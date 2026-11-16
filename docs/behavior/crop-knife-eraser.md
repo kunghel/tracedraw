@@ -184,6 +184,21 @@
   object under the start point when nothing is selected. Objects become
   curves; an object that vanishes completely is deleted. Objects whose
   bounds the band does not touch are left alone.
+- The band is smoothed (#2831): the pointer's points are taken as a
+  hand drew them, shaking by up to two screen pixels, so the line
+  through them is first thinned (points within the tolerance of the
+  line through their neighbours are left out, Ramer-Douglas-Peucker)
+  and fitted with few curves, within two pixels or a twentieth of the
+  nib's width when that is more. The round nib's band is that line's
+  stroke as curves (round caps and joins, its own overlaps merged), so
+  the edge it leaves in an object keeps the band's arcs: smooth, with
+  few nodes, the object's own curves outside the band untouched. The
+  band of the raw points was a polygon that followed every shake and
+  left an edge of many short sides. The square nib follows the fitted
+  line too. Dragged with a pen and the round nib, the band still
+  follows the pressure (`shaping::eraser_band`,
+  `shaping::tests::the_eraser_band_is_smooth_and_leaves_few_nodes`,
+  `shape_tool::eraser_tests::a_shaky_eraser_drag_leaves_a_smooth_edge_with_few_nodes`).
 - Click: erases a dot of the nib's size.
 - Double-click an object: deletes it whole.
 - A clip frame is erased through its frame (#1672), as Crop and the

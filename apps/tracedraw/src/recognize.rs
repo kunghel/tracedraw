@@ -346,6 +346,12 @@ impl App {
         self.doc().defaults.apply_to(&mut shape);
         if matches!(shape.kind, ShapeKind::Path { closed: false, .. }) {
             shape.fill = tracedraw_core::Fill::None;
+            // A line drawn with a pen follows its pressure (#883); a
+            // recognised shape keeps an even outline.
+            let widths = self.pen_widths(&points);
+            if let Some(st) = shape.stroke.as_mut().filter(|_| !widths.is_empty()) {
+                st.widths = widths;
+            }
         }
         self.run(Command::AddShape { layer, shape });
         self.select(vec![id]);

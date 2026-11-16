@@ -43,7 +43,11 @@ impl App {
             "tracecut.eyelets_found",
             &[("n", &centres.len().to_string())],
         );
-        out.preview = paths.clone();
+        // Shown as grommets on the dashed line they follow, worked out
+        // again as the settings change (#2759).
+        let d = spec.clamped().diameter;
+        out.rings = centres.iter().map(|c| (*c, d)).collect();
+        out.guides = eyelets::guides(&outlines, spec);
         out.changes = vec![Change::AddGroup {
             name: "tracecut.eyelets_group",
             paths,
@@ -87,6 +91,113 @@ impl App {
         out.preview = paths.clone();
         out.changes = vec![Change::AddGroup {
             name: "tracecut.box_group",
+            paths,
+            style: AddStyle::Hairline,
+        }];
+        out
+    }
+}
+
+/// Cutting Grid (#2098): a grid of straight cut lines, `width` by
+/// `height` mm, `columns` across and `rows` down, to cut a sheet of
+/// stickers or labels into equal pieces quickly.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct GridSpec {
+    pub width: f64,
+    pub height: f64,
+    pub columns: u32,
+    pub rows: u32,
+    /// The grid is the size of the selection's box (else `width` by
+    /// `height`), round it.
+    pub fit_selection: bool,
+}
+
+impl Default for GridSpec {
+    fn default() -> Self {
+        GridSpec {
+            width: 100.0,
+            height: 100.0,
+            columns: 4,
+            rows: 4,
+            fit_selection: true,
+        }
+    }
+}
+
+/// The sizes, and the columns and rows, a cutting grid takes.
+pub const GRID_SIZE_RANGE: (f64, f64) = (1.0, 5000.0);
+pub const GRID_COUNT_MAX: u32 = 500;
+
+/// The lines of a grid over `r`: `rows + 1` across and `columns + 1`
+/// down, each a straight line from edge to edge.
+pub fn grid_lines(r: Rect, columns: u32, rows: u32) -> Vec<tracedraw_core::geometry::BezPath> {
+    let (columns, rows) = (
+        columns.clamp(1, GRID_COUNT_MAX),
+        rows.clamp(1, GRID_COUNT_MAX),
+    );
+    let line = |a: Point, b: Point| {
+        let mut p = tracedraw_core::geometry::BezPath::new();
+        p.move_to(a);
+        p.line_to(b);
+        p
+    };
+    let mut out = Vec::new();
+    for i in 0..=rows {
+        let y = r.y0 + r.height() * f64::from(i) / f64::from(rows);
+        out.push(line(Point::new(r.x0, y), Point::new(r.x1, y)));
+    }
+    for i in 0..=columns {
+        let x = r.x0 + r.width() * f64::from(i) / f64::from(columns);
+        out.push(line(Point::new(x, r.y0), Point::new(x, r.y1)));
+    }
+    out
+}
+
+impl App {
+    /// Cutting Grid: the grid's lines as a group of hairlines, round the
+    /// selection's box (its size with Size of the selection), else in
+    /// the middle of the page (#2098).
+    pub fn tracecut_grid(&self, spec: &GridSpec) -> Changes {
+        let mut out = Changes {
+            label: "Cutting Grid",
+            ..Default::default()
+        };
+        let clamp = |v: f64| {
+            if v.is_finite() {
+                v.clamp(GRID_SIZE_RANGE.0, GRID_SIZE_RANGE.1)
+            } else {
+                GridSpec::default().width
+            }
+        };
+        let selection = self.tracecut_selection_box();
+        let centre = selection.map_or_else(|| self.page_rect().center(), |b| b.center());
+        let (w, h) = match selection.filter(|_| spec.fit_selection) {
+            Some(b) if b.width() > 1e-6 && b.height() > 1e-6 => (b.width(), b.height()),
+            _ => (clamp(spec.width), clamp(spec.height)),
+        };
+        let r = Rect::new(
+            centre.x - w / 2.0,
+            centre.y - h / 2.0,
+            centre.x + w / 2.0,
+            centre.y + h / 2.0,
+        );
+        let (columns, rows) = (
+            spec.columns.clamp(1, GRID_COUNT_MAX),
+            spec.rows.clamp(1, GRID_COUNT_MAX),
+        );
+        let paths = grid_lines(r, columns, rows);
+        out.summary = trf(
+            "tracecut.grid_found",
+            &[
+                ("n", &(columns * rows).to_string()),
+                ("w", &fmt_len(self.units, w / f64::from(columns))),
+                ("h", &fmt_len(self.units, h / f64::from(rows))),
+            ],
+        );
+        out.preview = paths.clone();
+        out.changes = vec![Change::AddGroup {
+            name: "tracecut.grid_group",
             paths,
             style: AddStyle::Hairline,
         }];
@@ -188,7 +299,11 @@ mod tests {
             ..Default::default()
         };
         let c = app.tracecut_eyelets(&spec);
-        assert_eq!(c.preview.len(), 12);
+        // The preview shows them as grommets on their dashed guide.
+        assert_eq!(c.rings.len(), 12);
+        assert!(c.rings.iter().all(|(_, d)| (*d - 8.0).abs() < 1e-9));
+        assert_eq!(c.guides.len(), 1);
+        assert!(c.preview.is_empty());
         let before = app.engine.history_labels().0.len();
         assert!(app.tracecut_apply_changes(&c));
         assert_eq!(app.engine.history_labels().0.len(), before + 1);
@@ -221,7 +336,7 @@ mod tests {
             along: Along::Curve,
             ..spec
         });
-        assert_eq!(along.preview.len(), 12);
+        assert_eq!(along.rings.len(), 12);
         app.undo();
         assert!(app.doc().find_shape(g.id).is_none());
     }
@@ -280,6 +395,64 @@ mod tests {
             &crate::tracecut::ToolSettings::default(),
         );
         assert!(matches!(&w.outcome, crate::tracecut::Outcome::Changes(c) if c.preview.len() == 6));
+    }
+
+    /// Cutting Grid (#2098): rows + 1 lines across and columns + 1 down,
+    /// round the selection (its size by default), one undo step.
+    #[test]
+    fn the_cutting_grid_goes_round_the_selection_in_one_step() {
+        let mut app = App::headless();
+        let id = app
+            .new_shape(tracedraw_core::ShapeKind::Rect {
+                rect: Rect::new(10.0, 20.0, 70.0, 50.0),
+                radius: 0.0,
+                corners: None,
+            })
+            .expect("rect");
+        app.select(vec![id]);
+        let spec = GridSpec {
+            columns: 3,
+            rows: 2,
+            ..Default::default()
+        };
+        let c = app.tracecut_grid(&spec);
+        assert_eq!(c.preview.len(), 3 + 4);
+        let all = c
+            .preview
+            .iter()
+            .map(|p| p.bounding_box())
+            .reduce(|a, b| a.union(b))
+            .unwrap();
+        assert!((all.x0 - 10.0).abs() < 1e-9 && (all.x1 - 70.0).abs() < 1e-9);
+        assert!((all.y0 - 20.0).abs() < 1e-9 && (all.y1 - 50.0).abs() < 1e-9);
+        let before = app.engine.history_labels().0.len();
+        assert!(app.tracecut_apply_changes(&c));
+        assert_eq!(app.engine.history_labels().0.len(), before + 1);
+        // Its own size, centred on the selection.
+        let own = app.tracecut_grid(&GridSpec {
+            width: 20.0,
+            height: 10.0,
+            fit_selection: false,
+            ..spec.clone()
+        });
+        let b = own
+            .preview
+            .iter()
+            .map(|p| p.bounding_box())
+            .reduce(|a, b| a.union(b))
+            .unwrap();
+        assert!((b.width() - 20.0).abs() < 1e-9 && (b.center().x - 40.0).abs() < 1e-9);
+        // Nothing selected: the middle of the page, at its size.
+        app.select(Vec::new());
+        let page = app.tracecut_grid(&spec);
+        let b = page
+            .preview
+            .iter()
+            .map(|p| p.bounding_box())
+            .reduce(|a, b| a.union(b))
+            .unwrap();
+        assert!((b.width() - 100.0).abs() < 1e-9);
+        assert!((b.center().x - app.page_rect().center().x).abs() < 1e-9);
     }
 
     #[test]

@@ -254,8 +254,8 @@ pub fn document(t: &Template, title: &str) -> Option<Document> {
             Some(d.doc)
         }
         Source::File(p) => {
-            let text = std::fs::read_to_string(p).ok()?;
-            let mut doc = Document::from_json(&text).ok()?;
+            let bytes = std::fs::read(p).ok()?;
+            let mut doc = Document::from_tdraw_bytes(&bytes).ok()?;
             doc.title = title.to_string();
             Some(doc)
         }

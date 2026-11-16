@@ -12,8 +12,9 @@
 # check then does on purpose) must bring the app back in a new process
 # that draws again. The output folder (dist-android/emulator-check by
 # default) gets the screenshot (screen.png), the whole system log
-# (logcat.txt), the app's own lines (tracedraw.txt) and the crash log
-# (crash.txt), also when the check fails; on GitHub Actions a failure
+# (logcat.txt), the lifecycle events with their system reasons (events.txt),
+# the app's own lines (tracedraw.txt) and the crash log (crash.txt), also
+# when the check fails; on GitHub Actions a failure
 # also leaves its key log lines as annotations on the job.
 #
 # The app also sends one HTTPS request at its start (to
@@ -60,6 +61,7 @@ sh_dev() {
 collect() {
     adb exec-out screencap -p > "$out/screen.png" 2>/dev/null || true
     adb logcat -d -v threadtime > "$out/logcat.txt" 2>/dev/null || true
+    adb logcat -d -b events -v threadtime > "$out/events.txt" 2>/dev/null || true
     adb logcat -d -b crash -v threadtime > "$out/crash.txt" 2>/dev/null || true
     # Every line the app's processes wrote (each start is a new pid), and
     # the system's lines about the app.
@@ -83,8 +85,8 @@ summary() {
     grep -hE "FATAL EXCEPTION|AndroidRuntime|Fatal signal|Abort message|Tombstone written|ANR in|panicked at|RustPanic| tracedraw *: (panic|ERROR)" \
         "$out/logcat.txt" "$out/crash.txt" 2>/dev/null | cut -c1-220 | head -n 40 > "$s/crash" || true
     grep -E " tracedraw *:" "$out/tracedraw.txt" 2>/dev/null | tail -n 40 > "$s/app" || true
-    adb logcat -d -b events -v threadtime 2>/dev/null \
-        | grep -E "_relaunch|_on_(create|destroy|stop)_called|am_proc_died|am_kill" \
+    grep -E "_relaunch|_on_(create|destroy|stop)_called|wm_destroy_activity|wm_finish_activity|am_proc_died|am_kill" \
+        "$out/events.txt" \
         | grep -E "$pkg|TraceDrawActivity" | tail -n 20 > "$s/events" || true
     { python3 scripts/android/screen_check.py "$out/screen.png" 2>&1 || true
       sh_dev dumpsys window | grep -E 'mCurrentFocus|mFocusedApp' || true

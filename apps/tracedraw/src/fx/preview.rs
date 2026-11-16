@@ -204,6 +204,10 @@ pub struct FxPreview {
     /// The values whose making failed (its thread died): not made again
     /// until a value changes.
     failed: Option<u64>,
+    /// The last preview made, its key, step name and commands: Show
+    /// Original takes it off the drawing and puts it back on release
+    /// without making it again (#1129).
+    last: Option<(u64, &'static str, Vec<Command>)>,
     /// How many previews were made, for tests.
     pub made: usize,
 }
@@ -316,7 +320,28 @@ impl App {
             return;
         }
         self.poll_fx_preview();
+        if st.show_original {
+            // Held: the drawing without the effect for a moment.
+            self.withdraw_fx_preview();
+            return;
+        }
         let key = preview_key(st, &self.selection);
+        if self.fx_preview.shown != Some(key) && self.fx_preview.job.is_none() {
+            // Show Original let go: the preview made before comes back.
+            if let Some((k, label, cmds)) = self.fx_preview.last.clone() {
+                if k == key {
+                    self.withdraw_fx_preview();
+                    self.engine.begin_preview();
+                    self.fx_preview.active = true;
+                    if let Err(e) = self.engine.run_batch(label, &cmds) {
+                        self.status = e.to_string();
+                    }
+                    self.fx_preview.shown = Some(key);
+                    self.fx_preview.pending = None;
+                    return;
+                }
+            }
+        }
         if self.fx_preview.shown == Some(key) || self.fx_preview.failed == Some(key) {
             self.fx_preview.pending = None;
             self.fx_preview.last_start = None;
@@ -429,6 +454,7 @@ impl App {
             if let Err(e) = self.engine.run_batch(job.label, &cmds) {
                 self.status = e.to_string();
             }
+            self.fx_preview.last = Some((job.key, job.label, cmds));
         }
         self.fx_preview.shown = Some(job.key);
         self.fx_preview.made += 1;
@@ -451,6 +477,7 @@ impl App {
         self.fx_preview.base = None;
         self.fx_preview.last_start = None;
         self.fx_preview.failed = None;
+        self.fx_preview.last = None;
     }
 
     /// OK: the preview the drawing shows is kept as one undo step; with
@@ -786,6 +813,42 @@ mod tests {
         assert!(!app.engine.in_preview());
     }
 
+    /// Show Original held takes the effect off the drawing; let go, the
+    /// preview made before comes back without being made again (#1129).
+    /// The settings-only window (#2799) previews and keeps the effect the
+    /// same way.
+    #[test]
+    fn show_original_and_the_settings_only_window() {
+        let (ctx, mut app, id) = bitmap_app(40, 32);
+        app.settings.fx_settings_only = true;
+        let steps = app.engine.history_labels().0.len();
+        crate::ui::effect_dialog::choose_effect(&mut app, "gaussian_blur");
+        assert!(app.settle_fx_preview(&ctx, 10.0));
+        assert_eq!(effects_of(&app, id).len(), 1);
+        let made = app.fx_preview.made;
+        let hold = |app: &mut App, on: bool| {
+            let Dialog::Effect(st) = &mut app.dialog else {
+                panic!("the dialog");
+            };
+            st.show_original = on;
+            st.clone()
+        };
+        let st = hold(&mut app, true);
+        app.preview_bitmap_effect(&ctx, &st);
+        assert!(effects_of(&app, id).is_empty());
+        assert_eq!(app.engine.history_labels().0.len(), steps);
+        let st = hold(&mut app, false);
+        app.preview_bitmap_effect(&ctx, &st);
+        assert_eq!(effects_of(&app, id).len(), 1);
+        assert_eq!(app.fx_preview.made, made, "put back, not made again");
+        assert!(app.engine.in_preview());
+        frame(&ctx, &mut app, vec![enter()]);
+        assert!(matches!(app.dialog, Dialog::None));
+        assert_eq!(app.engine.history_labels().0.len(), steps + 1);
+        assert_eq!(effects_of(&app, id).len(), 1);
+        assert!(!app.engine.in_preview());
+    }
+
     /// Editing an effect from the FX section: the drawing keeps showing
     /// the effect as it is until a value changes, then shows the change;
     /// OK changes the effect in place as one step.
@@ -805,6 +868,8 @@ mod tests {
             pick: None,
             preview: true,
             all_pages: false,
+            show_original: false,
+            preset_name: String::new(),
         });
         for _ in 0..3 {
             frame(&ctx, &mut app, Vec::new());

@@ -251,6 +251,16 @@ keys (`pick_drag_tests::node_commands_have_keys_of_their_own`).
   `tab_in_the_main_window_never_reaches_the_menu_bar`).
 - Esc with a menu or a drop-down list open closes it and changes
   nothing else (the selection stays).
+- A field of the property bar or of a docker with the keyboard keeps
+  the keys that edit its text: Ctrl+A, Ctrl+C, Ctrl+V, Ctrl+X, Ctrl+Z,
+  Ctrl+Y, and Ctrl with the arrows, Home, End, Backspace or Delete.
+  Any other Ctrl shortcut (Ctrl+K, Ctrl+G, Ctrl+L...) is a command: the
+  field applies what was typed in it as if Enter had been pressed,
+  gives the keyboard back to the drawing, and the command runs in the
+  next frame, on what the field changed. Enter, or a click on the
+  drawing or an object, gives the keyboard back as well (#2893,
+  `pick_drag_tests::field_focus_tests`). Not while a dialog is open,
+  and not with Ctrl+Alt (AltGr types characters).
 
 ## Menus and lists from the keyboard
 

@@ -182,6 +182,7 @@ fn load(
             _ => eprintln!("{path}: the colour profile it carries could not be used"),
         }
     }
+    tracedraw_render::bitmap_effects::prepare(&mut loaded.0);
     Ok(loaded)
 }
 
@@ -621,7 +622,7 @@ fn main() -> ExitCode {
                         let _ =
                             tracedraw_io::svg_import::parse(&String::from_utf8_lossy(&m), &mut ids);
                     } else {
-                        let _ = tracedraw_core::Document::from_json(&String::from_utf8_lossy(&m));
+                        let _ = tracedraw_core::Document::from_tdraw_bytes(&m);
                     }
                 })
                 .is_ok();
@@ -689,6 +690,32 @@ fn main() -> ExitCode {
             for line in report.as_ref().map(reader_warnings).unwrap_or_default() {
                 eprintln!("{line}");
             }
+            // Conversion to a drawing/native file retains source state;
+            // exports omit content excluded from output, as PDF does.
+            let ext = std::path::Path::new(output)
+                .extension()
+                .and_then(|s| s.to_str())
+                .unwrap_or("")
+                .to_ascii_lowercase();
+            let doc = if matches!(
+                ext.as_str(),
+                "svg"
+                    | "pdf"
+                    | "eps"
+                    | "ps"
+                    | "prn"
+                    | "dxf"
+                    | "emf"
+                    | "wmf"
+                    | "plt"
+                    | "psd"
+                    | "html"
+                    | "png"
+            ) {
+                tracedraw_io::for_output(&doc)
+            } else {
+                std::borrow::Cow::Borrowed(&doc)
+            };
             let res = if output.to_ascii_lowercase().ends_with(".svg") {
                 tracedraw_io::save_svg(&doc, 0, output)
             } else if output.to_ascii_lowercase().ends_with(".pdf") {

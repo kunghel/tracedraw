@@ -372,10 +372,19 @@ fn smooth_joints(sub: &Sub) -> Vec<bool> {
         .collect()
 }
 
+/// A side goes on through a smooth node only while what it has run so
+/// far is a sliver beside the segment past the node, at most this share
+/// of it (a node a cut left just beside the corner, #2225). A node
+/// further along is a node of the curve the user keeps: the rounding
+/// stops at it and never takes it away (#2700).
+const SLIVER: f64 = 0.1;
+
 /// The segments of one side of the corner after segment `k`, from the
 /// corner away: the side coming in (`back`) or the one going out, each
-/// through the smooth nodes after it, at most [`MAX_SIDE`] segments.
-fn side_segs(smooth: &[bool], k: usize, back: bool) -> Vec<usize> {
+/// through the smooth nodes after it that only end a sliver (see
+/// [`SLIVER`]; `lens` the segments' lengths), at most [`MAX_SIDE`]
+/// segments.
+fn side_segs(smooth: &[bool], lens: &[f64], k: usize, back: bool) -> Vec<usize> {
     let n = smooth.len();
     let mut out = Vec::new();
     if n == 0 {
@@ -392,7 +401,12 @@ fn side_segs(smooth: &[bool], k: usize, back: bool) -> Vec<usize> {
         if !smooth[joint] {
             break;
         }
-        cur = if back { joint } else { (cur + 1) % n };
+        let next = if back { joint } else { (cur + 1) % n };
+        let run: f64 = out.iter().map(|i| lens[*i]).sum();
+        if run > SLIVER * lens[next] {
+            break;
+        }
+        cur = next;
     }
     out
 }
@@ -482,7 +496,10 @@ fn side_touch(
     let (u_in, u_out) = (end_dir(&sub.segs[k].0)?, start_dir(&sub.segs[out_k].0)?);
     let theta = (-u_in).dot(u_out).clamp(-1.0, 1.0).acos();
     let side = if turn(u_in, u_out) >= 0.0 { 1.0 } else { -1.0 };
-    let (ins, outs) = (side_segs(smooth, k, true), side_segs(smooth, k, false));
+    let (ins, outs) = (
+        side_segs(smooth, lens, k, true),
+        side_segs(smooth, lens, k, false),
+    );
     // From where straight sides would be touched, then from near the
     // corner and from halfway along the first segments.
     let straight = r / (theta / 2.0).tan();
@@ -689,6 +706,7 @@ pub fn corner_reach(path: &BezPath) -> Vec<f64> {
         }
         let count = if sub.closed { n } else { n - 1 };
         let smooth = smooth_joints(&sub);
+        let lens: Vec<f64> = sub.segs.iter().map(|(s, _)| s.arclen(ROUGH)).collect();
         for k in 0..count {
             let (seg_in, _) = &sub.segs[k];
             let (seg_out, _) = &sub.segs[(k + 1) % n];
@@ -704,9 +722,9 @@ pub fn corner_reach(path: &BezPath) -> Vec<f64> {
             }
             // Each side as far as the next corner (#2225).
             let room = |back: bool| -> f64 {
-                side_segs(&smooth, k, back)
+                side_segs(&smooth, &lens, k, back)
                     .iter()
-                    .map(|i| sub.segs[*i].0.arclen(ROUGH))
+                    .map(|i| lens[*i])
                     .sum()
             };
             let room = room(true).min(room(false));
@@ -762,7 +780,10 @@ pub fn max_fillet(path: &BezPath, only: Option<&[usize]>) -> Option<f64> {
             let out_k = (k + 1) % n;
             // Each side runs through its smooth nodes to the next corner;
             // a chosen corner there takes half of it.
-            let (ins, outs) = (side_segs(&smooth, k, true), side_segs(&smooth, k, false));
+            let (ins, outs) = (
+                side_segs(&smooth, &lens, k, true),
+                side_segs(&smooth, &lens, k, false),
+            );
             let (Some(&far_in), Some(&far_out)) = (ins.last(), outs.last()) else {
                 continue;
             };
@@ -914,12 +935,12 @@ pub fn cut_corners(path: &BezPath, cut: CornerCut, only: Option<&[usize]>) -> (B
                         let (i, j) = (far.seg_in, far.seg_out);
                         // The segments between the corner and where the
                         // sides are touched go whole.
-                        let mut whole: Vec<usize> = side_segs(&smooth, k, true)
+                        let mut whole: Vec<usize> = side_segs(&smooth, &lens, k, true)
                             .into_iter()
                             .take_while(|m| *m != i)
                             .collect();
                         whole.extend(
-                            side_segs(&smooth, k, false)
+                            side_segs(&smooth, &lens, k, false)
                                 .into_iter()
                                 .take_while(|m| *m != j),
                         );
@@ -2506,7 +2527,9 @@ mod tests {
         // Nothing larger than the largest fits.
         let (_, n) = cut_corners(&bitten, CornerCut::Fillet(max * 1.05), Some(&only));
         assert_eq!(n, 0);
-        // A straight side with a node in its middle rounds past it too.
+        // A straight side with a node a quarter of the way along stops
+        // the rounding at that node, which stays (#2700): the node is no
+        // sliver beside the corner.
         let mut p = BezPath::new();
         p.move_to((0.0, 0.0));
         p.line_to((5.0, 0.0));
@@ -2519,11 +2542,17 @@ mod tests {
             .find(|c| (c.at - Point::new(0.0, 0.0)).hypot() < 1e-9)
             .expect("corner")
             .node;
-        assert!((max_fillet(&p, Some(&[node])).expect("corner") - 20.0).abs() < 1e-3);
-        let (cut, n) = cut_corners(&p, CornerCut::Fillet(8.0), Some(&[node]));
+        assert!((max_fillet(&p, Some(&[node])).expect("corner") - 5.0).abs() < 1e-3);
+        let (cut, n) = cut_corners(&p, CornerCut::Fillet(4.0), Some(&[node]));
         assert_eq!(n, 1);
-        assert!((cut.area() - (400.0 - (64.0 - 16.0 * std::f64::consts::PI))).abs() < 0.05);
+        assert!((cut.area() - (400.0 - (16.0 - 4.0 * std::f64::consts::PI))).abs() < 0.05);
         assert_eq!(fillets(&cut).len(), 1);
+        assert!(cut
+            .elements()
+            .iter()
+            .any(|e| matches!(e, PathEl::LineTo(q) if (*q - Point::new(5.0, 0.0)).hypot() < 1e-9)));
+        let (_, n) = cut_corners(&p, CornerCut::Fillet(8.0), Some(&[node]));
+        assert_eq!(n, 0, "past the node");
     }
 
     /// Every corner of shapes cut out of circles rounds at every radius

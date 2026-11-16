@@ -74,6 +74,10 @@ at first start and can turn off at any time:
 - AI images (making, remixing or cutting out pictures with the same
   service), only when you ask: it sends your request and, for a remix or
   cut-out, the picture you chose, to that service the same way.
+- Trace Bitmap's AI model, only when you press Download AI model: the
+  enlarging model is downloaded once from its project's GitHub release
+  page and kept in TraceDraw's own folder. The enlargement runs on your
+  computer; the picture is not sent anywhere.
 - File > GitHub, only when you use it: opening, saving and listing the
   history of a drawing in a GitHub repository you name goes to GitHub's
   API with the access token you provide (none for public repositories).

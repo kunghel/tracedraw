@@ -31,10 +31,18 @@ memory, processor and disk lines are measured or estimated, and say so.
   has no 32-bit package. A
   32-bit program can use at most 2 GB of memory, so very large drawings
   and exports are better done on 64-bit Windows. There is no Windows on ARM build.
+  Windows 7 and 8.1 are not supported: the Rust Windows targets the
+  program is built for need Windows 10, so on older versions it stops
+  at start with a missing-function error. A user reported it
+  running on Windows 7 x64 with the VxKex NEXT compatibility layer
+  (discussion #2790); that is untested by us and at your own risk.
 - **macOS:** 11 Big Sur or later (`LSMinimumSystemVersion` in
   `packaging/macos/Info.plist`), with a separate download for Apple
   silicon (arm64) and for Intel (x86_64).
-- **Linux:** x86_64 and arm64, as AppImage, `.deb` or a plain `.tar.gz`.
+- **Linux:** x86_64 and arm64, as AppImage, `.deb` or a plain `.tar.gz`,
+  and x86_64 as a Flatpak bundle. The Flatpak runs on the freedesktop
+  24.08 runtime, which brings its own glibc, so it also starts on the
+  older distributions below once Flatpak is installed (#2054).
   The programs are built on Ubuntu 22.04 and need **glibc 2.35 or later**
   (the newest symbol version in `objdump -T` of the 0.19.8 programs is
   `GLIBC_2.35`; the `.deb` asks for `libc6 (>= 2.35)`). The AppImage does

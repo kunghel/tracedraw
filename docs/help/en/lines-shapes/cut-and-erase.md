@@ -1,8 +1,9 @@
 # Cropping, cutting and erasing
 
 Four tools of the Crop flyout take parts of objects away: [[tool.crop]],
-[[tool.knife]], [[tool.segment_delete]] and [[tool.eraser]]. Each change is
-one undo step.
+[[tool.knife]], [[tool.segment_delete]] and [[tool.eraser]]; the fifth,
+[[tool.shape_builder]], merges or removes the parts overlapping objects
+cut each other into. Each change is one undo step.
 
 ## Crop {#crop}
 
@@ -85,3 +86,23 @@ are hidden along it, so the eraser cuts through the frame and its contents
 together. Bitmaps and groups are not erased. The defaults of the eraser are on the
 [[tool.eraser]] page of the tool options; see
 [Tool options](../customize/tool-options.md#eraser).
+
+## Shape Builder {#shape-builder}
+
+The [[tool.shape_builder]] tool builds a new shape out of the parts that
+overlapping objects cut each other into, by dragging across them.
+
+1. Select the overlapping objects (rectangles, ellipses, polygons and
+   closed curves; a click with the tool selects when nothing is selected).
+2. Choose the [[tool.shape_builder]] tool. The part under the pointer is
+   hatched: a place inside the same objects and outside the others.
+3. Drag across the parts you want as one object. Each part lights up as
+   you cross it. When you let go, the parts become one new object with the
+   fill and outline of the front object over the first part, and they are
+   cut out of the objects they came from. An object left with nothing is
+   deleted.
+
+Hold <kbd>Alt</kbd> while you drag to take the parts away instead: they
+are cut out and nothing new is made. A click on a part makes it an object
+of its own. The objects stay selected, with the new one, so you can go on
+building.

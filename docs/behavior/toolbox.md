@@ -18,21 +18,24 @@
   bars' menu (Customize, button size, the bars), as on the other bars.
 - Buttons with a flyout have a small arrow at the bottom-right. Clicking
   the arrow, dragging, or pressing and holding the button for 0.4 s
-  opens the flyout; a click elsewhere picks the tool the button
-  shows. While a flyout is open, hovering another flyout button opens that
+  opens the flyout; a click on the button's main area picks the tool it
+  shows and closes the open flyout, including after hovering from another
+  group. While a flyout is open, hovering another flyout button opens that
   one instead; moving away from the toolbox or clicking elsewhere closes
   it.
 - A flyout lists its tools vertically: a check mark beside the tool the
   button shows, the icon, the name and the shortcut at the right.
   Separators split Pick and Freehand Pick from Free Transform; Crop, Knife
-  and Segment Delete from Eraser; Polygon, Star, Spiral and Common
+  and Segment Delete from Eraser, and the Eraser from Shape Builder
+  (#1149); Polygon, Star, Spiral and Common
   Shapes from Action Lines and Graph Paper; the dimension tools from the 3-point
   callout; the connectors from Anchor Editing; Interactive and Area Fill
   from Mesh Fill.
 - Tooltips: "<Name> tool (<shortcut>)" in bold, then what the tool does.
   No tooltip shows while a flyout is open.
 - Double-clicking a button: Pick selects all objects, Zoom fits all
-  objects, Rectangle adds a page frame.
+  objects, Rectangle adds a page frame behind every object of the layer
+  (#2640).
 - The "+" at the end lists every flyout with a check box to show or hide
   it (the Outline flyout is hidden by default) and Reset toolbox.
 - The toolbox starts docked on the left. Its grip (the dots above the
@@ -167,7 +170,7 @@ the pointer stands still over the window is not taken as the pointer
 leaving it, so the pointer is never left as the arrow or invisible
 until the mouse moves (#1922, `winit_alt_shortcuts::tests`, see
 `vendor/README.md`).
-On Windows a drawn pointer is not painted in the window at all: its
+On Windows and Linux a drawn pointer is not painted in the window at all: its
 drawing is made a bitmap (`cursors::bitmap`: what `cursors::paint`
 draws, rasterised in software in the screen's pixels and cut to what is
 drawn, the hot spot where the pointer points) and given to the system
@@ -182,11 +185,17 @@ bitmap is drawn once for each pointer, screen scale and theme and kept
 cannot take a bitmap, and a system pointer asked for later in the frame
 still wins. A nib wider than 48 points either side (the eraser or a
 brush zoomed far in) does not fit a pointer bitmap and is painted as
-before, with the blank image. The other systems paint the drawn
-pointers as before (the browser takes no bitmap from the window, and
-the size a bitmap shows at on a scaled screen differs between them);
-`TRACEDRAW_BITMAP_POINTERS=1` turns the bitmaps on there for a trial,
-`0` off on Windows.
+before (with the blank image on Windows). On Linux the painted pointer
+made the drawing tools feel slow next to the Pick tool's arrow (#2557);
+X11 takes the bitmap in the screen's pixels, and Wayland shows it at
+the window's scale. The patched winit sends a bitmap pointer to the
+display server only when it changes (egui-winit hands it over every
+frame), and on Wayland pads its buffer to whole multiples of 12 pixels
+so that any integer buffer scale divides it (see `vendor/README.md`).
+macOS and the browser paint the drawn pointers as before (the browser
+takes no bitmap from the window, and macOS takes a bitmap's pixels for
+points); `TRACEDRAW_BITMAP_POINTERS=1` turns the bitmaps on there for
+a trial, `0` off on Windows and Linux.
 (`cursors::tests::a_drawn_pointer_is_handed_to_the_system_as_a_bitmap`,
 `cursors::tests::every_drawn_pointer_has_a_bitmap_in_the_screens_pixels`.)
 The cross hair's lines cross on the middle of the pixel under the hot

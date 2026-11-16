@@ -8,7 +8,7 @@
 //! Lines, Copy Envelope Properties and Clear Envelope.
 
 use crate::app::App;
-use crate::envelope_edit::{last_envelope, Part, Preset};
+use crate::envelope_edit::{Part, Preset};
 use crate::i18n::tr;
 use crate::theme::Tokens;
 use crate::tools::Tool;
@@ -393,7 +393,9 @@ pub fn draw_envelopes(app: &App, painter: &Painter) {
     }
     let blue = Color32::from_rgb(40, 110, 220);
     for s in app.selected_shapes() {
-        let Some((_, f)) = last_envelope(&s.effects) else {
+        // The Envelope tool's frame on an object with no envelope shows
+        // too, before it is edited (#2611).
+        let Some((_, _, f)) = app.editable_envelope(s.id) else {
             continue;
         };
         let page = f.transformed(s.transform);

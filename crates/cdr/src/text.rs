@@ -259,8 +259,12 @@ pub(crate) struct RunStyle {
     /// Line spacing as a distance between baselines, mm (set instead of
     /// `line_spacing`).
     pub line_spacing_mm: Option<f64>,
-    /// Extra character spacing as a fraction of the em (0 = none).
+    /// Character spacing as a fraction of the width of the space
+    /// character (0 = none).
     pub char_spacing: Option<f64>,
+    /// Word spacing as a fraction of the width of the space character
+    /// (1 = the space as the font has it).
+    pub word_spacing: Option<f64>,
     /// Paragraph indents in points: (left, first line, right).
     pub indent_pt: Option<(f64, f64, f64)>,
     /// The paragraph's tab stops (the style table's tab entries before
@@ -435,6 +439,7 @@ impl RunStyle {
                 base.line_spacing_mm
             },
             char_spacing: self.char_spacing.or(base.char_spacing),
+            word_spacing: self.word_spacing.or(base.word_spacing),
             indent_pt: self.indent_pt.or(base.indent_pt),
             tabs: self.tabs.clone().or_else(|| base.tabs.clone()),
             para_before: self.para_before.or(base.para_before),
@@ -668,8 +673,10 @@ fn read_stlt_set11(
         r.skip(n * size);
         Some(())
     };
-    // Intervals: id, 8 unknown, character spacing i32 (millionths), 8
-    // unknown, line spacing, 20 unknown, the line spacing's unit u32: 0
+    // Intervals: id, 8 unknown, character spacing i32 (millionths), 4
+    // unknown, word spacing i32 (millionths, 1 000 000 the space as it
+    // is; #2586: 1 107 391 beside a character spacing of 107 391 in a
+    // version 18 file), line spacing, 20 unknown, the line spacing's unit u32: 0
     // (and 2) millionths of the character height, 1 a distance in
     // coordinate units (7 pt stored as 24 694 in a version 12 file whose
     // multi-line text otherwise collapses onto one line).
@@ -678,14 +685,15 @@ fn read_stlt_set11(
         return Vec::new();
     };
     let ni = (ni as usize).min(r.remaining() / 52);
-    let mut intervals: std::collections::HashMap<u32, (f64, LineSpacing)> =
+    let mut intervals: std::collections::HashMap<u32, (f64, Option<f64>, LineSpacing)> =
         std::collections::HashMap::with_capacity(ni);
     for _ in 0..ni {
-        let (Some(id), _, Some(ch), _, Some(ln), _, Some(unit)) = (
+        let (Some(id), _, Some(ch), _, Some(word), Some(ln), _, Some(unit)) = (
             r.u32(),
             r.skip(8),
             r.u32(),
-            r.skip(8),
+            r.skip(4),
+            r.u32(),
             r.u32(),
             r.skip(20),
             r.u32(),
@@ -697,7 +705,10 @@ fn read_stlt_set11(
         } else {
             LineSpacing::Factor(ln as i32 as f64 / 1_000_000.0)
         };
-        intervals.insert(id, (ch as i32 as f64 / 1_000_000.0, line));
+        // Zero is taken as not given (files that leave the field empty).
+        let word = word as i32 as f64 / 1_000_000.0;
+        let word = (word > 0.0 && word <= 20.0).then_some(word);
+        intervals.insert(id, (ch as i32 as f64 / 1_000_000.0, word, line));
     }
     if skip_table(&mut r, 152).is_none() {
         return Vec::new();
@@ -796,7 +807,7 @@ fn read_stlt_set11(
             else {
                 break;
             };
-            if let Some((ch, ln)) = intervals.get(&interval_ref) {
+            if let Some((ch, word, ln)) = intervals.get(&interval_ref) {
                 match *ln {
                     LineSpacing::Factor(f) if f > 0.0 && f.is_finite() => {
                         style.line_spacing = Some(f);
@@ -809,6 +820,7 @@ fn read_stlt_set11(
                 if ch.is_finite() && ch.abs() <= 20.0 {
                     style.char_spacing = Some(*ch);
                 }
+                style.word_spacing = *word;
             }
             if has_set11 {
                 r.skip(4);
@@ -2336,7 +2348,9 @@ pub(crate) fn object_transparency_merge_code(style: &str) -> Option<i64> {
 /// linear, radial, conical and square as in fill records; `angle` is in
 /// degrees, the centre offsets in percent of the object and a `xScale` or
 /// `yScale` under 1 a padded edge, as the doubles of version 16+ fill
-/// records. `None` for other transparencies.
+/// records; a radial run instead reaches `xScale` and `yScale` times half
+/// the object's width and height from its centre. `None` for other
+/// transparencies.
 pub(crate) fn object_transparency_mask(style: &str) -> Option<(tracedraw_core::Fill, u8)> {
     use tracedraw_core::{Color, Fill, Fountain, FountainKind, Stop};
     let t = style.trim_matches(|c: char| c == '\0' || c.is_whitespace());
@@ -2371,7 +2385,24 @@ pub(crate) fn object_transparency_mask(style: &str) -> Option<(tracedraw_core::F
         let v: f32 = parts.nth(1)?.trim().parse().ok()?;
         Some((v / 255.0).clamp(0.0, 1.0))
     };
-    let (first, last) = (grey("primaryColor")?, grey("secondaryColor")?);
+    let (mut first, mut last) = (grey("primaryColor")?, grey("secondaryColor")?);
+    // The section's start and end amounts run the nodes' transparency
+    // from the one to the other: 0 and 1 in every file seen, whichever
+    // grey comes first. A run from 1 down to 0 is taken as the reversed
+    // transparency (#2736: Reverse Fill on a radial transparency drew as
+    // the plain one; manual node edits swap the greys instead). Assumed:
+    // no file with a reversed transparency has been seen.
+    let amount = |key: &str| num(&tr, key).filter(|v| (0.0..=1.0).contains(v));
+    if let (Some(s), Some(e)) = (amount("startTransparency"), amount("endTransparency")) {
+        if e < s {
+            let run = |g: f32| {
+                let t = f64::from(1.0 - g);
+                (1.0 - (s + (e - s) * t)).clamp(0.0, 1.0) as f32
+            };
+            first = run(first);
+            last = run(last);
+        }
+    }
     let kind = match num(&fill, "fountainType").unwrap_or(1.0) as i64 {
         2 => FountainKind::Radial,
         3 => FountainKind::Conical,
@@ -2398,6 +2429,25 @@ pub(crate) fn object_transparency_mask(style: &str) -> Option<(tracedraw_core::F
         edge_pad,
         ..Default::default()
     };
+    // A radial run whose scales are 1 ends at the object's edge, half
+    // its width from the centre (#2735: circles whose transparency is
+    // solid at the rim in the reporter's screenshots; read as an edge pad
+    // the run reached the box's corners, half the diagonal, and the rim
+    // stayed part way). The run is placed by nodes in half sizes, the
+    // scales the radius across and down.
+    if kind == FountainKind::Radial {
+        let sx = num(&fill, "xScale").unwrap_or(1.0).abs();
+        let sy = num(&fill, "yScale").unwrap_or(sx).abs();
+        if (1e-3..=1e3).contains(&sx) && (1e-3..=1e3).contains(&sy) {
+            let c = fountain.offset;
+            fountain.edge_pad = 0.0;
+            fountain.handles = Some(tracedraw_core::style::FountainHandles {
+                start: c,
+                end: tracedraw_core::geometry::Point::new(c.x + sx, c.y),
+                skew: tracedraw_core::geometry::Point::new(c.x, c.y + sy),
+            });
+        }
+    }
     crate::mirror_centred_stops(&mut fountain);
     let target = num(&tr, "appliesTo").unwrap_or(2.0).clamp(0.0, 2.0) as u8;
     Some((Fill::Fountain(fountain), target))
@@ -2949,6 +2999,41 @@ mod tests {
         }
         let s = r#"{"transparency":{"fill":{"type":"1"},"mode":"4","uniformTransparency":"0"}}"#;
         assert_eq!(object_transparency_merge_code(s), Some(4));
+    }
+
+    #[test]
+    fn radial_transparency_reaches_the_object_edge() {
+        // #2735: a radial transparency of scale 1 ends at the object's
+        // edge, half its width from the centre, not at its box's corners.
+        use tracedraw_core::geometry::{Point, Rect};
+        use tracedraw_core::{Fill, FountainKind};
+        let style = |scale: &str| {
+            format!(
+                r#"{{"transparency":{{"fill":{{"type":"2","fountainType":"2","angle":"0","xCenterOffset":"0","yCenterOffset":"0","xScale":"{scale}","yScale":"{scale}","primaryColor":"GRAY255,USER,0,100,0","secondaryColor":"GRAY255,USER,255,100,0"}},"appliesTo":"2"}}}}"#
+            )
+        };
+        let b = Rect::new(0.0, 0.0, 40.0, 40.0);
+        for (scale, radius) in [("1", 20.0), ("0.5", 10.0)] {
+            let (mask, _) = object_transparency_mask(&style(scale)).expect("mask");
+            let Fill::Fountain(f) = mask else {
+                panic!("{mask:?}")
+            };
+            assert_eq!(f.kind, FountainKind::Radial);
+            assert_eq!(f.edge_pad, 0.0);
+            // The run's end, at the rim, and its centre.
+            let at = |x: f64| f.param_at(b, Point::new(x, 20.0)).expect("placed");
+            assert!(
+                (at(20.0 + radius) - 1.0).abs() < 1e-9,
+                "{scale}: {}",
+                at(20.0 + radius)
+            );
+            assert!(at(20.0).abs() < 1e-9);
+            // Centre first: the file's first colour, the rim's, is last.
+            assert_eq!(
+                f.stops.last().map(|s| s.color),
+                Some(tracedraw_core::Color::Gray { v: 0.0 })
+            );
+        }
     }
 
     #[test]

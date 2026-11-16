@@ -15,6 +15,10 @@ barre sono visibili e come si comporta la tavolozza dei colori.
 - [[options.ui_shadows]] (meno ombre aiutano le schede grafiche più lente).
 - [[options.colored_icons]]: ogni gruppo di strumenti riceve un colore
   proprio.
+- [[options.docker_tabs_icons_only]]: le schede dei pannelli ai lati della
+  finestra mostrano solo l'immagine, con il nome nel suggerimento.
+  Disattivato, mostrano immagine e nome, e una colonna con più schede di
+  quante ne entrino scorre.
 - [[options.ui_size]]: quanto sono grandi menu, barre, icone e pannelli,
   rispetto al ridimensionamento che il sistema dà al monitor (100% in
   partenza). [[options.reset_to_default]] torna al 100%. La dimensione

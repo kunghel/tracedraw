@@ -246,6 +246,11 @@ pub(crate) mod frame_input;
 // (vendor/README.md).
 #[cfg(windows_platform)]
 pub(crate) mod alt_shortcuts;
+// TraceDraw: a picture dragged over a window from another program
+// (vendor/README.md, #2349).
+#[cfg(any(windows_platform, x11_platform, wayland_platform))]
+#[allow(dead_code)]
+pub(crate) mod picture_drop;
 mod platform_impl;
 mod utils;
 pub mod window;

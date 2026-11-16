@@ -227,6 +227,47 @@ drop shadow is not one of them: `Shape.AddDropShadow(dx, dy, opacity)` sets
 the object's shadow, which `document_info` reports apart from `effects`.
 So `AddDropShadow` leaves `Effects.Count` as it was.
 
+### Dimensions
+
+`Layer.CreateParallelDimension(x1, y1, x2, y2, tx, ty)`,
+`CreateHorizontalDimension` and `CreateVerticalDimension` (same arguments)
+make a live dimension from (x1, y1) to (x2, y2), its line through
+(tx, ty), in the Dimension tool's style, font and units: the same object
+the tool draws, which follows the objects it measures when they are
+edited. `CreateLinearDimension(kind, ...)` takes the kind as `'parallel'`,
+`'horizontal'`, `'vertical'` or `'auto'` (the larger span).
+`CreateAngularDimension(cx, cy, x1, y1, x2, y2, tx, ty)` measures the
+angle at (cx, cy) from the first point to the second, its arc through
+(tx, ty). `Shape.Dimension` gives `kind`, `value` (mm or degrees),
+`text` and `points`, or `null` for other objects (#2348).
+
+VBA macros have `Layer.CreateLinearDimension(Type, Point1, Point2,
+TextCentered, TextX, TextY)` with `cdrDimensionHorizontal` (0),
+`cdrDimensionVertical` (1) and `cdrDimensionSlanted` (2), and
+`Layer.CreateAngularDimension(Center, Point1, Point2, TextX, TextY)`. A
+point is anything with `PositionX`/`PositionY`, `{x, y}` or `[x, y]`, in
+the document unit; without TextX/TextY the line goes 10 mm off the
+points. A recorded macro records a dimension the Dimension tools drew as
+one of these calls, so playing it back makes a live dimension again.
+
+### Symbols
+
+`Document.Symbols` lists the drawing's symbols (`Index`, `Name`).
+`Shape.CreateSymbol(name)` and `ShapeRange.CreateSymbol(name)` make a
+symbol from the objects, which an instance replaces where they were.
+`Layer.PlaceSymbol(nameOrIndex, x, y)` places an instance with its corner
+at (x, y). `Shape.Children` lists a group's objects (each a `Shape` with
+`IsText`, `ChildType` and `Box`).
+
+`Shape.SymbolizeSimilar(name)` (#2343), on a group, turns every top-level
+group that draws the same (its objects that are not text: their kind, box
+from the group's corner, to 0.1 mm, and fill) into an instance of one
+symbol: an existing symbol that draws the same, else a new one from this
+group. A group with text becomes a group of the instance and its text, so
+each label stays editable. It returns `replaced`, `with_text`, `skipped`,
+`symbol_index`, `symbol_name` and `ids`. A recoloured or reshaped copy is
+left as it is.
+
 ## Limits
 
 A script cannot remove or rename a page or a layer, or ungroup a group:
@@ -250,3 +291,8 @@ what the user sees.
 - `scripting::tests::selection_round_trip`
 - `ai::tests::the_reference_names_only_methods_the_object_model_has` holds
   the description in `ai.rs` to the model
+- `scripting::extra::tests::a_script_makes_live_dimensions`
+- `scripting::extra::tests::a_vba_macro_makes_a_linear_dimension`
+- `scripting::extra::tests::a_recorded_dimension_plays_back_as_one`
+- `scripting::extra::tests::similar_groups_become_one_symbol_and_keep_their_text`
+- `scripting::extra::tests::a_script_creates_and_places_symbols`

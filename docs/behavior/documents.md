@@ -42,6 +42,13 @@ rulers:
   document name when it has never been saved, followed by `*` while it has
   unsaved changes. A close button shows on the hovered tab; a middle click
   also closes.
+- A drawing's tab dragged along the strip moves the drawing among the
+  tabs, as a page tab does: while it is held the other tabs slide aside
+  to show where it will land, an outline marks that place and the tab
+  follows the pointer; let go, the drawing takes that place and the same
+  drawing stays active. A plain click still switches (#2903,
+  `ui::tabs::tests::a_drawing_tab_dragged_along_the_strip_moves_the_drawing`,
+  `ui::tabs::tests::move_document_keeps_the_active_window`).
 - The New tab after the last one (a grey plus on a 26 px square) runs
   File > New.
 - More tabs than the strip is wide: the strip slides as an overflowing

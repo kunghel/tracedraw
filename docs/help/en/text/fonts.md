@@ -153,13 +153,20 @@ organizes your fonts.
 
 To use the Font Manager:
 
-- **Add folder** scans a folder for font files (TTF, OTF, TTC, OTC, three
-  levels down). Its fonts can be used in drawings at once and at every start
+- **Add folder** scans a folder for font files (TTF, OTF, TTC, OTC and
+  Type 1 PFB, three levels down). Its fonts can be used in drawings at once and at every start
   while the folder is in the libraries, without installing them one by one;
   removing the folder takes them out again (fonts installed on their own
   stay). In the browser and on Android, where no folder can be read, it
   lets you choose several font files at once instead. **Add font** installs
   one file at once.
+- Type 1 fonts (a `.pfb` file with its `.pfm` beside it, as older Windows
+  and CorelDRAW installs kept many script fonts) work like the others:
+  those in the system's font folders are listed at the start, under the
+  name Windows gives them in the `.pfm`, and **Add font** takes the
+  `.pfb` or the `.pfm`. A Type 1 font with the same name and style as an
+  installed TrueType or OpenType font is left out, so the installed one
+  stays the one used.
 - **Install** makes the picked fonts available in TraceDraw, now and at every
   start. **Uninstall** removes them; the system's own fonts are protected.
 - **Add to collection** and **Remove from collection** organize fonts; drag

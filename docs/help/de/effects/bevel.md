@@ -14,6 +14,7 @@ wird; öffnen Sie es mit [[menu.effects > menu.effects.bevel]].
    - [[docker.soft_edge]]: Die Kante fällt zum Objekt hin ab, auf einer Seite
      beleuchtet und auf der anderen schattiert;
    - [[docker.emboss]]: Das Objekt scheint aus der Seite herausgeprägt.
+   - [[docker.bevel_center]]: Das Abschrägungsband halb innerhalb, halb außerhalb der Kontur.
 3. Stellen Sie das Aussehen der Abschrägung ein:
    - [[docker.depth]]: wie weit die Abschrägung von der Kante reicht, beim
      weichen Rand ins Objekt hinein, beim Relief nach außen;
@@ -22,6 +23,7 @@ wird; öffnen Sie es mit [[menu.effects > menu.effects.bevel]].
      verlaufen weich von der Kante nach innen;
    - [[docker.light_angle]]: die Richtung, aus der das Licht kommt;
    - [[docker.intensity]]: wie stark Licht und Schatten sind;
+   - [[docker.bevel_smooth_light]]: Das Licht fällt nach Richtung um die Kante, jeder Teil so hell, wie er zum Licht zeigt, statt zwei Hälften.
    - [[docker.light_color]] und [[docker.shadow_color]]: die Farben der
      beleuchteten und der schattierten Seite;
    - [[docker.emboss_color]]: die Farbe, aus der die Abschrägung abgetönt

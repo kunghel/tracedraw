@@ -24,7 +24,9 @@ TraceDraw opens:
 - DXF, EMF, WMF and HPGL (`.plt`);
 - PSD and PSB, with layers as bitmaps;
 - TXT, RTF and DOCX documents, as paragraph text;
-- CMX (partly; see [the CMX notes](../behavior/cmx-import.md)).
+- CMX (partly; see [the CMX notes](../behavior/cmx-import.md));
+- desktop publishing `.pmd`, `.pm6` and `.p65` files, only their text
+  and the pictures stored inside (see [the PMD notes](../behavior/pmd-import.md)).
 
 Bitmaps (PNG, JPEG, BMP, GIF, TIFF and WebP) are not opened as
 drawings: bring them in with **File > Import**, which places them at

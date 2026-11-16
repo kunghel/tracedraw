@@ -18,7 +18,8 @@ use crate::text::{self, RunStyle, StyleRec};
 use std::collections::HashMap;
 use tracedraw_core::{
     document::{
-        Corners, EllipseArc, Layer, Page, ParagraphStyle, Shape, ShapeKind, TextAlign, TextSpan,
+        Corners, EllipseArc, Layer, LeadingUnit, Page, ParagraphStyle, Shape, ShapeKind, TextAlign,
+        TextSpan,
     },
     geometry::{Affine, BezPath, Point, Rect, Size},
     style::{
@@ -243,6 +244,53 @@ pub(crate) const OBJ_BITMAP: u32 = 0x05;
 pub(crate) const OBJ_PARAGRAPH_TEXT: u32 = 0x06;
 const OBJ_POLYGON: u32 = 0x14;
 const OBJ_PATH: u32 = 0x25;
+/// The uniform cubic B-spline steered by `points` as Bezier curves
+/// (#2723): closed, it runs round all of them; open, it starts at the
+/// first point and ends at the last (both ends repeated three times).
+/// Each piece between the knots is the Bezier curve from
+/// (a + 4b + c) / 6 to (b + 4c + d) / 6 with its handles at a third and
+/// two thirds of the way from b to c.
+fn b_spline_path(points: &[Point], closed: bool) -> BezPath {
+    let mut path = BezPath::new();
+    let n = points.len();
+    if n < 3 {
+        if let (Some(a), Some(b)) = (points.first(), points.last()) {
+            path.move_to(*a);
+            path.line_to(*b);
+            if closed {
+                path.close_path();
+            }
+        }
+        return path;
+    }
+    let ctrl: Vec<Point> = if closed {
+        points.to_vec()
+    } else {
+        let mut c = vec![points[0]; 2];
+        c.extend_from_slice(points);
+        c.extend([points[n - 1]; 2]);
+        c
+    };
+    let m = ctrl.len();
+    let at = |i: usize| ctrl[i % m].to_vec2();
+    let pieces = if closed { m } else { m - 3 };
+    for i in 0..pieces {
+        let (a, b, c, e) = (at(i), at(i + 1), at(i + 2), at(i + 3));
+        if i == 0 {
+            path.move_to(((a + b * 4.0 + c) / 6.0).to_point());
+        }
+        path.curve_to(
+            ((b * 2.0 + c) / 3.0).to_point(),
+            ((b + c * 2.0) / 3.0).to_point(),
+            ((b + c * 4.0 + e) / 6.0).to_point(),
+        );
+    }
+    if closed {
+        path.close_path();
+    }
+    path
+}
+
 /// A straight connector line whose ends are in its `ppdt` record. The
 /// type also marks the groups of a table (the table and each of its
 /// cells), whose records are in their `LIST npps` too.
@@ -270,8 +318,6 @@ const MESH_MAX_NODES: usize = 250_000;
 /// records (a 16-byte id), which files saved for older versions carry too.
 const NEWER_RECORD_TAG: u32 = 2400;
 
-/// The width of the space character in ems, for character spacing.
-const SPACE_EM: f64 = 0.25;
 /// A guideline (seen in version 12 files on the guides layer).
 pub(crate) const OBJ_GUIDE: u32 = 0x16;
 /// Argument of a guideline: its line (see [`Ctx::read_guide`]).
@@ -798,13 +844,17 @@ pub(crate) fn parse_document_kept(
             let default_name = format!("Layer {}", page.layers.len() + 1);
             let name = ctx.layer_name(lc).unwrap_or(default_name);
             let mut layer = Layer::new(doc.ids_mut().layer(), name);
+            if let Some(f) = ctx.modern_layer_flags(lc) {
+                layer.locked = f[0] & 0x10 != 0;
+                layer.printable = f[0] & 0x08 == 0;
+            }
             // Guides and grid layers hold no drawable content.
             match ctx.layer_type(lc) {
                 Some(t) if t & 0x0f == 0x0a => {
                     layer.visible = false;
                     layer.printable = false;
                 }
-                _ => layer.visible = true,
+                _ => layer.visible = !ctx.layer_hidden(lc),
             }
             let mut ids = std::mem::take(doc.ids_mut());
             layer.shapes = ctx.read_objects(lc, &mut ids, size, 0);
@@ -877,26 +927,34 @@ pub(crate) fn parse_document_kept(
     // the right and left of the spine, from the first page alone on the
     // right (or on the left starting a spread). Which of the two the
     // file starts with is the one that puts more of the objects on their
-    // pages, and every page then goes by its place in the spreads. Each
+    // pages, and every page then goes by its place in the spreads, the
+    // turns breaking only where many pages after hold their objects
+    // better the other way (a page lost or added, #2833). Each
     // page took the side holding more of its own objects before, and a
     // page with objects reaching across the spine took the wrong one,
     // mixing it with the page beside it; the pages showed one by one,
     // not in spreads (#1660).
     if ctx.facing_pages {
-        let side = |i: usize, starts_right: bool| i.is_multiple_of(2) == starts_right;
-        let on_pages = |starts_right: bool| -> usize {
-            doc.pages
-                .iter()
-                .enumerate()
-                .map(|(i, p)| {
-                    let dx = spine_shift(p.size.width, side(i, starts_right));
-                    centres_on_page(&p.layers, p.size.width, dx)
-                })
-                .sum()
-        };
-        let starts_right = on_pages(true) >= on_pages(false);
-        for (i, p) in doc.pages.iter_mut().enumerate() {
-            let dx = spine_shift(p.size.width, side(i, starts_right));
+        // Each page's share of its objects that lands on it from the right
+        // of the spine and from the left; then the sides, taking turns
+        // with as few breaks as those shares allow (#2833).
+        let shares: Vec<(f64, f64)> = doc
+            .pages
+            .iter()
+            .map(|p| {
+                let w = p.size.width;
+                let n = p.layers.iter().map(|l| l.shapes.len()).sum::<usize>();
+                if n == 0 {
+                    return (0.0, 0.0);
+                }
+                let on = |right: bool| centres_on_page(&p.layers, w, spine_shift(w, right));
+                (on(true) as f64 / n as f64, on(false) as f64 / n as f64)
+            })
+            .collect();
+        let sides = facing_sides(&shares);
+        let starts_right = sides.first().copied().unwrap_or(true);
+        for (p, right) in doc.pages.iter_mut().zip(sides) {
+            let dx = spine_shift(p.size.width, right);
             for s in p.layers.iter_mut().flat_map(|l| l.shapes.iter_mut()) {
                 s.transform = Affine::translate((dx, 0.0)) * s.transform;
             }
@@ -979,9 +1037,9 @@ impl<'a> Ctx<'a> {
         Reader::at(d, pos, self.v16())
     }
 
-    /// `flgs` of a `page` or `layr` list: 4 bytes, byte 3 is the record
-    /// type (0x90 page, 0x98 layer), byte 2 marks the master page, byte 0
-    /// is the layer type (0 normal, 8 desktop, 0x0a guides, 0x1a grid).
+    /// Four-byte state flags; byte 3 identifies the record (0x90 page,
+    /// 0x98 layer), and byte 2 marks master-page entries. Modern layers
+    /// identify their kind in `loda`; byte 0 also holds state bits.
     fn flags(&self, list: &Chunk) -> Option<[u8; 4]> {
         let f = list.find(b"flgs")?;
         let d = self.data(f);
@@ -996,18 +1054,60 @@ impl<'a> Ctx<'a> {
         matches!(self.flags(oc), Some(f) if f[3] & 0xf8 == 0x08 && f[0] & OBJECT_LOCKED != 0)
     }
 
+    /// Modern object and group records share byte 1's hidden bit. A
+    /// hidden text has [0, 3, 0, 8], its visible neighbour [0, 2, 0, 8];
+    /// groups use record type 0x10 and keep their children's own state.
+    fn shape_hidden(&self, oc: &Chunk) -> bool {
+        self.v >= 16
+            && matches!(self.flags(oc), Some(f) if (f[3] & 0xf8 == 0x08 || f[3] == 0x10) && f[1] & 1 != 0)
+    }
+
     fn page_is_master(&self, pc: &Chunk) -> bool {
         matches!(self.flags(pc), Some(f) if f[3] == 0x90 && f[2] != 0)
     }
 
     fn layer_type(&self, lc: &Chunk) -> Option<u8> {
+        // Modern `loda` kinds distinguish an ordinary excluded layer
+        // from the desktop: both can have byte-0 flag 0x08 (#2850).
+        if self.v >= 16 {
+            if let Some(kind) = self
+                .own_loda(lc)
+                .and_then(|c| tracedraw_cdr_format::loda::table(self.data(c), self.v))
+                .map(|l| l.kind)
+            {
+                match kind {
+                    0 => return Some(0),
+                    11 => return Some(0x1a),
+                    12 => return Some(0x0a),
+                    17 => return Some(0x08),
+                    _ => {}
+                }
+            }
+        }
         self.flags(lc).filter(|f| f[3] == 0x98).map(|f| f[0])
+    }
+
+    fn modern_layer_flags(&self, lc: &Chunk) -> Option<[u8; 4]> {
+        (self.v >= 16)
+            .then(|| self.flags(lc))
+            .flatten()
+            .filter(|f| f[3] == 0x98)
+    }
+
+    /// Modern hidden layers carry bit 0 of byte 1, observed in version
+    /// 27 as [0x40, 1, 0, 0x98] beside [0, 0, 0, 0x98] (#2862).
+    fn layer_hidden(&self, lc: &Chunk) -> bool {
+        self.modern_layer_flags(lc).is_some_and(|f| f[1] & 1 != 0)
     }
 
     /// A guides, grid or desktop layer (type byte not 0), or a page's
     /// entry for a layer of the master page (byte 2 set).
     fn is_structural_layer(&self, lc: &Chunk) -> bool {
-        matches!(self.flags(lc), Some(f) if f[3] == 0x98 && (f[0] != 0 || f[2] != 0))
+        let Some(f) = self.flags(lc).filter(|f| f[3] == 0x98) else {
+            return false;
+        };
+        let kind = self.layer_type(lc).unwrap_or(0);
+        kind != 0 || f[2] != 0
     }
 
     /// The `loda`/`lobj` chunk of a list: a direct child, or (version 16+,
@@ -2112,13 +2212,6 @@ impl<'a> Ctx<'a> {
         if let Some(t) = style.strikethrough {
             span.strikethrough = t.into();
         }
-        if let Some(cs) = style.char_spacing {
-            if cs != 0.0 {
-                // The file counts character spacing in widths of the
-                // space character, taken here as a quarter of the em.
-                span.tracking_pct = cs * 100.0 * SPACE_EM;
-            }
-        }
         if let Some(c) = style.char_shift {
             span.angle_deg = c.angle_deg;
             span.offset_x_pct = c.x_pct;
@@ -2269,7 +2362,22 @@ impl<'a> Ctx<'a> {
             } else {
                 None
             });
-            let fmt = paragraph_spacing(&base, &para_fmt);
+            let mut fmt = paragraph_spacing(&base, &para_fmt);
+            // Character and word spacing given on the paragraph's first
+            // run rather than on the paragraph (they are paragraph
+            // settings in CorelDRAW).
+            if let Some(first) = para.runs.first().map(|r| r.style.over(&base)) {
+                if base.char_spacing.is_none() {
+                    if let Some(cs) = first.char_spacing {
+                        fmt.char_spacing_pct = (cs * 100.0).clamp(-100.0, 2000.0);
+                    }
+                }
+                if base.word_spacing.is_none() {
+                    if let Some(ws) = first.word_spacing {
+                        fmt.word_spacing_pct = (ws * 100.0).clamp(0.0, 2000.0);
+                    }
+                }
+            }
             if i == 0 {
                 // The first paragraph sets the object's formatting.
                 para_fmt = fmt.clone();
@@ -2543,6 +2651,10 @@ impl<'a> Ctx<'a> {
                 Some(0x08) => {}
                 Some(0x10) if v >= 16 => {
                     match distortion_entry(d, tr.pos) {
+                        Some(_) if chain.projective.is_some() => {
+                            self.report
+                                .warn("a distortion after a perspective is not applied");
+                        }
                         Some(_) if !chain.warps.is_empty() => {
                             self.report
                                 .warn("a distortion after an envelope is not applied");
@@ -2561,7 +2673,28 @@ impl<'a> Ctx<'a> {
                     }
                     continue;
                 }
+                // A perspective (#2691): the box it maps from and the
+                // four corners it maps that box onto.
+                Some(0x02) if v >= 16 => {
+                    match perspective_entry(d, tr.pos) {
+                        Some(_) if !chain.warps.is_empty() || !chain.distortions.is_empty() => {
+                            self.report.warn(
+                                "a perspective with an envelope or a distortion is not applied",
+                            );
+                        }
+                        Some((rect, corners)) => chain.perspective(rect, corners),
+                        None => self
+                            .report
+                            .warn("a perspective could not be read; not applied"),
+                    }
+                    continue;
+                }
                 Some(0x01) if v >= 16 => {
+                    if chain.projective.is_some() {
+                        self.report
+                            .warn("an envelope after a perspective is not applied");
+                        continue;
+                    }
                     if !chain.distortions.is_empty() {
                         self.report
                             .warn("an envelope after a distortion is not applied");
@@ -2637,6 +2770,88 @@ impl<'a> Ctx<'a> {
             return None;
         }
         Some(self.read_transform_chain(trfd?, &envds))
+    }
+
+    /// The `trfd` of a version 16+ group list's own `lgob` when it holds a
+    /// perspective (#2691); None otherwise.
+    fn own_perspective_chain(&mut self, list: &Chunk) -> Option<TransformChain> {
+        if self.v < 16 {
+            return None;
+        }
+        let lgob = list.children.iter().find(|k| k.is(b"lgob"))?;
+        let (trfd, envds) = transform_chunks(lgob);
+        let chain = self.read_transform_chain(trfd?, &envds);
+        chain.projective.is_some().then_some(chain)
+    }
+
+    /// Put `shape` (drawn through `pre` first, in page space) in the
+    /// perspective of a group (#2691): `rest` is the projective map the
+    /// group's perspectives make of the file's space its objects are in
+    /// (from the page centre); the matrices after the last perspective
+    /// become the objects' transform. Each object takes a live
+    /// perspective: the corners of its box (or of the perspective it has
+    /// already) carried through that map.
+    fn perspective_group_object(
+        &mut self,
+        shape: &mut Shape,
+        pre: Affine,
+        rest: &[f64; 9],
+        after: Affine,
+        page_size: Size,
+    ) {
+        use tracedraw_core::geometry::Shape as _;
+        let m = pre * shape.transform;
+        let outer = Affine::translate((page_size.width / 2.0, page_size.height / 2.0))
+            * self.outer_transform;
+        match &mut shape.kind {
+            ShapeKind::Group { children } => {
+                for c in children.iter_mut() {
+                    self.perspective_group_object(c, m, rest, after, page_size);
+                }
+                shape.transform = Affine::IDENTITY;
+                return;
+            }
+            ShapeKind::ClipFrame { frame, contents } => {
+                self.perspective_group_object(frame, m, rest, after, page_size);
+                for c in contents.iter_mut() {
+                    self.perspective_group_object(c, m, rest, after, page_size);
+                }
+                shape.transform = Affine::IDENTITY;
+                return;
+            }
+            _ => {}
+        }
+        let to_file = outer.inverse() * m;
+        let own = shape
+            .effects
+            .iter()
+            .position(|e| matches!(e, tracedraw_core::live::Effect::Perspective { .. }));
+        let start = match own.map(|i| &shape.effects[i]) {
+            Some(tracedraw_core::live::Effect::Perspective { corners }) => *corners,
+            _ => {
+                let b = shape.local_path().bounding_box();
+                if b.width() < 1e-9 || b.height() < 1e-9 {
+                    shape.transform = outer * after * to_file;
+                    return;
+                }
+                [
+                    Point::new(b.x0, b.y0),
+                    Point::new(b.x1, b.y0),
+                    Point::new(b.x1, b.y1),
+                    Point::new(b.x0, b.y1),
+                ]
+            }
+        };
+        let corners = start.map(|p| map3(rest, to_file * p));
+        if !corners.iter().all(|p| p.x.is_finite() && p.y.is_finite()) {
+            return;
+        }
+        let effect = tracedraw_core::live::Effect::Perspective { corners };
+        match own {
+            Some(i) => shape.effects[i] = effect,
+            None => shape.effects.push(effect),
+        }
+        shape.transform = outer * after;
     }
 
     /// Bend `shape` (drawn through `pre` first, in page space) through the
@@ -2744,11 +2959,14 @@ impl<'a> Ctx<'a> {
     /// - a connector line: u32 0, u32 1, then the start and the end point
     ///   (coordinates), then what the ends attach to. The file's preview
     ///   draws each as a straight line between the two points;
-    /// - a list of points: u16 count, u32 1, the points (coordinates), then
-    ///   a u32 for each point (0 or 1), 6 + 12 bytes a point in all. Seen
-    ///   as the outlines of clip frames, closed outlines of some hundred
-    ///   points whose last point lies a step from the first; the preview
-    ///   clips the contents to the outline through the points.
+    /// - a list of points: u16 count, u32 1 (closed; 0 open), the points
+    ///   (coordinates), then a u32 for each point (0 or 1), 6 + 12 bytes a
+    ///   point in all. The points are the control points of a B-spline
+    ///   (the B-spline tool, #2723): the shape is the smooth uniform cubic
+    ///   B-spline they steer, inside the polygon through them, not that
+    ///   polygon. Seen too as the outlines of clip frames, closed outlines
+    ///   of some hundred points close together. The u32 a point is not
+    ///   read.
     fn read_connector(&mut self, oc: &Chunk) -> Option<ShapeKind> {
         let mut found = None;
         oc.walk(&mut |c, _| {
@@ -2758,22 +2976,20 @@ impl<'a> Ctx<'a> {
         });
         let d = self.data(found?);
         let n = u16::from_le_bytes([*d.first()?, *d.get(1)?]) as usize;
-        if n >= 2 && d.len() == 6 + 12 * n && d.get(2..6) == Some(&[1, 0, 0, 0][..]) {
+        let closed = d.get(2..6) == Some(&[1, 0, 0, 0][..]);
+        let open = d.get(2..6) == Some(&[0, 0, 0, 0][..]);
+        if n >= 2 && d.len() == 6 + 12 * n && (closed || open) {
             let mut r = self.reader_at(d, 6);
-            let mut path = BezPath::new();
-            for i in 0..n {
+            let mut points = Vec::with_capacity(n);
+            for _ in 0..n {
                 let p = Point::new(r.coord()?, r.coord()?);
                 if !(p.x.is_finite() && p.y.is_finite()) {
                     return None;
                 }
-                if i == 0 {
-                    path.move_to(p);
-                } else {
-                    path.line_to(p);
-                }
+                points.push(p);
             }
-            path.close_path();
-            return Some(ShapeKind::Path { path, closed: true });
+            let path = b_spline_path(&points, closed);
+            return Some(ShapeKind::Path { path, closed });
         }
         let mut r = self.reader_at(d, 8);
         let a = Point::new(r.coord()?, r.coord()?);
@@ -4189,6 +4405,31 @@ impl<'a> Ctx<'a> {
             }
         }
 
+        // Version 16+ perspectives (#2691) become TraceDraw's live
+        // perspective: the matrices and perspectives up to the last one
+        // make one projective map from the object's own space, which takes
+        // the corners of its box where the file puts them; the matrices
+        // after it stay the object's transform.
+        let mut perspective = None;
+        if let Some(g) = chain.projective {
+            use tracedraw_core::geometry::Shape as _;
+            let b = Shape::new(id, kind.clone()).local_path().bounding_box();
+            if b.width() > 1e-9 && b.height() > 1e-9 {
+                let corners = [
+                    Point::new(b.x0, b.y0),
+                    Point::new(b.x1, b.y0),
+                    Point::new(b.x1, b.y1),
+                    Point::new(b.x0, b.y1),
+                ]
+                .map(|p| map3(&g, p));
+                if corners.iter().all(|p| p.x.is_finite() && p.y.is_finite()) {
+                    perspective = Some(tracedraw_core::live::Effect::Perspective { corners });
+                    fill_axes = Some(transform);
+                    transform = self.outer_transform * chain.after_perspective;
+                }
+            }
+        }
+
         // Version 16+: the outline's mitre limit is in the object's style
         // string (the outline record leaves it out, #384).
         if let (Some(s), Some(a)) = (
@@ -4290,6 +4531,9 @@ impl<'a> Ctx<'a> {
         shape.keep_corner_size();
         shape.name = name;
         shape.opacity = opacity;
+        if let Some(style) = style_string.as_deref() {
+            crate::bitmap_effects::apply(style, self.v, &mut shape, &mut self.report);
+        }
         // Version 16+: the fill's winding (#1919): "1" fills nonzero.
         if style_string.as_deref().and_then(text::object_fill_winding) == Some(true) {
             shape.fill_rule = tracedraw_core::shaping::FillRule::NonZero;
@@ -4298,6 +4542,9 @@ impl<'a> Ctx<'a> {
             shape.effects.push(tracedraw_core::live::Effect::Distort(d));
         }
         if let Some(e) = live_envelope {
+            shape.effects.push(e);
+        }
+        if let Some(e) = perspective {
             shape.effects.push(e);
         }
         // A version 15 graded transparency runs between its record's two
@@ -4579,6 +4826,10 @@ impl<'a> Ctx<'a> {
                 let id = ids.shape();
                 match self.read_object(c, id, page_size) {
                     Some(mut shape) => {
+                        // Both the older hidden-object argument and the
+                        // modern flag apply to the whole object, also
+                        // when a crop or clip wraps it in a new shape.
+                        let visible = shape.visible && !self.shape_hidden(c);
                         if std::mem::take(&mut self.pending_renumber) {
                             renumber(&mut shape, ids);
                         }
@@ -4600,6 +4851,7 @@ impl<'a> Ctx<'a> {
                         if self.object_locked(c) {
                             shape.locked = true;
                         }
+                        shape.visible &= visible;
                         self.note_static_id(c, shape.id);
                         out.push(shape);
                     }
@@ -4608,8 +4860,10 @@ impl<'a> Ctx<'a> {
                     None => self.report.skipped_objects += 1,
                 }
             } else if c.is(b"grp ") {
+                let hidden = self.shape_hidden(c);
                 // A table (versions 14 on) is a group of cell groups.
-                if let Some(table) = self.read_table(c, ids, page_size) {
+                if let Some(mut table) = self.read_table(c, ids, page_size) {
+                    table.visible = !hidden;
                     self.note_static_id(c, table.id);
                     out.push(table);
                     continue;
@@ -4644,15 +4898,33 @@ impl<'a> Ctx<'a> {
                         }
                     }
                 }
+                // A version 16+ group in perspective (#2691): its objects
+                // carry the matrices before the first perspective; the
+                // perspectives and the matrices after them are the group's.
+                if let Some(chain) = self.own_perspective_chain(c) {
+                    if let Some(g) = chain.projective {
+                        let rest = mul3(&g, &affine3(chain.before.inverse()));
+                        for child in children.iter_mut() {
+                            self.perspective_group_object(
+                                child,
+                                Affine::IDENTITY,
+                                &rest,
+                                chain.after_perspective,
+                                page_size,
+                            );
+                        }
+                    }
+                }
                 self.outer_transform = saved;
                 // A vector pattern transparency over the group: a mask
                 // over all it holds, so the group stays a group.
                 let mask = self.group_pattern_transparency(c);
                 match children.len() {
                     0 => {}
-                    1 if mask.is_none() => out.extend(children),
+                    1 if mask.is_none() && !hidden => out.extend(children),
                     _ => {
                         let mut g = Shape::new(ids.shape(), ShapeKind::Group { children });
+                        g.visible = !hidden;
                         g.fill = Fill::None;
                         g.stroke = None;
                         if let Some(mask) = mask {
@@ -4722,10 +4994,29 @@ impl<'a> Ctx<'a> {
                     })
                     .map(|t| self.read_transform(t))
                     .unwrap_or(Affine::IDENTITY);
+                // In perspective (#2691), its objects are drawn through
+                // the perspectives as well, after they are read.
+                let perspective = self.own_perspective_chain(c);
                 let saved = self.outer_transform;
-                self.outer_transform = saved * own;
+                if perspective.is_none() {
+                    self.outer_transform = saved * own;
+                }
                 let before = out.len();
                 self.collect_objects(c, ids, page_size, depth + 1, out);
+                if let Some(g) = perspective.as_ref().and_then(|p| p.projective) {
+                    let after = perspective
+                        .as_ref()
+                        .map_or(Affine::IDENTITY, |p| p.after_perspective);
+                    for child in out[before..].iter_mut() {
+                        self.perspective_group_object(
+                            child,
+                            Affine::IDENTITY,
+                            &g,
+                            after,
+                            page_size,
+                        );
+                    }
+                }
                 self.outer_transform = saved;
                 // A blend keeps no steps of its own: an empty linked group
                 // between its two end objects, its `loda` of object type 7
@@ -6297,6 +6588,7 @@ fn contour_effect(
         to_center: false,
         fill_to,
         outline_to,
+        fill_end_to: None,
         color_blend: 0,
         corners,
         accel_objects: 0.0,
@@ -6499,6 +6791,16 @@ struct TransformChain {
     /// distorted again over its distortion (#1824); never with
     /// envelopes.
     distortions: Vec<Distortion>,
+    /// The perspectives (version 16+, #2691) with the matrices between
+    /// and before them, as one projective map (a 3 by 3 matrix, rows
+    /// first) from the object's own space to the space the last
+    /// perspective maps into; never with envelopes or distortions.
+    projective: Option<[f64; 9]>,
+    /// The matrices after the last perspective.
+    after_perspective: Affine,
+    /// The matrices after the first perspective, one after the other
+    /// (the perspectives left out).
+    perspective_matrices: Affine,
 }
 
 /// The distortion entry of a version 16+ `trfd` (type 0x10) and the
@@ -6538,6 +6840,11 @@ struct Warp {
 impl TransformChain {
     /// `m` after everything so far.
     fn then(&mut self, m: Affine) {
+        if self.projective.is_some() {
+            self.after_perspective = m * self.after_perspective;
+            self.perspective_matrices = m * self.perspective_matrices;
+            return;
+        }
         if let Some(d) = self.distortions.last_mut() {
             d.after = m * d.after;
             return;
@@ -6551,8 +6858,32 @@ impl TransformChain {
     /// All the matrices one after the other, the envelopes and the
     /// distortions left out.
     fn matrices(&self) -> Affine {
+        if self.projective.is_some() {
+            return self.perspective_matrices * self.before;
+        }
         let m = self.warps.iter().fold(self.before, |m, w| w.after * m);
         self.distortions.iter().fold(m, |m, d| d.after * m)
+    }
+
+    /// A perspective taking `rect` onto `corners` (bottom-left, top-left,
+    /// top-right, bottom-right) after everything so far.
+    fn perspective(&mut self, rect: Rect, corners: [Point; 4]) {
+        let src = [
+            Point::new(rect.x0, rect.y0),
+            Point::new(rect.x0, rect.y1),
+            Point::new(rect.x1, rect.y1),
+            Point::new(rect.x1, rect.y0),
+        ];
+        let Some(h) = tracedraw_core::live::homography(&src, &corners) else {
+            return;
+        };
+        let h = [h[0], h[1], h[2], h[3], h[4], h[5], h[6], h[7], 1.0];
+        let so_far = match self.projective {
+            Some(p) => mul3(&affine3(self.after_perspective), &p),
+            None => affine3(self.before),
+        };
+        self.projective = Some(mul3(&h, &so_far));
+        self.after_perspective = Affine::IDENTITY;
     }
 
     /// The matrices after the first envelope, one after the other.
@@ -6715,6 +7046,57 @@ fn even_scale(m: Affine) -> Option<f64> {
     let det = a * d - b * c;
     let tol = 1e-9 * (a.abs() + b.abs() + c.abs() + d.abs()).max(1e-12);
     ((a - d).abs() <= tol && (b + c).abs() <= tol && det > 1e-18).then(|| det.sqrt())
+}
+
+/// An affine matrix as a 3 by 3 one, rows first.
+fn affine3(m: Affine) -> [f64; 9] {
+    let [a, b, c, d, e, f] = m.as_coeffs();
+    [a, c, e, b, d, f, 0.0, 0.0, 1.0]
+}
+
+/// `a` after `b`, both 3 by 3 matrices, rows first.
+fn mul3(a: &[f64; 9], b: &[f64; 9]) -> [f64; 9] {
+    let mut out = [0.0; 9];
+    for r in 0..3 {
+        for c in 0..3 {
+            out[r * 3 + c] = (0..3).map(|k| a[r * 3 + k] * b[k * 3 + c]).sum();
+        }
+    }
+    out
+}
+
+/// `p` through the projective map `m` (3 by 3, rows first).
+fn map3(m: &[f64; 9], p: Point) -> Point {
+    let w = m[6] * p.x + m[7] * p.y + m[8];
+    let w = if w.abs() < 1e-12 { 1e-12 } else { w };
+    Point::new(
+        (m[0] * p.x + m[1] * p.y + m[2]) / w,
+        (m[3] * p.x + m[4] * p.y + m[5]) / w,
+    )
+}
+
+/// The perspective entry of a version 16+ `trfd` whose body starts at
+/// `at` (after the entry type): 6 zero bytes, u32 1, the box it maps
+/// from (four i32: left, top, right, bottom, from the page centre, y
+/// upwards), then the four corners that box goes to (i32 pairs:
+/// bottom-left, top-left, top-right, bottom-right; the first again after
+/// them), in millimetres. `None` when it is cut short or flat.
+fn perspective_entry(d: &[u8], at: usize) -> Option<(Rect, [Point; 4])> {
+    let int = |k: usize| {
+        d.get(at + k..at + k + 4)
+            .map(|b| i32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+    };
+    let mm = |v: i32| v as f64 * UNIT_MM;
+    let (x0, y0, x1, y1) = (mm(int(10)?), mm(int(14)?), mm(int(18)?), mm(int(22)?));
+    let rect = Rect::new(x0.min(x1), y0.min(y1), x0.max(x1), y0.max(y1));
+    if rect.width() < 1e-6 || rect.height() < 1e-6 {
+        return None;
+    }
+    let mut corners = [Point::ZERO; 4];
+    for (k, c) in corners.iter_mut().enumerate() {
+        *c = Point::new(mm(int(26 + 8 * k)?), mm(int(30 + 8 * k)?));
+    }
+    Some((rect, corners))
 }
 
 /// The envelope entry of a version 16+ `trfd` whose body starts at `at`
@@ -7160,6 +7542,65 @@ fn spine_shift(width: f64, right: bool) -> f64 {
     }
 }
 
+/// What a break in the turns of a book's pages costs, in pages' worth of
+/// objects: more than one page whose objects reach across the spine can
+/// win (two breaks, in and out, cost three), less than the pages after a
+/// page the file lost or added, which all sit on the other side.
+const SIDE_BREAK: f64 = 1.5;
+
+/// The side of the spine each facing page sits on (true: right), from
+/// `shares`, each page's share of its objects that lands on it from the
+/// right and from the left. Pages take turns on the right and left, and
+/// the turns may break (two pages on one side running) where the pages
+/// after hold their objects better that way, each break costing
+/// [`SIDE_BREAK`]: the sides that put most objects on their pages for
+/// the fewest breaks (Viterbi's way through the pages). With no break
+/// worth it, this is the strict turns from the better start (#1660); a
+/// page the file lost or added in a long book no longer throws every
+/// page after it half a page across, onto the page beside it (#2833).
+/// On a tie the first page is on the right, and turns go on.
+fn facing_sides(shares: &[(f64, f64)]) -> Vec<bool> {
+    let n = shares.len();
+    if n == 0 {
+        return Vec::new();
+    }
+    // best[i][s]: the most score for pages 0..=i with page i on side s
+    // (0 right, 1 left); from[i][s]: page i - 1's side on that way.
+    let mut best = vec![[0.0f64; 2]; n];
+    let mut from = vec![[0usize; 2]; n];
+    let score = |i: usize, s: usize| if s == 0 { shares[i].0 } else { shares[i].1 };
+    // A tiny lean to the right for the first page and to taking turns,
+    // so equal ways keep the strict turns from the right.
+    const LEAN: f64 = 1e-9;
+    best[0] = [score(0, 0) + LEAN, score(0, 1)];
+    for i in 1..n {
+        for s in 0..2 {
+            let turn = best[i - 1][1 - s] + LEAN;
+            let stay = best[i - 1][s] - SIDE_BREAK;
+            let (b, f) = if turn >= stay {
+                (turn, 1 - s)
+            } else {
+                (stay, s)
+            };
+            best[i][s] = b + score(i, s);
+            from[i][s] = f;
+        }
+    }
+    let mut s = if best[n - 1][0] >= best[n - 1][1] {
+        0
+    } else {
+        1
+    };
+    let mut sides = vec![true; n];
+    for i in (0..n).rev() {
+        sides[i] = s == 0;
+        if i > 0 {
+            s = from[i][s];
+        }
+    }
+    sides
+}
+
 /// How many of the objects' centres moved `dx` across land on a page
 /// `width` across.
 fn centres_on_page(layers: &[Layer], width: f64, dx: f64) -> usize {
@@ -7194,42 +7635,78 @@ fn paragraph_spacing(style: &text::RunStyle, base: &ParagraphStyle) -> Paragraph
         2 => f * size_mm,
         _ => f * line_mm,
     };
+    // Points and the point size stay what they are: turned into a share
+    // of a line height taken as 1.15 times the size, they grew with the
+    // font's real line height, so a face whose lines are taller than
+    // that (1.41 times the size for some Tamil faces) set its lines
+    // about 1.23 times as far apart as the file (#2676).
+    const MM_PT: f64 = 72.0 / 25.4;
     if let Some(ls) = style.line_spacing {
-        let pct = match method {
-            1 | 2 if line_mm > 0.0 => to_mm(ls) / line_mm * 100.0,
-            _ => ls * 100.0,
-        };
-        p.leading_pct = pct.clamp(10.0, 1000.0);
-    } else if let Some(mm) = style.line_spacing_mm {
-        // A distance between baselines, as a share of the line height.
-        if line_mm > 0.0 {
-            p.leading_pct = (mm / line_mm * 100.0).clamp(10.0, 1000.0);
+        match method {
+            1 => {
+                p.leading_unit = LeadingUnit::Points;
+                p.leading_pct = (to_mm(ls) * MM_PT).clamp(0.1, 2000.0);
+            }
+            2 => {
+                p.leading_unit = LeadingUnit::PercentPointSize;
+                p.leading_pct = (ls * 100.0).clamp(10.0, 1000.0);
+            }
+            _ => {
+                p.leading_unit = LeadingUnit::PercentCharHeight;
+                p.leading_pct = (ls * 100.0).clamp(10.0, 1000.0);
+            }
         }
+    } else if let Some(mm) = style.line_spacing_mm {
+        // A distance between baselines (a version 12 interval entry of
+        // unit 1), in points for the same reason.
+        p.leading_unit = LeadingUnit::Points;
+        p.leading_pct = (mm * MM_PT).clamp(0.1, 2000.0);
     }
     // Space before: the distance from the paragraph before, so only what
     // goes past the line spacing is extra room (100 % of the character
     // height, the default, is none). Space after: all extra room.
     if method <= 2 {
-        let baseline_mm = line_mm * p.leading_pct / 100.0;
+        let baseline_mm = p.line_step(line_mm, size_mm);
         if let Some(b) = style.para_before {
             let before = match method {
                 0 => (b - 1.0) * line_mm,
                 _ => to_mm(b) - baseline_mm,
             };
             p.space_before = before.clamp(0.0, 1000.0);
+            // In the character height, kept so: the room follows the
+            // font's own line height and size, as in the reference
+            // program, and the Text docker shows the percent (#2613).
+            p.space_before_pct =
+                (method == 0 && b.is_finite()).then(|| (b * 100.0).clamp(0.0, 10000.0));
         }
         if let Some(a) = style.para_after {
             p.space_after = to_mm(a).clamp(0.0, 1000.0);
+            p.space_after_pct =
+                (method == 0 && a.is_finite()).then(|| (a * 100.0).clamp(0.0, 10000.0));
         }
     }
     if let Some((left, first, right)) = style.indent_pt {
         const PT_MM: f64 = 25.4 / 72.0;
         p.left_indent = left * PT_MM;
-        p.first_line_indent = first * PT_MM;
+        // The file gives the first line's indent from the frame's edge, as
+        // the left indent is (the left one moves the other lines only),
+        // while TraceDraw's first-line indent counts from the left indent:
+        // read as given, a first line at 1 mm under a left indent of
+        // 1.5 mm sat at 2.5 mm and wrapped a line that fits (#2669).
+        p.first_line_indent = (first - left) * PT_MM;
         p.right_indent = right * PT_MM;
     }
     if let Some(tabs) = &style.tabs {
         p.tabs = tracedraw_core::normalized_tabs(tabs);
+    }
+    // Character and word spacing count in widths of the font's space
+    // character, as the paragraph's spacing does (#2586; they were read
+    // as a quarter of the em, which made text wider than in CorelDRAW).
+    if let Some(cs) = style.char_spacing {
+        p.char_spacing_pct = (cs * 100.0).clamp(-100.0, 2000.0);
+    }
+    if let Some(ws) = style.word_spacing {
+        p.word_spacing_pct = (ws * 100.0).clamp(0.0, 2000.0);
     }
     p
 }
@@ -7269,6 +7746,31 @@ fn grey_mask(f: &tracedraw_core::Fountain) -> Fill {
 pub(crate) mod tests {
     use super::*;
 
+    /// The indent record of #2669: left 1.5 mm, first line 1 mm from the
+    /// frame, right 0. The first line starts at 1 mm (left + first-line
+    /// indent in TraceDraw's layout), not 2.5 mm, and a first line at the
+    /// left indent (the usual block indent) is no extra indent.
+    #[test]
+    fn the_first_line_indent_counts_from_the_frame() {
+        const MM_PT: f64 = 72.0 / 25.4;
+        let mut st = text::RunStyle {
+            indent_pt: Some((1.5 * MM_PT, 1.0 * MM_PT, 0.0)),
+            ..Default::default()
+        };
+        let p = paragraph_spacing(&st, &ParagraphStyle::default());
+        assert!((p.left_indent - 1.5).abs() < 1e-9, "{p:?}");
+        assert!((p.first_line_indent + 0.5).abs() < 1e-9, "{p:?}");
+        assert!((p.left_indent + p.first_line_indent - 1.0).abs() < 1e-9);
+        assert_eq!(p.right_indent, 0.0);
+        st.indent_pt = Some((5.0 * MM_PT, 5.0 * MM_PT, 0.0));
+        let p = paragraph_spacing(&st, &ParagraphStyle::default());
+        assert!(p.first_line_indent.abs() < 1e-9, "{p:?}");
+        assert!((p.left_indent - 5.0).abs() < 1e-9);
+        st.indent_pt = Some((0.0, 3.0 * MM_PT, 0.0));
+        let p = paragraph_spacing(&st, &ParagraphStyle::default());
+        assert!((p.first_line_indent - 3.0).abs() < 1e-9, "{p:?}");
+    }
+
     #[test]
     fn paragraph_spacing_before_and_after_come_from_the_style_string() {
         let st = text::parse_style_string(
@@ -7280,6 +7782,11 @@ pub(crate) mod tests {
         let line_mm = st.size_pt.unwrap_or(12.0) * 25.4 / 72.0 * 1.15;
         assert!((p.space_before - line_mm).abs() < 1e-9, "{p:?}");
         assert!((p.space_after - line_mm / 2.0).abs() < 1e-9, "{p:?}");
+        // Kept in percent of the character height too (#2613).
+        assert_eq!(
+            (p.space_before_pct, p.space_after_pct),
+            (Some(200.0), Some(50.0))
+        );
         assert!((p.leading_pct - 120.0).abs() < 1e-9);
         // The defaults files hold: no extra room.
         let d = text::parse_style_string(
@@ -7310,9 +7817,13 @@ pub(crate) mod tests {
         );
         let p = paragraph_spacing(&st, &ParagraphStyle::default());
         let size_mm = st.size_pt.expect("size") * 25.4 / 72.0;
-        let line_mm = size_mm * 1.15;
-        let baseline = line_mm * p.leading_pct / 100.0;
-        assert!((baseline - 3.5277).abs() < 1e-6, "{p:?}");
+        // Points stay points, whatever the face's own line height
+        // (#2676: a tall face set the lines further apart than the file).
+        assert_eq!(p.leading_unit, LeadingUnit::Points);
+        for line_height in [size_mm * 1.15, size_mm * 1.41] {
+            let baseline = p.line_step(line_height, size_mm);
+            assert!((baseline - 3.5277).abs() < 1e-6, "{p:?}");
+        }
         assert!((p.space_before - (6.2603 - 3.5277)).abs() < 1e-6, "{p:?}");
         assert!((p.space_after - 0.2118).abs() < 1e-6, "{p:?}");
         // In the point size: 1.2 times the size between baselines.
@@ -7321,8 +7832,11 @@ pub(crate) mod tests {
         );
         let p = paragraph_spacing(&pt, &ParagraphStyle::default());
         let size_mm = pt.size_pt.expect("size") * 25.4 / 72.0;
-        let baseline = size_mm * 1.15 * p.leading_pct / 100.0;
-        assert!((baseline - 1.2 * size_mm).abs() < 1e-6, "{p:?}");
+        assert_eq!(p.leading_unit, LeadingUnit::PercentPointSize);
+        for line_height in [size_mm * 1.15, size_mm * 1.41] {
+            let baseline = p.line_step(line_height, size_mm);
+            assert!((baseline - 1.2 * size_mm).abs() < 1e-6, "{p:?}");
+        }
     }
     use tracedraw_core::geometry::Shape as _;
 
@@ -8842,6 +9356,7 @@ pub(crate) mod tests {
                 after: Affine::IDENTITY,
             }],
             distortions: Vec::new(),
+            ..Default::default()
         };
         let before = Affine::translate((10.0, 20.0)) * Affine::scale_non_uniform(2.0, 0.5);
         let e = text_envelope(&text(None), &chain(before)).expect("a live envelope");
@@ -9087,6 +9602,81 @@ pub(crate) mod tests {
         assert!(!doc.metadata.facing_pages);
         let x0 = doc.pages[1].layers[0].shapes[0].bounds().x0;
         assert!((x0 - 50.0).abs() < 1e-6, "{x0}");
+    }
+
+    /// The sides of facing pages: strict turns from the better start,
+    /// one page whose objects reach across the spine does not break them,
+    /// and a run of pages that all sit the other way (after a page the
+    /// file lost or added) does, once (#2833).
+    #[test]
+    fn facing_sides_take_turns_and_follow_a_lost_page() {
+        let r = (1.0, 0.0);
+        let l = (0.0, 1.0);
+        let e = (0.0, 0.0);
+        assert_eq!(facing_sides(&[r, l, r, l]), vec![true, false, true, false]);
+        assert_eq!(facing_sides(&[l, r, l]), vec![false, true, false]);
+        // Nothing to go by: from the right.
+        assert_eq!(facing_sides(&[e, e, e]), vec![true, false, true]);
+        // Page 3 reads the wrong way: it keeps its turn.
+        assert_eq!(
+            facing_sides(&[r, l, l, l, r, l]),
+            vec![true, false, true, false, true, false]
+        );
+        // From page 4 every page sits the other way: one break.
+        assert_eq!(
+            facing_sides(&[r, l, r, r, l, r, l]),
+            vec![true, false, true, true, false, true, false]
+        );
+    }
+
+    /// A book of 300 facing pages (#2833, a 1 GB file of almost 300
+    /// pages whose pages overlapped): from page 151 on, the pages sit on
+    /// the other side of the spine than strict turns from the first page
+    /// give, as when the file holds one page more or less there. Every
+    /// page's object lands on its own page; page 11, whose object reads
+    /// from the wrong side, keeps its turn.
+    #[test]
+    fn a_long_book_whose_turns_break_keeps_every_page_on_its_side() {
+        // A 25.4 mm square from the spine, to the right or the left.
+        let page = |right: bool| {
+            let w = if right { 254000.0 } else { -254000.0 };
+            let mut c = f64s(&[w, 127000.0]);
+            c.extend_from_slice(&f64s(&[1.0, 1.0]));
+            c.push(0);
+            c.extend_from_slice(&[0; 7]);
+            for gap in [16usize, 16, 16, 0] {
+                c.extend_from_slice(&f64s(&[0.0]));
+                c.extend_from_slice(&vec![0u8; gap]);
+            }
+            list(
+                b"page",
+                &list(
+                    b"layr",
+                    &list(
+                        b"obj ",
+                        &chunk(b"loda", &loda(OBJ_RECT, &[(ARG_COORDS, c)])),
+                    ),
+                ),
+            )
+        };
+        let true_side = |i: usize| if i < 150 { i % 2 == 0 } else { i % 2 == 1 };
+        let mut m = mcfg(21, 1_000_000, 1_500_000);
+        m.resize(32, 0);
+        m[26] = 1;
+        let mut body = chunk(b"mcfg", &m);
+        for i in 0..300 {
+            // Page 11's object is drawn from the other side.
+            let right = if i == 10 { !true_side(i) } else { true_side(i) };
+            body.extend_from_slice(&page(right));
+        }
+        let (doc, rep) = parse(&riff(b"CDRL", &body), 21);
+        assert_eq!(doc.pages.len(), 300, "{:?}", rep.warnings);
+        assert!(doc.metadata.facing_pages);
+        for (i, p) in doc.pages.iter().enumerate() {
+            let b = p.layers[0].shapes[0].bounds();
+            let on = b.x0 >= -1e-6 && b.x1 <= 100.0 + 1e-6;
+            assert_eq!(on, i != 10, "page {}: {:?}", i + 1, b);
+        }
     }
 
     #[test]
@@ -11935,8 +12525,11 @@ pub(crate) mod tests {
                 spans, align, para, ..
             } => {
                 assert_eq!(*align, TextAlign::Center);
-                assert!((spans[0].tracking_pct + 10.0 * SPACE_EM).abs() < 1e-9);
-                assert!((para.leading_pct - 150.0).abs() < 1e-6, "{para:?}");
+                assert!((para.char_spacing_pct + 10.0).abs() < 1e-9, "{para:?}");
+                assert_eq!(spans[0].tracking_pct, 0.0);
+                // The distance in points: 1.5 times 1.15 times 36 pt.
+                assert_eq!(para.leading_unit, LeadingUnit::Points);
+                assert!((para.leading_pct - 36.0 * 1.15 * 1.5).abs() < 1e-3, "{para:?}");
             }
             other => panic!("{other:?}"),
         }
@@ -12005,10 +12598,12 @@ pub(crate) mod tests {
                 assert_eq!(spans[0].font_family, "Verdana");
                 assert!((spans[0].size_pt - 36.0).abs() < 1e-9);
                 assert!(spans[0].italic && !spans[0].bold);
-                assert!((spans[0].tracking_pct - 5.0 * SPACE_EM).abs() < 1e-9);
+                assert!((para.char_spacing_pct - 5.0).abs() < 1e-9, "{para:?}");
                 assert!((para.leading_pct - 150.0).abs() < 1e-9);
                 assert!((para.left_indent - 25.4).abs() < 1e-9, "{para:?}");
-                assert!((para.first_line_indent - 6.35).abs() < 1e-9);
+                // First line at 18 pt from the frame: 54 pt left of the
+                // other lines (#2669).
+                assert!((para.first_line_indent + 19.05).abs() < 1e-9, "{para:?}");
                 assert!((para.right_indent - 12.7).abs() < 1e-9);
             }
             other => panic!("{other:?}"),
@@ -14402,8 +14997,10 @@ pub(crate) mod tests {
         assert!(rep.warnings.iter().any(|w| w.contains("0x26")));
     }
 
+    /// A point list is the control polygon of a B-spline (#2723): the
+    /// shape is the smooth curve inside it, not the polygon.
     #[test]
-    fn point_lists_are_closed_outlines_through_their_points() {
+    fn point_lists_are_b_splines_steered_by_their_points() {
         // ppdt: u16 count, u32 1, the points, then a u32 for each point.
         let mut ppdt = 4u16.to_le_bytes().to_vec();
         ppdt.extend_from_slice(&u32s(&[1]));
@@ -14431,16 +15028,50 @@ pub(crate) mod tests {
             ShapeKind::Path { path, closed } => {
                 use tracedraw_core::geometry::Shape as _;
                 assert!(closed);
-                // A move, three lines and the close.
-                assert_eq!(path.elements().len(), 5);
+                // A move, four curves and the close.
+                assert_eq!(path.elements().len(), 6);
+                assert!(path
+                    .elements()
+                    .iter()
+                    .all(|e| !matches!(e, tracedraw_core::geometry::PathEl::LineTo(_))));
+                // The closed cubic B-spline round a rectangle's corners
+                // spans eleven twelfths of each side, in the middle.
                 let b = path.bounding_box();
                 assert!(
-                    (b.width() - 25.4).abs() < 1e-9 && (b.height() - 12.7).abs() < 1e-9,
+                    (b.width() - 25.4 * 11.0 / 12.0).abs() < 1e-6
+                        && (b.height() - 12.7 * 11.0 / 12.0).abs() < 1e-6,
                     "{b:?}"
                 );
+                assert!((b.center().x - 12.7).abs() < 1e-6, "{b:?}");
             }
             other => panic!("{other:?}"),
         }
+    }
+
+    /// An open B-spline starts at its first point and ends at its last,
+    /// bending towards the points between (#2723).
+    #[test]
+    fn open_b_splines_run_from_the_first_point_to_the_last() {
+        let pts = [
+            Point::new(0.0, 0.0),
+            Point::new(10.0, 10.0),
+            Point::new(20.0, 0.0),
+        ];
+        let path = b_spline_path(&pts, false);
+        let els = path.elements();
+        assert_eq!(
+            els.first(),
+            Some(&tracedraw_core::geometry::PathEl::MoveTo(pts[0]))
+        );
+        assert!(
+            matches!(els.last(), Some(tracedraw_core::geometry::PathEl::CurveTo(_, _, e)) if *e == pts[2])
+        );
+        use tracedraw_core::geometry::Shape as _;
+        let b = path.bounding_box();
+        assert!(b.height() > 2.0 && b.height() < 10.0, "{b:?}");
+        // Two points are the line between them.
+        let line = b_spline_path(&pts[..2], false);
+        assert_eq!(line.elements().len(), 2);
     }
 
     #[test]
@@ -15247,6 +15878,137 @@ pub(crate) mod tests {
             ] {
                 assert!((got - want).abs() < 0.05, "{b:?}");
             }
+        }
+    }
+
+    /// A perspective entry as the version 22 file of #2691 holds one: 6
+    /// zero bytes, 1, the box (left, top, right, bottom in file units),
+    /// the corners it goes to (bottom-left, top-left, top-right,
+    /// bottom-right, the first again), then 60 bytes not read.
+    fn trfd_perspective(bx: [i32; 4], corners: [(i32, i32); 4]) -> Vec<u8> {
+        let mut b = vec![0u8; 6];
+        b.extend_from_slice(&u32s(&[1]));
+        b.extend_from_slice(&i32s(&bx));
+        for (x, y) in corners.iter().chain(std::iter::once(&corners[0])) {
+            b.extend_from_slice(&i32s(&[*x, *y]));
+        }
+        b.extend_from_slice(&u32s(&[492, 68]));
+        b.resize(b.len() + 52, 0);
+        trfd_entry(2, &b)
+    }
+
+    /// Where the corners of a shape's live perspective land on the page.
+    fn perspective_on_page(s: &Shape) -> [Point; 4] {
+        let corners = s
+            .effects
+            .iter()
+            .find_map(|e| match e {
+                tracedraw_core::live::Effect::Perspective { corners } => Some(*corners),
+                _ => None,
+            })
+            .expect("a live perspective");
+        corners.map(|p| s.transform * p)
+    }
+
+    fn assert_near(got: [Point; 4], want: [(f64, f64); 4]) {
+        for (g, w) in got.iter().zip(want) {
+            assert!(
+                (g.x - w.0).abs() < 1e-6 && (g.y - w.1).abs() < 1e-6,
+                "{got:?} against {want:?}"
+            );
+        }
+    }
+
+    /// Version 16+ perspectives (#2691): an entry of type 2 between the
+    /// matrices takes its box onto four corners. A version 22 file whose
+    /// shop sign is in perspective opened with the sign flat and its
+    /// grouped parts out of place, the perspectives left out.
+    #[test]
+    fn version_16_perspectives_take_their_box_onto_their_corners() {
+        // Stretched to 20 x 10 mm, the top-right corner raised to 20 mm,
+        // then moved 5 mm up.
+        let t = trfd_v16(&[
+            trfd_matrix([2.0, 0.0, 0.0, 0.0, 1.0, 0.0]),
+            trfd_perspective(
+                [0, 100_000, 200_000, 0],
+                [(0, 0), (0, 100_000), (200_000, 200_000), (200_000, 0)],
+            ),
+            trfd_matrix([1.0, 0.0, 0.0, 0.0, 1.0, 50_000.0]),
+        ]);
+        let (doc, rep) = envelope_file(t, &[], false);
+        assert_eq!(rep.shapes, 1, "{:?}", rep.warnings);
+        assert!(rep.warnings.is_empty(), "{:?}", rep.warnings);
+        // The page is 254 mm square, its centre the file's origin.
+        let c = 127.0;
+        assert_near(
+            perspective_on_page(first_shape(&doc)),
+            [
+                (c, c + 5.0),
+                (c + 20.0, c + 5.0),
+                (c + 20.0, c + 25.0),
+                (c, c + 15.0),
+            ],
+        );
+
+        // Applied again over the first (the box of the second is where
+        // the first left the object): both apply, in order.
+        let t = trfd_v16(&[
+            trfd_perspective(
+                [0, 100_000, 100_000, 0],
+                [(0, 0), (0, 100_000), (100_000, 100_000), (100_000, 0)],
+            ),
+            trfd_matrix([1.0, 0.0, 100_000.0, 0.0, 1.0, 0.0]),
+            trfd_perspective(
+                [100_000, 100_000, 200_000, 0],
+                [
+                    (100_000, 0),
+                    (100_000, 100_000),
+                    (200_000, 150_000),
+                    (200_000, 0),
+                ],
+            ),
+        ]);
+        let (doc, _) = envelope_file(t, &[], false);
+        assert_near(
+            perspective_on_page(first_shape(&doc)),
+            [
+                (c + 10.0, c),
+                (c + 20.0, c),
+                (c + 20.0, c + 15.0),
+                (c + 10.0, c + 10.0),
+            ],
+        );
+    }
+
+    /// A group in perspective (#2691): the group's own `trfd` holds the
+    /// perspective and its objects only their own matrices; each object
+    /// takes the group's perspective.
+    #[test]
+    fn version_16_group_perspectives_reach_their_objects() {
+        let t = trfd_v16(&[
+            trfd_perspective(
+                [0, 100_000, 100_000, 0],
+                [(0, 0), (0, 100_000), (100_000, 200_000), (100_000, 0)],
+            ),
+            trfd_matrix([1.0, 0.0, 0.0, 0.0, 1.0, 50_000.0]),
+        ]);
+        let (doc, rep) = envelope_file(t, &[], true);
+        assert!(rep.warnings.is_empty(), "{:?}", rep.warnings);
+        let ShapeKind::Group { children } = &first_shape(&doc).kind else {
+            panic!("a group");
+        };
+        assert_eq!(children.len(), 2);
+        let c = 127.0;
+        for s in children {
+            assert_near(
+                perspective_on_page(s),
+                [
+                    (c, c + 5.0),
+                    (c + 10.0, c + 5.0),
+                    (c + 10.0, c + 25.0),
+                    (c, c + 15.0),
+                ],
+            );
         }
     }
 

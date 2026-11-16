@@ -4,6 +4,10 @@
 //! own size, a drag gives the box it is fitted in (its proportions kept),
 //! Space or Enter centres it on the page, and Esc or a right click calls
 //! the import off.
+//!
+//! Several files picked at once (discussion #2695) come in one after
+//! another, each placed in turn, and end up selected together; Esc calls
+//! off the one waiting and those after it.
 
 use crate::app::App;
 use crate::i18n::tr;
@@ -35,6 +39,15 @@ pub enum Placement {
 #[derive(Debug, Clone, PartialEq)]
 pub struct WaitingPlacement {
     pub placement: Placement,
+    pub before: Vec<ShapeId>,
+}
+
+/// Several files coming in from one File > Import.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ImportBatch {
+    /// The objects the files before the latest one brought.
+    pub came: Vec<ShapeId>,
+    /// The selection before the latest file started coming in.
     pub before: Vec<ShapeId>,
 }
 
@@ -74,6 +87,61 @@ pub fn placement_transform(b: Rect, placement: Placement, page: Rect) -> Option<
 impl App {
     /// File > Import with a file chosen: wait for its place when Options
     /// > Global > File Formats says so, else bring it in at once.
+    pub fn import_picked_many(&mut self, paths: Vec<std::path::PathBuf>) {
+        let mut paths = paths.into_iter();
+        let Some(first) = paths.next() else {
+            return;
+        };
+        self.import_queue = paths.collect();
+        self.import_batch = (!self.import_queue.is_empty()).then(|| ImportBatch {
+            came: Vec::new(),
+            before: self.selection.clone(),
+        });
+        self.import_picked(&first);
+    }
+
+    /// Each frame: once the file before has come in (placed, its
+    /// questions answered), the next file picked with it starts; after
+    /// the last, everything the files brought is selected.
+    pub fn advance_import_queue(&mut self) {
+        if self.import_batch.is_none()
+            || self.import_placing.is_some()
+            || self.import_place_waiting.is_some()
+            || !matches!(self.dialog, crate::ui::dialogs::Dialog::None)
+        {
+            return;
+        }
+        let selection = self.selection.clone();
+        let Some(batch) = self.import_batch.as_mut() else {
+            return;
+        };
+        if selection != batch.before {
+            for id in selection {
+                if !batch.came.contains(&id) {
+                    batch.came.push(id);
+                }
+            }
+        }
+        batch.before = self.selection.clone();
+        match self.import_queue.pop_front() {
+            Some(next) => self.import_picked(&next),
+            None => {
+                let Some(batch) = self.import_batch.take() else {
+                    return;
+                };
+                let doc = self.doc();
+                let came: Vec<ShapeId> = batch
+                    .came
+                    .into_iter()
+                    .filter(|id| doc.shape_on_page(*id).is_some())
+                    .collect();
+                if !came.is_empty() {
+                    self.select(came);
+                }
+            }
+        }
+    }
+
     pub fn import_picked(&mut self, path: &std::path::Path) {
         if self.settings.formats.import_with_cursor {
             self.begin_import_placement(path);
@@ -108,6 +176,9 @@ impl App {
     /// Esc or a right click: nothing comes in.
     pub fn cancel_import_placement(&mut self) {
         if self.import_placing.take().is_some() {
+            // The files picked with it are called off too; what came
+            // before stays, selected together.
+            self.import_queue.clear();
             self.status = tr("status.cancelled");
         }
     }

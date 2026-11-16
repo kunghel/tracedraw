@@ -15,6 +15,10 @@ zijn en hoe het kleurenpalet zich gedraagt.
 - [[options.ui_shadows]] (minder schaduwen helpen bij tragere grafische
   kaarten).
 - [[options.colored_icons]]: elke groep gereedschappen krijgt een eigen kleur.
+- [[options.docker_tabs_icons_only]]: de paneeltabbladen aan de zijkanten
+  van het venster tonen alleen hun afbeelding, met de naam in de tip. Uit
+  tonen ze afbeelding en naam, en een kolom met meer tabbladen dan er passen
+  schuift.
 - [[options.ui_size]]: hoe groot menu's, balken, pictogrammen en panelen zijn,
   ten opzichte van de schaal die uw systeem aan de monitor geeft (in het begin
   100%). [[options.reset_to_default]] gaat terug naar 100%. De grootte van de

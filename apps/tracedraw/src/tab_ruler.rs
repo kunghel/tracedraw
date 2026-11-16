@@ -7,6 +7,10 @@
 //! long text keeps the drag smooth), and the whole drag is one undo step.
 //! The paragraph's left and right indents show as triangles along the
 //! strip's outer edge; dragging one sets the indent the same way (#1993).
+//! With the rulers shown and the frame upright, the strip is the page's
+//! own horizontal ruler over the frame's width, not a strip on the page
+//! (#1912); a turned or mirrored frame, or rulers hidden, keep the strip
+//! along the frame's top edge.
 //! See docs/behavior/text.md, Tab ruler.
 
 use crate::app::App;
@@ -54,6 +58,10 @@ pub struct TabRuler {
     /// and right edges).
     pub left_indent: f64,
     pub right_indent: f64,
+    /// The strip is the page's horizontal ruler over the frame's width
+    /// (#1912): `a` and `b` stand on the ruler's lower edge, `up` points
+    /// up and the strip is the ruler's whole height.
+    pub docked: bool,
 }
 
 /// Which indent of the paragraph a marker on the ruler sets.
@@ -139,6 +147,9 @@ impl TabRuler {
 
     /// The near and far sides of the strip from the edge.
     fn band(&self) -> (f32, f32) {
+        if self.docked {
+            return (0.0, Tokens::RULER);
+        }
         let near = self.handle + GAP;
         (near, near + HEIGHT)
     }
@@ -271,6 +282,25 @@ impl App {
         if (a - pts[0]).dot(up) < 0.0 {
             up = -up;
         }
+        // Upright (its top edge level and on top) with the rulers shown:
+        // the strip is the horizontal ruler over the frame (#1912).
+        let canvas = self.canvas_rect;
+        let docked = self.show_rulers
+            && canvas.width() > 0.0
+            && edge.x > 0.0
+            && edge.y.abs() <= 0.5
+            && up.y < 0.0;
+        let (a, b, up, depth) = if docked {
+            let bottom = pts.iter().map(|p| p.y).fold(f32::MIN, f32::max);
+            (
+                Pos2::new(a.x, canvas.top()),
+                Pos2::new(b.x, canvas.top()),
+                Vec2::new(0.0, -1.0),
+                (bottom - canvas.top()).max(0.0),
+            )
+        } else {
+            (a, b, up, (pts[3] - pts[0]).length())
+        };
         let (stops, defaults) = match &self.tab_drag {
             Some(d) if d.shape == id => (d.stops.clone(), false),
             _ if para.tabs.is_empty() => (default_stops(frame.width), true),
@@ -287,14 +317,22 @@ impl App {
             a,
             b,
             up,
-            depth: (pts[3] - pts[0]).length(),
+            depth,
             width_mm: frame.width,
             stops,
             defaults,
             handle: self.handle_size(),
             left_indent,
             right_indent,
+            docked,
         })
+    }
+
+    /// Whether the tab ruler of the frame being edited is the page's
+    /// horizontal ruler (#1912): the rulers then take its clicks and
+    /// drags, not the drawing.
+    pub fn tab_ruler_docked(&self) -> bool {
+        self.tab_ruler().is_some_and(|r| r.docked)
     }
 
     /// Give the paragraphs at the caret of text `id` the indent `value`
@@ -503,13 +541,19 @@ impl App {
 /// every millimetre (every 5 when they would crowd), a longer one every
 /// 10, the stops as markers of their kind (the default grid lighter) and,
 /// while a stop is dragged, a line down the frame where it would go.
+/// A strip that is the page's ruler (#1912) shows here only the lines
+/// down the frame while a stop or an indent is dragged; the rest is
+/// drawn with the ruler ([`draw_in_ruler`]).
 pub fn draw(app: &App, painter: &Painter) {
     let Some(r) = app.tab_ruler() else {
         return;
     };
-    let (near, far) = (r.handle + GAP, r.handle + GAP + HEIGHT);
+    if r.docked {
+        drag_lines(app, painter, &r);
+        return;
+    }
+    let (near, far) = r.band();
     let fill = Tokens::ruler_bg();
-    let ink = Tokens::text();
     let dim = Tokens::ruler_tick();
     painter.add(egui::Shape::convex_polygon(
         vec![
@@ -539,6 +583,34 @@ pub fn draw(app: &App, painter: &Painter) {
         x += step;
         n += 1;
     }
+    markers(app, painter, &r);
+    drag_lines(app, painter, &r);
+}
+
+/// The tab ruler drawn in the page's horizontal ruler (#1912): the
+/// frame's width lighter, between two lines at its edges, with the stops
+/// and the indent markers over the ruler's own ticks and numbers.
+pub fn draw_in_ruler(app: &App, painter: &Painter) {
+    let Some(r) = app.tab_ruler().filter(|r| r.docked) else {
+        return;
+    };
+    let (near, far) = r.band();
+    let span = egui::Rect::from_two_pos(r.at(0.0, near), r.at(r.width_mm, far));
+    painter.rect_filled(span, 0.0, Tokens::SELECTION.gamma_multiply(0.14));
+    for x in [span.left(), span.right()] {
+        painter.vline(
+            x.round() + 0.5,
+            span.y_range(),
+            Stroke::new(1.0, Tokens::SELECTION.gamma_multiply(0.7)),
+        );
+    }
+    markers(app, painter, &r);
+}
+
+/// The stops and the indent markers of ruler `r`.
+fn markers(app: &App, painter: &Painter, r: &TabRuler) {
+    let ink = Tokens::text();
+    let dim = Tokens::ruler_tick();
     let dragging = app.tab_drag.as_ref().filter(|d| d.shape == r.shape);
     for (i, s) in r.stops.iter().enumerate() {
         let moving = dragging.is_some_and(|d| d.index == i);
@@ -551,38 +623,41 @@ pub fn draw(app: &App, painter: &Painter) {
         } else {
             ink
         };
-        marker(painter, &r, s, color);
-    }
-    // Where the dragged stop would go: a line down the frame.
-    if let Some(s) = dragging.and_then(|d| d.stops.get(d.index).filter(|_| !d.off)) {
-        let top = r.at(s.pos, near);
-        painter.line_segment(
-            [top, top - r.up * (near + r.depth)],
-            Stroke::new(1.0, Tokens::SELECTION.gamma_multiply(0.6)),
-        );
+        marker(painter, r, s, color);
     }
     // The indents: a triangle each along the outer edge, pointing at the
-    // frame; the one dragged with a line down the frame.
+    // frame.
     let moving = app
         .indent_drag
         .as_ref()
         .filter(|d| d.shape == r.shape)
         .map(|d| d.side);
     for side in [IndentSide::Left, IndentSide::Right] {
-        let x = r.indent_pos(side);
         let color = if moving == Some(side) {
             Tokens::SELECTION
         } else {
             ink
         };
-        indent_marker(painter, &r, x, color);
-        if moving == Some(side) {
-            let top = r.at(x, near);
-            painter.line_segment(
-                [top, top - r.up * (near + r.depth)],
-                Stroke::new(1.0, Tokens::SELECTION.gamma_multiply(0.6)),
-            );
-        }
+        indent_marker(painter, r, r.indent_pos(side), color);
+    }
+}
+
+/// Where the dragged stop or indent would go: a line down the frame.
+fn drag_lines(app: &App, painter: &Painter, r: &TabRuler) {
+    let near = r.band().0;
+    let line = |x: f64| {
+        let top = r.at(x, near);
+        painter.line_segment(
+            [top, top - r.up * (near + r.depth)],
+            Stroke::new(1.0, Tokens::SELECTION.gamma_multiply(0.6)),
+        );
+    };
+    let dragging = app.tab_drag.as_ref().filter(|d| d.shape == r.shape);
+    if let Some(s) = dragging.and_then(|d| d.stops.get(d.index).filter(|_| !d.off)) {
+        line(s.pos);
+    }
+    if let Some(d) = app.indent_drag.as_ref().filter(|d| d.shape == r.shape) {
+        line(r.indent_pos(d.side));
     }
 }
 

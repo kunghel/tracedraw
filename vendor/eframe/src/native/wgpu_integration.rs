@@ -534,6 +534,10 @@ impl WinitApp for WgpuWinitApp<'_> {
 
         if let Some(running) = &mut self.running {
             Ok(running.on_window_event(window_id, &event))
+        } else if self.app_creator.is_some() {
+            // TraceDraw: Android can send focus or configuration events before
+            // its first Resumed creates the app and its window surface.
+            Ok(EventResult::Wait)
         } else {
             // running is removed to get ready for exiting
             Ok(EventResult::Exit)

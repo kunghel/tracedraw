@@ -92,8 +92,45 @@ pub fn in_range(chars: &[char], range: usize) -> Vec<char> {
 
 /// The glyphs of `chars` a search finds: a code point in hexadecimal
 /// (`20AC`, `U+20AC`, `0x20ac`) finds that character and those whose code
-/// starts with it; other text finds the characters it holds (#375).
+/// starts with it; a word of three Latin letters or more finds the
+/// characters whose Unicode name holds every word typed (`euro`,
+/// `arrow left`, #1328); other text finds the characters it holds (#375).
 pub fn search(chars: &[char], query: &str) -> Vec<char> {
+    search_named(chars, query, char_name)
+}
+
+/// The Unicode name of `c` in capitals ("EURO SIGN"), empty when it has
+/// none.
+pub fn char_name(c: char) -> String {
+    unicode_names2::name(c)
+        .map(|n| n.to_string())
+        .unwrap_or_default()
+}
+
+/// The words of `query` a name search looks for, in capitals: none when
+/// the query is a character or two (`A`, `aB`), which finds those
+/// characters only.
+fn name_words(query: &str) -> Vec<String> {
+    let words: Vec<String> = query.split_whitespace().map(|w| w.to_uppercase()).collect();
+    // Unicode names are in ASCII capitals, so characters typed or pasted
+    // in another script ("αβγ") stay a search for those characters.
+    if words.iter().all(|w| w.is_ascii())
+        && words
+            .iter()
+            .any(|w| w.chars().filter(|c| c.is_ascii_alphabetic()).count() >= 3)
+    {
+        words
+    } else {
+        Vec::new()
+    }
+}
+
+/// [`search`] with the names given by `name` (cached by the docker).
+pub fn search_named(
+    chars: &[char],
+    query: &str,
+    mut name: impl FnMut(char) -> String,
+) -> Vec<char> {
     let q = query.trim();
     if q.is_empty() {
         return chars.to_vec();
@@ -119,6 +156,17 @@ pub fn search(chars: &[char], query: &str) -> Vec<char> {
             .collect();
     }
     let wanted: Vec<char> = q.chars().filter(|c| !c.is_whitespace()).collect();
+    let words = name_words(q);
+    if !words.is_empty() {
+        return chars
+            .iter()
+            .copied()
+            .filter(|c| {
+                let n = name(*c);
+                words.iter().all(|w| n.contains(w.as_str()))
+            })
+            .collect();
+    }
     chars
         .iter()
         .copied()
@@ -185,6 +233,52 @@ fn coverage(ui: &Ui, family: &str) -> Arc<Vec<char>> {
     let c = Arc::new(tracedraw_text::fonts().char_coverage(family));
     ui.data_mut(|d| d.insert_temp(key, c.clone()));
     c
+}
+
+/// The Unicode names of the characters `family` draws, read once per
+/// font the first time a name is searched in it.
+fn names(ui: &Ui, family: &str) -> Arc<std::collections::HashMap<char, String>> {
+    let key = egui::Id::new(("glyph_names", family.to_string()));
+    if let Some(n) = ui.data(|d| d.get_temp::<Arc<std::collections::HashMap<char, String>>>(key)) {
+        return n;
+    }
+    let n: std::collections::HashMap<char, String> = coverage(ui, family)
+        .iter()
+        .map(|c| (*c, char_name(*c)))
+        .collect();
+    let n = Arc::new(n);
+    ui.data_mut(|d| d.insert_temp(key, n.clone()));
+    n
+}
+
+/// The glyphs the grid shows: those of `family` in `range` that `query`
+/// finds, worked out again only when one of them changes, so typing and
+/// redrawing stay smooth in a font of tens of thousands of glyphs.
+fn found(ui: &Ui, family: &str, range: usize, query: &str) -> Arc<Vec<char>> {
+    type Found = (String, usize, String, Arc<Vec<char>>);
+    let key = egui::Id::new("glyphs_found");
+    if let Some((f, r, q, chars)) = ui.data(|d| d.get_temp::<Found>(key)) {
+        if f == family && r == range && q == query {
+            return chars;
+        }
+    }
+    let in_it = in_range(&coverage(ui, family), range);
+    let chars = if name_words(query.trim()).is_empty() {
+        search(&in_it, query)
+    } else {
+        let names = names(ui, family);
+        search_named(&in_it, query, |c| {
+            names.get(&c).cloned().unwrap_or_default()
+        })
+    };
+    let chars = Arc::new(chars);
+    ui.data_mut(|d| {
+        d.insert_temp::<Found>(
+            key,
+            (family.to_string(), range, query.to_string(), chars.clone()),
+        )
+    });
+    chars
 }
 
 /// The alternates of `ch` in `family`, cached for the session.
@@ -405,10 +499,7 @@ pub fn glyphs(app: &mut App, ui: &mut Ui) {
     .rich_tip(tr("glyphs.search_hint"));
     ui.add_space(4.0);
     let family = app.glyph_font.clone();
-    let chars = search(
-        &in_range(&coverage(ui, &family), app.glyph_range),
-        &app.glyph_search,
-    );
+    let chars = found(ui, &family, app.glyph_range, &app.glyph_search);
     let info_id = egui::Id::new("glyphs_info");
     let mut hovered: Option<char> = None;
     // The glyph last under the pointer: its code point, the character and
@@ -538,6 +629,20 @@ mod tests {
         assert_eq!(search(&chars, "004"), vec!['A', 'B']);
         // A bare letter or word finds those characters, not codes.
         assert_eq!(search(&chars, "aB"), vec!['a', 'B']);
+        // A word of three letters or more finds the characters whose
+        // Unicode name holds every word typed, in any case (#1328).
+        assert_eq!(search(&chars, "euro"), vec!['€']);
+        assert_eq!(search(&chars, "Acute"), vec!['é']);
+        assert_eq!(search(&chars, "latin capital"), vec!['A', 'B']);
+        let arrows = ['\u{2190}', '\u{2192}', '\u{2191}', 'x'];
+        assert_eq!(search(&arrows, "arrow right"), vec!['\u{2192}']);
+        assert_eq!(search(&arrows, "ARROW").len(), 3);
+        assert_eq!(char_name('€'), "EURO SIGN");
+        assert!(search(&chars, "nothing named so").is_empty());
+        // Letters of another script typed or pasted find themselves.
+        let greek = ['\u{3B1}', '\u{3B2}', '\u{3B3}', '\u{3B4}'];
+        assert_eq!(search(&greek, "\u{3B1}\u{3B2}\u{3B3}"), greek[..3].to_vec());
+        assert_eq!(search(&greek, "alpha"), vec!['\u{3B1}']);
         assert!(describe('€').starts_with("U+20AC"));
         // The keystroke of the code page the reference program shows
         // (#447), and back.

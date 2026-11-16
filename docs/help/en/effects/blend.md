@@ -23,6 +23,11 @@ With the panel:
 Both objects stay objects of the drawing: move, resize or recolor either one
 and the steps follow. Deleting the end object removes the blend.
 
+With the Pick tool, a click on the steps between the two objects
+selects the whole blend, the start and end objects together, so a drag moves
+it anywhere as one. A click on the start or end object itself selects that
+object alone, to resize, recolor or edit it.
+
 ## Blend settings {#settings}
 
 With a blend selected, every change on the property bar or in the panel

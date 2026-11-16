@@ -27,6 +27,13 @@ moved, scaled, turned or skewed (`dimensions.rs`).
   (Options > Edit, 15 degrees by default) from the first point or the
   vertex, as the curve tools do; the preview follows
   (`pick_drag_tests::ctrl_keeps_a_dimension_leg_to_the_constrain_angle`).
+- From the first point on, the measure so far reads in a small box beside
+  the pointer, in the property bar's units, decimals and units sign: the
+  length while the second point or the dimension line is wanted, the
+  angle once the angular tool's first side is given. It is the value the
+  label will show (prefix and suffix left out), for the point a click
+  would take there, snapped and constrained (#2624,
+  `dimension_bar::tests::the_measure_reads_live_while_the_dimension_is_placed`).
 - The new dimension is selected; one undo step.
 
 ## Add Dimensions
@@ -92,6 +99,7 @@ is kept in the preferences (`tools.dimension_style`).
 |---|---|---|
 | Precision | 1.23 (2 decimals) | 0 to 6 decimals |
 | Units | Drawing units (the document's) | any unit of the Units list; lengths go through the drawing scale (at 1:100 a 10 mm line reads 1000 mm) |
+| Drawing scale | the document's (1:1) | the typical scales, or Custom... for Document Setup > Rulers; it is the whole drawing's scale, one undo step (#2772, #1891) |
 | Show units | on | the unit's sign after the number; for angles, the degree sign |
 | Prefix, Suffix | empty | text before and after (applied when the field is left or Enter is pressed) |
 | Text | Above the line | Above the line, In the line, Below the line |

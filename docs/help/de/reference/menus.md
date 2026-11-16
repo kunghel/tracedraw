@@ -473,6 +473,7 @@ Ihre eigenen Tastenkürzel zeigen; siehe
 | [[menu.help.whats_new]] | [Neuigkeiten](../welcome/whats-new.md) |
 | [[menu.help.highlight_whats_new]] | [Neuigkeiten](../welcome/whats-new.md) |
 | [[menu.help.updates]] | [Über TraceDraw und Updates](../welcome/about-and-updates.md) |
+| [[menu.help.benchmark]] | [TraceDraw-Optionen](../customize/options-app.md#benchmark) |
 | [[menu.help.message_settings]] | [Über TraceDraw und Updates](../welcome/about-and-updates.md) |
 | [[menu.help.community]] | [Über TraceDraw und Updates](../welcome/about-and-updates.md) |
 | [[menu.help.support]] | [Über TraceDraw und Updates](../welcome/about-and-updates.md) |

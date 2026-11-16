@@ -32,3 +32,20 @@ You can also join two end nodes of one curve with the [[tool.shape]] tool;
 see [Shaping curves with the Shape tool](shape-tool.md#property-bar). Drawing
 from the end of a selected curve also continues it; see
 [Continuing a curve](lines.md#continue).
+
+## Join tool {#join-tool}
+
+The [[tool.join]] tool, in the toolbox with the [[tool.shape]] tool, joins the
+end nodes of open curves by hand.
+
+- Draw a stroke over the end nodes: they are joined in pairs, in the order the
+  stroke reaches them. Two ends within the pick distance of each other become
+  one node halfway between them; ends further apart are joined by a straight
+  segment.
+- Click an end node (it is filled in), then another, to join those two. A
+  click away lets go of the first.
+- The two ends of one curve close it. Ends of two curves make one curve, with
+  the fill and outline of the curve of the first end.
+
+Every join made by one stroke is one undo step. The tool works on the curves
+of the page that are visible and not locked, outside groups.

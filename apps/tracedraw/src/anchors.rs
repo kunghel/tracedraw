@@ -49,6 +49,41 @@ pub fn with_anchors(
 /// The four side midpoints as fractions.
 pub const SIDE_ANCHORS: [(f64, f64); 4] = [(0.5, 1.0), (1.0, 0.5), (0.5, 0.0), (0.0, 0.5)];
 
+/// Most nodes an object may have for them to be anchors too.
+const MAX_GEOMETRIC: usize = 64;
+
+/// An object's own nodes, as Options > Tools > Connector's "Use geometric
+/// anchor points" adds them (#1436): none for an object of more than
+/// [`MAX_GEOMETRIC`] nodes (text, traced pictures), where they would only
+/// get in the way.
+pub fn geometric_anchors(s: &tracedraw_core::document::Shape) -> Vec<Point> {
+    use tracedraw_core::geometry::PathEl;
+    if matches!(
+        s.kind,
+        tracedraw_core::document::ShapeKind::Group { .. }
+            | tracedraw_core::document::ShapeKind::Text { .. }
+    ) {
+        return Vec::new();
+    }
+    let mut out: Vec<Point> = Vec::new();
+    for el in s.page_path().elements() {
+        let p = match el {
+            PathEl::MoveTo(p)
+            | PathEl::LineTo(p)
+            | PathEl::QuadTo(_, p)
+            | PathEl::CurveTo(_, _, p) => *p,
+            PathEl::ClosePath => continue,
+        };
+        if !out.iter().any(|q| (*q - p).hypot() < 1e-6) {
+            out.push(p);
+        }
+        if out.len() > MAX_GEOMETRIC {
+            return Vec::new();
+        }
+    }
+    out
+}
+
 impl App {
     /// All anchors of an object in page coordinates: the four side
     /// midpoints followed by the custom ones.
@@ -57,12 +92,16 @@ impl App {
             return Vec::new();
         };
         let b = s.bounds();
-        SIDE_ANCHORS
+        let mut out: Vec<Point> = SIDE_ANCHORS
             .iter()
             .copied()
             .chain(custom_anchors(&s.data))
             .map(|(fx, fy)| Point::new(b.x0 + fx * b.width(), b.y0 + fy * b.height()))
-            .collect()
+            .collect();
+        if self.settings.connector_geometric_anchors {
+            out.extend(geometric_anchors(s));
+        }
+        out
     }
 
     /// The anchor of `id` closest to `p`.
@@ -318,5 +357,25 @@ mod tests {
         // Removing it leaves the four side anchors.
         app.remove_anchor(a, 0);
         assert_eq!(app.anchors_of(a).len(), 4);
+    }
+
+    /// Options > Tools > Connector, "Use geometric anchor points": an
+    /// object's own nodes are anchors too, and a connector dragged from a
+    /// corner starts there (#1436).
+    #[test]
+    fn geometric_anchor_points_add_the_nodes() {
+        let mut app = App::headless();
+        app.view.zoom = 1.0;
+        let a = rect(&mut app, Rect::new(0.0, 0.0, 10.0, 10.0));
+        let b = rect(&mut app, Rect::new(30.0, 0.0, 40.0, 10.0));
+        assert_eq!(app.anchors_of(a).len(), 4);
+        app.settings.connector_geometric_anchors = true;
+        let anchors = app.anchors_of(a);
+        assert_eq!(anchors.len(), 8, "{anchors:?}");
+        assert!(anchors.contains(&Point::new(10.0, 10.0)));
+        let (pa, _) = app
+            .connector_anchors(a, Point::new(10.0, 10.0), b, Point::new(30.0, 5.0))
+            .expect("anchors");
+        assert_eq!(pa, Point::new(10.0, 10.0));
     }
 }

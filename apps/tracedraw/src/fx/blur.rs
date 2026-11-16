@@ -125,6 +125,16 @@ pub fn directional_smooth(img: &RgbaImage, p: &P) -> RgbaImage {
 }
 
 pub fn gaussian_blur(img: &RgbaImage, p: &P) -> RgbaImage {
+    if p.values.get("kernel_extent") == Some(&2.0) {
+        return tracedraw_render::bitmap_effects::finite_gaussian_rgba(
+            img.as_raw(),
+            img.width(),
+            img.height(),
+            p.f("radius"),
+        )
+        .and_then(|data| RgbaImage::from_raw(img.width(), img.height(), data))
+        .unwrap_or_else(|| img.clone());
+    }
     // The radius is about two sigma.
     gaussian(img, p.f32("radius") / 2.0)
 }

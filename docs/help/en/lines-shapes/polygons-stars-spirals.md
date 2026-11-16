@@ -78,8 +78,31 @@ next time TraceDraw starts.
 
 The [[tool.action_lines]] tool draws speed lines in a comic-book style: a
 group of **lines** (2 to 500, 12 at first) that are **parallel** (at first)
-or **radial**. Their lengths vary, but the same box always gives the same
-lines.
+or **radial**. Their lengths vary, but the same settings and box always
+give the same lines; **New Random** deals another set.
+
+On the property bar:
+
+- **Length**: how much the lengths vary (0 % makes them all equal).
+- **Middle** (radial): how much of the middle stays empty.
+- **Width**: 0 draws thin lines with the default outline; a width draws
+  filled strokes in its colour, with **Width var.** (how much thinner a
+  stroke may be) and **Ends** (square, pointed at one end, or pointed at
+  both).
+- **Spacing**: how unevenly the lines are spaced.
+- **Angle**: turns parallel lines, or where radial lines start.
+- **Oval** (radial): the lines reach the edge of an oval box instead of
+  a circle.
+- **From** (parallel): the side the lines start from: right, left or
+  centre.
+
+## Speech Balloon {#speech-balloons}
+
+[[tool.balloon]]: Draw speech balloons for comics: body and tail in one curve, the tail dragged to point at anyone.
+
+1. Choose the style on the property bar: Speech, Thought, Whisper, Shout or Caption.
+2. Drag a box: the balloon fills it, its tail welded on in one curve.
+3. Drag the diamond at the tail's tip to point the tail at someone; set its width and bend on the bar.
 
 ## Graph Paper {#graph-paper}
 

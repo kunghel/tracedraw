@@ -14,9 +14,11 @@ Contour panel share the controls in `ui/contour_bar.rs`.
 | Corners | Mitred | Mitred, Round, Bevelled |
 | Colour direction | Direct | Direct, Clockwise, Counterclockwise (through the hues) |
 | Last step's fill and outline colours | white, black | |
+| Last fill colour (the end of a fountain fill, #1265) | white | |
 | Object acceleration, colour acceleration | 0 % | -100 to 100 % |
 
-The two colour buttons of the bar open the colour palette's swatches
+The colour buttons of the bar (fill, outline and last fill colour)
+open the colour palette's swatches
 and, under Other, the colour's swatch: a click on it closes the list
 and opens the colour picker beside the button (viewer, Model list,
 eyedropper, sliders), which stays open while it is used and closes on a
@@ -66,6 +68,15 @@ step count, side and end colours, and the steps the file stores go
   of the way from the object's fill (and outline) colour to the last
   step's colours, mixed directly or through the hues clockwise or
   counterclockwise. An object without fill gives unfilled steps.
+- A fountain-filled object's steps keep its fountain (kind, angle,
+  stops' places) and change its colours (#1265): each stop at place `s`
+  (0 at the start, 1 at the end) goes the step's share of the way to
+  the colour `s` of the way from the fill colour to the last fill
+  colour, so on the last step the fountain runs from the fill colour to
+  the last fill colour. Contours from older files have no last fill
+  colour and take the fill colour for both ends. Other fills (solid,
+  pattern, texture, mesh) give solid steps from their first colour, as
+  before.
 - Outside steps are drawn behind the object, farthest first; inside
   steps in front of it, outermost first.
 
@@ -83,7 +94,9 @@ step count, side and end colours, and the steps the file stores go
 
 With the tool and one object selected that has a contour, the canvas
 shows its handles (#1265, `ContourHandles`, `canvas::draw_contour_handles`,
-plain segments and two small rectangles):
+plain segments and two small rectangles, the offset square 11 screen
+pixels wide, or the node size of Options > Nodes and Handles and two
+pixels more when that is larger, #2731):
 
 - A line from the middle of the object's right edge (page bounds, `a`),
   to the right for Outside, to the left for Inside and To centre.
@@ -96,7 +109,8 @@ plain segments and two small rectangles):
   first step's distance without acceleration (none To centre). Dragging
   it to `t` gives `steps = round(steps * offset / t)` (1 to 999) and the
   offset that keeps the last step where it was.
-- A press within 9 screen pixels takes a handle, the steps handle first
+- A press within 12 screen pixels (or the pick distance of Options >
+  Nodes and Handles, when larger, #2731) takes a handle, the steps handle first
   where they meet; the pointer shows a sideways arrow over them. A drag
   from anywhere else draws a new contour as before.
 - The contour is drawn live at every move; the first move of a drag
@@ -122,6 +136,7 @@ plain segments and two small rectangles):
 
 - `live::tests::contour_outside_three_steps`
 - `live::tests::contour_offset_is_measured_on_the_page`
+- `live::tests::contour_steps_keep_a_fountain_toward_both_end_colours`
 - `shaping::tests::offset_corners_are_mitred_round_or_bevelled`
 - `shaping::tests::offset_reads_overlapping_strokes_with_the_fill_rule_given`
 - `live::tests::effects_read_text_with_the_nonzero_rule`

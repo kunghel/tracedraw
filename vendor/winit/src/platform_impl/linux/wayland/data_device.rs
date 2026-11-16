@@ -80,7 +80,13 @@ impl WinitState {
     /// Read the list of files of `offer` for `ticket`, without blocking:
     /// the event loop calls back as the source writes.
     fn read_file_list(&mut self, offer: &DragOffer, ticket: u64) {
-        let pipe: ReadPipe = match offer.receive(URI_LIST.to_owned()) {
+        // TraceDraw: a list of files, or a picture another program drags
+        // in, written to a file whose list is handed on (#2349).
+        let Some((mime, picture)) = drag_type(offer) else {
+            self.file_list_failed(ticket);
+            return;
+        };
+        let pipe: ReadPipe = match offer.receive(mime) {
             Ok(pipe) => pipe,
             Err(error) => {
                 tracing::warn!("could not read the files dragged over the window: {error}");
@@ -92,10 +98,15 @@ impl WinitState {
         let inserted = self
             .loop_handle
             .insert_source(pipe, move |(), file, state| {
-                let mut buf = [0u8; 4096];
+                let mut buf = [0u8; 65536];
                 // One read for each wake-up: the pipe blocks, and it is ready.
                 match (&**file).read(&mut buf) {
                     Ok(0) => {
+                        if let Some(ext) = picture {
+                            list = crate::picture_drop::save(&list, ext)
+                                .map(|p| crate::picture_drop::uri_list(&p))
+                                .unwrap_or_default();
+                        }
                         let mut out = Vec::new();
                         let finish = state.file_drag.data(ticket, &list, &mut out);
                         state.send_file_drop(out);
@@ -152,6 +163,20 @@ impl WinitState {
     }
 }
 
+/// TraceDraw: the type a drag is read as, with the extension of the
+/// picture file it is written to when it is a picture: its list of files
+/// first, else a picture another program drags in (#2349).
+fn drag_type(offer: &DragOffer) -> Option<(String, Option<&'static str>)> {
+    offer.with_mime_types(|m| {
+        if m.iter().any(|t| t == URI_LIST) {
+            return Some((URI_LIST.to_owned(), None));
+        }
+        let (t, ext) = crate::picture_drop::best_type(m.iter().map(String::as_str))?;
+        let offered = m.iter().find(|o| o.eq_ignore_ascii_case(t))?;
+        Some((offered.clone(), Some(ext)))
+    })
+}
+
 impl DataDeviceHandler for WinitState {
     fn enter(
         &mut self,
@@ -174,10 +199,11 @@ impl DataDeviceHandler for WinitState {
         }
         self.file_drop_action = DndAction::empty();
         let target = self.drag_target(surface, x, y);
-        let files = target.is_some() && offer.with_mime_types(|m| m.iter().any(|t| t == URI_LIST));
-        if files {
+        let wanted = target.as_ref().and_then(|_| drag_type(&offer));
+        let files = wanted.is_some();
+        if let Some((mime, _)) = wanted {
             offer.set_actions(DndAction::Copy, DndAction::Copy);
-            offer.accept_mime_type(offer.serial, Some(URI_LIST.to_owned()));
+            offer.accept_mime_type(offer.serial, Some(mime));
         } else {
             offer.accept_mime_type(offer.serial, None);
         }

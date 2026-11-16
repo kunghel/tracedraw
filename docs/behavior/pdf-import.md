@@ -423,3 +423,25 @@ their own crypt filter and signature contents are left alone.
   Devanagari font, which the tests also install; the reporter's own file
   uses a system font we cannot ship or install here, so it was not
   opened with its font.
+
+  Without the font installed, the embedded font's own outlines are read
+  first (`crates/io/src/pdf_indic_shapes.rs`): a glyph the `cmap` does
+  not name is drawn with the outlines of glyphs it does name. A glyph
+  whose contours are, point for point, a named letter's contours and a
+  named sign's (each set moved as a whole) stands for the letter and the
+  sign (कु, कू, न् with its virama shown, ें, ों, ीं; the aa sign with
+  the e or ai sign makes the o or au sign); a glyph all of whose points
+  are points of a consonant's outline, with fewer of them and a shorter
+  advance, is its half form (श्); a glyph with the short i sign's advance
+  and foot that shares a good part of its hook is the short i sign drawn
+  longer for a wider cluster. These texts are taken as the `cmap`'s are,
+  and the other glyphs are worked out from them by the rules above (the
+  half form of क, drawn unlike क, follows from the short i sign before
+  it being known). Only an exact match counts; a glyph that two readings
+  fit is left to the rules. On the second file sent with #1806 (a
+  letter in a Hindi font with no `GSUB` in its subset), स्कूल came in as
+  स्ूल, मुश्किल as मुक्किल, विश्वास as विविास and उपयुक्त as उपयुति; all
+  its words now come in as typed
+  (`pdf_import::tests::glyphs_the_map_holds_nowhere_are_read_off_their_outlines`,
+  `pdf_indic_shapes::tests`, with a small TrueType font the tests
+  build).

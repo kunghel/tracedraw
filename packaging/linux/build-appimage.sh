@@ -17,7 +17,18 @@ TOOL="$ROOT/dist/linuxdeploy.AppImage"
 chmod +x "$TOOL"
 cd "$ROOT/dist"
 OUT="tracedraw-$VERSION-linux-$NAME.AppImage"
-VERSION="$VERSION" ARCH="$TOOL_ARCH" OUTPUT="$OUT" "$TOOL" --appimage-extract-and-run \
+# The update information inside the AppImage (#2341): AppImageUpdate,
+# Gear Lever and other updaters find the newest release's .zsync file
+# (the nightly is a pre-release, so it is never taken) and download only
+# the parts that changed. The .zsync is written beside the AppImage.
+UPDATE_INFO="gh-releases-zsync|tracedraw|tracedraw|latest|tracedraw-*-linux-$NAME.AppImage.zsync"
+VERSION="$VERSION" ARCH="$TOOL_ARCH" OUTPUT="$OUT" LDAI_UPDATE_INFORMATION="$UPDATE_INFO" \
+  "$TOOL" --appimage-extract-and-run \
   --appdir "$DIR" --desktop-file "$DIR/usr/share/applications/tracedraw.desktop" \
   --icon-file "$DIR/usr/share/icons/hicolor/256x256/apps/tracedraw.png" --output appimage
+# Older appimage plugins leave the .zsync out: make it with zsyncmake.
+if [ ! -f "$OUT.zsync" ]; then
+  command -v zsyncmake >/dev/null || { echo "zsyncmake not found" >&2; exit 1; }
+  zsyncmake -u "$OUT" -o "$OUT.zsync" "$OUT"
+fi
 rm -rf "$DIR"

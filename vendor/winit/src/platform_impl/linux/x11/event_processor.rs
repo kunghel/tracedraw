@@ -498,11 +498,9 @@ impl EventProcessor {
             // Action is specified in versions 2 and up, though we don't need it anyway.
             // let action = xev.data.get_long(4);
 
-            let accepted = if let Some(ref type_list) = self.dnd.type_list {
-                type_list.contains(&atoms[TextUriList])
-            } else {
-                false
-            };
+            // TraceDraw: a list of files, or a picture another program
+            // drags in (#2349, `Dnd::wanted`).
+            let accepted = self.dnd.wanted().is_some();
 
             if !accepted {
                 unsafe {
@@ -622,7 +620,7 @@ impl EventProcessor {
         // This is where we receive data from drag and drop
         self.dnd.result = None;
         if let Ok(mut data) = unsafe { self.dnd.read_data(window) } {
-            let parse_result = self.dnd.parse_data(&mut data);
+            let parse_result = self.dnd.parse_wanted(&mut data);
             if let Ok(ref path_list) = parse_result {
                 for path in path_list {
                     let event = Event::WindowEvent {

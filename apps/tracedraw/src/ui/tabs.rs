@@ -2,7 +2,9 @@
 //! drawing (an asterisk marks unsaved changes; the close button shows on
 //! the hovered tab) and the New tab after the last one, over a blue line
 //! that runs the width of the window. The Welcome Screen tab closes to its
-//! house alone, which shows the Welcome Screen again (#677).
+//! house alone, which shows the Welcome Screen again (#677). A drawing's
+//! tab dragged along the strip takes the drawing to another place among
+//! the tabs (#2903).
 
 use crate::app::App;
 use crate::i18n::tr;
@@ -25,6 +27,8 @@ enum Action {
     Switch(usize),
     Close(usize),
     New,
+    /// A drawing's tab dragged to another place among the tabs.
+    Move(usize, usize),
 }
 
 pub fn document_tabs(app: &mut App, ui: &mut Ui) {
@@ -57,14 +61,74 @@ pub fn document_tabs(app: &mut App, ui: &mut Ui) {
             TabClick::Close => action = Some(Action::CloseWelcome),
             TabClick::None => {}
         }
-        for i in 0..app.docs.len() {
-            let title = app.document_tab_title(i);
+        // A drawing's tab dragged along the strip (#2903), as a page tab
+        // is (#2712): the tab it is and where the pointer took hold of
+        // it. While it is held the other tabs slide aside to show where
+        // it will land and it follows the pointer; let go, the drawing
+        // takes that place.
+        let n = app.docs.len();
+        let titles: Vec<String> = (0..n).map(|i| app.document_tab_title(i)).collect();
+        let widths: Vec<f32> = titles.iter().map(|t| doc_tab_width(ui, t)).collect();
+        let drag_key = egui::Id::new("doc_tab_drag");
+        let (pointer_x, released, down) = ui.input(|inp| {
+            (
+                inp.pointer.latest_pos().map(|p| p.x),
+                inp.pointer.any_released(),
+                inp.pointer.any_down(),
+            )
+        });
+        let mut held = ui
+            .ctx()
+            .data(|d| d.get_temp::<(usize, f32)>(drag_key))
+            .filter(|(from, _)| *from < n);
+        if held.is_some() && !down && !released {
+            // A drag that ended without its tab seeing it (the tab went).
+            ui.ctx()
+                .data_mut(|d| d.remove_temp::<(usize, f32)>(drag_key));
+            held = None;
+        }
+        let gap = ui.spacing().item_spacing.x;
+        let start_x = ui.cursor().min.x;
+        let held_to = held.zip(pointer_x).map(|((from, grab), px)| {
+            let others: Vec<f32> = (0..n)
+                .filter(|j| *j != from)
+                .map(|j| widths[j] + gap)
+                .collect();
+            // The dragged tab's middle decides, not the pointer's spot.
+            let mid = px - grab + widths[from] / 2.0;
+            (
+                from,
+                crate::ui::window_bars::tab_drop_slot(&others, start_x, mid),
+            )
+        });
+        let order = match held_to {
+            Some((from, to)) => crate::ui::window_bars::tab_order(n, from, to),
+            None => (0..n).collect(),
+        };
+        for i in order {
             let active = !app.show_welcome && i == app.active_doc;
-            let (click, rect) = doc_tab(ui, i, &title, active);
+            let float_left = held
+                .filter(|(from, _)| *from == i)
+                .zip(pointer_x)
+                .map(|((_, grab), px)| px - grab);
+            let tab = doc_tab(ui, i, &titles[i], active, widths[i], float_left);
             if active && changed {
-                keep = Some(rect);
+                keep = Some(tab.slot);
             }
-            match click {
+            if tab.drag_started {
+                let grab = pointer_x.map_or(widths[i] / 2.0, |px| px - tab.slot.min.x);
+                ui.ctx().data_mut(|d| d.insert_temp(drag_key, (i, grab)));
+            }
+            if tab.drag_stopped {
+                ui.ctx()
+                    .data_mut(|d| d.remove_temp::<(usize, f32)>(drag_key));
+                if let Some((from, to)) = held_to.filter(|(from, _)| *from == i) {
+                    if to != from {
+                        action = Some(Action::Move(from, to));
+                    }
+                }
+            }
+            match tab.click {
                 TabClick::Select => action = Some(Action::Switch(i)),
                 TabClick::Close => action = Some(Action::Close(i)),
                 TabClick::None => {}
@@ -103,6 +167,7 @@ pub fn document_tabs(app: &mut App, ui: &mut Ui) {
             app.close_document();
         }
         Some(Action::New) => app.request_new_document(),
+        Some(Action::Move(from, to)) => app.move_document(from, to),
         None => {}
     }
 }
@@ -251,15 +316,48 @@ pub(crate) fn doc_tab_id(i: usize) -> egui::Id {
     egui::Id::new(("doc_tab", i))
 }
 
-fn doc_tab(ui: &mut Ui, i: usize, title: &str, active: bool) -> (TabClick, Rect) {
+/// The width of a drawing's tab titled `title`.
+fn doc_tab_width(ui: &Ui, title: &str) -> f32 {
     let galley = ui.painter().layout_no_wrap(
         title.to_string(),
         egui::FontId::proportional(FONT),
         crate::theme::Tokens::text(),
     );
-    let width = (PAD + galley.size().x + 6.0 + CLOSE + 8.0).max(116.0);
-    let (rect, _) = ui.allocate_exact_size(Vec2::new(width, TAB_HEIGHT), Sense::hover());
-    let resp = ui.interact(rect, doc_tab_id(i), Sense::click());
+    (PAD + galley.size().x + 6.0 + CLOSE + 8.0).max(116.0)
+}
+
+/// What a drawing's tab did this frame.
+struct DocTab {
+    click: TabClick,
+    /// Its place in the strip.
+    slot: Rect,
+    drag_started: bool,
+    drag_stopped: bool,
+}
+
+/// The tab of drawing `i`, `width` wide. While it is dragged
+/// (`float_left`, the left edge where the pointer holds it) its place in
+/// the strip shows as an outline and the tab is drawn at the pointer,
+/// over the other tabs (#2903).
+fn doc_tab(
+    ui: &mut Ui,
+    i: usize,
+    title: &str,
+    active: bool,
+    width: f32,
+    float_left: Option<f32>,
+) -> DocTab {
+    let galley = ui.painter().layout_no_wrap(
+        title.to_string(),
+        egui::FontId::proportional(FONT),
+        crate::theme::Tokens::text(),
+    );
+    let (slot, _) = ui.allocate_exact_size(Vec2::new(width, TAB_HEIGHT), Sense::hover());
+    let rect = match float_left {
+        Some(left) => Rect::from_min_size(Pos2::new(left, slot.min.y), slot.size()),
+        None => slot,
+    };
+    let resp = ui.interact(rect, doc_tab_id(i), Sense::click_and_drag());
     let close_rect = Rect::from_center_size(
         Pos2::new(rect.right() - 8.0 - CLOSE / 2.0, rect.center().y),
         Vec2::splat(CLOSE),
@@ -268,8 +366,31 @@ fn doc_tab(ui: &mut Ui, i: usize, title: &str, active: bool) -> (TabClick, Rect)
     let close_resp = ui
         .interact(close_rect, close_id, Sense::click())
         .rich_tip(crate::ui::tips::keyed("tabs.close_drawing"));
-    let painter = ui.painter();
-    painter.rect_filled(rect, 0.0, tab_fill(active, resp.hovered()));
+    let painter = if float_left.is_some() {
+        // The place it will land, then the tab itself over its
+        // neighbours.
+        ui.painter().rect_stroke(
+            slot.shrink(2.0),
+            2.0,
+            Stroke::new(1.0, Tokens::text_dim()),
+            egui::StrokeKind::Inside,
+        );
+        ui.ctx().request_repaint();
+        ui.painter()
+            .clone()
+            .with_layer_id(egui::LayerId::new(
+                egui::Order::Foreground,
+                egui::Id::new("doc_tab_dragged"),
+            ))
+    } else {
+        ui.painter().clone()
+    };
+    let fill = if float_left.is_some() && !active {
+        crate::theme::Tokens::tool_hover()
+    } else {
+        tab_fill(active, resp.hovered())
+    };
+    painter.rect_filled(rect, 0.0, fill);
     painter.galley(
         Pos2::new(
             rect.left() + PAD,
@@ -279,8 +400,11 @@ fn doc_tab(ui: &mut Ui, i: usize, title: &str, active: bool) -> (TabClick, Rect)
         crate::theme::Tokens::text(),
     );
     if resp.hovered() || close_resp.hovered() {
-        close_mark(painter, close_rect, close_resp.hovered());
+        close_mark(&painter, close_rect, close_resp.hovered());
     }
+    let drag_started = resp.drag_started_by(egui::PointerButton::Primary)
+        && !crate::ui::overflow::finger_sliding(ui.ctx());
+    let drag_stopped = resp.drag_stopped();
     let resp = resp.rich_tip(format!("{title}\n{}", tr("tabs.drawing_desc")));
     let click = if close_resp.clicked() || resp.middle_clicked() {
         TabClick::Close
@@ -289,7 +413,12 @@ fn doc_tab(ui: &mut Ui, i: usize, title: &str, active: bool) -> (TabClick, Rect)
     } else {
         TabClick::None
     };
-    (click, rect)
+    DocTab {
+        click,
+        slot,
+        drag_started,
+        drag_stopped,
+    }
 }
 
 #[cfg(test)]
@@ -400,5 +529,90 @@ mod tests {
         }
         let r = tab(&ctx, last - 1);
         assert!(window.contains_rect(r), "{r:?} the active tab shows");
+    }
+
+    fn press(ctx: &egui::Context, app: &mut App, at: Pos2, pressed: bool) {
+        frame(
+            ctx,
+            app,
+            vec![Event::PointerButton {
+                pos: at,
+                button: PointerButton::Primary,
+                pressed,
+                modifiers: egui::Modifiers::NONE,
+            }],
+        );
+    }
+
+    /// A drawing's tab dragged along the strip, as a page tab is: while
+    /// it is held the others slide aside and it follows the pointer;
+    /// let go past the last tab, the drawing is the last one, the same
+    /// drawing still active (#2903).
+    #[test]
+    fn a_drawing_tab_dragged_along_the_strip_moves_the_drawing() {
+        let ctx = crate::theme::ui_context();
+        let mut app = App::headless();
+        app.show_welcome = false;
+        while app.docs.len() < 3 {
+            app.new_document();
+        }
+        app.switch_document(0);
+        let drawings: Vec<u64> = app.docs.iter().map(|d| d.drawing).collect();
+        for _ in 0..3 {
+            frame(&ctx, &mut app, Vec::new());
+        }
+        let first = tab(&ctx, 0);
+        let last = tab(&ctx, 2);
+        let mut at = first.center();
+        frame(&ctx, &mut app, vec![Event::PointerMoved(at)]);
+        press(&ctx, &mut app, at, true);
+        let target = Pos2::new(last.right() + 20.0, at.y);
+        for _ in 0..12 {
+            at.x += (target.x - first.center().x) / 12.0;
+            frame(&ctx, &mut app, vec![Event::PointerMoved(at)]);
+        }
+        // Held: the second tab has slid to the first place.
+        let r = tab(&ctx, 1);
+        assert!((r.left() - first.left()).abs() < 1.5, "{r:?} vs {first:?}");
+        assert_eq!(app.docs[0].drawing, drawings[0], "not moved yet");
+        press(&ctx, &mut app, at, false);
+        frame(&ctx, &mut app, Vec::new());
+        let now: Vec<u64> = app.docs.iter().map(|d| d.drawing).collect();
+        assert_eq!(now, vec![drawings[1], drawings[2], drawings[0]]);
+        assert_eq!(app.active_doc, 2, "the same drawing stays active");
+        // A plain click still chooses a drawing (the strip slid to show
+        // the active tab; any tab in reach will do).
+        for _ in 0..3 {
+            frame(&ctx, &mut app, Vec::new());
+        }
+        let strip = ctx
+            .data(|d| d.get_temp::<Rect>(egui::Id::new("document_tabs_strip")))
+            .expect("the strip is drawn");
+        let j = (0..3)
+            .find(|j| *j != app.active_doc && strip.contains(tab(&ctx, *j).center()))
+            .expect("another tab in reach");
+        click(&ctx, &mut app, tab(&ctx, j).center());
+        assert_eq!(app.active_doc, j);
+    }
+
+    /// Moving a tab keeps the active window and the others' order.
+    #[test]
+    fn move_document_keeps_the_active_window() {
+        let mut app = App::headless();
+        while app.docs.len() < 4 {
+            app.new_document();
+        }
+        app.switch_document(1);
+        let d: Vec<u64> = app.docs.iter().map(|s| s.drawing).collect();
+        app.move_document(3, 0);
+        let now: Vec<u64> = app.docs.iter().map(|s| s.drawing).collect();
+        assert_eq!(now, vec![d[3], d[0], d[1], d[2]]);
+        assert_eq!(app.active_doc, 2);
+        app.move_document(2, 3);
+        assert_eq!(app.active_doc, 3);
+        app.move_document(0, 1);
+        assert_eq!(app.active_doc, 3);
+        app.move_document(9, 0);
+        assert_eq!(app.docs.len(), 4);
     }
 }

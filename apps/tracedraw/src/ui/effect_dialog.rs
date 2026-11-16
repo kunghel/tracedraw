@@ -32,6 +32,66 @@ pub struct EffectState {
     /// The All pages box: OK also gives the effect to every picture on
     /// the drawing's pages (#1551).
     pub all_pages: bool,
+    /// Show Original is held: the drawing shows the objects without the
+    /// effect for a moment (#1129).
+    pub show_original: bool,
+    /// The name typed for a new preset of the effect's settings.
+    pub preset_name: String,
+}
+
+/// An effect's settings saved under a name (#1129), offered again in
+/// the dialog of the same effect in any drawing.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct FxPreset {
+    pub name: String,
+    pub effect: BitmapEffect,
+}
+
+/// At most this many effect presets are kept.
+pub const MAX_FX_PRESETS: usize = 300;
+
+/// The presets of effect `id`, with their places in `all`.
+pub fn presets_of<'a>(all: &'a [FxPreset], id: &str) -> Vec<(usize, &'a FxPreset)> {
+    all.iter()
+        .enumerate()
+        .filter(|(_, p)| p.effect.id == id)
+        .collect()
+}
+
+/// Save `effect`'s settings as a preset named `name` (a free "`base` n"
+/// when blank); a preset of the same effect and name is replaced. False
+/// when the list is full.
+pub fn save_fx_preset(
+    all: &mut Vec<FxPreset>,
+    effect: &BitmapEffect,
+    name: &str,
+    base: &str,
+) -> bool {
+    let mut name = name.trim().to_string();
+    if name.is_empty() {
+        name = (1..)
+            .map(|n| format!("{base} {n}"))
+            .find(|n| {
+                presets_of(all, &effect.id)
+                    .iter()
+                    .all(|(_, p)| p.name != *n)
+            })
+            .unwrap_or_else(|| base.to_string());
+    }
+    let mut kept = effect.clone();
+    kept.visible = true;
+    if let Some(p) = all
+        .iter_mut()
+        .find(|p| p.effect.id == effect.id && p.name == name)
+    {
+        p.effect = kept;
+        return true;
+    }
+    if all.len() >= MAX_FX_PRESETS {
+        return false;
+    }
+    all.push(FxPreset { name, effect: kept });
+    true
 }
 
 impl EffectState {
@@ -50,6 +110,8 @@ impl EffectState {
             pick: None,
             preview: PREVIEW_AT_START,
             all_pages: false,
+            show_original: false,
+            preset_name: String::new(),
         }
     }
 }
@@ -848,6 +910,29 @@ pub fn effect_dialog(app: &mut App, ctx: &Context, st: &mut EffectState, close: 
     }
     let title = tr(&format!("fx.{}", spec.id));
     let mut ok = false;
+    if app.settings.fx_settings_only {
+        // The settings alone in a small window: the effect is seen on the
+        // drawing (#2799), which the wheel zooms meanwhile.
+        st.pick = None;
+        crate::ui::dialogs::window(ctx, title)
+            .id_salt("fx_settings_only")
+            .resizable(SETTINGS_ONLY_SIZE, SETTINGS_ONLY_MIN)
+            .show(ctx, |ui| {
+                let total = ui.available_rect_before_wrap();
+                let body_h = (total.height() - BOTTOM_H).max(200.0);
+                let r = Rect::from_min_size(total.min, Vec2::new(total.width(), body_h));
+                let mut col = ui.new_child(
+                    egui::UiBuilder::new()
+                        .max_rect(r)
+                        .layout(egui::Layout::top_down(egui::Align::Min)),
+                );
+                effect_settings(&mut col, app, st, spec, None);
+                ui.allocate_rect(r, Sense::hover());
+                ok = super::dialogs::ok_cancel(ui, close);
+            });
+        finish(app, ctx, st, ok, *close);
+        return;
+    }
     before_after::window(ctx, title).show(ctx, |ui| {
         let effect = st.effect.clone();
         // Adding starts from what the bitmap shows without this effect
@@ -903,9 +988,19 @@ pub fn effect_dialog(app: &mut App, ctx: &Context, st: &mut EffectState, close: 
         });
         ok = super::dialogs::ok_cancel(ui, close);
     });
+    finish(app, ctx, st, ok, *close);
+}
+
+/// The settings-only window's first size and its smallest.
+pub const SETTINGS_ONLY_SIZE: Vec2 = Vec2::new(380.0, 600.0);
+pub const SETTINGS_ONLY_MIN: Vec2 = Vec2::new(320.0, 380.0);
+
+/// After the dialog's frame: OK keeps the effect, a close takes the
+/// preview back, otherwise the drawing shows the values.
+fn finish(app: &mut App, ctx: &Context, st: &mut EffectState, ok: bool, close: bool) {
     if ok {
         app.commit_bitmap_effect(st);
-    } else if *close {
+    } else if close {
         app.end_bitmap_effect_preview();
     } else {
         app.preview_bitmap_effect(ctx, st);
@@ -961,7 +1056,9 @@ fn effect_settings(
         } else {
             // The settings panel, with the Reset, undo and redo row and
             // the Preview box under it.
-            let below = before_after::STEPS_H + 30.0;
+            // Room for the presets, Preview, Show Original and All
+            // pages rows.
+            let below = before_after::STEPS_H + 120.0;
             before_after::panel(ui, "fx_params_scroll", below, |ui| {
                 if spec.id == "contrast_enhancement" {
                     // The chosen channel's histogram (brightness for all).
@@ -993,9 +1090,127 @@ fn effect_settings(
                 &crate::ui::tips::keyed("dialog.reset"),
             );
         }
+        presets_row(ui, app, st);
         preview_row(ui, app, &mut st.preview);
+        original_row(ui, app, st);
         all_pages_row(ui, app, st);
     }
+}
+
+/// The effect's presets (#1129): a list that puts a saved preset's
+/// settings in the dialog, the name for a new one, Save and Delete.
+fn presets_row(ui: &mut Ui, app: &mut App, st: &mut EffectState) {
+    let presets: Vec<(usize, FxPreset)> = presets_of(&app.settings.fx_presets, &st.effect.id)
+        .into_iter()
+        .map(|(i, p)| (i, p.clone()))
+        .collect();
+    let mut delete = None;
+    ui.horizontal(|ui| {
+        ui.label(tr("dialog.fx_presets"));
+        let chosen = presets
+            .iter()
+            .find(|(_, p)| p.effect.params == st.effect.params)
+            .map(|(i, p)| (*i, p.name.clone()));
+        let shown = chosen
+            .as_ref()
+            .map(|(_, n)| n.clone())
+            .unwrap_or_else(|| tr("dialog.fx_preset_none"));
+        egui::ComboBox::from_id_salt("fx_presets")
+            .selected_text(shown)
+            .width(150.0)
+            .show_ui(ui, |ui| {
+                if presets.is_empty() {
+                    ui.label(tr("dialog.fx_preset_empty"));
+                }
+                for (_, p) in &presets {
+                    let on = chosen.as_ref().is_some_and(|(_, n)| *n == p.name);
+                    if ui.selectable_label(on, &p.name).clicked() {
+                        st.effect.params = p.effect.params.clone();
+                        st.preset_name = p.name.clone();
+                    }
+                }
+            })
+            .response
+            .rich_tip(crate::ui::tips::pair(
+                "dialog.fx_presets",
+                "dialog.fx_presets_desc",
+            ));
+        if ui
+            .add_enabled(chosen.is_some(), egui::Button::new("\u{00D7}").small())
+            .rich_tip(tr("dialog.fx_preset_delete"))
+            .rich_disabled_tip(tr("dialog.fx_preset_delete"))
+            .clicked()
+        {
+            delete = chosen.map(|(i, _)| i);
+        }
+    });
+    ui.horizontal(|ui| {
+        ui.add(
+            egui::TextEdit::singleline(&mut st.preset_name)
+                .desired_width(170.0)
+                .hint_text(tr("dialog.fx_preset_name")),
+        )
+        .rich_tip(tr("dialog.fx_preset_name"));
+        if ui
+            .button(tr("dialog.fx_preset_save"))
+            .rich_tip(crate::ui::tips::pair(
+                "dialog.fx_preset_save",
+                "dialog.fx_preset_save_desc",
+            ))
+            .clicked()
+        {
+            let base = tr("dialog.fx_preset_default_name");
+            if save_fx_preset(
+                &mut app.settings.fx_presets,
+                &st.effect,
+                &st.preset_name,
+                &base,
+            ) {
+                app.settings.save();
+            }
+        }
+    });
+    if let Some(i) = delete {
+        if i < app.settings.fx_presets.len() {
+            app.settings.fx_presets.remove(i);
+            app.settings.save();
+        }
+    }
+}
+
+/// Show Original (held: the drawing without the effect, #1129) and the
+/// Settings only box (the dialog without its Before and After panes,
+/// #2799).
+fn original_row(ui: &mut Ui, app: &mut App, st: &mut EffectState) {
+    ui.horizontal(|ui| {
+        let held = ui
+            .add_enabled(st.preview, egui::Button::new(tr("dialog.fx_show_original")))
+            .rich_tip(crate::ui::tips::pair(
+                "dialog.fx_show_original",
+                "dialog.fx_show_original_desc",
+            ))
+            .rich_disabled_tip(crate::ui::tips::pair(
+                "dialog.fx_show_original",
+                "dialog.fx_show_original_desc",
+            ));
+        st.show_original = st.preview && held.is_pointer_button_down_on();
+        let mut only = app.settings.fx_settings_only;
+        if ui
+            .checkbox(&mut only, tr("dialog.fx_settings_only"))
+            .rich_tip(crate::ui::tips::pair(
+                "dialog.fx_settings_only",
+                "dialog.fx_settings_only_desc",
+            ))
+            .changed()
+        {
+            app.settings.fx_settings_only = only;
+            // The drawing is where the effect is seen now.
+            if only {
+                st.preview = true;
+            }
+            app.settings.save();
+        }
+    });
 }
 
 /// The All pages box, while adding an effect with a picture selected in a
@@ -1085,6 +1300,8 @@ pub fn fx_section(app: &mut App, ui: &mut Ui, id: ShapeId) {
                     pick: None,
                     preview: PREVIEW_AT_START,
                     all_pages: false,
+                    show_original: false,
+                    preset_name: String::new(),
                 });
             }
             if ui
@@ -1139,6 +1356,34 @@ pub fn fx_section(app: &mut App, ui: &mut Ui, id: ShapeId) {
 #[cfg(test)]
 mod tests {
     use super::channel_key_of;
+
+    #[test]
+    fn effect_presets_are_saved_by_effect_and_name() {
+        use super::{presets_of, save_fx_preset};
+        let mut all = Vec::new();
+        let mut blur = crate::fx::new_effect("gaussian_blur");
+        blur.params.insert("radius".into(), 3.0);
+        blur.visible = false;
+        assert!(save_fx_preset(&mut all, &blur, "  ", "Preset"));
+        assert!(save_fx_preset(&mut all, &blur, "", "Preset"));
+        assert_eq!(all[0].name, "Preset 1");
+        assert_eq!(all[1].name, "Preset 2");
+        assert!(all[0].effect.visible, "kept shown");
+        let emboss = crate::fx::new_effect("emboss");
+        assert!(save_fx_preset(&mut all, &emboss, "Soft", "Preset"));
+        // The same name replaces the settings.
+        blur.params.insert("radius".into(), 9.0);
+        assert!(save_fx_preset(&mut all, &blur, "Preset 1", "Preset"));
+        assert_eq!(all.len(), 3);
+        assert_eq!(all[0].effect.params["radius"], 9.0);
+        let blurs = presets_of(&all, "gaussian_blur");
+        assert_eq!(blurs.len(), 2);
+        assert_eq!(presets_of(&all, "emboss")[0].0, 2);
+        // The settings file keeps them.
+        let json = serde_json::to_string(&all).expect("json");
+        let back: Vec<super::FxPreset> = serde_json::from_str(&json).expect("back");
+        assert_eq!(back, all);
+    }
 
     #[test]
     fn presets_keep_numbers_only() {

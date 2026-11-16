@@ -1358,6 +1358,7 @@ fn blends_contours_envelopes_and_extrusions() {
             to_center: false,
             fill_to: Color::WHITE,
             outline_to: None,
+            fill_end_to: None,
             color_blend: 0,
             corners: None,
             accel_objects: 0.0,

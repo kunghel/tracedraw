@@ -127,14 +127,25 @@ bleed).
 Printers' marks (#789), off by default and kept with the preferences
 and in saved presets (the Prepress preset ticks Crop marks):
 
+All printers' marks (#2197) ticks or unticks every mark below at once,
+and shows ticked when all are.
+
 - Crop marks: 5 mm lines at the page's edges, starting 1.5 mm outside
   the bleed.
+- Bleed marks (#2197): 3.5 mm lines at the bleed's edges, starting
+  1.5 mm outside it, beside the crop marks; none without a bleed
+  (`imposition::bleed_marks`).
 - Registration marks: a target (2 mm circle with a cross) in the middle
   of each side.
 - Color bars: the four process inks, their two-ink overprints and the
   50 % tints, 4 mm patches left of the top target.
+- Densitometer scale (#2197): eleven black steps from 0 to 100 %,
+  right of the top target.
 - File information: the drawing's name, the page's name, the page and
   page count and the date and time, under the page.
+
+Checks: `imposition::tests::page_marks_sit_around_each_page_in_its_own_coordinates`,
+`ui::publish_pdf::tests::all_printers_marks_and_bleed_marks`.
 
 The marks are the Print dialog's (`printing.md`), made by the same code
 (`imposition::page_marks`, each page on its own fitted sheet). With any

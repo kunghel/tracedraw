@@ -1110,6 +1110,72 @@ pub fn to_curve(path: &BezPath, index: usize) -> BezPath {
     BezPath::from_vec(els)
 }
 
+/// Where a curve's direction shows (Shape tool, "Show curve direction"):
+/// for every subpath its first node with the way the curve leaves it,
+/// and for an open subpath also its last node with the way the curve
+/// arrives there, as unit vectors (`true` marks a first node). After
+/// Break Curve each part shows its own direction at both of its ends,
+/// as the reference program shows them, so the way a cutting plotter
+/// will follow each part can be read off the curve (#2578).
+pub fn direction_marks(path: &BezPath) -> Vec<(Point, Vec2, bool)> {
+    let els = normalize(path).elements().to_vec();
+    let unit = |v: Vec2| {
+        let l = v.hypot();
+        (l > 1e-9).then(|| v / l)
+    };
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < els.len() {
+        let PathEl::MoveTo(s) = els[i] else {
+            i += 1;
+            continue;
+        };
+        let mut j = i + 1;
+        let mut prev = s;
+        let mut first: Option<Vec2> = None;
+        let mut last: Option<(Point, Vec2)> = None;
+        let mut closed = false;
+        while j < els.len() && !matches!(els[j], PathEl::MoveTo(_)) {
+            let (leave, arrive, end) = match els[j] {
+                PathEl::LineTo(p) => (unit(p - prev), unit(p - prev), Some(p)),
+                PathEl::QuadTo(c, p) => (
+                    unit(c - prev).or(unit(p - prev)),
+                    unit(p - c).or(unit(p - prev)),
+                    Some(p),
+                ),
+                PathEl::CurveTo(c1, c2, p) => (
+                    unit(c1 - prev).or(unit(c2 - prev)).or(unit(p - prev)),
+                    unit(p - c2).or(unit(p - c1)).or(unit(p - prev)),
+                    Some(p),
+                ),
+                PathEl::ClosePath => {
+                    closed = true;
+                    (unit(s - prev), None, None)
+                }
+                PathEl::MoveTo(_) => (None, None, None),
+            };
+            if first.is_none() {
+                first = leave;
+            }
+            if let (Some(p), Some(d)) = (end, arrive) {
+                last = Some((p, d));
+            }
+            if let Some(p) = end {
+                prev = p;
+            }
+            j += 1;
+        }
+        if let Some(d) = first {
+            out.push((s, d, true));
+        }
+        if let (false, Some((p, d))) = (closed, last) {
+            out.push((p, d, false));
+        }
+        i = j;
+    }
+    out
+}
+
 /// Close the subpath containing `index` (adds a ClosePath if missing).
 pub fn close_subpath(path: &BezPath, index: usize) -> BezPath {
     let mut els: Vec<PathEl> = normalize(path).elements().to_vec();
@@ -2284,6 +2350,45 @@ fn subpath_start(els: &[PathEl], index: usize) -> Point {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Break Curve in the middle of a line drawn right to left: both
+    /// parts keep that direction, each shown at both ends (#2578).
+    #[test]
+    fn each_broken_part_shows_its_direction_at_both_ends() {
+        let mut path = BezPath::new();
+        path.move_to((100.0, 0.0));
+        path.line_to((50.0, 0.0));
+        path.line_to((0.0, 0.0));
+        let broken = break_at(&path, 1);
+        let marks = direction_marks(&broken);
+        let left = Vec2::new(-1.0, 0.0);
+        assert_eq!(
+            marks,
+            vec![
+                (Point::new(100.0, 0.0), left, true),
+                (Point::new(50.0, 0.0), left, false),
+                (Point::new(50.0, 0.0), left, true),
+                (Point::new(0.0, 0.0), left, false),
+            ]
+        );
+        // A closed curve shows its first node only.
+        let mut sq = BezPath::new();
+        sq.move_to((0.0, 0.0));
+        sq.line_to((10.0, 0.0));
+        sq.line_to((10.0, 10.0));
+        sq.close_path();
+        assert_eq!(
+            direction_marks(&sq),
+            vec![(Point::new(0.0, 0.0), Vec2::new(1.0, 0.0), true)]
+        );
+        // A curve leaves along its first handle and arrives along its last.
+        let mut c = BezPath::new();
+        c.move_to((0.0, 0.0));
+        c.curve_to((0.0, 10.0), (10.0, 20.0), (20.0, 20.0));
+        let m = direction_marks(&c);
+        assert_eq!(m[0], (Point::new(0.0, 0.0), Vec2::new(0.0, 1.0), true));
+        assert_eq!(m[1], (Point::new(20.0, 20.0), Vec2::new(1.0, 0.0), false));
+    }
 
     /// A closed smooth curve through four points: four curves, the last one
     /// back onto the start, then the close.

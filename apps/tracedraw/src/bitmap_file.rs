@@ -1191,4 +1191,87 @@ mod tests {
         assert!(s.cmyk_bitmap && s.picture_inks.is_some());
         let _ = std::fs::remove_dir_all(&d);
     }
+
+    /// #2849: an imported JPEG is saved in a .tdraw as that JPEG, not as
+    /// a PNG two to three times its size; it opens with the same pixels
+    /// and saves as JPEG again. A picture whose pixels change is saved as
+    /// PNG; a CMYK JPEG keeps its own way.
+    #[test]
+    fn imported_jpegs_are_saved_as_the_jpeg() {
+        let d = std::env::temp_dir().join(format!("td-jpeg-keep-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&d);
+        // A photo-like picture: a gradient with fine noise.
+        let mut seed = 3u32;
+        let img = image::RgbImage::from_fn(480, 320, |x, y| {
+            seed = seed.wrapping_mul(1_103_515_245).wrapping_add(12_345);
+            let n = ((seed >> 16) % 24) as u8;
+            image::Rgb([
+                (x / 2) as u8 ^ n,
+                ((y * 3 / 4) as u8).wrapping_add(n),
+                128u8.wrapping_add(n),
+            ])
+        });
+        let mut jpeg = Vec::new();
+        image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg, 85)
+            .encode_image(&img)
+            .expect("jpeg");
+        let mut app = App::headless();
+        let s = imported(&mut app, &d, "photo.jpg", &jpeg);
+        let ShapeKind::Bitmap { png, .. } = &s.kind else {
+            panic!("bitmap")
+        };
+        assert!(
+            png.len() > jpeg.len() * 2,
+            "png {} jpeg {}",
+            png.len(),
+            jpeg.len()
+        );
+        assert_eq!(
+            tracedraw_core::jpeg_source::jpeg_of(png).as_deref(),
+            Some(&jpeg[..])
+        );
+        let file = d.join("photo.tdraw");
+        app.save_to(file.clone());
+        let bytes = std::fs::read(&file).expect("saved");
+        assert!(
+            bytes.len() < jpeg.len() + jpeg.len() / 2 + 20_000,
+            "{} bytes",
+            bytes.len()
+        );
+        let text = tracedraw_core::document::tdraw_text(&bytes).expect("text");
+        assert!(text.contains("\"jpg:/9j/"), "the table holds the JPEG");
+        // It opens with the picture's pixels, and saves as JPEG again.
+        let mut other = App::headless();
+        other.open_path(file.clone());
+        let back = other
+            .doc()
+            .pages
+            .iter()
+            .flat_map(|p| &p.layers)
+            .flat_map(|l| &l.shapes)
+            .find(|s| matches!(s.kind, ShapeKind::Bitmap { .. }))
+            .cloned()
+            .expect("the picture");
+        for (x, y) in [(0, 0), (100, 50), (479, 319), (240, 160)] {
+            assert_eq!(pixel(&back, x, y), pixel(&s, x, y), "pixel {x},{y}");
+        }
+        let again = d.join("again.tdraw");
+        other.save_to(again.clone());
+        let text = tracedraw_core::document::tdraw_text(&std::fs::read(&again).expect("saved"))
+            .expect("text");
+        assert!(text.contains("\"jpg:/9j/"));
+        // Other pixels: saved as PNG.
+        let changed = tracedraw_core::SharedBytes::from({
+            let mut b = Vec::new();
+            image::DynamicImage::ImageRgb8(image::RgbImage::new(4, 4))
+                .write_to(&mut std::io::Cursor::new(&mut b), image::ImageFormat::Png)
+                .expect("png");
+            b
+        });
+        assert!(tracedraw_core::jpeg_source::jpeg_of(&changed).is_none());
+        // A CMYK JPEG is not kept as JPEG (its inks go another way).
+        let cmyk = include_bytes!("../testdata/progressive-cmyk.jpg");
+        assert!(tracedraw_core::jpeg_source::decode_rgba(cmyk).is_none());
+        let _ = std::fs::remove_dir_all(&d);
+    }
 }

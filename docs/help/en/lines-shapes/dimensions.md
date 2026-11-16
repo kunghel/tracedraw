@@ -53,6 +53,20 @@ Dimensions in the selection are not measured, and an object with no height
 (or width) gets no dimension for it. The new dimensions are selected and one
 undo takes them all away.
 
+## Sizes and areas {#sizes-areas}
+
+**Tools > [[menu.tools.sizes_areas]]** lists the sizes of the selected
+objects, each object's box width by height, with the objects of the same
+size counted together (`[3x] 50.00 x 30.00 mm`), how many objects and
+sizes there are, the total area of their boxes and the area the closed
+objects really cover (holes taken out), in square metres (and square feet
+with imperial units). Its **[[sizes.pages]]** tab lists every page's size
+and the pages' total area. Sizes are in the document's unit, through the
+drawing scale for objects; pages are as printed. **[[sizes.copy]]** puts
+the list on the clipboard as text, for a quote or an order, and
+**[[menu.object.add_dimensions_each]]** labels each selected object with
+its width and height (see above).
+
 ## Dimension style {#dimension-style}
 
 The property bar shows these settings with the dimension tools and when the

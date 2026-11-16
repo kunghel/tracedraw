@@ -140,6 +140,9 @@ and its fonts into one folder (see
 repository (see [GitHub](github.md)). [[menu.file.revert]] goes back to the
 version last saved.
 
+Drag a drawing's tab along the strip to change the order of the tabs: the
+other tabs move aside to show where it will go.
+
 ## Closing drawings {#closing}
 
 Choose [[menu.file > menu.file.close]] (<kbd>Ctrl+F4</kbd>), click the close

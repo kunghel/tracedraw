@@ -2,6 +2,9 @@
 //! order the effects apply. Each row switches its effect on or off (an
 //! effect switched off is kept, at its place, and not drawn), moves it up
 //! or down the stack, or removes it. Every change is one undo step.
+//! Under the stack, the Presets (#2160): saved looks with a picture of
+//! the selected object wearing each, applied to the selection with a
+//! click (see `style_presets.rs`).
 
 use crate::app::App;
 use crate::i18n::tr;
@@ -23,6 +26,13 @@ pub fn effect_key(e: &Effect) -> &'static str {
         Effect::Bevel { .. } => "effect.bevel",
         Effect::BlockShadow { .. } => "effect.block_shadow",
         Effect::InnerShadow { .. } => "effect.inner_shadow",
+        Effect::OuterShadow { .. } => "effect.outer_shadow",
+        Effect::Glow { inner: true, .. } => "effect.inner_glow",
+        Effect::Glow { .. } => "effect.outer_glow",
+        Effect::ColorOverlay { .. } => "effect.color_overlay",
+        Effect::GradientOverlay { .. } => "effect.gradient_overlay",
+        Effect::GaussianBlur { .. } => "effect.gaussian_blur",
+        Effect::FillOpacity { .. } => "effect.fill_opacity",
         Effect::Symmetry { .. } => "effect.symmetry",
         Effect::Lens(_) => "effect.lens",
         Effect::Transparency { .. } => "effect.transparency",
@@ -54,6 +64,127 @@ fn changed_stack(s: &Shape, change: Change) -> Option<Vec<(Effect, bool)>> {
 }
 
 pub fn effects_docker(app: &mut App, ui: &mut Ui) {
+    // The stackable looks with their values (#1141), then the whole stack.
+    crate::ui::layer_effects::layer_effects(app, ui);
+    ui.separator();
+    effect_stack(app, ui);
+    ui.separator();
+    presets(app, ui);
+}
+
+/// The side of a preset's picture, points.
+const PICTURE: f32 = 40.0;
+
+/// The Presets: Save from the selection (with the name typed), then a
+/// row per preset: its picture on the selected object, its name, Apply
+/// and delete.
+fn presets(app: &mut App, ui: &mut Ui) {
+    ui.strong(tr("effects.presets"));
+    let has = !app.selection.is_empty();
+    ui.horizontal(|ui| {
+        let id = egui::Id::new("style_preset_name");
+        let mut name = ui.data(|d| d.get_temp::<String>(id)).unwrap_or_default();
+        ui.add(
+            egui::TextEdit::singleline(&mut name)
+                .desired_width(120.0)
+                .hint_text(tr("effects.preset_name")),
+        )
+        .rich_tip(tr("effects.preset_name"));
+        if ui
+            .add_enabled(has, egui::Button::new(tr("effects.preset_save")))
+            .rich_tip(crate::ui::tips::pair(
+                "effects.preset_save",
+                "effects.preset_save_desc",
+            ))
+            .rich_disabled_tip(crate::ui::tips::pair(
+                "effects.preset_save",
+                "effects.preset_save_desc",
+            ))
+            .clicked()
+            && app.save_style_preset(&name)
+        {
+            name.clear();
+        }
+        ui.data_mut(|d| d.insert_temp(id, name));
+    });
+    let n = app.settings.style_presets.len();
+    if n == 0 {
+        ui.label(egui::RichText::new(tr("effects.presets_hint")).color(Tokens::text_dim()));
+        return;
+    }
+    let px = (PICTURE * ui.ctx().pixels_per_point()).round() as u32;
+    let mut apply = None;
+    let mut remove = None;
+    for i in 0..n {
+        let name = app.settings.style_presets[i].name.clone();
+        let pic = app.style_preset_picture(ui.ctx(), i, px);
+        ui.horizontal(|ui| {
+            let (r, resp) =
+                ui.allocate_exact_size(egui::vec2(PICTURE, PICTURE), egui::Sense::click());
+            crate::ui::before_after::checkerboard(ui.painter(), r);
+            if let Some(t) = &pic {
+                let size = t.size_vec2() / ui.ctx().pixels_per_point();
+                let fit = (PICTURE / size.x.max(size.y).max(1.0)).min(1.0);
+                let place = egui::Rect::from_center_size(r.center(), size * fit);
+                ui.painter().image(
+                    t.id(),
+                    place,
+                    egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                    egui::Color32::WHITE,
+                );
+            }
+            ui.painter().rect_stroke(
+                r,
+                2.0,
+                egui::Stroke::new(1.0, Tokens::control_border()),
+                egui::StrokeKind::Inside,
+            );
+            if resp
+                .rich_tip(crate::ui::tips::pair(
+                    "effects.preset_apply",
+                    "effects.preset_picture_desc",
+                ))
+                .clicked()
+                && has
+            {
+                apply = Some(i);
+            }
+            ui.label(&name);
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                if ui
+                    .small_button("\u{00D7}")
+                    .rich_tip(tr("effects.preset_delete"))
+                    .clicked()
+                {
+                    remove = Some(i);
+                }
+                if ui
+                    .add_enabled(has, egui::Button::new(tr("effects.preset_apply")).small())
+                    .rich_tip(crate::ui::tips::pair(
+                        "effects.preset_apply",
+                        "effects.preset_apply_desc",
+                    ))
+                    .rich_disabled_tip(crate::ui::tips::pair(
+                        "effects.preset_apply",
+                        "effects.preset_apply_desc",
+                    ))
+                    .clicked()
+                {
+                    apply = Some(i);
+                }
+            });
+        });
+    }
+    if let Some(i) = apply {
+        app.apply_style_preset(i);
+    }
+    if let Some(i) = remove {
+        app.delete_style_preset(i);
+    }
+}
+
+/// The effect stack of the first selected object.
+fn effect_stack(app: &mut App, ui: &mut Ui) {
     let Some(shape) = app.selected_shapes().into_iter().next() else {
         ui.label(egui::RichText::new(tr("effects.select_hint")).color(Tokens::text_dim()));
         return;

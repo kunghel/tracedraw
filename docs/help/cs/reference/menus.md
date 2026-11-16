@@ -472,6 +472,7 @@ viz [Volby přizpůsobení](../customize/customization.md#commands).
 | [[menu.help.whats_new]] | [Co je nového](../welcome/whats-new.md) |
 | [[menu.help.highlight_whats_new]] | [Co je nového](../welcome/whats-new.md) |
 | [[menu.help.updates]] | [O aplikaci TraceDraw a aktualizace](../welcome/about-and-updates.md) |
+| [[menu.help.benchmark]] | [Možnosti TraceDraw](../customize/options-app.md#benchmark) |
 | [[menu.help.message_settings]] | [O aplikaci TraceDraw a aktualizace](../welcome/about-and-updates.md) |
 | [[menu.help.community]] | [O aplikaci TraceDraw a aktualizace](../welcome/about-and-updates.md) |
 | [[menu.help.support]] | [O aplikaci TraceDraw a aktualizace](../welcome/about-and-updates.md) |

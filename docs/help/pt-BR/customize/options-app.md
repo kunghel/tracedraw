@@ -120,3 +120,13 @@ A página tem cinco abas.
   [Dicionários](../text/writing-tools.md#dictionaries).
 - [[dialog.autocorrect]]: o que é corrigido ao digitar; veja
   [Correção automática](../text/writing-tools.md#autocorrect).
+
+## [[benchmark.title]] {#benchmark}
+
+[[menu.help > menu.help.benchmark]]: [[menu.help.benchmark_tip]]
+
+[[benchmark.intro]]
+
+[[benchmark.compare_how]]
+
+[[options.light_zoom]]: [[options.light_zoom_tip]]

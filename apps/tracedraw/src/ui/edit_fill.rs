@@ -374,14 +374,16 @@ fn uniform(ui: &mut Ui, st: &mut EditFillState) {
                 crate::ui::color_picker::model_list(ui, egui::Id::new("edit_fill_model"), c);
             });
             let mut m = c.convert_to(crate::ui::color_picker::edit_model(*c));
-            if crate::ui::color_docker::sliders(ui, &mut m) {
+            // HEX shows the code alone, in the field under (#2606).
+            let hex =
+                crate::ui::color_picker::shows_hex(ui.ctx(), egui::Id::new("edit_fill_model"), *c);
+            if !hex && crate::ui::color_docker::sliders(ui, &mut m) {
                 *c = m;
             }
-            ui.label(
-                egui::RichText::new(c.to_hex())
-                    .monospace()
-                    .color(Tokens::text_dim()),
-            );
+            // The code shown can be typed over or pasted (#2606).
+            if crate::ui::color_picker::hex_field(ui, egui::Id::new("edit_fill_hex"), c) {
+                st.hue = crate::ui::color_picker::viewer_point(*c).0;
+            }
         });
     });
 }

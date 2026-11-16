@@ -472,6 +472,7 @@
 | [[menu.help.whats_new]] | [Что нового](../welcome/whats-new.md) |
 | [[menu.help.highlight_whats_new]] | [Что нового](../welcome/whats-new.md) |
 | [[menu.help.updates]] | [О программе TraceDraw и обновления](../welcome/about-and-updates.md) |
+| [[menu.help.benchmark]] | [Параметры TraceDraw](../customize/options-app.md#benchmark) |
 | [[menu.help.message_settings]] | [О программе TraceDraw и обновления](../welcome/about-and-updates.md) |
 | [[menu.help.community]] | [О программе TraceDraw и обновления](../welcome/about-and-updates.md) |
 | [[menu.help.support]] | [О программе TraceDraw и обновления](../welcome/about-and-updates.md) |

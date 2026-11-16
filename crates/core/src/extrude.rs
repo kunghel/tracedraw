@@ -31,6 +31,42 @@ use crate::Color;
 use kurbo::{ParamCurve, ParamCurveDeriv, ParamCurveNearest, PathSeg};
 use serde::{Deserialize, Serialize};
 
+/// A linear fountain over `path` running from colour `a.1` at the point
+/// `a.0` to `b.1` at `b.0` (laid out over the path's box as the renderer
+/// lays a linear fountain), or `None` when the two points coincide
+/// across the run or the colours match.
+pub(crate) fn fountain_between(
+    path: &BezPath,
+    a: (Point, Color),
+    b: (Point, Color),
+) -> Option<Fill> {
+    if a.1.to_rgb8() == b.1.to_rgb8() {
+        return None;
+    }
+    let along = b.0 - a.0;
+    if along.hypot() <= 1e-9 || !along.hypot().is_finite() {
+        return None;
+    }
+    let dir = along.normalize();
+    let bb = kurbo::Shape::bounding_box(path);
+    let half = (bb.width() * dir.x.abs() + bb.height() * dir.y.abs()) / 2.0;
+    if !(half.is_finite() && half > 1e-9) {
+        return None;
+    }
+    let at = |p: Point| (((p - bb.center()).dot(dir) + half) / (2.0 * half)).clamp(0.0, 1.0);
+    let (pa, pb) = (at(a.0), at(b.0));
+    if pb - pa < 1e-6 {
+        return None;
+    }
+    let angle = dir.y.atan2(dir.x).to_degrees();
+    let mut f = crate::style::Fountain::two(crate::style::FountainKind::Linear, a.1, b.1, angle);
+    f.stops = vec![
+        crate::style::Stop::new(pa, a.1),
+        crate::style::Stop::new(pb, b.1),
+    ];
+    Some(Fill::Fountain(f))
+}
+
 /// How the body runs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

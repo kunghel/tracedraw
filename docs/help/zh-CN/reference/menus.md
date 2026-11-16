@@ -471,6 +471,7 @@
 | [[menu.help.whats_new]] | [新增功能](../welcome/whats-new.md) |
 | [[menu.help.highlight_whats_new]] | [新增功能](../welcome/whats-new.md) |
 | [[menu.help.updates]] | [关于 TraceDraw 和更新](../welcome/about-and-updates.md) |
+| [[menu.help.benchmark]] | [TraceDraw 选项](../customize/options-app.md#benchmark) |
 | [[menu.help.message_settings]] | [关于 TraceDraw 和更新](../welcome/about-and-updates.md) |
 | [[menu.help.community]] | [关于 TraceDraw 和更新](../welcome/about-and-updates.md) |
 | [[menu.help.support]] | [关于 TraceDraw 和更新](../welcome/about-and-updates.md) |

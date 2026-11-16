@@ -215,6 +215,25 @@ impl App {
         }
     }
 
+    /// A Pick tool press at `p` on the chosen drop shadow of `id`, away
+    /// from the object: the drag that follows moves the whole shadow with
+    /// the pointer, one undo step "Drop Shadow" (#2711). False anywhere
+    /// else (the object itself, or no shadow chosen).
+    pub fn start_picked_shadow_move(&mut self, id: ShapeId, p: Point) -> bool {
+        if self.picked_shadow() != Some(id) || self.hit_test(p) == Some(id) {
+            return false;
+        }
+        let Some((_, sh, b)) = self.selected_shadow() else {
+            return false;
+        };
+        self.drag = crate::app::Drag::ShadowHandle {
+            handle: ShadowHandle::End,
+            grab: sh.end_point(b) - p,
+            begun: false,
+        };
+        true
+    }
+
     /// Delete with a shadow chosen on its own: the shadow goes, its
     /// object stays selected. False when no shadow is chosen.
     pub fn delete_picked_shadow(&mut self) -> bool {
@@ -468,7 +487,8 @@ impl App {
         if !self.selection.contains(&shape) {
             self.select(vec![shape]);
         }
-        self.set_shadow(Some(sh), true);
+        // A new drag is a step of its own (#2890).
+        self.set_shadow(Some(sh), !first);
     }
 
     /// The selected shadow's line from its start to its end passes within
@@ -590,67 +610,153 @@ impl App {
         self.set_shadow(Some(sh), false);
     }
 
-    /// True when Break Apart would break a drop shadow off.
+    /// True when Break Apart would break a shadow off a selected object:
+    /// a drop shadow that shows, a block shadow or an inner shadow, on an
+    /// object on a layer or inside a group (#2893).
     pub fn can_break_shadow_apart(&self) -> bool {
         self.selection.iter().any(|id| {
-            self.doc()
-                .shape(*id)
-                .is_ok_and(|(_, s)| s.shadow.is_some_and(|sh| sh.opacity > 0.0))
+            self.doc().find_shape(*id).is_some_and(|s| {
+                s.shadow.is_some_and(|sh| sh.opacity > 0.0) || breakable_effect_shadow(s)
+            })
         })
     }
 
-    /// Break Drop Shadow Apart: each selected object's shadow becomes a
-    /// bitmap of its own just behind the object (merged as the shadow
-    /// was), and the object loses its shadow, in one undo step. The new
-    /// bitmaps come out selected. Objects inside groups are left alone.
+    /// True when the shadows Break Apart would take off include a block
+    /// or an inner shadow: the menus then say Break Shadow Apart rather
+    /// than Break Drop Shadow Apart.
+    pub fn breaks_effect_shadow(&self) -> bool {
+        self.selection.iter().any(|id| {
+            self.doc()
+                .find_shape(*id)
+                .is_some_and(breakable_effect_shadow)
+        })
+    }
+
+    /// Break Shadow Apart (#2893): each selected object's shadows become
+    /// objects of their own beside it and the object loses them, in one
+    /// undo step: the drop shadow a bitmap just behind it (merged as the
+    /// shadow was), a block shadow its curves behind it, an inner shadow
+    /// a bitmap just in front of it. An object inside a group keeps them
+    /// in its group. What was made comes out selected.
     pub fn break_shadow_apart(&mut self) {
         let mut cmds = Vec::new();
         let mut made = Vec::new();
         for id in self.selection.clone() {
-            let Ok((layer, s)) = self.doc().shape(id) else {
+            let Some(s) = self.doc().shape_on_page(id) else {
                 continue;
             };
-            let (layer, s) = (layer.id, s.clone());
-            if s.shadow.is_none() {
+            // The layer the object, or the outermost group holding it,
+            // lies on: what is made goes there first, then beside it.
+            let top = self.doc().ancestors(id).first().copied().unwrap_or(id);
+            let Ok((layer, _)) = self.doc().locate(top) else {
+                continue;
+            };
+            let mut place = |shape: Shape, in_front: bool, cmds: &mut Vec<Command>| {
+                let new_id = shape.id;
+                cmds.push(Command::AddShape { layer, shape });
+                cmds.push(Command::PlaceBeside {
+                    shapes: vec![new_id],
+                    reference: id,
+                    in_front,
+                });
+                made.push(new_id);
+            };
+            // The drop shadow, at the back.
+            if s.shadow.is_some_and(|sh| sh.opacity > 0.0) {
+                if let Some(bitmap) = self.shadow_bitmap(&s) {
+                    place(bitmap, false, &mut cmds);
+                    cmds.push(Command::SetShadow {
+                        shapes: vec![id],
+                        shadow: None,
+                    });
+                }
+            }
+            if !breakable_effect_shadow(&s) {
                 continue;
             }
-            let Some(bitmap) = self.shadow_bitmap(&s) else {
-                continue;
-            };
-            let new_id = bitmap.id;
-            cmds.push(Command::AddShape {
-                layer,
-                shape: bitmap,
+            // Block shadows: the curves they draw behind the object.
+            let mut blocks = s.clone();
+            blocks.shadow = None;
+            blocks
+                .effects
+                .retain(|e| matches!(e, Effect::BlockShadow { .. }));
+            if !blocks.effects.is_empty() {
+                for part in
+                    tracedraw_core::live::break_apart(&blocks, || self.engine.new_shape_id())
+                {
+                    if part.id != id {
+                        place(part, false, &mut cmds);
+                    }
+                }
+            }
+            // The inner shadow, over the object.
+            if let Some(bitmap) = self.inner_shadow_bitmap(&s) {
+                place(bitmap, true, &mut cmds);
+            }
+            let kept: Vec<Effect> = self
+                .doc()
+                .find_shape(id)
+                .map(|o| o.effects.clone())
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|e| !matches!(e, Effect::BlockShadow { .. } | Effect::InnerShadow { .. }))
+                .collect();
+            cmds.push(Command::SetEffects {
+                shape: id,
+                effects: kept,
             });
-            cmds.push(Command::OrderRelative {
-                shapes: vec![new_id],
-                reference: id,
-                in_front: false,
-            });
-            cmds.push(Command::SetShadow {
-                shapes: vec![id],
-                shadow: None,
-            });
-            made.push(new_id);
         }
         if cmds.is_empty() {
             return;
         }
-        match self.engine.run_batch("Break Drop Shadow Apart", &cmds) {
+        match self.engine.run_batch("Break Shadow Apart", &cmds) {
             Ok(()) => self.select(made),
             Err(e) => self.status = e.to_string(),
         }
     }
 
+    /// The bitmap object that stands for the inner shadow of `s` (in page
+    /// space): the shadow's colour, its density in the alpha, merged as
+    /// the shadow was.
+    fn inner_shadow_bitmap(&mut self, s: &Shape) -> Option<Shape> {
+        let merge = s.effects.iter().find_map(|e| match e {
+            Effect::InnerShadow { merge, .. } => Some(*merge),
+            _ => None,
+        })?;
+        let color = s.effects.iter().find_map(|e| match e {
+            Effect::InnerShadow { color, .. } => Some(*color),
+            _ => None,
+        })?;
+        let (rect, pm) = tracedraw_render::render_inner_shadow_image(s, BREAK_APART_DPI)?;
+        self.shadow_pixels_bitmap(rect, &pm, color, merge)
+    }
+
     /// The bitmap object that stands for the shadow of `s`.
-    fn shadow_bitmap(&mut self, s: &Shape) -> Option<Shape> {
+    pub(crate) fn shadow_bitmap(&mut self, s: &Shape) -> Option<Shape> {
         let sh = s.shadow?;
         let (rect, pm) = tracedraw_render::render_shadow_image(s, BREAK_APART_DPI)?;
+        self.shadow_pixels_bitmap(rect, &pm, sh.color, sh.merge)
+    }
+
+    /// A bitmap object over `rect` of the shadow drawn in `pm`: `color` in
+    /// every pixel, the shadow's density in the alpha, merged by `merge`.
+    fn shadow_pixels_bitmap(
+        &mut self,
+        rect: Rect,
+        pm: &tiny_skia::Pixmap,
+        color: Color,
+        merge: MergeMode,
+    ) -> Option<Shape> {
         let (w, h) = (pm.width(), pm.height());
+        // The shadow's one colour in every pixel, its density in the
+        // alpha: a bitmap of a single colour, which a palette colour then
+        // recolours (#2677). Undoing the premultiplied pixels gave faint
+        // ones colours a little off the shadow's, so the bitmap read as
+        // many colours and kept its own.
+        let [r, g, b] = color.to_rgb8();
         let mut rgba = Vec::with_capacity((w * h * 4) as usize);
         for p in pm.pixels() {
-            let c = p.demultiply();
-            rgba.extend_from_slice(&[c.red(), c.green(), c.blue(), c.alpha()]);
+            rgba.extend_from_slice(&[r, g, b, p.alpha()]);
         }
         let img = image::RgbaImage::from_raw(w, h, rgba)?;
         let mut png = Vec::new();
@@ -674,16 +780,26 @@ impl App {
         shape.fill = Fill::None;
         shape.stroke = None;
         shape.name = Some(tr("shadow.broken_name"));
-        if sh.merge != MergeMode::Normal {
+        if merge != MergeMode::Normal {
             // An opaque transparency that only carries the merge mode.
             shape.effects = vec![Effect::Transparency {
                 mask: Fill::Solid(Color::WHITE),
-                merge: sh.merge,
+                merge,
                 target: 2,
             }];
         }
         Some(shape)
     }
+}
+
+/// True when `s` has a block shadow or an inner shadow that Break Shadow
+/// Apart takes off it (#2893).
+fn breakable_effect_shadow(s: &Shape) -> bool {
+    s.effects.iter().any(|e| match e {
+        Effect::BlockShadow { .. } => true,
+        Effect::InnerShadow { opacity, .. } => *opacity > 0.0,
+        _ => false,
+    })
 }
 
 #[cfg(test)]
@@ -1138,6 +1254,118 @@ mod tests {
             assert_eq!(sh.perspective, p.perspective, "{key}");
             assert_eq!(sh.merge, p.merge, "{key}");
         }
+    }
+
+    /// #2677: a shadow broken apart is a bitmap of the shadow's one
+    /// colour, and a palette colour (a click, or a right click) recolours
+    /// it, each pixel keeping its density, in one undo step.
+    #[test]
+    fn a_shadow_broken_apart_takes_a_palette_colour() {
+        let (mut app, id) = app_with_rect();
+        app.set_shadow(
+            Some(Shadow {
+                color: Color::rgb8(30, 60, 90),
+                blur: 2.0,
+                ..Shadow::default()
+            }),
+            false,
+        );
+        app.break_apart();
+        assert!(shadow(&app, id).is_none());
+        let bitmap_id = app.selection[0];
+        let pixels = |app: &App| {
+            let Some(ShapeKind::Bitmap { png, .. }) =
+                app.doc().find_shape(bitmap_id).map(|s| s.kind.clone())
+            else {
+                panic!("bitmap");
+            };
+            crate::bitmap_fx::decode(&png).expect("png")
+        };
+        let before = pixels(&app);
+        assert_eq!(
+            crate::bitmap_modes::single_color(&before),
+            Some([30, 60, 90])
+        );
+        assert!(before.pixels().any(|p| p[3] > 0 && p[3] < 255), "feathered");
+        let depth = app.engine.history_labels().0.len();
+        app.apply_fill(Fill::Solid(Color::rgb8(220, 20, 10)));
+        let red = pixels(&app);
+        assert_eq!(app.engine.history_labels().0.len(), depth + 1);
+        for (a, b) in before.pixels().zip(red.pixels()) {
+            assert_eq!(a[3], b[3], "the density is kept");
+            if b[3] > 0 {
+                assert_eq!([b[0], b[1], b[2]], [220, 20, 10]);
+            }
+        }
+        // A right click (the outline colour) recolours it too.
+        app.apply_outline_color(Some(Color::rgb8(0, 128, 0)));
+        let green = pixels(&app);
+        assert!(green
+            .pixels()
+            .filter(|p| p[3] > 0)
+            .all(|p| [p[0], p[1], p[2]] == [0, 128, 0]));
+        // Still the bitmap, still behind the object.
+        assert_eq!(app.selection, vec![bitmap_id]);
+    }
+
+    /// #2674: Flatten Effects on an object whose only effect is a drop
+    /// shadow makes the shadow a bitmap just behind it, in one step, and
+    /// inside a group the objects with shadows are flattened in place,
+    /// the group staying a group. Both did nothing.
+    #[test]
+    fn flatten_effects_breaks_off_a_shadow_alone_and_in_a_group() {
+        let (mut app, id) = app_with_rect();
+        app.set_shadow(Some(Shadow::default()), false);
+        let depth = app.engine.history_labels().0.len();
+        app.flatten_effects();
+        assert_eq!(app.engine.history_labels().0.len(), depth + 1);
+        assert!(shadow(&app, id).is_none());
+        let (layer, _) = app.doc().shape(id).expect("object");
+        let io = layer
+            .shapes
+            .iter()
+            .position(|s| s.id == id)
+            .expect("in layer");
+        assert!(io > 0);
+        let behind = &layer.shapes[io - 1];
+        assert!(
+            matches!(behind.kind, ShapeKind::Bitmap { .. }),
+            "{behind:?}"
+        );
+        let b = behind.bounds();
+        assert!(b.x1 > 60.0 && b.y0 < 20.0, "the shadow's place: {b:?}");
+        assert!(app.selection.contains(&behind.id) && app.selection.contains(&id));
+        app.undo();
+        assert!(shadow(&app, id).is_some());
+
+        // A group of two rectangles, one with a shadow.
+        let other = app
+            .new_shape(ShapeKind::Rect {
+                rect: Rect::new(100.0, 20.0, 140.0, 80.0),
+                radius: 0.0,
+                corners: None,
+            })
+            .expect("rect");
+        app.select(vec![id, other]);
+        app.group_selection();
+        let group = app.selection[0];
+        app.flatten_effects();
+        let g = app.doc().find_shape(group).expect("still there");
+        let ShapeKind::Group { children } = &g.kind else {
+            panic!("still a group: {g:?}");
+        };
+        assert_eq!(children.len(), 3, "{children:?}");
+        assert!(children.iter().all(|c| c.shadow.is_none()));
+        let ib = children
+            .iter()
+            .position(|c| matches!(c.kind, ShapeKind::Bitmap { .. }))
+            .expect("the shadow's bitmap");
+        let ir = children
+            .iter()
+            .position(|c| c.id == id)
+            .expect("the object");
+        assert_eq!(ib + 1, ir, "just behind its object");
+        assert_eq!(app.selection, vec![group]);
     }
 
     #[test]

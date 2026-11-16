@@ -19,6 +19,12 @@ use tracedraw_core::{Color, Command, Fill, ShapeId};
 /// The models the sliders offer, by their names in `Color::convert_to`.
 pub const MODELS: [&str; 7] = ["RGB", "CMYK", "HSB", "HSL", "Lab", "Grayscale", "YIQ"];
 
+/// Whether the docker shows the new colour as HEX: chosen in the Model
+/// list, over an RGB colour (#2606).
+pub fn hex_view(app: &App) -> bool {
+    app.color_docker.hex && MODELS.get(app.color_model) == Some(&"RGB")
+}
+
 /// The views the top buttons show or hide.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum View {
@@ -50,6 +56,9 @@ pub struct ColorDockerState {
     /// Fill and outline locked together: Fill and Outline each give the
     /// selection the new colour as both, in one step.
     pub lock: bool,
+    /// HEX chosen in the Model list: the colour is kept in RGB and shown
+    /// by its hexadecimal code, without sliders (#2606).
+    pub hex: bool,
 }
 
 impl Default for ColorDockerState {
@@ -63,6 +72,7 @@ impl Default for ColorDockerState {
             new_ink: String::new(),
             ink_rename: None,
             lock: false,
+            hex: false,
         }
     }
 }
@@ -853,6 +863,7 @@ pub(crate) fn reset(app: &mut App) {
     app.color_docker.tint = d.tint;
     app.color_docker.lock = d.lock;
     app.color_docker.hue = d.hue;
+    app.color_docker.hex = d.hex;
     let model = MODELS.iter().position(|m| *m == "CMYK").unwrap_or(1);
     if app.color_model != model {
         app.color_model = model;
@@ -901,17 +912,37 @@ fn top_row(app: &mut App, ui: &mut Ui) {
         }
         ui.add_space(6.0);
         let gear = 28.0;
-        let model = MODELS.get(app.color_model).copied().unwrap_or("CMYK");
+        let hex = hex_view(app);
+        let model = if hex {
+            crate::ui::color_picker::HEX
+        } else {
+            MODELS.get(app.color_model).copied().unwrap_or("CMYK")
+        };
         let width = (ui.available_width() - gear - 10.0).clamp(80.0, 240.0);
         crate::ui::keynav::ComboBox::from_id_salt("col_model")
             .selected_text(model)
             .width(width)
             .show_ui(ui, |ui| {
                 for (i, m) in MODELS.iter().enumerate() {
-                    if ui.selectable_label(app.color_model == i, *m).clicked() {
+                    if ui
+                        .selectable_label(!hex && app.color_model == i, *m)
+                        .clicked()
+                    {
                         app.color_model = i;
+                        app.color_docker.hex = false;
                         app.mixer_color = app.mixer_color.convert_to(m);
                     }
+                }
+                // HEX: the colour in RGB, typed or read as its code
+                // (#2606).
+                if ui
+                    .selectable_label(hex, crate::ui::color_picker::HEX)
+                    .rich_tip(crate::ui::tips::keyed("docker.hex_color"))
+                    .clicked()
+                {
+                    app.color_model = MODELS.iter().position(|m| *m == "RGB").unwrap_or(0);
+                    app.color_docker.hex = true;
+                    app.mixer_color = app.mixer_color.convert_to("RGB");
                 }
             })
             .response
@@ -980,7 +1011,8 @@ pub fn color(app: &mut App, ui: &mut Ui) {
         }
         ui.add_space(6.0);
     }
-    if app.color_docker.shown[1] {
+    // HEX shows the code alone, in the row under (#2606).
+    if app.color_docker.shown[1] && !hex_view(app) {
         let mut m = c;
         if sliders(ui, &mut m) {
             c = m;
@@ -1074,7 +1106,7 @@ fn actions(app: &mut App, ui: &mut Ui, c: Color) {
             )
         });
         if eyedropper_button(app, ui).clicked() {
-            app.set_tool(crate::tools::Tool::ColorEyedropper);
+            app.docker_eyedropper();
         }
         ui.menu_button(MORE_ACTIONS, |ui| more_actions(app, ui, c, has))
             .response
@@ -2103,6 +2135,44 @@ pub(crate) mod tests {
         }
         out.shapes.iter().for_each(|c| walk(&c.shape, &mut texts));
         texts
+    }
+
+    /// #2606: HEX in the Model list keeps the new colour in RGB and shows
+    /// it by its code, without the sliders; the choice is kept with the
+    /// panel's other choices.
+    #[test]
+    fn hex_shows_the_code_without_sliders() {
+        let mut app = App::headless();
+        app.color_docker.shown = [false, true, false];
+        app.color_model = MODELS.iter().position(|m| *m == "RGB").unwrap();
+        app.mixer_color = Color::rgb8(0x36, 0x4c, 0x9f);
+        let texts = panel_texts(&mut app);
+        assert!(texts.iter().any(|t| t == "R"), "RGB sliders: {texts:?}");
+        app.color_docker.hex = true;
+        assert!(hex_view(&app));
+        let texts = panel_texts(&mut app);
+        assert!(texts.iter().any(|t| t == "HEX"), "{texts:?}");
+        assert!(!texts.iter().any(|t| t == "R"), "no sliders: {texts:?}");
+        assert!(
+            texts.iter().any(|t| t.eq_ignore_ascii_case("#364c9f")),
+            "{texts:?}"
+        );
+        // Kept with the panel's choices, and given back as HEX.
+        let prefs = app.panel_prefs();
+        assert_eq!(prefs.color_model, "HEX");
+        let mut other = App::headless();
+        other.apply_panel_prefs(&prefs);
+        assert!(hex_view(&other));
+        assert_eq!(MODELS[other.color_model], "RGB");
+        assert_eq!(other.mixer_color.model_name(), "RGB");
+        // Another model ends it.
+        let mut cmyk = prefs.clone();
+        cmyk.color_model = "CMYK".into();
+        other.apply_panel_prefs(&cmyk);
+        assert!(!hex_view(&other));
+        // Reset panel too.
+        reset(&mut app);
+        assert!(!hex_view(&app));
     }
 
     /// One Tint control in the panel: under the palette's swatches while

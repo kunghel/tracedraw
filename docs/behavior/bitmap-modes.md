@@ -17,9 +17,9 @@ kept in every mode.
 | Black and White (1-bit)... | dialog below |
 | Grayscale (8-bit) | luminance `0.299 R + 0.587 G + 0.114 B`, stored as an 8-bit grayscale PNG (with alpha when the bitmap has transparency); the bitmap is no longer CMYK nor keeps ink channels, so the status line names it Grayscale. Ticked while every selected bitmap is grayscale (#2330, `ops2::tests::image_mode_grayscale_converts_the_bitmap`) |
 | Duotone (8-bit)... | dialog below |
-| Indexed (8-bit)... | dialog below |
+| Indexed (8-bit)... | dialog below; the result is stored as an indexed PNG (a palette of up to 256 colours with their opacity), so the status line names it Indexed and the item is ticked while every selected bitmap is indexed; a bitmap left with more than 256 colours and opacities stays RGB. It is no longer CMYK nor keeps ink channels (#2607, `ops2::tests::image_mode_lab_and_indexed_convert_the_bitmap`) |
 | RGB Color (24-bit) | the bitmap's colour mode becomes RGB (`Shape::cmyk_bitmap` off); pixels unchanged, a grayscale bitmap stored with three channels again. Ticked while every selected bitmap is RGB (neither CMYK nor grayscale) |
-| Lab Color (24-bit) | each pixel through CIE Lab (D65) and back, unchanged within one level |
+| Lab Color (24-bit) | each pixel through CIE Lab (D65) and back, unchanged within one level; the bitmap's colour mode becomes Lab, marked in its PNG (a `tEXt` chunk "TraceDraw color mode" = "Lab"), so the status line names it Lab and the item is ticked while every selected bitmap is Lab; no longer CMYK nor keeping ink channels. RGB Color stores it unmarked again (#2605) |
 | CMYK Color (32-bit) | the colour mode becomes CMYK and the pixels show as the inks print them (through the colour management profiles and back), as Tools > Convert Colors does (#1254, `colour-management.md`). Ticked while every selected bitmap is CMYK |
 
 ## Black and White (1-bit)
@@ -74,8 +74,7 @@ before the conversion, so higher is lighter.
 - Nearest colours are looked up through a 32 x 32 x 32 cache.
 
 Not yet: an Overprint tab, range sensitivity and saved
-conversion presets; the current mode of a bitmap is not tracked, so it
-is not greyed out in the menu.
+conversion presets.
 
 ## Convert to Bitmap
 
@@ -86,7 +85,8 @@ selection into one bitmap in one undo step:
   (36 to 2400, default 300).
 - Color mode: Black and White (1-bit), Grayscale (8-bit), Indexed
   (8-bit), RGB Color (24-bit, default), CMYK Color (32-bit). The result
-  is a bitmap in that colour mode, which the status line shows (#1777):
+  is a bitmap in that colour mode, which the status line shows (#1777;
+  Indexed an indexed PNG while the colours fit a palette, #2607):
   Grayscale stores the luminance `0.299 R + 0.587 G + 0.114 B` as an
   8-bit grayscale PNG (with an alpha channel when the background is
   transparent), and a bitmap whose PNG is grayscale is in the Grayscale
@@ -120,6 +120,7 @@ selection into one bitmap in one undo step:
   it for an outline outside, mitred corners and arrowheads), so a thick
   outline is not cut (#2369,
   `ops2::tests::convert_to_bitmap_keeps_the_whole_thick_outline`).
+  The size shown in the dialog is worked out from this same area.
 
 ## Monochrome bitmaps
 

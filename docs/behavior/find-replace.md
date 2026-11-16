@@ -65,7 +65,8 @@ Replace with, each used only while ticked:
 | Fill | with a Fill colour ticked: that colour is replaced by the new one in uniform fills, gradient stops and mesh nodes; otherwise the fill becomes a uniform fill of the new colour |
 | Outline | with an Outline colour ticked: outlines of that colour take the new colour; otherwise every outline does. Objects without an outline get none |
 | Outline width | every existing outline takes the width |
-| Font | with a Font ticked: spans in that font take the new one; otherwise every span does |
+| Font | with a Font ticked: spans in that font take the new one; otherwise every span does. Below it, All characters (the default), Numbers only or Letters only: with Numbers only just the numbers of those spans (the digits of every script) take the new font, with Letters only just the letters (of every script, vowel signs and other marks staying with their letter); spans are cut where the kind of character changes (#2585) |
+| Digits to 0-9 | in the spans the font criterion picks (every span without it): the decimal digits of other scripts (Arabic-Indic, Persian, Devanagari, Bengali, Thai, full-width and the others) are written as 0 to 9, the rest of the text staying as it is. It works alone too (#2585) |
 
 Replace All searches again and applies every change as one batch of
 `SetFill`, `SetStroke` and `SetShapeKind` commands: one undo step
@@ -86,6 +87,12 @@ many objects something changed.
   (`find::tests::finds_across_pages_and_inside_groups`).
 - Gradient stops, outline colours and fonts are replaced, other fonts
   kept (`find::tests::replaces_gradient_stops_outlines_and_fonts`).
+- Given "Room 12, floor 3" in Serif, when the font Mono goes to the
+  numbers only, then 12 and 3 are in Mono and the rest stays in Serif;
+  with letters only the words take Mono; Arabic-Indic, Persian,
+  Devanagari and full-width digits become 0 to 9
+  (`find::tests::a_font_goes_to_the_numbers_or_the_letters_only`,
+  `find::tests::replace_all_changes_only_the_numbers`).
 - A locked object is found but not changed
   (`find::tests::locked_objects_are_found_but_not_changed`).
 - In the panel, From Selection, Find All, Next, Previous and Replace All

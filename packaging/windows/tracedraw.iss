@@ -170,6 +170,19 @@ Root: HKA; Subkey: "Software\Classes\TraceDraw.Document\ShellEx\{{e357fccd-a995-
 Root: HKA; Subkey: "Software\Classes\SystemFileAssociations\.tdraw\ShellEx\{{e357fccd-a995-4576-b01f-234630154e96}"; ValueType: string; ValueName: ""; ValueData: "{{6B1E5D3A-2F41-4C8E-9B7A-1D2C3E4F5A60}"; Flags: uninsdeletekey
 ; "Open with TraceDraw" for .cdr, without stealing the default
 Root: HKA; Subkey: "Software\Classes\.cdr\OpenWithProgids"; ValueType: string; ValueName: "TraceDraw.Document"; ValueData: ""; Flags: uninsdeletevalue
+; "Open with TraceDraw" for pictures, without stealing their default: a
+; picture opened so becomes a new drawing holding it (#2600)
+Root: HKA; Subkey: "Software\Classes\TraceDraw.Picture"; ValueType: string; ValueName: ""; ValueData: "Picture"; Flags: uninsdeletekey
+Root: HKA; Subkey: "Software\Classes\TraceDraw.Picture\DefaultIcon"; ValueType: string; ValueName: ""; ValueData: "{app}\tracedraw.exe,0"
+Root: HKA; Subkey: "Software\Classes\TraceDraw.Picture\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\tracedraw.exe"" ""%1"""
+Root: HKA; Subkey: "Software\Classes\.png\OpenWithProgids"; ValueType: string; ValueName: "TraceDraw.Picture"; ValueData: ""; Flags: uninsdeletevalue
+Root: HKA; Subkey: "Software\Classes\.jpg\OpenWithProgids"; ValueType: string; ValueName: "TraceDraw.Picture"; ValueData: ""; Flags: uninsdeletevalue
+Root: HKA; Subkey: "Software\Classes\.jpeg\OpenWithProgids"; ValueType: string; ValueName: "TraceDraw.Picture"; ValueData: ""; Flags: uninsdeletevalue
+Root: HKA; Subkey: "Software\Classes\.bmp\OpenWithProgids"; ValueType: string; ValueName: "TraceDraw.Picture"; ValueData: ""; Flags: uninsdeletevalue
+Root: HKA; Subkey: "Software\Classes\.gif\OpenWithProgids"; ValueType: string; ValueName: "TraceDraw.Picture"; ValueData: ""; Flags: uninsdeletevalue
+Root: HKA; Subkey: "Software\Classes\.webp\OpenWithProgids"; ValueType: string; ValueName: "TraceDraw.Picture"; ValueData: ""; Flags: uninsdeletevalue
+Root: HKA; Subkey: "Software\Classes\.tif\OpenWithProgids"; ValueType: string; ValueName: "TraceDraw.Picture"; ValueData: ""; Flags: uninsdeletevalue
+Root: HKA; Subkey: "Software\Classes\.tiff\OpenWithProgids"; ValueType: string; ValueName: "TraceDraw.Picture"; ValueData: ""; Flags: uninsdeletevalue
 ; TraceDraw's language as chosen on the "TraceDraw's language" page:
 ; "system" (System language) or one of the app's codes (en, pt-BR,
 ; zh-TW...). The app reads it at start while no language was picked in

@@ -16,6 +16,7 @@
 //! undo step. Scripts an AI service wrote run untrusted
 //! ([`run_untrusted`]): without file access, with limits, all or nothing.
 
+mod extra;
 pub mod vba_run;
 mod vg;
 
@@ -52,6 +53,29 @@ struct HostInner {
     status: Option<String>,
     /// View > Simulate Overprints as a macro set it (`ActiveView.Type`).
     simulate_overprints: Option<bool>,
+    /// What a macro's `Copy` or `Cut` took, for its `Paste`: the macro's
+    /// own, not the system clipboard, which macros do not reach.
+    clip: Vec<Shape>,
+    /// What new dimensions look like: the app's dimension style, text
+    /// font and units (`create_dimension`).
+    dims: DimSettings,
+}
+
+/// The app settings a script's dimensions follow.
+struct DimSettings {
+    style: crate::dimensions::DimensionStyle,
+    font: String,
+    units: crate::app::Units,
+}
+
+impl Default for DimSettings {
+    fn default() -> Self {
+        DimSettings {
+            style: Default::default(),
+            font: "Arial".into(),
+            units: crate::app::Units::Millimeters,
+        }
+    }
 }
 
 /// How far a script is trusted.
@@ -167,6 +191,14 @@ class Shape {
   get Curve() { return new Curve(this.id); }
   get Effects() { return new Effects(this.id); }
   get PathData() { return __call('path_data', {id:this.id}).d; }
+  // A dimension's kind, value (mm or degrees), label and points; null
+  // for other objects.
+  get Dimension() { try { return __call('dimension_info', {id:this.id}); } catch (e) { return null; } }
+  get Children() { return __call('shape_children', {id:this.id}).children.map(c => Object.assign(new Shape(c.id), {IsText:c.is_text, ChildType:c.type, Box:c.bbox})); }
+  CreateSymbol(name) { return __call('create_symbol', {ids:[this.id], name:name||''}); }
+  // Every group that draws the same as this one (text aside) becomes an
+  // instance of one symbol; groups with text keep it editable.
+  SymbolizeSimilar(name) { return __call('symbolize_groups', {id:this.id, name:name||''}); }
 }
 class Effects {
   constructor(id) { this.id = id; }
@@ -244,6 +276,7 @@ class ShapeRange {
   DistributeSpacingHorizontally() { this.Distribute('spacing_h'); }
   DistributeSpacingVertically() { this.Distribute('spacing_v'); }
   CreateSelection() { __call('select', {ids:this.ids, add:false}); }
+  CreateSymbol(name) { return __call('create_symbol', {ids:this.ids, name:name||''}); }
   ReplaceText(needle, replacement, options) {
     const o = options || {};
     return __call('replace_text', {ids:this.ids, needle:needle, replacement:replacement,
@@ -280,6 +313,17 @@ class Layer {
   CreateCurveSegment(points) { return this.CreateCurve(points, false); }
   CreatePath(d) { return new Shape(__call('create_path', {layer:this.id, d:d}).id); }
   ImportBitmap(path) { return new Shape(__call('import_bitmap', {layer:this.id, path:path}).id); }
+  CreateLinearDimension(kind, x1, y1, x2, y2, tx, ty) { return new Shape(__call('create_dimension', {layer:this.id, kind:kind, x1:x1, y1:y1, x2:x2, y2:y2, tx:tx, ty:ty}).id); }
+  CreateParallelDimension(x1, y1, x2, y2, tx, ty) { return this.CreateLinearDimension('parallel', x1, y1, x2, y2, tx, ty); }
+  CreateHorizontalDimension(x1, y1, x2, y2, tx, ty) { return this.CreateLinearDimension('horizontal', x1, y1, x2, y2, tx, ty); }
+  CreateVerticalDimension(x1, y1, x2, y2, tx, ty) { return this.CreateLinearDimension('vertical', x1, y1, x2, y2, tx, ty); }
+  CreateAngularDimension(cx, cy, x1, y1, x2, y2, tx, ty) { return new Shape(__call('create_dimension', {layer:this.id, kind:'angular', cx:cx, cy:cy, x1:x1, y1:y1, x2:x2, y2:y2, tx:tx, ty:ty}).id); }
+  PlaceSymbol(symbol, x, y) {
+    const list = __call('symbols', {}).symbols;
+    const s = typeof symbol === 'number' ? list[symbol] : list.find(e => e.name === symbol);
+    if (!s) throw new Error('no symbol ' + symbol);
+    return new Shape(__call('place_symbol', {layer:this.id, index:s.index, x:x||0, y:y||0}).id);
+  }
 }
 class Layers {
   constructor(page) { this.page = page; }
@@ -339,6 +383,7 @@ class Document {
   CreateEllipse(x, y, w, h) { return this.ActiveLayer.CreateEllipse(x, y, w, h); }
   CreateArtisticText(x, y, t, f, s) { return this.ActiveLayer.CreateArtisticText(x, y, t, f, s); }
   CreatePath(d) { return this.ActiveLayer.CreatePath(d); }
+  get Symbols() { return __call('symbols', {}).symbols.map(e => ({Index:e.index, Name:e.name})); }
   Export(path, format) { __call('export', {path:path, format:format||''}); }
   BeginCommandGroup(name) { }
   EndCommandGroup() { }
@@ -409,6 +454,12 @@ fn host_for(app: &App, trust: Trust) -> HostInner {
         view: vg::AppView::of(app),
         status: None,
         simulate_overprints: None,
+        clip: Vec::new(),
+        dims: DimSettings {
+            style: app.dimension_style.clone(),
+            font: app.text_font.clone(),
+            units: app.units,
+        },
     }
 }
 
@@ -584,6 +635,101 @@ impl ScriptFilter {
     }
 }
 
+/// A plugin (#1802): a script that defines the global `TraceDrawPlugin`
+/// with a `name`, an optional `description` and `version`, and the
+/// commands it adds to Tools > Plugins: `commands`, a list of objects
+/// with a `name` and a `run()` function, or one `run()` of its own (one
+/// command named after the plugin). See `behavior/plugins.md`.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct Plugin {
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub version: String,
+    /// The names of its commands, in its order.
+    pub commands: Vec<String>,
+    /// Off: kept, but its commands are not in the menu.
+    #[serde(default = "plugin_on")]
+    pub enabled: bool,
+    pub source: String,
+}
+
+fn plugin_on() -> bool {
+    true
+}
+
+/// The commands of `TraceDrawPlugin` that have a `run()`, as a script
+/// expression: its `commands`, else the plugin itself.
+const PLUGIN_COMMANDS: &str = "(Array.isArray(TraceDrawPlugin.commands) \
+     ? TraceDrawPlugin.commands.filter(c => c && typeof c.run === 'function') \
+     : (typeof TraceDrawPlugin.run === 'function' ? [TraceDrawPlugin] : []))";
+
+/// Check a plugin script and read what it says about itself: it runs
+/// against an empty drawing with the limits of AI Drawing scripts, and
+/// nothing it does is kept.
+pub fn plugin_info(src: &str) -> Result<Plugin, String> {
+    let doc = Document::new("Plugin", tracedraw_core::Size::new(210.0, 297.0));
+    let call = format!(
+        "typeof TraceDrawPlugin === 'undefined' ? '' : JSON.stringify({{\
+         name: String(TraceDrawPlugin.name || ''),\
+         description: String(TraceDrawPlugin.description || ''),\
+         version: String(TraceDrawPlugin.version || ''),\
+         commands: {PLUGIN_COMMANDS}.map((c, i) => String(c.name || ('Command ' + (i + 1))))}})"
+    );
+    let ev = evaluate(blank_host(doc, Trust::Untrusted), src, Some(&call), None)?;
+    ev.result?;
+    let text = ev.text.unwrap_or_default();
+    if text.is_empty() {
+        return Err("the script defines no TraceDrawPlugin".into());
+    }
+    let v: Value = serde_json::from_str(&text).map_err(|e| e.to_string())?;
+    let field = |k: &str| v[k].as_str().unwrap_or("").trim().to_string();
+    let name = field("name");
+    if name.is_empty() {
+        return Err("TraceDrawPlugin has no name".into());
+    }
+    let commands: Vec<String> = v["commands"]
+        .as_array()
+        .map(|a| {
+            a.iter()
+                .map(|c| c.as_str().unwrap_or("").trim().to_string())
+                .collect()
+        })
+        .unwrap_or_default();
+    if commands.is_empty() {
+        return Err("TraceDrawPlugin has no command with a run() function".into());
+    }
+    Ok(Plugin {
+        name,
+        description: field("description"),
+        version: field("version"),
+        commands,
+        enabled: true,
+        source: src.to_string(),
+    })
+}
+
+/// Run command `index` of a plugin against the app, as a script of the
+/// user's own: its changes are one undo step named "Plugin", kept up to
+/// an error. Returns the printed lines.
+pub fn run_plugin(app: &mut App, plugin: &Plugin, index: usize) -> Result<Vec<String>, String> {
+    let call = format!("{PLUGIN_COMMANDS}[Number(__input)].run()");
+    let index = index.to_string();
+    let Evaluated { inner, result, .. } = evaluate(
+        host_for(app, Trust::User),
+        &plugin.source,
+        Some(&call),
+        Some(&index),
+    )?;
+    let output = inner.output;
+    if let Some(s) = inner.status {
+        app.status = s;
+    }
+    apply(app, inner.commands, inner.selection, inner.page, "Plugin");
+    result.map(|_| output)
+}
+
 /// The names the object model for macros defines (globals, classes,
 /// constants): the VBA compiler leaves them to the host. Worked out once.
 pub fn vg_global_names() -> Vec<String> {
@@ -648,6 +794,8 @@ fn blank_host(doc: Document, trust: Trust) -> HostInner {
         view: vg::AppView::default(),
         status: None,
         simulate_overprints: None,
+        clip: Vec::new(),
+        dims: DimSettings::default(),
     }
 }
 
@@ -998,13 +1146,13 @@ fn dispatch(_this: &JsValue, args: &[JsValue], ctx: &mut Context) -> JsResult<Js
     Ok(JsValue::from(js_string!(out.to_string())))
 }
 
-fn id_arg(a: &Value, key: &str) -> Result<u64, String> {
+pub(super) fn id_arg(a: &Value, key: &str) -> Result<u64, String> {
     a.get(key)
         .and_then(|v| v.as_u64())
         .ok_or_else(|| format!("missing {key}"))
 }
 
-fn num(a: &Value, key: &str, default: f64) -> f64 {
+pub(super) fn num(a: &Value, key: &str, default: f64) -> f64 {
     a.get(key).and_then(|v| v.as_f64()).unwrap_or(default)
 }
 
@@ -1088,11 +1236,21 @@ fn replacement_from_json(a: &Value) -> Result<tracedraw_core::find::Replacement,
             r.font = Some(f.trim().to_string());
         }
     }
+    // Only the numbers or the letters take the new font (#2585).
+    if let Some(c) = a.get("font_chars").and_then(|v| v.as_str()) {
+        r.font_chars = tracedraw_core::find::CharClass::ALL
+            .into_iter()
+            .find(|k| k.key() == c)
+            .ok_or_else(|| format!("font_chars: unknown value {c}"))?;
+    }
+    if let Some(w) = a.get("western_digits").and_then(|v| v.as_bool()) {
+        r.western_digits = w;
+    }
     Ok(r)
 }
 
 impl HostInner {
-    fn run(&mut self, cmd: Command) -> Result<(), String> {
+    pub(super) fn run(&mut self, cmd: Command) -> Result<(), String> {
         if self.trust == Trust::Untrusted && self.commands.len() >= UNTRUSTED_MAX_CHANGES {
             return Err(format!(
                 "more than {UNTRUSTED_MAX_CHANGES} changes; draw fewer objects"
@@ -1103,7 +1261,7 @@ impl HostInner {
         Ok(())
     }
 
-    fn new_id(&mut self) -> ShapeId {
+    pub(super) fn new_id(&mut self) -> ShapeId {
         // Minted from the drawing's own counter: adding the shape when the
         // batch replays keeps the app's counter past it (see
         // `Command::AddShape`).
@@ -1112,7 +1270,7 @@ impl HostInner {
         id
     }
 
-    fn shape(&self, id: u64) -> Result<Shape, String> {
+    pub(super) fn shape(&self, id: u64) -> Result<Shape, String> {
         self.doc
             .find_shape(ShapeId(id))
             .cloned()
@@ -1121,7 +1279,7 @@ impl HostInner {
 
     /// Drop from the selection the objects a command took away, so a later
     /// call does not name one of them.
-    fn drop_missing_selection(&mut self) {
+    pub(super) fn drop_missing_selection(&mut self) {
         let alive: Vec<ShapeId> = self
             .selection
             .iter()
@@ -1131,7 +1289,7 @@ impl HostInner {
         self.selection = alive;
     }
 
-    fn layer_for(&self, a: &Value) -> Result<LayerId, String> {
+    pub(super) fn layer_for(&self, a: &Value) -> Result<LayerId, String> {
         if let Some(l) = a.get("layer").and_then(|v| v.as_u64()) {
             return Ok(LayerId(l));
         }
@@ -1158,6 +1316,9 @@ impl HostInner {
         shape.id = self.new_id();
         let id = shape.id;
         self.run(Command::AddShape { layer, shape })?;
+        // CorelDRAW selects what a Create* method makes: macros gather
+        // the new shapes from `ActiveSelectionRange` (#2165).
+        self.selection = vec![id];
         Ok(json!({"id": id.raw()}))
     }
 
@@ -2474,9 +2635,36 @@ impl HostInner {
             }
             other => match self.vg_call(other, a)? {
                 Some(v) => v,
-                None => return Err(format!("unknown method {other}")),
+                None => match self.extra_call(other, a)? {
+                    Some(v) => v,
+                    None => return Err(format!("unknown method {other}")),
+                },
             },
         })
+    }
+}
+
+/// The script line that makes dimension `d` again.
+fn dimension_script(d: &crate::dimensions::Dimension) -> String {
+    use crate::dimensions::Measure;
+    match d.measure {
+        Measure::Linear { a, b, at } => {
+            let tool = if (a.y - b.y).abs() < 1e-9 && (a.x - b.x).abs() > 1e-9 {
+                "CreateHorizontalDimension"
+            } else if (a.x - b.x).abs() < 1e-9 && (a.y - b.y).abs() > 1e-9 {
+                "CreateVerticalDimension"
+            } else {
+                "CreateParallelDimension"
+            };
+            format!(
+                "layer.{tool}({:.3}, {:.3}, {:.3}, {:.3}, {:.3}, {:.3});\n",
+                a.x, a.y, b.x, b.y, at.x, at.y
+            )
+        }
+        Measure::Angular { center, a, b, at } => format!(
+            "layer.CreateAngularDimension({:.3}, {:.3}, {:.3}, {:.3}, {:.3}, {:.3}, {:.3}, {:.3});\n",
+            center.x, center.y, a.x, a.y, b.x, b.y, at.x, at.y
+        ),
     }
 }
 
@@ -2486,6 +2674,11 @@ pub fn commands_to_script(cmds: &[Command]) -> String {
     for c in cmds {
         match c {
             Command::AddShape { shape, .. } => {
+                // A dimension records as one, kept live (#2348).
+                if let Some(d) = crate::dimensions::Dimension::of(shape) {
+                    out.push_str(&dimension_script(&d.transformed(shape.transform)));
+                    continue;
+                }
                 let b = shape.bounds();
                 match &shape.kind {
                     ShapeKind::Rect { radius, .. } => out.push_str(&format!(

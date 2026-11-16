@@ -39,6 +39,10 @@ pub enum Pic {
     /// Fit page to drawing: a page shrunk onto the object on it.
     FitPage,
     Nudge,
+    /// Super nudge: the nudge arrows with a plus (#2608).
+    SuperNudge,
+    /// Micro nudge: the nudge arrows with a minus (#2608).
+    MicroNudge,
     DupX,
     DupY,
     TreatFilled,
@@ -317,6 +321,14 @@ pub fn draw_pic(painter: &Painter, r: Rect, pic: Pic, color: Color32) {
         Pic::Nudge => {
             arrow_h(8.0, 1.0, 15.0);
             arrow_v(8.0, 1.0, 15.0);
+        }
+        Pic::SuperNudge | Pic::MicroNudge => {
+            arrow_h(6.0, 0.5, 11.5);
+            arrow_v(6.0, 0.5, 11.5);
+            line((11.5, 13.5), (15.5, 13.5), s);
+            if pic == Pic::SuperNudge {
+                line((13.5, 11.5), (13.5, 15.5), s);
+            }
         }
         Pic::DupX | Pic::DupY => {
             outline(&[(1.5, 1.5), (9.0, 1.5), (9.0, 9.0), (1.5, 9.0)], thin);
@@ -1583,7 +1595,7 @@ fn page_size_list(app: &mut App, ui: &mut Ui, current: &str, size: Size) {
         app.dialog = crate::ui::dialogs::Dialog::PageSize {
             width: size.width,
             height: size.height,
-            all_pages: app.page_size_all,
+            all_pages: app.settings.page_size_all,
         };
     }
     if ui.button(tr("toolbar.edit_page_sizes")).clicked() {
@@ -1636,7 +1648,7 @@ pub fn page_bar(app: &mut App, ui: &mut Ui) {
     // Fit page to drawing, as Layout has it (#236); pale on an empty
     // page, or with All Pages on when no page has anything on it.
     let has_objects = |p: &tracedraw_core::Page| p.layers.iter().any(|l| !l.shapes.is_empty());
-    let has_objects = if app.page_size_all {
+    let has_objects = if app.settings.page_size_all {
         app.doc().pages.iter().any(has_objects)
     } else {
         app.doc().page(app.page).ok().is_some_and(has_objects)
@@ -1699,7 +1711,7 @@ pub fn page_bar(app: &mut App, ui: &mut Ui) {
         )
     });
     if fitted {
-        app.autofit_pages(app.settings.fit_page_margin, app.page_size_all);
+        app.autofit_pages(app.settings.fit_page_margin, app.settings.page_size_all);
         app.fit_pending = true;
         egui::Popup::close_id(&ctx, popup_id);
     }
@@ -1722,22 +1734,22 @@ pub fn page_bar(app: &mut App, ui: &mut Ui) {
         Pic::AllPages,
         &tr("toolbar.all_pages_tip"),
         true,
-        app.page_size_all,
+        app.settings.page_size_all,
     )
     .clicked()
     {
-        app.page_size_all = true;
+        app.settings.page_size_all = true;
     }
     if pic_button(
         ui,
         Pic::CurrentPage,
         &tr("toolbar.current_page_tip"),
         true,
-        !app.page_size_all,
+        !app.settings.page_size_all,
     )
     .clicked()
     {
-        app.page_size_all = false;
+        app.settings.page_size_all = false;
     }
     sep(ui);
     ui.label(tr("toolbar.units_label"));
@@ -1755,13 +1767,7 @@ pub fn page_bar(app: &mut App, ui: &mut Ui) {
         .rich_tip(crate::ui::tips::keyed("toolbar.units"));
     app.units = u;
     sep(ui);
-    tip_row(ui, Pic::Nudge, "toolbar.nudge_tip", |ui| {
-        if let Some(n) = distance(ui, app, app.nudge_mm, 84.0, Some(0.1)) {
-            if n > 0.0 {
-                app.nudge_mm = n;
-            }
-        }
-    });
+    nudge_part(app, ui);
     sep(ui);
     let dup = app.duplicate_offset;
     let mut new_dup = None;
@@ -1795,10 +1801,40 @@ pub fn page_bar(app: &mut App, ui: &mut Ui) {
     }
 }
 
+/// The nudge distances the arrow keys move the selection by: Nudge, then
+/// Super nudge (Shift) over Micro nudge (Ctrl), the values Document
+/// Options > Rulers sets, here with nothing selected and with objects
+/// selected so they change without opening the dialog (#2608).
+pub fn nudge_part(app: &mut App, ui: &mut Ui) {
+    tip_row(ui, Pic::Nudge, "toolbar.nudge_tip", |ui| {
+        if let Some(n) = distance(ui, app, app.nudge_mm, 84.0, Some(0.1)) {
+            if n > 0.0 {
+                app.nudge_mm = n;
+            }
+        }
+    });
+    let (sup, micro) = (app.settings.super_nudge_mm, app.settings.micro_nudge_mm);
+    let (mut new_sup, mut new_micro) = (None, None);
+    stacked(ui, |ui| {
+        tip_row(ui, Pic::SuperNudge, "toolbar.super_nudge_tip", |ui| {
+            new_sup = distance(ui, app, sup, 84.0, Some(0.1));
+        });
+        tip_row(ui, Pic::MicroNudge, "toolbar.micro_nudge_tip", |ui| {
+            new_micro = distance(ui, app, micro, 84.0, Some(0.01));
+        });
+    });
+    if let Some(v) = new_sup.filter(|v| *v > 0.0) {
+        app.settings.super_nudge_mm = v;
+    }
+    if let Some(v) = new_micro.filter(|v| *v > 0.0) {
+        app.settings.micro_nudge_mm = v;
+    }
+}
+
 /// Resize the current page, or every page when "all pages" is on, as one
 /// undo step.
 pub fn resize_pages(app: &mut App, size: Size) {
-    let pages: Vec<_> = if app.page_size_all {
+    let pages: Vec<_> = if app.settings.page_size_all {
         app.doc().pages.iter().map(|p| p.id).collect()
     } else {
         vec![app.page]
@@ -1907,6 +1943,66 @@ fn rotation_field(app: &mut App, ui: &mut Ui, refp: Point) -> egui::Response {
     r
 }
 
+/// The scale that takes a selection `now` wide and high to the size
+/// typed, `to`. A side with no size (a horizontal line's height, a
+/// vertical line's width) cannot scale and stays as it is, so the other
+/// side can still be typed (#2762). `None` when nothing would change.
+pub(crate) fn size_scale(now: (f64, f64), to: (f64, f64)) -> Option<(f64, f64)> {
+    let axis = |old: f64, new: f64| -> Option<f64> {
+        if old <= 1e-9 {
+            Some(1.0)
+        } else if new > 1e-6 {
+            Some(new / old)
+        } else {
+            None
+        }
+    };
+    let f = (axis(now.0, to.0)?, axis(now.1, to.1)?);
+    ((f.0 - 1.0).abs() > 1e-12 || (f.1 - 1.0).abs() > 1e-12).then_some(f)
+}
+
+/// A percentage follows a single object's own axes. Several objects
+/// retain the property bar's relative page-axis scaling.
+fn percentage_scale_transform(app: &App, sx: f64, sy: f64, reference: Point) -> Option<Affine> {
+    if !sx.is_finite()
+        || !sy.is_finite()
+        || sx <= 0.0
+        || sy <= 0.0
+        || !reference.x.is_finite()
+        || !reference.y.is_finite()
+    {
+        return None;
+    }
+    let shapes = app.selected_rc();
+    let scale = Affine::scale_non_uniform(sx, sy);
+    let linear = match shapes.as_slice() {
+        [shape] if sx != sy => {
+            let [a, b, c, d, _, _] = shape.transform.as_coeffs();
+            let basis = Affine::new([a, b, c, d, 0.0, 0.0]);
+            let (x, y) = tracedraw_core::document::axis_scale(basis);
+            let determinant = basis.determinant();
+            if !basis.as_coeffs().iter().all(|v| v.is_finite())
+                || !determinant.is_finite()
+                || determinant.abs() <= 1e-12 * x * y
+            {
+                return None;
+            }
+            basis * scale * basis.inverse()
+        }
+        _ => scale,
+    };
+    let transform =
+        Affine::translate(reference.to_vec2()) * linear * Affine::translate(-reference.to_vec2());
+    (transform.as_coeffs().iter().all(|v| v.is_finite())
+        && shapes.iter().all(|shape| {
+            (transform * shape.transform)
+                .as_coeffs()
+                .iter()
+                .all(|v| v.is_finite())
+        }))
+    .then_some(transform)
+}
+
 pub fn object_bar(app: &mut App, ui: &mut Ui) {
     let Some(b) = app.selection_bounds() else {
         return;
@@ -1948,8 +2044,11 @@ pub fn object_bar(app: &mut App, ui: &mut Ui) {
             }
         });
     });
-    // Scale factors (relative: the field shows 100% and applies the change).
-    let mut scale: Option<(f64, f64)> = None;
+    // Scale factors: one object shows how far it is scaled from the size
+    // it was drawn or imported at (#2693); several show 100%. A value
+    // typed scales the selection from what it shows.
+    let shown = app.scale_shown();
+    let mut scale: Option<Affine> = None;
     stacked(ui, |ui| {
         for horizontal in [true, false] {
             let key = if horizontal {
@@ -1957,9 +2056,10 @@ pub fn object_bar(app: &mut App, ui: &mut Ui) {
             } else {
                 "toolbar.scale_y"
             };
+            let now = if horizontal { shown.0 } else { shown.1 };
             crate::ui::tips::tip_over(ui, crate::ui::tips::keyed(key), |ui| {
                 row(ui, |ui| {
-                    let mut pct = 100.0f64;
+                    let mut pct = now;
                     let r = ui.add_sized(
                         [64.0, ROW],
                         crate::ui::field::NumField::new(&mut pct)
@@ -1967,42 +2067,60 @@ pub fn object_bar(app: &mut App, ui: &mut Ui) {
                             .fixed_decimals(1)
                             .suffix(" %"),
                     );
-                    if r.changed() && (pct - 100.0).abs() > 1e-9 && pct > 0.0 {
-                        let f = pct / 100.0;
-                        scale = Some(if locked {
+                    if r.changed() && (pct - now).abs() > 1e-9 && pct > 0.0 && now > 1e-9 {
+                        let f = pct / now;
+                        let (sx, sy) = if locked {
                             (f, f)
                         } else if horizontal {
                             (f, 1.0)
                         } else {
                             (1.0, f)
-                        });
+                        };
+                        scale = percentage_scale_transform(app, sx, sy, refp);
                     }
                 })
             });
         }
     });
-    if pic_button(
-        ui,
-        Pic::Lock(locked),
-        &tr("toolbar.lock_ratio"),
-        true,
-        locked,
-    )
-    .clicked()
-    {
-        app.scale_locked = !locked;
-    }
+    // The lock over the 100% button, which makes the size as it is now
+    // read 100% in the scale fields (#2761); stacked so the bar keeps its
+    // width.
+    stacked(ui, |ui| {
+        let w = btn().max(30.0);
+        let (rect, resp) = ui.allocate_exact_size(Vec2::new(w, ROW), Sense::click());
+        frame(ui, rect, resp.hovered(), locked);
+        draw_pic(
+            ui.painter(),
+            Rect::from_center_size(rect.center(), Vec2::splat(ROW - 4.0)),
+            Pic::Lock(locked),
+            icon_color(true),
+        );
+        if resp.rich_tip(tr("toolbar.lock_ratio")).clicked() {
+            app.scale_locked = !locked;
+        }
+        if ui
+            .add_sized(
+                [w, ROW],
+                egui::Button::new(egui::RichText::new("100%").size(10.0))
+                    .wrap_mode(egui::TextWrapMode::Extend),
+            )
+            .rich_tip(crate::ui::tips::keyed("toolbar.scale_set_100"))
+            .clicked()
+        {
+            app.set_scale_as_100();
+        }
+    });
     if let Some((nw, nh)) = size {
-        if nw > 1e-6 && nh > 1e-6 && w > 1e-9 && h > 1e-9 {
-            scale = Some((nw / w, nh / h));
+        if let Some((sx, sy)) = size_scale((w, h), (nw, nh)) {
+            scale = Some(
+                Affine::translate(refp.to_vec2())
+                    * Affine::scale_non_uniform(sx, sy)
+                    * Affine::translate(-refp.to_vec2()),
+            );
         }
     }
-    if let Some((sx, sy)) = scale {
-        app.transform_selection(
-            Affine::translate(refp.to_vec2())
-                * Affine::scale_non_uniform(sx, sy)
-                * Affine::translate(-refp.to_vec2()),
-        );
+    if let Some(transform) = scale {
+        app.transform_selection(transform);
     }
     sep(ui);
     crate::ui::tips::tip_over(ui, crate::ui::tips::keyed("toolbar.rotation_angle"), |ui| {
@@ -2158,6 +2276,38 @@ fn set_no_outline(app: &mut App) {
     }
 }
 
+/// The rows of the outline width list: None, Hairline and the usual
+/// widths; returns the one clicked. A width and its unit stay on one row
+/// and the list grows wider than the box when they need it ("0.75 pt"
+/// broke in two in a narrow list, #2651).
+fn outline_width_rows(
+    app: &App,
+    ui: &mut Ui,
+    width: Option<f64>,
+    mixed: bool,
+) -> Option<Option<f64>> {
+    ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
+    let mut picked = None;
+    if ui
+        .selectable_label(!mixed && width.is_none(), tr("toolbar.none"))
+        .clicked()
+    {
+        picked = Some(None);
+    }
+    if ui.selectable_label(false, tr("toolbar.hairline")).clicked() {
+        picked = Some(Some(tracedraw_core::Stroke::HAIRLINE));
+    }
+    for w in outline_width_presets(app.outline_units()) {
+        if ui
+            .selectable_label(false, outline_text(app, Some(w)))
+            .clicked()
+        {
+            picked = Some(Some(w));
+        }
+    }
+    picked
+}
+
 /// The outline width: a box typed into (Enter or leaving it applies, Esc
 /// puts it back) and an arrow dropping the usual widths; with `wheel`,
 /// the mouse wheel over it steps through those widths. Returns the width
@@ -2267,22 +2417,8 @@ fn outline_width_box(
             egui::ScrollArea::vertical()
                 .max_height(400.0)
                 .show(ui, |ui| {
-                    if ui
-                        .selectable_label(!mixed && width.is_none(), tr("toolbar.none"))
-                        .clicked()
-                    {
-                        picked = Some(None);
-                    }
-                    if ui.selectable_label(false, tr("toolbar.hairline")).clicked() {
-                        picked = Some(Some(tracedraw_core::Stroke::HAIRLINE));
-                    }
-                    for w in outline_width_presets(app.outline_units()) {
-                        if ui
-                            .selectable_label(false, outline_text(app, Some(w)))
-                            .clicked()
-                        {
-                            picked = Some(Some(w));
-                        }
+                    if let Some(p) = outline_width_rows(app, ui, width, mixed) {
+                        picked = Some(p);
                     }
                     crate::ui::keynav::scroll_into_view(ui);
                 });
@@ -2300,7 +2436,14 @@ pub fn outline_part(app: &mut App, ui: &mut Ui) {
     // The first object's outline; values that differ across the selection
     // show empty. Each control changes only its own value on each object.
     let first = app.first_paint_target();
-    let stroke = first.as_ref().and_then(|s| s.stroke.clone());
+    // Nothing selected (a drawing tool): the outline new objects get, set
+    // here before drawing (#1892).
+    let defaults = app.selection.is_empty();
+    let stroke = if defaults {
+        app.default_stroke()
+    } else {
+        first.as_ref().and_then(|s| s.stroke.clone())
+    };
     let mix = app.selection_stroke_mix();
     label_pic(ui, Pic::Pen, &tr("toolbar.outline_width"));
     let width = stroke.as_ref().map(|s| s.width);
@@ -2343,6 +2486,14 @@ pub fn outline_part(app: &mut App, ui: &mut Ui) {
                     .selectable_label(dash_shown && dash.as_slice() == d, dash_label(d))
                     .clicked()
                 {
+                    if defaults {
+                        let mut st = stroke.clone().unwrap_or_default();
+                        st.dash = d.to_vec();
+                        app.request_default_change(crate::defaults::DefaultChange::Outline(Some(
+                            st,
+                        )));
+                        continue;
+                    }
                     // Each object (each one in a group too) keeps the
                     // rest of its own outline.
                     let cmds: Vec<Command> = app
@@ -2403,6 +2554,18 @@ pub fn outline_part(app: &mut App, ui: &mut Ui) {
                     .selectable_label(shown && current == a, arrow_label(&a))
                     .clicked()
                 {
+                    if defaults {
+                        let mut st = stroke.clone().unwrap_or_default();
+                        if start {
+                            st.start_arrow = a.clone();
+                        } else {
+                            st.end_arrow = a.clone();
+                        }
+                        app.request_default_change(crate::defaults::DefaultChange::Outline(Some(
+                            st,
+                        )));
+                        continue;
+                    }
                     // Each object (each one in a group too) keeps the
                     // rest of its own outline.
                     let cmds: Vec<Command> = app
@@ -2564,6 +2727,9 @@ pub fn ellipse_part(app: &mut App, ui: &mut Ui) {
     {
         std::mem::swap(&mut arc.start_deg, &mut arc.end_deg);
         new = Some(arc);
+        // New pies and arcs keep their angles as typed, now the other
+        // way round (Options > Tools > Ellipse, #1436).
+        app.settings.ellipse_clockwise = !app.settings.ellipse_clockwise;
     }
     if new != current {
         app.ellipse_arc = new;
@@ -2823,6 +2989,73 @@ pub fn char_offset_part(app: &mut App, ui: &mut Ui) {
     }
 }
 
+/// The character width (#2190) and the Superscript and Subscript buttons
+/// (#2164) of the characters being edited, as [`char_offset_part`]
+/// finds them: the Shape tool's chosen character nodes, else every
+/// character of the selected texts. A click on the lit button puts the
+/// characters back on the baseline. Each change is one undo step.
+pub fn char_width_position_part(app: &mut App, ui: &mut Ui) {
+    use tracedraw_core::TextPosition;
+    let Some((mut width, position)) = app.char_width_position() else {
+        return;
+    };
+    let w0 = width;
+    crate::ui::tips::tip_over(ui, crate::ui::tips::keyed("docker.char_width"), |ui| {
+        crate::ui::text_docker::char_width_icon(ui);
+        ui.add_sized(
+            [72.0, ROW + 4.0],
+            crate::ui::field::NumField::new(&mut width)
+                .range(crate::ui::text_docker::CHAR_WIDTH_RANGE)
+                .max_decimals(1)
+                .suffix(" %"),
+        );
+    });
+    if (width - w0).abs() > 1e-9 {
+        app.set_char_attrs("Character Width", move |sp| sp.width_pct = width);
+    }
+    for (p, valign, key) in [
+        (
+            TextPosition::Superscript,
+            egui::Align::TOP,
+            "docker.superscript",
+        ),
+        (
+            TextPosition::Subscript,
+            egui::Align::BOTTOM,
+            "docker.subscript",
+        ),
+    ] {
+        let on = position == p;
+        // An X with a small 2 raised or lowered beside it, laid out so no
+        // font needs the superscript or subscript digit.
+        let color = ui.visuals().text_color();
+        let mut label = egui::text::LayoutJob::default();
+        label.append(
+            "X",
+            0.0,
+            egui::TextFormat::simple(egui::FontId::proportional(13.0), color),
+        );
+        label.append(
+            "2",
+            0.0,
+            egui::TextFormat {
+                font_id: egui::FontId::proportional(8.0),
+                color,
+                valign,
+                ..Default::default()
+            },
+        );
+        if ui
+            .add_sized([28.0, ROW + 4.0], egui::Button::selectable(on, label))
+            .rich_tip(crate::ui::tips::keyed(key))
+            .clicked()
+        {
+            let target = if on { TextPosition::Normal } else { p };
+            app.set_char_attrs("Character Position", move |sp| sp.position = target);
+        }
+    }
+}
+
 /// A change the rectangle part of the bar makes to corners.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum CornerEdit {
@@ -2831,6 +3064,8 @@ pub enum CornerEdit {
     Size(usize, f64),
     /// Relative corner scaling on or off.
     Scaling(bool),
+    /// Every edge's bow, 0 straight to 1 a quarter circle (#2188).
+    Bulge(f64),
 }
 
 impl CornerEdit {
@@ -2847,6 +3082,14 @@ impl CornerEdit {
                 }
             }
             CornerEdit::Scaling(relative) => c.fixed = !relative,
+            CornerEdit::Bulge(v) => {
+                let v = if v.is_finite() {
+                    v.clamp(0.0, 1.0)
+                } else {
+                    0.0
+                };
+                c.bulge = [v; 4];
+            }
         }
         c
     }
@@ -2884,6 +3127,7 @@ pub fn edit_corners(app: &mut App, edit: CornerEdit) {
         CornerEdit::Kind(_) => "Corner Style",
         CornerEdit::Size(..) => "Corner Radius",
         CornerEdit::Scaling(_) => "Corner Scaling",
+        CornerEdit::Bulge(_) => "Edge Bulge",
     };
     if let Err(e) = app.engine.run_batch(label, &cmds) {
         app.status = e.to_string();
@@ -2968,6 +3212,35 @@ pub fn rectangle_part(app: &mut App, ui: &mut Ui) {
     .clicked()
     {
         edit = Some(CornerEdit::Scaling(!relative));
+    }
+    // The edges' bow (#2188): a share of a quarter circle, the largest
+    // edge's when they differ; the Shape tool's edge handles bow one.
+    // Shown with the Rectangle and Shape tools, or once a rectangle
+    // bows, so the Pick tool's full bar keeps its room.
+    let show_bulge = matches!(
+        app.tool,
+        crate::tools::Tool::Rectangle | crate::tools::Tool::Shape
+    ) || current.has_bulge();
+    if !show_bulge {
+        if let Some(e) = edit {
+            edit_corners(app, e);
+        }
+        return;
+    }
+    sep(ui);
+    let mut bulge = ((0..4).map(|i| current.edge_bulge(i)).fold(0.0, f64::max) * 100.0).round();
+    ui.label(egui::RichText::new(tr("toolbar.edge_bulge_short")).size(12.0));
+    if ui
+        .add(
+            crate::ui::field::NumField::new(&mut bulge)
+                .range(0.0..=100.0)
+                .suffix(" %")
+                .width(44.0),
+        )
+        .rich_tip(crate::ui::tips::keyed("toolbar.edge_bulge"))
+        .changed()
+    {
+        edit = Some(CornerEdit::Bulge(bulge / 100.0));
     }
     if let Some(e) = edit {
         edit_corners(app, e);
@@ -3321,9 +3594,11 @@ pub fn wrap_offset_field(app: &mut App, ui: &mut Ui, offset: f64) {
     });
 }
 
-/// Wrap Paragraph Text, To Front and To Back of the layer and Convert to
-/// Curves, for the selected objects.
-pub fn order_part(app: &mut App, ui: &mut Ui) {
+/// Wrap Paragraph Text and its list of wrap styles, for the selected
+/// objects: on every object's bar, so that paragraph text alone, a
+/// picture alone or any one object shows it, not only a mixed selection
+/// (#2620, discussion #2618).
+pub fn wrap_part(app: &mut App, ui: &mut Ui) {
     let wrap = app.selected_rc().iter().any(|s| s.wrap_text);
     if pic_button(
         ui,
@@ -3341,6 +3616,12 @@ pub fn order_part(app: &mut App, ui: &mut Ui) {
         });
     }
     wrap_style_list(app, ui);
+}
+
+/// Wrap Paragraph Text, To Front and To Back of the layer and Convert to
+/// Curves, for the selected objects.
+pub fn order_part(app: &mut App, ui: &mut Ui) {
+    wrap_part(app, ui);
     if pic_button(ui, Pic::ToFront, &tr("toolbar.to_front"), true, false).clicked() {
         app.order_page(true);
     }
@@ -3365,6 +3646,54 @@ pub fn order_part(app: &mut App, ui: &mut Ui) {
 mod tests {
     use super::*;
     use tracedraw_core::geometry::Rect as R;
+
+    /// A horizontal line has no height and a vertical one no width: the
+    /// other side typed on the bar still sizes it (#2762).
+    #[test]
+    fn a_straight_line_takes_the_size_typed_on_its_long_side() {
+        assert_eq!(size_scale((50.0, 0.0), (100.0, 0.0)), Some((2.0, 1.0)));
+        assert_eq!(size_scale((0.0, 40.0), (0.0, 10.0)), Some((1.0, 0.25)));
+        // Its missing side typed does nothing; nor does the same size.
+        assert_eq!(size_scale((50.0, 0.0), (50.0, 30.0)), None);
+        assert_eq!(size_scale((50.0, 20.0), (50.0, 20.0)), None);
+        // A side typed as nothing is refused.
+        assert_eq!(size_scale((50.0, 20.0), (0.0, 20.0)), None);
+        assert_eq!(size_scale((50.0, 20.0), (25.0, 40.0)), Some((0.5, 2.0)));
+    }
+
+    #[test]
+    fn single_object_scale_transform_rejects_invalid_matrices_and_values() {
+        let mut app = App::headless();
+        let kind = ShapeKind::Rect {
+            rect: R::new(0.0, 0.0, 40.0, 20.0),
+            radius: 0.0,
+            corners: None,
+        };
+        let id = app.new_shape(kind.clone()).expect("rectangle");
+        app.select(vec![id]);
+        for (sx, sy) in [
+            (0.0, 1.0),
+            (-1.0, 1.0),
+            (f64::NAN, 1.0),
+            (2.0, f64::INFINITY),
+        ] {
+            assert!(percentage_scale_transform(&app, sx, sy, Point::ZERO).is_none());
+        }
+        assert!(percentage_scale_transform(&app, 2.0, 1.0, Point::new(f64::NAN, 0.0)).is_none());
+        for transform in [
+            Affine::new([1.0, 1.0, 1.0, 1.0, 0.0, 0.0]),
+            Affine::new([f64::NAN, 0.0, 0.0, 1.0, 0.0, 0.0]),
+            Affine::scale_non_uniform(f64::MAX, 1.0),
+        ] {
+            let id = app
+                .new_shape_styled(kind.clone(), |s| s.transform = transform)
+                .expect("rectangle");
+            app.select(vec![id]);
+            let before = app.engine.history_labels().0.len();
+            assert!(percentage_scale_transform(&app, 2.0, 1.0, Point::ZERO).is_none());
+            assert_eq!(app.engine.history_labels().0.len(), before);
+        }
+    }
 
     /// A bar button that cannot run now is drawn greyed but plain to see
     /// in every theme: on the Dark theme the Shape tool's node buttons,
@@ -3883,7 +4212,7 @@ mod tests {
         let mut app = App::headless();
         app.add_page();
         let depth = app.engine.history_labels().0.len();
-        app.page_size_all = true;
+        app.settings.page_size_all = true;
         resize_pages(&mut app, Size::new(100.0, 50.0));
         assert!(app
             .doc()
@@ -3891,7 +4220,7 @@ mod tests {
             .iter()
             .all(|p| p.size == Size::new(100.0, 50.0)));
         assert_eq!(app.engine.history_labels().0.len(), depth + 1);
-        app.page_size_all = false;
+        app.settings.page_size_all = false;
         resize_pages(&mut app, Size::new(70.0, 70.0));
         let sizes: Vec<Size> = app.doc().pages.iter().map(|p| p.size).collect();
         assert_eq!(
@@ -4015,6 +4344,41 @@ mod tests {
                 );
             }
             assert_eq!(width(&app), Some(p[6 - k]), "notch {k}");
+        }
+    }
+
+    /// The outline width list keeps each width and its unit on one row,
+    /// however narrow the list (#2651: with short words for None and
+    /// Hairline, as in Chinese, "0.75 pt" broke in two).
+    #[test]
+    fn the_outline_width_list_keeps_a_width_on_one_row() {
+        let ctx = crate::theme::ui_context();
+        App::setup_context(&ctx);
+        for u in OUTLINE_UNITS {
+            let mut app = App::headless();
+            app.settings.outline_units = u.id().to_string();
+            let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+                ui.allocate_ui(egui::vec2(20.0, 600.0), |ui| {
+                    ui.set_max_width(20.0);
+                    outline_width_rows(&app, ui, None, false);
+                });
+            });
+            out.textures_delta.clear();
+            let rows: Vec<(String, usize)> = out
+                .shapes
+                .iter()
+                .filter_map(|c| match &c.shape {
+                    egui::Shape::Text(t) => {
+                        Some((t.galley.text().to_string(), t.galley.rows.len()))
+                    }
+                    _ => None,
+                })
+                .collect();
+            for w in outline_width_presets(u) {
+                let label = outline_text(&app, Some(w));
+                let row = rows.iter().find(|(t, _)| *t == label);
+                assert_eq!(row.map(|r| r.1), Some(1), "{u:?} {label}: {rows:?}");
+            }
         }
     }
 

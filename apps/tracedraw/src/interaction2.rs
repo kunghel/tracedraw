@@ -148,6 +148,7 @@ impl App {
                 self.brush_input(response, p, mods)
             }
             Tool::VariableOutline => self.variable_outline_input(response, p, mods),
+            Tool::Join => self.join_tool_input(response, p),
             Tool::SegmentDelete => {
                 if response.clicked_by(PointerButton::Primary) {
                     self.delete_virtual_segment_at(p);
@@ -181,6 +182,8 @@ impl App {
             Tool::ShapeRecognition | Tool::Sketch => {
                 if response.drag_started_by(PointerButton::Primary) {
                     self.drag = Drag::Freehand { points: vec![p] };
+                    // A pen's pressure along the stroke (#883).
+                    self.pen_stroke = crate::pen::PenStroke::start(self.pen_pressure);
                 }
                 if response.dragged_by(PointerButton::Primary) {
                     if let Drag::Freehand { points } = &mut self.drag {
@@ -190,6 +193,8 @@ impl App {
                             .unwrap_or(true)
                         {
                             points.push(p);
+                            let n = points.len();
+                            self.pen_stroke.record(n, self.pen_pressure);
                         }
                     }
                 }
@@ -215,7 +220,11 @@ impl App {
                     }
                 }
             }
-            Tool::BlockShadow => {
+            Tool::BlockShadow | Tool::InnerShadow => {
+                // A drag from an object casts the shadow from the press
+                // (the Inner Shadow tool as the Block Shadow one, #2473);
+                // one from the square at the selected shadow's end moves
+                // that end (#1280).
                 if response.drag_started_by(PointerButton::Primary) {
                     // The press point, not where the drag was noticed.
                     let press = response
@@ -223,55 +232,22 @@ impl App {
                         .input(|i| i.pointer.press_origin())
                         .map(|o| self.view.to_page(o))
                         .unwrap_or(p);
-                    if let Some(id) = self.shadow_drag_target(press) {
-                        // A press on one of several selected objects
-                        // keeps them all: each takes the shadow (#2218).
-                        if !self.selection.contains(&id) {
-                            self.select(vec![id]);
+                    if !self.begin_offset_shadow_handle(press) {
+                        if let Some(id) = self.shadow_drag_target(press) {
+                            // A press on one of several selected objects
+                            // keeps them all: each takes the shadow (#2218).
+                            if !self.selection.contains(&id) {
+                                self.select(vec![id]);
+                            }
+                            self.drag = Drag::ContourDrag { start: press };
                         }
-                        self.drag = Drag::ContourDrag { start: press };
                     }
                 }
                 if response.dragged_by(PointerButton::Primary) {
-                    if let Drag::ContourDrag { start } = self.drag {
-                        let offset = p - start;
-                        let color = self.block_shadow_color;
-                        let gap = self.block_shadow_gap;
-                        self.push_effect(Effect::BlockShadow { offset, color, gap }, true);
-                    }
-                }
-            }
-            Tool::InnerShadow => {
-                // As the Block Shadow tool: a drag from an object sets
-                // how far its inner shadow is cast (#2473).
-                if response.drag_started_by(PointerButton::Primary) {
-                    let press = response
+                    let ctrl = response
                         .ctx
-                        .input(|i| i.pointer.press_origin())
-                        .map(|o| self.view.to_page(o))
-                        .unwrap_or(p);
-                    if let Some(id) = self.shadow_drag_target(press) {
-                        if !self.selection.contains(&id) {
-                            self.select(vec![id]);
-                        }
-                        self.drag = Drag::ContourDrag { start: press };
-                    }
-                }
-                if response.dragged_by(PointerButton::Primary) {
-                    if let Drag::ContourDrag { start } = self.drag {
-                        let offset = p - start;
-                        let st = self.selected_inner_shadow().unwrap_or(self.inner_shadow);
-                        self.push_effect(
-                            Effect::InnerShadow {
-                                offset,
-                                color: st.color,
-                                opacity: st.opacity,
-                                blur: st.blur,
-                                merge: st.merge,
-                            },
-                            true,
-                        );
-                    }
+                        .input(|i| i.modifiers.ctrl || i.modifiers.command);
+                    self.offset_shadow_drag_to(p, ctrl);
                 }
             }
             Tool::Envelope => self.envelope_tool_input(response, p),
@@ -430,12 +406,33 @@ impl App {
                 }
             }
         }
-        if let Some(id) = self.new_shape(ShapeKind::Path {
-            path,
-            closed: false,
-        }) {
+        // Drawn with a pen: the outline follows its pressure (#883).
+        let widths = self.pen_widths(&points);
+        if let Some(id) = self.new_shape_styled(
+            ShapeKind::Path {
+                path,
+                closed: false,
+            },
+            |shape| {
+                if let Some(st) = shape.stroke.as_mut().filter(|_| !widths.is_empty()) {
+                    st.widths = widths;
+                }
+            },
+        ) {
             self.select(vec![id]);
         }
+    }
+
+    /// The width nodes a line drawn along `points` gets from the pen's
+    /// pressure, for the default outline's width; empty with the mouse
+    /// or with Options > Tools > Curve tools' pen pressure off (#850,
+    /// #883).
+    pub fn pen_widths(&self, points: &[Point]) -> Vec<tracedraw_core::style::WidthNode> {
+        self.pen_pressures(points)
+            .and_then(|pr| crate::pen::PressureProfile::new(points, pr))
+            .zip(self.default_stroke())
+            .map(|(pen, st)| pen.freehand_widths(st.width))
+            .unwrap_or_default()
     }
 
     /// Right-angle and rounded connectors: an elbow path between the

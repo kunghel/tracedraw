@@ -117,7 +117,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y pkg-config libxkbcommon-dev libwayland-dev libgl1-mesa-dev \
-            libx11-dev libxcursor-dev libxrandr-dev libxi-dev libgtk-3-dev libfuse2
+            libx11-dev libxcursor-dev libxrandr-dev libxi-dev libgtk-3-dev libfuse2 zsync
           cargo install cargo-deb
 
       # The spell checker of Windows (apps/tracedraw/src/spell_windows.rs,
@@ -318,6 +318,47 @@ jobs:
         with:
           name: tracedraw-${{ matrix.name }}
           path: dist/*
+          if-no-files-found: error
+
+  # The Flatpak bundle (#2054): the x86_64 tar.gz repackaged on the
+  # freedesktop runtime by packaging/linux/flatpak/manifest.sh, attached
+  # as tracedraw-<version>-linux-x86_64.flatpak (install it with
+  # `flatpak install --user <file>`). Flathub itself builds from the
+  # manifest that a version's release carries. New, so a failure here
+  # does not hold back the release.
+  flatpak:
+    needs: build
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    container:
+      image: ghcr.io/flathub-infra/flatpak-github-actions:freedesktop-24.08
+      options: --privileged
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/download-artifact@v4
+        with:
+          name: tracedraw-linux-x86_64
+          path: linux
+      - name: Manifest
+        id: ver
+        shell: bash
+        run: |
+          tgz=$(ls linux/tracedraw-*-linux-x86_64.tar.gz | head -n 1)
+          v=${tgz#linux/tracedraw-}; v=${v%-linux-x86_64.tar.gz}
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+          cp "$tgz" packaging/linux/flatpak/tracedraw-linux-x86_64.tar.gz
+          bash packaging/linux/flatpak/manifest.sh local "$v" > packaging/linux/flatpak/io.github.tracedraw.TraceDraw.yml
+          cat packaging/linux/flatpak/io.github.tracedraw.TraceDraw.yml
+      - uses: flatpak/flatpak-github-actions/flatpak-builder@v6
+        with:
+          manifest-path: packaging/linux/flatpak/io.github.tracedraw.TraceDraw.yml
+          bundle: tracedraw-${{ steps.ver.outputs.version }}-linux-x86_64.flatpak
+          upload-artifact: false
+          cache: false
+      - uses: actions/upload-artifact@v4
+        with:
+          name: tracedraw-flatpak
+          path: tracedraw-${{ steps.ver.outputs.version }}-linux-x86_64.flatpak
           if-no-files-found: error
 
   # The browser build: WebAssembly and WebGL 2, published to GitHub Pages
@@ -582,15 +623,18 @@ jobs:
   # "nightly" pre-release with the installers of that commit.
   release:
     if: (github.event_name == 'push' && (startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/main')) || (github.event_name == 'workflow_dispatch' && inputs.release != '')
-    needs: [build, web, android]
+    needs: [build, web, android, flatpak]
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
-      # Only CHANGELOG.md is needed, for the notes of a version.
+      # Only CHANGELOG.md is needed, for the notes of a version, and the
+      # Flatpak manifest's script.
       - uses: actions/checkout@v5
         with:
-          sparse-checkout: CHANGELOG.md
+          sparse-checkout: |
+            CHANGELOG.md
+            packaging/linux/flatpak/manifest.sh
           sparse-checkout-cone-mode: false
       - uses: actions/download-artifact@v4
         with:
@@ -619,6 +663,16 @@ jobs:
           fi
           printf '\nCode signing policy: https://github.com/%s#code-signing-policy\n' "$GITHUB_REPOSITORY" >> release-notes.md
           cat release-notes.md
+      # A version's Flathub manifest (#2054), with the SHA-256 of the
+      # tar.gz files it attaches: what the Flathub repository is given.
+      - name: Flathub manifest
+        if: env.RELEASE_TAG != ''
+        shell: bash
+        run: |
+          v="${RELEASE_TAG#v}"
+          bash packaging/linux/flatpak/manifest.sh flathub "$v" "$GITHUB_SHA" \
+            "artifacts/tracedraw-$v-linux-x86_64.tar.gz" "artifacts/tracedraw-$v-linux-arm64.tar.gz" \
+            > artifacts/io.github.tracedraw.TraceDraw.yml
       - name: Drop the previous nightly
         if: env.RELEASE_TAG == ''
         env:
@@ -633,6 +687,50 @@ jobs:
           prerelease: ${{ env.RELEASE_TAG == '' }}
           make_latest: ${{ env.RELEASE_TAG != '' && 'true' || 'false' }}
           body_path: release-notes.md
+
+  # Chocolatey (#2689): a version's package (tracedraw.<version>.nupkg,
+  # which runs the release's setup silently) is attached to the release
+  # and, once the CHOCOLATEY_API_KEY secret is set (a free account's key
+  # on community.chocolatey.org), pushed to the community repository,
+  # where each version passes its checks first. A failure here never
+  # holds back the release.
+  chocolatey:
+    if: (github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')) || (github.event_name == 'workflow_dispatch' && inputs.release != '')
+    needs: release
+    runs-on: windows-latest
+    continue-on-error: true
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          sparse-checkout: packaging/windows/chocolatey
+      - uses: actions/download-artifact@v4
+        with:
+          path: setups
+          pattern: tracedraw-windows-*
+          merge-multiple: true
+      - name: Pack
+        shell: pwsh
+        run: packaging\windows\chocolatey\pack.ps1 -Version "$($env:RELEASE_TAG.TrimStart('v'))" -SetupDir setups -OutDir choco
+      - name: Attach to the release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$env:RELEASE_TAG" (Get-ChildItem choco\*.nupkg).FullName --repo "${{ github.repository }}" --clobber
+      - name: Push to Chocolatey
+        shell: pwsh
+        env:
+          CHOCOLATEY_API_KEY: ${{ secrets.CHOCOLATEY_API_KEY }}
+        run: |
+          if (-not $env:CHOCOLATEY_API_KEY) {
+            "Chocolatey: CHOCOLATEY_API_KEY not set, nothing pushed" >> $env:GITHUB_STEP_SUMMARY
+            exit 0
+          }
+          $pkg = (Get-ChildItem choco\*.nupkg | Select-Object -First 1).FullName
+          choco push $pkg --source https://push.chocolatey.org/ --api-key $env:CHOCOLATEY_API_KEY
+          if ($LASTEXITCODE -ne 0) { throw "choco push failed ($LASTEXITCODE)" }
+          "Chocolatey: $(Split-Path -Leaf $pkg) pushed for moderation" >> $env:GITHUB_STEP_SUMMARY
 
   # Microsoft Store: a version's MSIX is submitted for certification, once
   # the Store API secrets and the MSSTORE_APP_ID variable are set (see

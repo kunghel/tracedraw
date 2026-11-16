@@ -27,15 +27,26 @@ pub struct ParagraphFormat {
     pub word_spacing_pct: f64,
     pub space_before: f64,
     pub space_after: f64,
+    /// In percent of the character height (#2613); not in older files.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub space_before_pct: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub space_after_pct: Option<f64>,
     pub first_line_indent: f64,
     pub left_indent: f64,
     pub right_indent: f64,
     pub bullets: bool,
     pub bullet_char: String,
     pub bullet_indent: f64,
+    /// Numbering, font, size, shift and indents of the bullet (#1443).
+    #[serde(skip_serializing_if = "crate::document::BulletStyle::is_plain")]
+    pub bullet: crate::document::BulletStyle,
     pub drop_cap_lines: u32,
     pub tabs: Vec<crate::document::TabStop>,
     pub hyphenate: bool,
+    /// Left to right or right to left; not in older files.
+    #[serde(skip_serializing_if = "crate::document::TextDirection::is_left_to_right")]
+    pub direction: crate::document::TextDirection,
 }
 
 impl Default for ParagraphFormat {
@@ -55,15 +66,19 @@ impl ParagraphFormat {
             word_spacing_pct: p.word_spacing_pct,
             space_before: p.space_before,
             space_after: p.space_after,
+            space_before_pct: p.space_before_pct,
+            space_after_pct: p.space_after_pct,
             first_line_indent: p.first_line_indent,
             left_indent: p.left_indent,
             right_indent: p.right_indent,
             bullets: p.bullets,
             bullet_char: p.bullet_char.clone(),
             bullet_indent: p.bullet_indent,
+            bullet: p.bullet.clone(),
             drop_cap_lines: p.drop_cap_lines,
             tabs: p.tabs.clone(),
             hyphenate: p.hyphenate,
+            direction: p.direction,
         }
     }
 
@@ -76,15 +91,19 @@ impl ParagraphFormat {
         p.word_spacing_pct = self.word_spacing_pct;
         p.space_before = self.space_before;
         p.space_after = self.space_after;
+        p.space_before_pct = self.space_before_pct;
+        p.space_after_pct = self.space_after_pct;
         p.first_line_indent = self.first_line_indent;
         p.left_indent = self.left_indent;
         p.right_indent = self.right_indent;
         p.bullets = self.bullets;
         p.bullet_char = self.bullet_char.clone();
         p.bullet_indent = self.bullet_indent;
+        p.bullet = self.bullet.clone();
         p.drop_cap_lines = self.drop_cap_lines;
         p.tabs = self.tabs.clone();
         p.hyphenate = self.hyphenate;
+        p.direction = self.direction;
         self.align
     }
 
@@ -107,15 +126,19 @@ impl ParagraphFormat {
             word_spacing_pct,
             space_before,
             space_after,
+            space_before_pct,
+            space_after_pct,
             first_line_indent,
             left_indent,
             right_indent,
             bullets,
             bullet_char,
             bullet_indent,
+            bullet,
             drop_cap_lines,
             tabs,
-            hyphenate
+            hyphenate,
+            direction
         );
     }
 }

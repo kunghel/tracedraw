@@ -2333,6 +2333,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "matrixmultiply"
+version = "0.3.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3f607c237553f086e7043417a51df26b2eb899d3caff94e6a67592ff992fedc7"
+dependencies = [
+ "autocfg",
+ "rawpointer",
+]
+
+[[package]]
 name = "md-5"
 version = "0.10.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3002,6 +3012,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "phf_codegen"
+version = "0.11.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "aef8048c789fa5e851558d709946d6d79a8ff88c0440c587967f8e94bfb1216a"
+dependencies = [
+ "phf_generator",
+ "phf_shared",
+]
+
+[[package]]
 name = "phf_generator"
 version = "0.11.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3309,6 +3329,12 @@ dependencies = [
  "objc2-foundation 0.3.2",
  "objc2-quartz-core 0.3.2",
 ]
+
+[[package]]
+name = "rawpointer"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "60a357793950651c4ed0f3f52338f53b2f809f32d83a07f72909fa13e4c6c1e3"
 
 [[package]]
 name = "read-fonts"
@@ -4256,7 +4282,7 @@ checksum = "06bdbd8cfc056b8d2e2e85f29b56a3bdbecb527cef81eb39e3e7b98af4652770"
 
 [[package]]
 name = "tracedraw"
-version = "0.45.2"
+version = "0.47.0"
 dependencies = [
  "android-activity",
  "android_logger",
@@ -4278,6 +4304,7 @@ dependencies = [
  "kurbo",
  "log",
  "lopdf",
+ "matrixmultiply",
  "pollster 0.4.0",
  "qrcode",
  "rfd",
@@ -4297,6 +4324,7 @@ dependencies = [
  "tracedraw-vba",
  "tracedraw-vba-project",
  "ttf-parser",
+ "unicode_names2",
  "ureq",
  "vaam-image-webp",
  "wasm-bindgen",
@@ -4317,7 +4345,7 @@ dependencies = [
 
 [[package]]
 name = "tracedraw-cdr"
-version = "0.45.2"
+version = "0.47.0"
 dependencies = [
  "encoding_rs",
  "flate2",
@@ -4334,7 +4362,7 @@ dependencies = [
 
 [[package]]
 name = "tracedraw-cdr-format"
-version = "0.45.2"
+version = "0.47.0"
 dependencies = [
  "flate2",
  "log",
@@ -4345,7 +4373,7 @@ dependencies = [
 
 [[package]]
 name = "tracedraw-cli"
-version = "0.45.2"
+version = "0.47.0"
 dependencies = [
  "env_logger",
  "flate2",
@@ -4361,23 +4389,28 @@ dependencies = [
 
 [[package]]
 name = "tracedraw-core"
-version = "0.45.2"
+version = "0.47.0"
 dependencies = [
  "base64 0.22.1",
+ "flate2",
  "i_overlay",
  "kurbo",
+ "png",
  "serde",
  "serde_json",
  "thiserror 2.0.21",
+ "zune-core",
+ "zune-jpeg",
 ]
 
 [[package]]
 name = "tracedraw-io"
-version = "0.45.2"
+version = "0.47.0"
 dependencies = [
  "aes 0.8.4",
  "base64 0.22.1",
  "cbc 0.1.2",
+ "cfb",
  "flate2",
  "getrandom 0.3.4",
  "getrandom 0.4.3",
@@ -4403,7 +4436,7 @@ dependencies = [
 
 [[package]]
 name = "tracedraw-render"
-version = "0.45.2"
+version = "0.47.0"
 dependencies = [
  "log",
  "tiny-skia",
@@ -4412,7 +4445,7 @@ dependencies = [
 
 [[package]]
 name = "tracedraw-text"
-version = "0.45.2"
+version = "0.47.0"
 dependencies = [
  "encoding_rs",
  "fontconfig-parser",
@@ -4429,7 +4462,7 @@ dependencies = [
 
 [[package]]
 name = "tracedraw-thumbnailer"
-version = "0.45.2"
+version = "0.47.0"
 dependencies = [
  "tracedraw-core",
  "tracedraw-render",
@@ -4440,7 +4473,7 @@ dependencies = [
 
 [[package]]
 name = "tracedraw-tracecut"
-version = "0.45.2"
+version = "0.47.0"
 dependencies = [
  "serde",
  "tracedraw-core",
@@ -4448,14 +4481,14 @@ dependencies = [
 
 [[package]]
 name = "tracedraw-vba"
-version = "0.45.2"
+version = "0.47.0"
 dependencies = [
  "boa_engine",
 ]
 
 [[package]]
 name = "tracedraw-vba-project"
-version = "0.45.2"
+version = "0.47.0"
 dependencies = [
  "cfb",
  "chardetng",
@@ -4583,6 +4616,26 @@ name = "unicode-width"
 version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b4ac048d71ede7ee76d585517add45da530660ef4390e49b098733c6e897f254"
+
+[[package]]
+name = "unicode_names2"
+version = "2.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d189085656ca1203291e965444e7f6a2723fbdd1dd9f34f8482e79bafd8338a0"
+dependencies = [
+ "phf",
+ "unicode_names2_generator",
+]
+
+[[package]]
+name = "unicode_names2_generator"
+version = "2.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1262662dc96937c71115228ce2e1d30f41db71a7a45d3459e98783ef94052214"
+dependencies = [
+ "phf_codegen",
+ "rand 0.8.8",
+]
 
 [[package]]
 name = "untrusted"

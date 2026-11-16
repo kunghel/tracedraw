@@ -76,10 +76,14 @@ written (the blend goes out alone, with a warning in the log).
 
 - With the Pick tool a click on the drop shadow, away from its object,
   chooses the shadow on its own: it shows a box of its own, out to its
-  feathered edge, with hollow handles instead of the object's, and
-  Delete takes the shadow away and leaves the object selected. A click
-  on the object chooses the object again (#2545,
-  `pick_drag_tests::a_drop_shadow_is_chosen_apart_from_its_object`).
+  feathered edge, without handles (the hollow handles it had did
+  nothing, #2711), and Delete takes the shadow away and leaves the
+  object selected. A drag on the chosen shadow moves it with the
+  pointer, as a drag on it with the Drop Shadow tool does, one undo
+  step, the object staying where it is. A click on the object chooses
+  the object again (#2545,
+  `pick_drag_tests::a_drop_shadow_is_chosen_apart_from_its_object`,
+  `pick_drag_tests::dragging_a_chosen_drop_shadow_moves_it`).
 - An object with an envelope, a perspective or a distortion takes its
   shadow by the outline it shows: the box the tool measures on (which
   edge a press is next to, where the handles sit, where a perspective
@@ -272,13 +276,29 @@ pixel for pixel.
 ## Break Drop Shadow Apart
 
 Object > Break Drop Shadow Apart (Ctrl+K, which takes the place of
-Break Apart while a selected object has a shadow), or Break apart on the
-property bar: each selected top-level object's shadow becomes a bitmap
-of its own at 150 dpi, placed just behind the object, named Shadow,
-holding the shadow's colour, feathering, opacity and fade. A merge mode
-other than Normal is kept as an opaque transparency with that merge
-mode. The object loses its shadow. Everything happens in one undo step,
-and the new bitmaps come out selected.
+Break Apart while a selected object has a shadow; the Objects docker's
+menu has it too), or Break apart on the property bar: each selected
+object's shadow becomes a bitmap of its own at 150 dpi, placed just
+behind the object, named Shadow, holding the shadow's colour,
+feathering, opacity and fade. A merge mode other than Normal is kept as
+an opaque transparency with that merge mode. The object loses its
+shadow. Everything happens in one undo step, and the new bitmaps come
+out selected.
+
+The same command takes the object's block shadows and inner shadow off
+too (#2893); it reads Break Shadow Apart when the selection has one of
+them. A block shadow becomes its curves, behind the object (in front of
+the drop shadow's bitmap); an inner shadow becomes a bitmap of its own
+at 150 dpi over the object's box, just in front of it, its colour in
+every pixel and its density in the alpha, with its merge mode kept as
+for the drop shadow. An object inside a group keeps what comes off it
+in its group, beside it. The object keeps its fill (a mesh too) and its
+other effects.
+
+A new shadow given to one object never takes another object's shadow
+back (#2890): a drag with the Drop Shadow tool, a field of its bar typed
+in again or a handle dragged replaces only the step it made itself, on
+the same objects with nothing done since.
 
 ## PDF and printing
 
@@ -293,7 +313,13 @@ Lighten, Darken, Hue, Saturation, Color, Luminosity for Lightness,
 Exclusion for Invert, Overlay, SoftLight, HardLight, ColorDodge,
 ColorBurn; the others draw normally). The object stays vector on top.
 The colour image downsampling asked for applies to the shadow's picture
-too. PDF/X-1a and X-3 keep no transparency: an object with a shadow is
+too. A picture casts the shadow of what its pixels cover, as on the
+page: a picture with a transparent background cast the shadow of its
+whole box (d#2596,
+`render::tests::the_shadow_picture_of_a_picture_follows_its_pixels`). An
+object whose effects draw objects of their own (an extrusion's body, a
+contour's steps) casts one shadow of all of it beneath all of it, as on
+the page (`pdf::tests::an_extruded_object_casts_one_shadow_beneath_its_body`). PDF/X-1a and X-3 keep no transparency: an object with a shadow is
 flattened with what lies beneath it, over the shadow's area (#1029).
 
 ## Checks

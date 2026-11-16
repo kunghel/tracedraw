@@ -45,7 +45,35 @@ fn spot_attrs(fill: &Fill, stroke: Option<&tracedraw_core::Stroke>) -> String {
     out
 }
 
+/// How text goes into an SVG file (#2289).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SvgText {
+    /// Every text as curves: the file needs no fonts and looks the same
+    /// everywhere.
+    #[default]
+    Curves,
+    /// Text as `<text>` elements naming their fonts, editable in other
+    /// programs; the viewer supplies the fonts.
+    Text,
+    /// Text as `<text>` elements with the font files inside the SVG
+    /// (`@font-face`), so the file shows the same fonts anywhere. Fonts
+    /// whose licence forbids embedding go in as curves.
+    TextWithFonts,
+}
+
+/// Options for [`page_to_svg_with`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct SvgOptions {
+    pub text: SvgText,
+}
+
+/// One page as SVG, text as curves.
 pub fn page_to_svg(doc: &Document, page_index: usize) -> String {
+    page_to_svg_with(doc, page_index, &SvgOptions::default())
+}
+
+/// One page as SVG with `opts`.
+pub fn page_to_svg_with(doc: &Document, page_index: usize, opts: &SvgOptions) -> String {
     let doc = &*crate::for_export(doc, Some(page_index));
     INKS.with(|i| {
         *i.borrow_mut() = doc.inks.iter().map(|k| (k.id, k.name.clone())).collect();
@@ -65,7 +93,12 @@ pub fn page_to_svg(doc: &Document, page_index: usize) -> String {
     let flip = Affine::new([1.0, 0.0, 0.0, -1.0, 0.0, h]);
     let mut gradient_defs = String::new();
     let mut body = String::new();
-    let mut ctx = SvgCtx { next_grad: 0, flip };
+    let mut ctx = SvgCtx {
+        next_grad: 0,
+        flip,
+        text: opts.text,
+        fonts: Vec::new(),
+    };
     let layers = doc.layers_drawn_for_page(page.id).unwrap_or_default();
     for layer in layers {
         if !layer.visible {
@@ -90,6 +123,10 @@ pub fn page_to_svg(doc: &Document, page_index: usize) -> String {
         }
         let _ = writeln!(body, "  </g>");
     }
+    let font_faces = text_out::font_faces(&ctx.fonts);
+    if !font_faces.is_empty() {
+        gradient_defs.insert_str(0, &font_faces);
+    }
     if !gradient_defs.is_empty() {
         let _ = writeln!(out, "  <defs>\n{gradient_defs}  </defs>");
     }
@@ -104,6 +141,10 @@ pub fn page_to_svg(doc: &Document, page_index: usize) -> String {
 struct SvgCtx {
     next_grad: usize,
     flip: Affine,
+    /// How text goes in.
+    text: SvgText,
+    /// The fonts embedded so far, for the `@font-face` rules.
+    fonts: Vec<text_out::EmbeddedFont>,
 }
 
 impl SvgCtx {
@@ -461,6 +502,28 @@ fn write_unlinked(
         }
     };
 
+    // Text as text (#2289): plain fills and outlines only, since a
+    // gradient or pattern in user space would move with each `<text>`'s
+    // own transform.
+    if ctx.text != SvgText::Curves
+        && matches!(shape.kind, ShapeKind::Text { .. })
+        && calligraphic.is_none()
+        && !drawn.as_ref().is_some_and(|(s, _)| s.painterly.is_some())
+        && plain_paint(&fill_attr)
+        && plain_paint(&stroke_attr)
+    {
+        let spot = spot_attrs(&shape.fill, shape.stroke.as_ref());
+        if text_out::write_text(
+            shape,
+            transform,
+            &format!("{fill_attr} {stroke_attr}{spot}"),
+            out,
+            ctx,
+            indent,
+        ) {
+            return;
+        }
+    }
     let name = shape
         .name
         .as_deref()
@@ -512,9 +575,14 @@ fn write_unlinked(
         .as_ref()
         .and_then(|(s, _)| s.painterly.as_ref().map(|b| (s, b)))
     {
-        for (alpha, marks) in
-            tracedraw_core::painterly::marks_by_opacity(&shape.page_path(), s.width, brush, 12)
-        {
+        for (alpha, marks) in tracedraw_core::painterly::marks_by_opacity_along(
+            &shape.page_path(),
+            s.width,
+            brush,
+            12,
+            &s.widths,
+            s.width,
+        ) {
             let _ = writeln!(
                 out,
                 "{pad}<path d=\"{}\" fill=\"{}\" fill-opacity=\"{}\" stroke=\"none\"/>",
@@ -1020,12 +1088,22 @@ pub fn encode_png(w: u32, h: u32, rgba: &[u8]) -> Vec<u8> {
     pm.encode_png().unwrap_or_default()
 }
 
+/// A paint attribute (`fill="..."` or `stroke="..."` with the rest of
+/// the outline's attributes) holding a plain colour or none, no
+/// gradient or pattern.
+fn plain_paint(attr: &str) -> bool {
+    !attr.contains("url(")
+}
+
 fn escape(s: &str) -> String {
     s.replace('&', "&amp;")
         .replace('<', "&lt;")
         .replace('>', "&gt;")
         .replace('"', "&quot;")
 }
+
+#[path = "svg_text_out.rs"]
+mod text_out;
 
 #[cfg(test)]
 pub(crate) mod tests {

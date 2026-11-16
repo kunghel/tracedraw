@@ -1816,6 +1816,50 @@ impl Mesh {
         m
     }
 
+    /// Whether the grid was made over the box `b` (local space): its
+    /// nodes' box is `b`, within a hundredth of its size, as the Mesh
+    /// Fill tool makes it over its object.
+    pub fn fits(&self, b: crate::geometry::Rect) -> bool {
+        let mut it = self.nodes.iter().map(|n| n.pos);
+        let Some(first) = it.next() else {
+            return false;
+        };
+        let nb = it.fold(Rect::from_points(first, first), |r, p| r.union_pt(p));
+        let tol = 0.01 * b.width().max(b.height());
+        tol > 0.0
+            && (nb.x0 - b.x0).abs() <= tol
+            && (nb.y0 - b.y0).abs() <= tol
+            && (nb.x1 - b.x1).abs() <= tol
+            && (nb.y1 - b.y1).abs() <= tol
+    }
+
+    /// The grid stretched over the box `b` when it lies inside `b` (within
+    /// a hundredth of its size) without covering it: the part of `b` past
+    /// the grid has no fill. `None` when it covers `b`, reaches past it,
+    /// or either has no size.
+    pub fn refit_inside(&self, b: crate::geometry::Rect) -> Option<Mesh> {
+        let mut it = self.nodes.iter().map(|n| n.pos);
+        let first = it.next()?;
+        let nb = it.fold(Rect::from_points(first, first), |r, p| r.union_pt(p));
+        let tol = 0.01 * b.width().max(b.height());
+        let ok =
+            |r: Rect| r.width() > 1e-9 && r.height() > 1e-9 && r.x0.is_finite() && r.y0.is_finite();
+        if !(ok(b) && ok(nb) && tol > 0.0) || self.fits(b) {
+            return None;
+        }
+        let inside = nb.x0 >= b.x0 - tol
+            && nb.y0 >= b.y0 - tol
+            && nb.x1 <= b.x1 + tol
+            && nb.y1 <= b.y1 + tol;
+        inside.then(|| {
+            self.transformed(
+                Affine::translate((b.x0, b.y0))
+                    * Affine::scale_non_uniform(b.width() / nb.width(), b.height() / nb.height())
+                    * Affine::translate((-nb.x0, -nb.y0)),
+            )
+        })
+    }
+
     /// Whether any node carries handles (curved grid lines).
     pub fn is_curved(&self) -> bool {
         self.nodes.iter().any(|n| n.handles.is_some())

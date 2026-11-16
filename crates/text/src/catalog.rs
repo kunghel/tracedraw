@@ -339,7 +339,12 @@ pub fn is_font_file(path: &Path) -> bool {
     path.extension()
         .and_then(|e| e.to_str())
         .map(|e| e.to_ascii_lowercase())
-        .is_some_and(|e| matches!(e.as_str(), "ttf" | "otf" | "ttc" | "otc"))
+        .is_some_and(|e| {
+            matches!(
+                e.as_str(),
+                "ttf" | "otf" | "ttc" | "otc" | "pfb" | "pfa" | "pfm"
+            )
+        })
 }
 
 /// The font files in `dir` and its subfolders (three levels down at
@@ -371,7 +376,16 @@ pub fn font_files(dir: &Path) -> Vec<PathBuf> {
 pub fn scan_folder(dir: &Path) -> Vec<FaceRecord> {
     let mut out = Vec::new();
     for path in font_files(dir) {
-        let Ok(data) = std::fs::read(&path) else {
+        // A Type 1 font is listed once, by its .pfb (#193).
+        let data = if crate::type1::is_type1_file(&path) {
+            if !crate::type1::is_type1_path(&path) {
+                continue;
+            }
+            crate::type1::convert_file(&path)
+        } else {
+            std::fs::read(&path).ok()
+        };
+        let Some(data) = data else {
             continue;
         };
         for mut r in describe_file(&data) {
@@ -516,9 +530,21 @@ impl FontSystem {
         let loaded = self.installed_paths();
         let mut ids = Vec::new();
         {
+            // The names before the database, as everywhere.
+            let mut named = self.named.write().unwrap_or_else(|e| e.into_inner());
             let mut db = self.db.write().unwrap_or_else(|e| e.into_inner());
             for path in paths {
                 if loaded.contains(path) {
+                    continue;
+                }
+                // A Type 1 font (#193), turned into one the engine reads
+                // and kept under its file's name.
+                if crate::type1::is_type1_file(path) {
+                    if let Some(data) = crate::type1::convert_file(path) {
+                        let got = db.load_font_source(fontdb::Source::Binary(Arc::new(data)));
+                        named.extend(got.iter().map(|id| (*id, path.clone())));
+                        ids.extend(got);
+                    }
                     continue;
                 }
                 let Ok(data) = std::fs::read(path) else {

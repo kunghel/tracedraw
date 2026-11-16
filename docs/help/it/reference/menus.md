@@ -473,6 +473,7 @@ mostrare le vostre scorciatoie; vedere
 | [[menu.help.whats_new]] | [Novità](../welcome/whats-new.md) |
 | [[menu.help.highlight_whats_new]] | [Novità](../welcome/whats-new.md) |
 | [[menu.help.updates]] | [Informazioni su TraceDraw e aggiornamenti](../welcome/about-and-updates.md) |
+| [[menu.help.benchmark]] | [Opzioni di TraceDraw](../customize/options-app.md#benchmark) |
 | [[menu.help.message_settings]] | [Informazioni su TraceDraw e aggiornamenti](../welcome/about-and-updates.md) |
 | [[menu.help.community]] | [Informazioni su TraceDraw e aggiornamenti](../welcome/about-and-updates.md) |
 | [[menu.help.support]] | [Informazioni su TraceDraw e aggiornamenti](../welcome/about-and-updates.md) |

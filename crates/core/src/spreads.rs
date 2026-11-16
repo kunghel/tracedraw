@@ -170,6 +170,18 @@ impl Document {
         }
     }
 
+    /// The box inside the page margins of page `index` whose box is
+    /// `page` (#1660): with facing pages the inside margin lies at the
+    /// spine, else on the page's left. `None` without margins.
+    pub fn margin_box(&self, index: usize, page: Rect) -> Option<Rect> {
+        let m = self.metadata.margins.filter(|m| !m.is_zero())?;
+        let side = match self.facing() {
+            Some(start) => side_of(index, start),
+            None => PageSide::Right,
+        };
+        Some(m.inner(page, side))
+    }
+
     /// Where the pages of `spread` sit in it (see [`place`]).
     pub fn place_spread(&self, spread: Spread) -> (Vec<(usize, Point)>, Rect) {
         place(spread, |i| {
@@ -371,6 +383,61 @@ mod tests {
 
     fn pages_of(spreads: &[Spread]) -> Vec<Vec<usize>> {
         spreads.iter().map(|s| s.pages().collect()).collect()
+    }
+
+    /// #1660: page margins for books, the inside margin at the spine
+    /// (right of a left page, left of a right page), saved with the
+    /// drawing only when set.
+    #[test]
+    fn page_margins_mirror_at_the_spine() {
+        use crate::document::{Metadata, PageMargins};
+        let mut doc = Document::new("d", Size::new(100.0, 200.0));
+        let page = Rect::new(0.0, 0.0, 100.0, 200.0);
+        assert_eq!(doc.margin_box(0, page), None);
+        let json = serde_json::to_string(&doc.metadata).unwrap();
+        assert!(!json.contains("margins"), "{json}");
+        doc.metadata.margins = Some(PageMargins {
+            top: 15.0,
+            bottom: 25.0,
+            inside: 20.0,
+            outside: 10.0,
+        });
+        // A page alone: the inside margin on its left.
+        assert_eq!(
+            doc.margin_box(0, page),
+            Some(Rect::new(20.0, 25.0, 90.0, 185.0))
+        );
+        doc.metadata.facing_pages = true;
+        // Page 1 on the right, page 2 on the left, page 3 on the right.
+        assert_eq!(
+            doc.margin_box(0, page),
+            Some(Rect::new(20.0, 25.0, 90.0, 185.0))
+        );
+        let left = Rect::new(-100.0, 0.0, 0.0, 200.0);
+        assert_eq!(
+            doc.margin_box(1, left),
+            Some(Rect::new(-90.0, 25.0, -20.0, 185.0))
+        );
+        assert_eq!(
+            doc.margin_box(2, page),
+            Some(Rect::new(20.0, 25.0, 90.0, 185.0))
+        );
+        doc.metadata.facing_start = PageSide::Left;
+        assert_eq!(
+            doc.margin_box(0, page),
+            Some(Rect::new(10.0, 25.0, 80.0, 185.0))
+        );
+        // Saved and read back.
+        let back: Metadata =
+            serde_json::from_str(&serde_json::to_string(&doc.metadata).unwrap()).unwrap();
+        assert_eq!(back.margins, doc.metadata.margins);
+        // Margins wider than the page leave a box of no width; bad values
+        // count as none.
+        let wide = PageMargins::uniform(80.0).inner(page, PageSide::Right);
+        assert_eq!((wide.x0, wide.x1), (80.0, 80.0));
+        assert!(PageMargins::uniform(f64::NAN).is_zero());
+        doc.metadata.margins = Some(PageMargins::uniform(0.0));
+        assert_eq!(doc.margin_box(0, page), None);
     }
 
     /// Starting on the right, page 1 stands alone, then 2-3, 4-5 ...;

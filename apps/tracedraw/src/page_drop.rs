@@ -7,7 +7,11 @@
 //! Let go on a tab, the selection goes to that page at once. Either way
 //! the objects keep their place on the page; with Ctrl held (or a right
 //! click during the move) copies go and the originals stay. The whole
-//! drag is one undo step. See `docs/behavior/pages.md`, Moving objects to another page by its tab.
+//! drag is one undo step. A colour or a fill dragged (a palette swatch,
+//! the status bar's or the property bar's fill, an object with the right
+//! button) and rested on another page's tab opens that page the same way,
+//! so it can be let go on an object there (#2704). See
+//! `docs/behavior/pages.md`, Moving objects to another page by its tab.
 
 use crate::app::App;
 use crate::app::Drag;
@@ -94,8 +98,10 @@ impl App {
     /// frame's time (seconds), `ctrl` whether Ctrl (Cmd) is held.
     pub fn track_page_tab_drag(&mut self, time: f64, ctrl: bool) {
         if !matches!(self.drag, Drag::Move { .. }) {
-            self.page_tab_hover = None;
+            let hover = self.page_tab_hover;
             self.end_page_drag_group();
+            self.page_tab_hover = hover;
+            self.track_page_tab_color_drag(time);
             return;
         }
         self.page_drag_ctrl = ctrl;
@@ -123,6 +129,43 @@ impl App {
                 let p = self.view.to_page(at);
                 self.start_move(p);
             }
+        }
+    }
+
+    /// Whether a colour or a fill is being dragged: a palette swatch, the
+    /// status bar's fill, the property bar's fill swatch or an object
+    /// with the right mouse button.
+    pub fn carrying_color(&self) -> bool {
+        self.palette_drag.is_some()
+            || self.fill_drag.is_some()
+            || self.fill_swatch_drag.is_some()
+            || self.right_drag.is_some()
+    }
+
+    /// While a colour or a fill is dragged (see [`App::carrying_color`]),
+    /// resting [`PAGE_TAB_HOVER_SECS`] on another page's tab opens that
+    /// page, so the colour can be let go on an object there (#2704). A
+    /// right-button drag keeps the object it started from, whose fill
+    /// (or outline) then goes where it is let go.
+    fn track_page_tab_color_drag(&mut self, time: f64) {
+        if !self.carrying_color() {
+            self.page_tab_hover = None;
+            return;
+        }
+        match self.page_tab_under_pointer() {
+            Some(i) if i != self.page_index() => match self.page_tab_hover {
+                Some((j, since)) if j == i => {
+                    if time - since >= PAGE_TAB_HOVER_SECS {
+                        self.page_tab_hover = None;
+                        if self.right_drag.is_some() && self.right_drag_style.is_none() {
+                            self.right_drag_style = self.selected_shapes().first().cloned();
+                        }
+                        self.goto_page(i);
+                    }
+                }
+                _ => self.page_tab_hover = Some((i, time)),
+            },
+            _ => self.page_tab_hover = None,
         }
     }
 

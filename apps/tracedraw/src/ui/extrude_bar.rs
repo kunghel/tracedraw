@@ -396,6 +396,46 @@ pub fn draw_handles(app: &App, painter: &Painter) {
             Stroke::new(1.0, blue),
         );
     }
+    // The depth slider: a bar across the line where the far face is
+    // (#1280), filled while it is dragged.
+    let held = app.extrude_drag.filter(|d| d.depth).map(|d| d.id);
+    for d in app.extrusion_depth_sliders() {
+        let (a, z) = (app.view.to_screen(d.mid), app.view.to_screen(d.vanishing));
+        let at = app.view.to_screen(d.at);
+        if d.away {
+            // Beyond the middle: the line runs on to the slider.
+            painter.add(egui::Shape::dashed_line(
+                &[a, at],
+                Stroke::new(1.0, blue),
+                4.0,
+                3.0,
+            ));
+        }
+        let along = (z - a).normalized();
+        let along = if along.x.is_finite() {
+            along
+        } else {
+            egui::vec2(1.0, 0.0)
+        };
+        let across = egui::vec2(-along.y, along.x);
+        let (half_w, half_l) = (2.5, 7.0);
+        let corners = [
+            at + across * half_l + along * half_w,
+            at + across * half_l - along * half_w,
+            at - across * half_l - along * half_w,
+            at - across * half_l + along * half_w,
+        ];
+        let fill = if held == Some(d.id) {
+            blue
+        } else {
+            Color32::WHITE
+        };
+        painter.add(egui::Shape::convex_polygon(
+            corners.to_vec(),
+            fill,
+            Stroke::new(1.0, blue),
+        ));
+    }
 }
 
 /// The Extrude docker's pages.

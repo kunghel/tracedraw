@@ -201,6 +201,7 @@ fn contour(outside: bool, offset: f64, join: Join) -> Effect {
         to_center: false,
         fill_to: Color::WHITE,
         outline_to: None,
+        fill_end_to: None,
         color_blend: 0,
         corners: Some(join),
         accel_objects: 0.0,

@@ -146,12 +146,20 @@ pub fn riff_stream(bytes: &[u8], container: &Container) -> Result<Vec<u8>> {
             let cursor = std::io::Cursor::new(bytes);
             let mut archive = zip::ZipArchive::new(cursor)?;
             let f = archive.by_name(riff_member)?;
-            // The size the archive claims is not trusted for the
-            // allocation, and what inflates past the limit is cut off.
-            let mut out = Vec::with_capacity(f.size().min(MAX_STREAM) as usize);
-            f.take(MAX_STREAM).read_to_end(&mut out)?;
-            if out.len() as u64 >= MAX_STREAM {
-                log::warn!("{riff_member} inflates past {MAX_STREAM} bytes; cut off there");
+            // Read as far as the archive declares, within the ceiling, as
+            // the data streams are: a book of some 300 pages in a 1 GB
+            // file keeps more than 512 MB of records, and a fixed 512 MB
+            // cut the stream there, so the pages after it were lost and
+            // the last one read was cut short (#2833). The size the
+            // archive claims is not trusted for the allocation, and a
+            // member inflating past it stops at 512 MB or at that size,
+            // whichever is larger.
+            let declared = f.size();
+            let limit = member_limit(declared);
+            let mut out = Vec::with_capacity(declared.min(MAX_STREAM) as usize);
+            f.take(limit).read_to_end(&mut out)?;
+            if cut_short(out.len() as u64, limit, declared) {
+                log::warn!("{riff_member} inflates past {limit} bytes; cut off there");
             }
             Ok(out)
         }

@@ -97,6 +97,9 @@ pub struct SystemPrefs {
     pub text_scale_known: bool,
     /// The system's contrast setting could be read.
     pub contrast_known: bool,
+    /// The desktop asks programs for dark windows (#2748): the theme
+    /// is then a dark one until another is picked.
+    pub dark: bool,
 }
 
 impl Default for SystemPrefs {
@@ -106,6 +109,7 @@ impl Default for SystemPrefs {
             high_contrast: None,
             text_scale_known: false,
             contrast_known: false,
+            dark: false,
         }
     }
 }
@@ -167,13 +171,14 @@ fn update(p: SystemPrefs) {
     READ.notify_all();
     if changed {
         log::info!(
-            "system text size {:.0} %, high contrast {}",
+            "system text size {:.0} %, high contrast {}, dark mode {}",
             p.text_scale * 100.0,
             if p.high_contrast.is_some() {
                 "on"
             } else {
                 "off"
-            }
+            },
+            if p.dark { "on" } else { "off" }
         );
         if let Some(ctx) = CONTEXT.get() {
             ctx.request_repaint();
@@ -309,13 +314,30 @@ fn read_now() -> SystemPrefs {
                 .map(|o| colors_from(&o))
                 .unwrap_or(ContrastColors::BLACK)
         });
+    let dark = reg_query(r"HKCU\Software\Microsoft\Windows\CurrentVersion\Themes\Personalize")
+        .is_some_and(|o| windows_apps_dark(&o));
     SystemPrefs {
         text_scale,
         high_contrast,
         // The value is missing while the text size was never changed.
         text_scale_known: true,
         contrast_known: contrast.is_some(),
+        dark,
     }
+}
+
+/// Whether the Personalize key `reg query` printed asks for dark apps:
+/// `AppsUseLightTheme` is 0 (#2748). Missing means light.
+pub fn windows_apps_dark(output: &str) -> bool {
+    output.lines().any(|line| {
+        let mut words = line.split_whitespace();
+        words.next() == Some("AppsUseLightTheme")
+            && words.next() == Some("REG_DWORD")
+            && words
+                .next()
+                .and_then(|v| u32::from_str_radix(v.trim_start_matches("0x"), 16).ok())
+                == Some(0)
+    })
 }
 
 /// The output of `program` with `args`, when it ran and succeeded.
@@ -371,6 +393,7 @@ fn read_now() -> SystemPrefs {
         // macOS has no system text size for programs of this kind.
         text_scale_known: false,
         contrast_known: read.is_some(),
+        dark: read.is_some_and(|(_, dark)| dark),
     }
 }
 
@@ -447,6 +470,31 @@ pub fn kde_contrast_scheme(kdeglobals: &str) -> bool {
     })
 }
 
+/// Whether a free desktop asks for dark windows (#2748), from the most
+/// to the least direct reading: the desktop portal's colour scheme (1
+/// prefers dark, 2 prefers light, 0 no preference), GNOME's
+/// `color-scheme` ('prefer-dark'), then the name of the GTK theme or of
+/// KDE's colour scheme ("Adwaita-dark", "BreezeDark").
+pub fn linux_dark(
+    portal: Option<u32>,
+    color_scheme: Option<&str>,
+    gtk_theme: Option<&str>,
+    kde_scheme: Option<&str>,
+) -> bool {
+    match portal {
+        Some(1) => return true,
+        Some(2) => return false,
+        _ => {}
+    }
+    let named_dark = |name: &str| name.to_ascii_lowercase().contains("dark");
+    match color_scheme.map(gsettings_value) {
+        Some("prefer-dark") => return true,
+        Some("prefer-light") => return false,
+        _ => {}
+    }
+    gtk_theme.map(gsettings_value).is_some_and(named_dark) || kde_scheme.is_some_and(named_dark)
+}
+
 /// The desktop's settings on Linux and the other free systems.
 #[cfg(not(any(
     windows,
@@ -516,13 +564,26 @@ fn read_now() -> SystemPrefs {
         (None, None) => None,
         (p, o) => Some(p == Some(1) || o == Some(true)),
     };
-    // The portal's colour scheme: 1 prefers dark.
-    let dark = portal("color-scheme") == Some(1);
+    let portal_scheme = portal("color-scheme");
+    // The desktop's own settings only when the portal has no answer, as
+    // each one runs a program.
+    let dark = if matches!(portal_scheme, Some(1) | Some(2)) {
+        portal_scheme == Some(1)
+    } else if kde {
+        linux_dark(None, None, None, kde_general(&kdeglobals, "ColorScheme"))
+    } else {
+        let scheme = gsettings("org.gnome.desktop.interface", "color-scheme");
+        let theme = gsettings("org.gnome.desktop.interface", "gtk-theme");
+        linux_dark(None, scheme.as_deref(), theme.as_deref(), None)
+    };
+    // High contrast follows the portal's scheme alone, as before.
+    let contrast_dark = portal_scheme == Some(1);
     SystemPrefs {
         text_scale: text.unwrap_or(1.0),
-        high_contrast: (contrast == Some(true)).then(|| ContrastColors::for_dark(dark)),
+        high_contrast: (contrast == Some(true)).then(|| ContrastColors::for_dark(contrast_dark)),
         text_scale_known: text.is_some(),
         contrast_known: contrast.is_some(),
+        dark,
     }
 }
 
@@ -542,6 +603,7 @@ pub fn parse_android(answer: &str) -> Option<SystemPrefs> {
         high_contrast: contrast.then(|| ContrastColors::for_dark(dark)),
         text_scale_known: true,
         contrast_known: true,
+        dark,
     })
 }
 
@@ -562,6 +624,7 @@ fn read_now() -> SystemPrefs {
         high_contrast: a.contrast.then(|| ContrastColors::for_dark(a.dark)),
         text_scale_known: a.font_px.is_some(),
         contrast_known: true,
+        dark: a.dark,
     }
 }
 
@@ -612,6 +675,43 @@ mod tests {
         assert_eq!(ContrastColors::for_dark(true), ContrastColors::BLACK);
         assert_eq!(ContrastColors::for_dark(false), ContrastColors::WHITE);
         assert!(!ContrastColors::WHITE.is_dark());
+    }
+
+    /// #2748: the desktop's dark mode on Windows and the free desktops.
+    #[test]
+    fn the_desktop_dark_mode_is_read() {
+        let key = "\r\nHKEY_CURRENT_USER\\...\\Personalize\r\n    AppsUseLightTheme    REG_DWORD    0x0\r\n    SystemUsesLightTheme    REG_DWORD    0x1\r\n";
+        assert!(windows_apps_dark(key));
+        assert!(!windows_apps_dark(
+            "    AppsUseLightTheme    REG_DWORD    0x1"
+        ));
+        assert!(!windows_apps_dark(
+            "    SystemUsesLightTheme    REG_DWORD    0x0"
+        ));
+        assert!(!windows_apps_dark(""));
+        assert!(linux_dark(Some(1), None, None, None));
+        assert!(!linux_dark(Some(2), Some("'prefer-dark'"), None, None));
+        assert!(linux_dark(Some(0), Some("'prefer-dark'"), None, None));
+        assert!(!linux_dark(
+            None,
+            Some("'prefer-light'"),
+            Some("'Adwaita-dark'"),
+            None
+        ));
+        assert!(linux_dark(
+            None,
+            Some("'default'"),
+            Some("'Adwaita-dark'"),
+            None
+        ));
+        assert!(linux_dark(None, None, None, Some("BreezeDark")));
+        assert!(!linux_dark(
+            None,
+            Some("'default'"),
+            Some("'Adwaita'"),
+            Some("BreezeLight")
+        ));
+        assert!(!linux_dark(None, None, None, None));
     }
 
     /// Linux (#1412): GNOME's text scaling factor and high contrast

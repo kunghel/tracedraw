@@ -69,8 +69,8 @@ impl Preset {
             Preset::Technical => (60.0, 30.0, 2, true),
             Preset::LineDrawing => (50.0, 50.0, 2, true),
             Preset::LineArt => (40.0, 25.0, 2, true),
-            Preset::Logo => (50.0, 25.0, 8, false),
-            Preset::DetailedLogo => (75.0, 20.0, 24, false),
+            Preset::Logo => (75.0, 20.0, 16, false),
+            Preset::DetailedLogo => (90.0, 15.0, 32, false),
             Preset::Clipart => (60.0, 25.0, 32, false),
             Preset::LowQualityImage => (35.0, 40.0, 48, false),
             Preset::HighQualityImage => (80.0, 15.0, 96, false),
@@ -98,6 +98,7 @@ impl Preset {
             delete_original: false,
             merged: Vec::new(),
             recolored: Vec::new(),
+            pixel_scale: 1.0,
         }
     }
 }
@@ -181,6 +182,12 @@ pub struct Settings {
     /// Colours of the trace drawn as another colour (the Colors tab's
     /// colour buttons): (traced, shown).
     pub recolored: Vec<([u8; 3], [u8; 3])>,
+    /// How many pixels of the picture make one pixel of the art: 1 for a
+    /// picture as it was drawn, 4 for one enlarged four times before it
+    /// is traced. Every measure the trace takes in pixels (the smallest
+    /// patch kept, how far a curve may stray, how wide a corner the blur
+    /// rounded) is in pixels of the art.
+    pub pixel_scale: f64,
 }
 
 impl Settings {
@@ -240,6 +247,8 @@ pub fn recolor(traced: &mut [Traced], s: &Settings) {
         let to = s.shown_color(c);
         if to != c {
             t.color = Color::rgb8(to[0], to[1], to[2]);
+            // A colour chosen by hand is drawn flat.
+            t.blend = None;
         }
     }
 }
@@ -250,6 +259,9 @@ pub struct Traced {
     pub path: BezPath,
     pub color: Color,
     pub closed: bool,
+    /// The blend the region is filled with, when it is a gradient of the
+    /// picture (`color` is then its mean colour).
+    pub blend: Option<crate::trace_blend::Blend>,
 }
 
 /// What the dialog's status line says of a trace.
@@ -300,7 +312,7 @@ pub type Cancel = std::sync::atomic::AtomicBool;
 /// The flood fills look at the flag once per this many pixels.
 const CANCEL_EVERY: usize = 4096;
 
-fn cancelled(c: Option<&Cancel>) -> bool {
+pub(crate) fn cancelled(c: Option<&Cancel>) -> bool {
     c.is_some_and(|c| c.load(std::sync::atomic::Ordering::Relaxed))
 }
 
@@ -315,11 +327,22 @@ pub fn trace_unless(img: &RgbaImage, s: &Settings, cancel: Option<&Cancel>) -> O
     if s.centerline {
         return centerline(img, s, cancel);
     }
-    if s.optimize {
+    let mut traced = if s.optimize {
         let best = optimize(img, s, cancel)?;
-        return outline(img, &best, cancel);
-    }
-    outline(img, s, cancel)
+        outline(img, &best, cancel)?
+    } else {
+        outline(img, s, cancel)?
+    };
+    // Small print redrawn with the letters of the font that draws it.
+    crate::trace_text::redraw_text(img, s, &mut traced, cancel)?;
+    Some(traced)
+}
+
+/// The trace before the small print is redrawn, for the tests of
+/// `trace_text.rs`.
+#[cfg(test)]
+pub(crate) fn outline_for_tests(img: &RgbaImage, s: &Settings) -> Vec<Traced> {
+    outline(img, s, None).unwrap_or_default()
 }
 
 // ----- the best settings for a picture -----------------------------------------
@@ -327,7 +350,7 @@ pub fn trace_unless(img: &RgbaImage, s: &Settings, cancel: Option<&Cancel>) -> O
 /// The details [`optimize`] tries, coarse to fine. Above 85 the cleaning
 /// of edges and specks stops and the curves multiply.
 #[cfg(not(target_arch = "wasm32"))]
-const OPTIMIZE_DETAILS: [f64; 5] = [50.0, 60.0, 70.0, 80.0, 85.0];
+const OPTIMIZE_DETAILS: [f64; 6] = [50.0, 60.0, 70.0, 80.0, 90.0, 95.0];
 /// In the browser the details are traced one after the other, in the
 /// frame: the three in the middle, where the search lands on nearly every
 /// picture.
@@ -384,26 +407,42 @@ pub fn optimize(img: &RgbaImage, s: &Settings, cancel: Option<&Cancel>) -> Optio
         Some(wrong + NODE_COST * stats(&traced).nodes as f64 / sides.max(1.0))
     };
     // Each detail on a thread of its own where there are threads.
+    // The detail the settings have is tried too, and kept unless another
+    // scores better: the search never leaves a trace worse than the one
+    // it started from (#2930).
+    let mut details: Vec<f64> = OPTIMIZE_DETAILS.to_vec();
+    let own = s.detail.clamp(0.0, 100.0);
+    if !details.iter().any(|d| (*d - own).abs() < 0.5) {
+        details.push(own);
+    }
     #[cfg(not(target_arch = "wasm32"))]
     let scores: Vec<Option<f64>> = std::thread::scope(|scope| {
-        let runs: Vec<_> = OPTIMIZE_DETAILS
+        let runs: Vec<_> = details
             .iter()
             .map(|d| scope.spawn(move || score(*d)))
             .collect();
         runs.into_iter().map(|r| r.join().ok().flatten()).collect()
     });
     #[cfg(target_arch = "wasm32")]
-    let scores: Vec<Option<f64>> = OPTIMIZE_DETAILS.iter().map(|d| score(*d)).collect();
+    let scores: Vec<Option<f64>> = details.iter().map(|d| score(*d)).collect();
     if cancelled(cancel) {
         return None;
     }
-    let best = OPTIMIZE_DETAILS
+    let scored: Vec<(f64, f64)> = details
         .iter()
         .zip(&scores)
         .filter_map(|(d, s)| s.map(|s| (*d, s)))
-        .min_by(|a, b| a.1.total_cmp(&b.1));
-    if let Some((detail, _)) = best {
-        base.detail = detail;
+        .collect();
+    let own_score = scored
+        .iter()
+        .find(|(d, _)| (*d - own).abs() < 0.5)
+        .map(|(_, s)| *s);
+    let best = scored.iter().copied().min_by(|a, b| a.1.total_cmp(&b.1));
+    if let Some((detail, score)) = best {
+        // Only for a real gain: scores a hair apart draw alike.
+        if own_score.is_none_or(|o| score < o - 0.05) {
+            base.detail = detail;
+        }
     }
     Some(base)
 }
@@ -668,6 +707,20 @@ fn outline(img: &RgbaImage, s: &Settings, cancel: Option<&Cancel>) -> Option<Vec
     if w == 0 || h == 0 {
         return Some(Vec::new());
     }
+    // Pixels of the picture for each pixel of the art, and an area of
+    // the art in pixels of the picture.
+    let enlarged = if s.pixel_scale.is_finite() {
+        s.pixel_scale.clamp(1.0, 8.0)
+    } else {
+        1.0
+    };
+    let area = |a: usize| {
+        if a <= 1 {
+            a
+        } else {
+            (a as f64 * enlarged * enlarged).round() as usize
+        }
+    };
     // 1. Take out the noise of photos and compressed images below the
     // highest detail, so it makes no specks, holes and seams of its own
     // inside flat colours (#611); smooth a little more when detail is
@@ -694,13 +747,8 @@ fn outline(img: &RgbaImage, s: &Settings, cancel: Option<&Cancel>) -> Option<Vec
     let palette: Vec<[u8; 3]> = if black_white {
         vec![[0, 0, 0], [255, 255, 255]]
     } else {
-        // At the highest detail every colour counts, the edges' too.
         let n = s.colors.clamp(2, 256) as usize;
-        if speck_area(s.detail) <= 1 {
-            median_cut(&src, n, cancel)?
-        } else {
-            art_palette(&src, n, cancel)?
-        }
+        art_palette(&src, n, cancel)?
     };
     let mut labels = vec![0usize; w * h];
     for (x, y, p) in src.enumerate_pixels() {
@@ -731,6 +779,14 @@ fn outline(img: &RgbaImage, s: &Settings, cancel: Option<&Cancel>) -> Option<Vec
     // and leave steps and bumps along the edge. Like the specks, kept at
     // the highest detail.
     let colors: Vec<[u8; 3]> = src.pixels().map(|p| [p[0], p[1], p[2]]).collect();
+    // The pixels on the edge of two colours, each with the two colours
+    // it blends (`trace_fine::Edges`), take the nearer of the two: no
+    // third colour that looks like the blend, and a thin faint line is
+    // as wide as it is in the picture (#2927, #2929). From the picture
+    // itself, which the noise filter has not thinned.
+    let raw_colors: Vec<[u8; 3]> = img.pixels().map(|p| [p[0], p[1], p[2]]).collect();
+    let alpha: Vec<u8> = img.pixels().map(|p| p[3]).collect();
+    let edges = crate::trace_fine::Edges::find(&raw_colors, &alpha, w, h, cancel)?;
     // One flat colour split in two by its noise, when the art has fewer
     // colours than asked for, is one colour again (#611).
     let palette = merge_split_colors(&mut labels, w, h, palette, &colors);
@@ -759,30 +815,157 @@ fn outline(img: &RgbaImage, s: &Settings, cancel: Option<&Cancel>) -> Option<Vec
     // colour picked than the colour its pixels took, and nothing was
     // removed.
     let palette = compact_palette(&mut labels, palette);
-    if speck_area(s.detail) > 1 {
-        settle_edges(&mut labels, w, h, &palette, &colors, cancel);
-        dissolve_fringes(&mut labels, w, h, &palette, &colors, cancel)?;
+    // At every detail: the in-between colours of an edge are no detail
+    // of the art (#2929).
+    settle_edges(&mut labels, w, h, &palette, &colors, cancel);
+    dissolve_fringes_of(
+        &mut labels,
+        w,
+        h,
+        &palette,
+        &colors,
+        FRINGE_WIDTH * enlarged,
+        cancel,
+    )?;
+    // An end takes the label the cleaning left it when that is its
+    // colour; else (the core of a thin line the cleaning took for noise)
+    // the colour still in the picture nearest its own.
+    {
+        let mut used = vec![false; palette.len()];
+        for l in &labels {
+            if let Some(u) = used.get_mut(*l) {
+                *u = true;
+            }
+        }
+        let cleaned = labels.clone();
+        crate::trace_fine::settle_on_ends(
+            &mut labels,
+            &edges,
+            &raw_colors,
+            &palette,
+            |end, other| {
+                let c = raw_colors[end];
+                if black_white {
+                    return (0.299 * c[0] as f32 + 0.587 * c[1] as f32 + 0.114 * c[2] as f32
+                        >= 128.0) as usize;
+                }
+                let kept = cleaned[end];
+                let true_end = palette
+                    .get(kept)
+                    .is_some_and(|p| distance2(*p, c) <= END_TRUE * END_TRUE);
+                // Part of a stroke or an area of its colour: two or more of
+                // the pixels around it are of it too. A pixel or two alone
+                // (the gap in a small letter, lighter than the letter and
+                // darker than the paper) may be a mix like any other.
+                let (x, y) = (end % w, end / w);
+                let alike = (y.saturating_sub(1)..=(y + 1).min(h - 1))
+                    .flat_map(|v| {
+                        (x.saturating_sub(1)..=(x + 1).min(w - 1)).map(move |u| v * w + u)
+                    })
+                    .filter(|j| *j != end && distance2(raw_colors[*j], c) <= END_ALIKE * END_ALIKE)
+                    .count();
+                if true_end && alike >= 2 {
+                    return kept;
+                }
+                // The ringing of an enlarged edge (enlarging overshoots:
+                // a darker rim along a colour's edge with a lighter one):
+                // the colour it is the edge of lies between the colour
+                // across the edge and its own, so it is that colour's.
+                if enlarged > 1.0 && alike >= 2 && cleaned[other] != kept {
+                    if let (Some(k), Some(a)) = (palette.get(kept), palette.get(cleaned[other])) {
+                        if between(*k, *a, c) {
+                            return kept;
+                        }
+                    }
+                }
+                // The core of a stroke too thin to reach its colour lies
+                // part of the way from the colour around it (the other end)
+                // to the stroke's: the nearest colour it lies on the way to,
+                // at least [`THIN_SHARE`] of it; a grey hairline on white,
+                // in a picture of black and white, is black (#2927).
+                let around = palette.get(cleaned[other]).copied();
+                let on_the_way = |p: [u8; 3]| {
+                    let Some(a) = around else {
+                        return false;
+                    };
+                    let Some((d, slack)) = off_segment(c, a, p) else {
+                        return false;
+                    };
+                    let t = (0..3)
+                        .map(|k| (c[k] as f64 - a[k] as f64) * (p[k] as f64 - a[k] as f64))
+                        .sum::<f64>()
+                        / (distance2(a, p) as f64).max(1.0);
+                    d <= 2.0 * slack && t >= THIN_SHARE
+                };
+                let nearest = |way: bool| {
+                    palette
+                        .iter()
+                        .enumerate()
+                        .filter(|(i, p)| {
+                            used[*i]
+                                && (!way
+                                    || (*i != cleaned[other]
+                                        && !(true_end && *i == kept)
+                                        && on_the_way(**p)))
+                        })
+                        .min_by_key(|(_, p)| distance2(**p, c))
+                        .map(|(i, _)| i)
+                };
+                nearest(true)
+                    .or_else(|| true_end.then_some(kept))
+                    .or_else(|| nearest(false))
+                    .unwrap_or(kept)
+            },
+        );
     }
     // Specks: patches of one colour smaller than the detail allows take
     // the colour around them, so stray dots and the fringes of soft edges
     // do not become curves of their own (#611).
-    despeckle(
+    despeckle_of(
         &mut labels,
         w,
         h,
-        speck_area(s.detail),
-        dot_area(s.detail),
+        area(speck_area(s.detail)),
+        area(dot_area(s.detail)),
+        (enlarged * enlarged).round() as usize,
         &palette,
         cancel,
     );
     if cancelled(cancel) {
         return None;
     }
+    // The pale inside of a small letter open to the paper is paper.
+    open_gaps(&mut labels, w, h, &palette, area(GAP_OPEN_AREA), cancel)?;
+    // A small piece of a shade inside a small letter joins the shade
+    // beside it.
+    if !black_white && enlarged > 1.0 {
+        join_shades(
+            &mut labels,
+            w,
+            h,
+            &palette,
+            &raw_colors,
+            area(SHADE_AREA),
+            cancel,
+        )?;
+    }
     // The one-pixel bumps and notches left along the edges go, so the
     // curves fitted to them are smooth (#1250).
     if speck_area(s.detail) > 1 {
         smooth_labels(&mut labels, w, h, cancel)?;
     }
+    let art = !black_white && flat_art(img);
+    if art {
+        full_thin_colors(&mut labels, w, h, &palette);
+    }
+    // The bands of a gradient are one region again, drawn as a blend
+    // (#2929).
+    let (palette, blends) = if art {
+        crate::trace_blend::join_blends(&mut labels, w, h, palette, &raw_colors, &edges, cancel)?
+    } else {
+        let none = vec![None; palette.len()];
+        (palette, none)
+    };
     // 2. Background: the most common colour touching the border.
     let mut border_counts = vec![0usize; palette.len()];
     let mut border_clear = 0usize;
@@ -818,7 +1001,7 @@ fn outline(img: &RgbaImage, s: &Settings, cancel: Option<&Cancel>) -> Option<Vec
             return None;
         }
     }
-    let mut background = match s.remove {
+    let background = match s.remove {
         Remove::None => None,
         Remove::Background | Remove::EntireColor => match s.background {
             // The colour chosen: the palette colour nearest it.
@@ -831,10 +1014,15 @@ fn outline(img: &RgbaImage, s: &Settings, cancel: Option<&Cancel>) -> Option<Vec
             // that runs off the edge (the stems of a floral pattern) is
             // the only colour there, and was removed as the background
             // (#1930).
+            // And only paper: a dark or strongly coloured surround is part
+            // of the design (the dark square behind a gold emblem), kept
+            // unless its colour is specified (#2928).
             None => border_counts
                 .iter()
                 .enumerate()
-                .filter(|(_, c)| **c > border_clear)
+                .filter(|(i, c)| {
+                    **c > border_clear && palette.get(*i).is_some_and(|p| is_paper(*p))
+                })
                 .max_by_key(|(_, c)| **c)
                 .map(|(i, _)| i),
         },
@@ -842,47 +1030,208 @@ fn outline(img: &RgbaImage, s: &Settings, cancel: Option<&Cancel>) -> Option<Vec
     // Removing the background (not the entire colour) takes out the
     // patches of that colour reaching the picture's edge; patches of it
     // inside the picture (the white of an eye) are traced like any colour.
+    // The background's soft shades are background too: from the
+    // picture's edge on through every pixel whose colour runs on from
+    // its neighbour's with no edge between, near the background colour
+    // (a vignette, a faint gradient), so the whole of it goes, not the
+    // part the colour reduction happened to give one colour (#2928).
     if let (Remove::Background, Some(bg)) = (s.remove, background) {
-        clear_border_region(&mut labels, w, h, bg);
-        background = None;
+        spread_background(&mut labels, w, h, bg, &palette, &raw_colors, &edges);
     }
-    // 3. The box of each colour's pixels, in one pass.
-    let mut boxes = vec![(w, h, 0usize, 0usize); palette.len()];
-    for (i, l) in labels.iter().enumerate() {
-        if let Some(b) = boxes.get_mut(*l) {
-            let (x, y) = (i % w, i / w);
-            *b = (b.0.min(x), b.1.min(y), b.2.max(x), b.3.max(y));
+    // The curves of a labelling: made once, and again for each round of
+    // the check below.
+    let build = |labels: &[usize], mut background: Option<usize>| -> Option<Vec<Traced>> {
+        let hard = crate::trace_fine::hard_edges(labels, &edges, w, h);
+        // The labels on a finer grid, where the edges run inside the pixels
+        // blending two colours (`trace_fine`); everything from here on is in
+        // that grid, and the curves are brought back to the picture's at the
+        // end.
+        // An enlarged picture has sharp edges already: twice as fine places
+        // them within its pixels, and no finer grid is worth its time.
+        let fine = crate::trace_fine::scale_for(w, h);
+        let fine = if enlarged > 1.0 {
+            fine.min(ENLARGED_FINE)
+        } else {
+            fine
+        };
+        // How soft the picture is: a soft one is sharpened before its edges
+        // are placed, and its corners are taken to be rounded further.
+        let soft = if hard {
+            0.0
+        } else {
+            crate::trace_fine::soft_share(crate::trace_fine::softness(labels, &edges, w, h))
+        };
+        let mut labels = crate::trace_fine::finer_labels(
+            labels,
+            &raw_colors,
+            &alpha,
+            &edges,
+            &palette,
+            w,
+            h,
+            fine,
+            soft,
+            cancel,
+        )?;
+        let (w, h) = (w * fine, h * fine);
+        if let (Remove::Background, Some(bg)) = (s.remove, background) {
+            clear_border_region(&mut labels, w, h, bg);
+            background = None;
         }
-    }
-    let present: Vec<bool> = boxes.iter().map(|b| b.0 <= b.2).collect();
-    // The background taken out is no region.
-    let regions: std::borrow::Cow<[usize]> = match background {
-        Some(bg) => labels
+        // The small thin letters of an enlarged picture are drawn again
+        // by their strokes (`trace_strokes`).
+        let redrawn = if enlarged > 1.0 {
+            let corner =
+                crate::trace_fine::Fit::of(s, fine as f64 * enlarged * ENLARGED_SHARP, hard, soft)
+                    .corner;
+            Some(crate::trace_strokes::redraw(
+                &mut labels,
+                w,
+                h,
+                enlarged * fine as f64,
+                &crate::trace_fit::Faithful {
+                    k: fine as f64,
+                    tolerance: FAITHFUL_TOLERANCE,
+                    corner,
+                    scale: enlarged,
+                },
+                &palette,
+                cancel,
+            )?)
+        } else {
+            None
+        };
+        // 3. The box of each colour's pixels, in one pass.
+        let mut boxes = vec![(w, h, 0usize, 0usize); palette.len()];
+        for (i, l) in labels.iter().enumerate() {
+            if let Some(b) = boxes.get_mut(*l) {
+                let (x, y) = (i % w, i / w);
+                *b = (b.0.min(x), b.1.min(y), b.2.max(x), b.3.max(y));
+            }
+        }
+        let present: Vec<bool> = boxes.iter().map(|b| b.0 <= b.2).collect();
+        // The background taken out is no region.
+        let regions: std::borrow::Cow<[usize]> = match background {
+            Some(bg) => labels
+                .iter()
+                .map(|l| if *l == bg { usize::MAX } else { *l })
+                .collect::<Vec<usize>>()
+                .into(),
+            None => labels.as_slice().into(),
+        };
+        // The order the colours stack in: a colour inside another's holes
+        // (the eyes in a head) above it, so the one around is drawn whole
+        // under it, as one ring; else darkest first (#1250).
+        let luma: Vec<u32> = palette
             .iter()
-            .map(|l| if *l == bg { usize::MAX } else { *l })
-            .collect::<Vec<usize>>()
-            .into(),
-        None => labels.as_slice().into(),
-    };
-    // The order the colours stack in: a colour inside another's holes
-    // (the eyes in a head) above it, so the one around is drawn whole
-    // under it, as one ring; else darkest first (#1250).
-    let luma: Vec<u32> = palette
-        .iter()
-        .map(|c| (c[0] as u32 * 299 + c[1] as u32 * 587 + c[2] as u32 * 114) / 1000)
-        .collect();
-    // The holes of each colour with no page showing in them: their
-    // pixels (in the colour's box) and the colours in them.
-    let mut holes: Vec<Vec<(Vec<u32>, Vec<usize>)>> = vec![Vec::new(); palette.len()];
-    let order = if s.remove_overlap {
-        let mut order: Vec<usize> = (0..palette.len()).collect();
-        order.sort_by_key(|i| luma[*i]);
-        order
-    } else {
-        let mut inside: Vec<Vec<bool>> = vec![vec![false; palette.len()]; palette.len()];
-        let mut seen = vec![false; palette.len()];
-        for ci in 0..palette.len() {
-            if !present[ci] || Some(ci) == background {
+            .map(|c| (c[0] as u32 * 299 + c[1] as u32 * 587 + c[2] as u32 * 114) / 1000)
+            .collect();
+        // The holes of each colour with no page showing in them: their
+        // pixels (in the colour's box) and the colours in them.
+        let mut holes: Vec<Vec<(Vec<u32>, Vec<usize>)>> = vec![Vec::new(); palette.len()];
+        let order = if s.remove_overlap {
+            let mut order: Vec<usize> = (0..palette.len()).collect();
+            order.sort_by_key(|i| luma[*i]);
+            order
+        } else {
+            let mut inside: Vec<Vec<bool>> = vec![vec![false; palette.len()]; palette.len()];
+            let mut seen = vec![false; palette.len()];
+            for ci in 0..palette.len() {
+                if !present[ci] || Some(ci) == background {
+                    continue;
+                }
+                if cancelled(cancel) {
+                    return None;
+                }
+                let (x0, y0, x1, y1) = boxes[ci];
+                let (cw, ch) = (x1 - x0 + 1, y1 - y0 + 1);
+                let label_at = |i: usize| regions[(y0 + i / cw) * w + x0 + i % cw];
+                let own: Vec<bool> = (0..cw * ch).map(|i| label_at(i) == ci).collect();
+                for_each_hole(&own, cw, ch, |hole| {
+                    seen.fill(false);
+                    for &i in hole {
+                        match seen.get_mut(label_at(i)) {
+                            Some(v) => *v = true,
+                            // The page shows in this hole: it stays one.
+                            None => return,
+                        }
+                    }
+                    let colours: Vec<usize> = (0..seen.len()).filter(|l| seen[*l]).collect();
+                    for &l in &colours {
+                        inside[ci][l] = true;
+                    }
+                    holes[ci].push((hole.iter().map(|i| *i as u32).collect(), colours));
+                });
+            }
+            stacking_order(&inside, &luma)
+        };
+        let fit = crate::trace_fine::Fit::of(
+            s,
+            fine as f64
+                * if enlarged > 1.0 {
+                    enlarged * ENLARGED_SHARP
+                } else {
+                    1.0
+                },
+            hard,
+            soft,
+        );
+        let mut fit = fit;
+        if enlarged > 1.0 {
+            fit.tolerance *= ENLARGED_TOLERANCE;
+            fit.reach *= ENLARGED_REACH;
+            fit.cap_near = ENLARGED_CAP_NEAR;
+        }
+        let fit = fit;
+        let mut rank = vec![0usize; palette.len()];
+        for (k, ci) in order.iter().enumerate() {
+            rank[*ci] = k;
+        }
+        // The borders between the regions, each fitted once: every region's
+        // rings are put together from them, so where two regions meet their
+        // outlines are the same curve, with no gap between them and no second
+        // curve beside the first (#611, #1250).
+        // An enlarged picture's borders are fitted faithfully, each checked
+        // against the border it was made from (`trace_fit`).
+        let faithful = (enlarged > 1.0).then(|| crate::trace_fit::Faithful {
+            k: fine as f64,
+            tolerance: FAITHFUL_TOLERANCE * fit.tolerance / ENLARGED_TOLERANCE,
+            corner: fit.corner,
+            scale: enlarged as f64,
+        });
+        // How much of the picture each region covers: of the two sides
+        // of a border the lesser is the shape, the greater its ground.
+        let mut covers = vec![0usize; palette.len()];
+        for l in regions.iter() {
+            if let Some(c) = covers.get_mut(*l) {
+                *c += 1;
+            }
+        }
+        // The colour of each region for placing its edges: none for a
+        // blend, whose colour changes along the edge.
+        let flat: Vec<Option<[f32; 3]>> = palette
+            .iter()
+            .enumerate()
+            .map(|(i, c)| {
+                blends
+                    .get(i)
+                    .is_none_or(|b| b.is_none())
+                    .then(|| c.map(|v| v as f32))
+            })
+            .collect();
+        let source = faithful.as_ref().map(|f| FaithfulSource {
+            fit: f,
+            colors: &raw_colors,
+            w: w / fine,
+            h: h / fine,
+            flat: &flat,
+            covers: &covers,
+            redrawn: redrawn.as_deref(),
+        });
+        let shared = SharedBorders::new(&regions, w, h, &fit, source.as_ref(), cancel)?;
+        let mut out = Vec::new();
+        for ci in order {
+            if Some(ci) == background || !present[ci] {
                 continue;
             }
             if cancelled(cancel) {
@@ -892,88 +1241,492 @@ fn outline(img: &RgbaImage, s: &Settings, cancel: Option<&Cancel>) -> Option<Vec
             let (cw, ch) = (x1 - x0 + 1, y1 - y0 + 1);
             let label_at = |i: usize| regions[(y0 + i / cw) * w + x0 + i % cw];
             let own: Vec<bool> = (0..cw * ch).map(|i| label_at(i) == ci).collect();
-            for_each_hole(&own, cw, ch, |hole| {
-                seen.fill(false);
-                for &i in hole {
-                    match seen.get_mut(label_at(i)) {
-                        Some(v) => *v = true,
-                        // The page shows in this hole: it stays one.
-                        None => return,
+            // Stacked: the holes of the region holding only regions drawn
+            // above it are part of it, so its curve is the outline alone and
+            // the edges inside are drawn once, by the regions on top, which
+            // leave no page showing between them and it. Remove overlap keeps
+            // every region to its own pixels (no holes were looked for).
+            let mut mask = own;
+            for (pixels, colours) in &holes[ci] {
+                if colours.iter().all(|l| rank[*l] > rank[ci]) {
+                    for &i in pixels {
+                        mask[i as usize] = true;
                     }
                 }
-                let colours: Vec<usize> = (0..seen.len()).filter(|l| seen[*l]).collect();
-                for &l in &colours {
-                    inside[ci][l] = true;
+            }
+            // One curve for the colour (every region combined), or one per
+            // separate patch of it.
+            let pieces: Vec<((usize, usize), usize, usize, Vec<bool>)> = if s.merge_adjacent {
+                vec![((x0, y0), cw, ch, mask)]
+            } else {
+                patches(&mask, cw, ch)
+                    .into_iter()
+                    .map(|((px0, py0, px1, py1), own)| {
+                        ((x0 + px0, y0 + py0), px1 - px0 + 1, py1 - py0 + 1, own)
+                    })
+                    .collect()
+            };
+            let c = s.shown_color(palette[ci]);
+            for ((ox, oy), pw, ph, piece) in pieces {
+                if cancelled(cancel) {
+                    return None;
                 }
-                holes[ci].push((hole.iter().map(|i| *i as u32).collect(), colours));
-            });
+                let path = shared.rings(&piece, (ox, oy), pw, ph, cancel)?;
+                if path.elements().is_empty() {
+                    continue;
+                }
+                let path = tracedraw_core::geometry::Affine::scale(1.0 / fine as f64) * path;
+                out.push(Traced {
+                    path,
+                    color: Color::rgb8(c[0], c[1], c[2]),
+                    closed: true,
+                    blend: blends
+                        .get(ci)
+                        .copied()
+                        .flatten()
+                        .filter(|_| c == palette[ci]),
+                });
+            }
         }
-        stacking_order(&inside, &luma)
+        Some(out)
     };
-    let tolerance = 0.3 + (100.0 - s.detail) / 100.0 * 2.5;
-    let mut rank = vec![0usize; palette.len()];
-    for (k, ci) in order.iter().enumerate() {
-        rank[*ci] = k;
-    }
-    // The borders between the regions, each fitted once: every region's
-    // rings are put together from them, so where two regions meet their
-    // outlines are the same curve, with no gap between them and no second
-    // curve beside the first (#611, #1250).
-    let shared = SharedBorders::new(&regions, w, h, tolerance, s, cancel)?;
-    let mut out = Vec::new();
-    for ci in order {
-        if Some(ci) == background || !present[ci] {
-            continue;
-        }
-        if cancelled(cancel) {
-            return None;
-        }
-        let (x0, y0, x1, y1) = boxes[ci];
-        let (cw, ch) = (x1 - x0 + 1, y1 - y0 + 1);
-        let label_at = |i: usize| regions[(y0 + i / cw) * w + x0 + i % cw];
-        let own: Vec<bool> = (0..cw * ch).map(|i| label_at(i) == ci).collect();
-        // Stacked: the holes of the region holding only regions drawn
-        // above it are part of it, so its curve is the outline alone and
-        // the edges inside are drawn once, by the regions on top, which
-        // leave no page showing between them and it. Remove overlap keeps
-        // every region to its own pixels (no holes were looked for).
-        let mut mask = own;
-        for (pixels, colours) in &holes[ci] {
-            if colours.iter().all(|l| rank[*l] > rank[ci]) {
-                for &i in pixels {
-                    mask[i as usize] = true;
+    let mut out = build(&labels, background)?;
+    // The check: the curves are drawn and compared with the picture, and
+    // where a patch of them shows another colour than the picture does
+    // (the gap of a small letter the cleaning closed), its pixels take
+    // the colours the picture has there and the curves are made again.
+    if enlarged > 1.0 {
+        let removed = background.filter(|_| s.remove != Remove::None);
+        let least = (enlarged * enlarged * CHECK_AREA).round() as usize;
+        for _ in 0..CHECK_ROUNDS {
+            let (wrong, drawn) = differs(img, &out, &palette, removed, cancel)?;
+            let changes = recheck(img, &wrong, &drawn, &mut labels, &palette, &blends, least);
+            if changes.is_empty() {
+                break;
+            }
+            // The change is checked the same way: a patch that still
+            // differs from the picture goes back to what it was.
+            let again = build(&labels, background)?;
+            let (after, _) = differs(img, &again, &palette, removed, cancel)?;
+            let (mut kept, mut undone) = (0usize, 0usize);
+            for c in &changes {
+                let still = c
+                    .pixels
+                    .iter()
+                    .filter(|i| after.get(**i) == Some(&true))
+                    .count();
+                if still * 2 > c.pixels.len() {
+                    for (i, l) in c.pixels.iter().zip(&c.was) {
+                        if let Some(at) = labels.get_mut(*i) {
+                            *at = *l;
+                        }
+                    }
+                    undone += 1;
+                } else {
+                    kept += 1;
                 }
             }
-        }
-        // One curve for the colour (every region combined), or one per
-        // separate patch of it.
-        let pieces: Vec<((usize, usize), usize, usize, Vec<bool>)> = if s.merge_adjacent {
-            vec![((x0, y0), cw, ch, mask)]
-        } else {
-            patches(&mask, cw, ch)
-                .into_iter()
-                .map(|((px0, py0, px1, py1), own)| {
-                    ((x0 + px0, y0 + py0), px1 - px0 + 1, py1 - py0 + 1, own)
-                })
-                .collect()
-        };
-        let c = s.shown_color(palette[ci]);
-        for ((ox, oy), pw, ph, piece) in pieces {
-            if cancelled(cancel) {
-                return None;
+            if kept == 0 {
+                break;
             }
-            let path = shared.rings(&piece, (ox, oy), pw, ph, cancel)?;
-            if path.elements().is_empty() {
-                continue;
-            }
-            out.push(Traced {
-                path,
-                color: Color::rgb8(c[0], c[1], c[2]),
-                closed: true,
-            });
+            out = if undone == 0 {
+                again
+            } else {
+                build(&labels, background)?
+            };
         }
     }
     Some(out)
+}
+
+/// How many times at most a trace is drawn, compared with its picture
+/// and made again where it differs.
+const CHECK_ROUNDS: usize = 2;
+/// The smallest patch (pixels of the art) drawn in another colour than
+/// the picture's that is made again.
+const CHECK_AREA: f64 = 0.75;
+/// How many times nearer the picture's colours the colour a patch is
+/// given must be than the colours it had.
+const CHECK_NEARER: f64 = 0.6;
+
+/// A patch of pixels the check gave another label, and the labels they
+/// had.
+struct Relabelled {
+    pixels: Vec<usize>,
+    was: Vec<usize>,
+}
+
+/// Draw `traced` and compare it with the picture it was traced from:
+/// which pixels differ ([`WRONG_DISTANCE`], an edge a pixel off aside),
+/// and the colours drawn. `removed` is the background taken out, shown
+/// where nothing is drawn. `None` once `cancel` is set.
+fn differs(
+    img: &RgbaImage,
+    traced: &[Traced],
+    palette: &[[u8; 3]],
+    removed: Option<usize>,
+    cancel: Option<&Cancel>,
+) -> Option<(Vec<bool>, Vec<[f32; 3]>)> {
+    let (w, h) = (img.width() as usize, img.height() as usize);
+    if w == 0 || h == 0 {
+        return Some((Vec::new(), Vec::new()));
+    }
+    let drawn = render_traced(traced, w as u32, h as u32, 1.0);
+    if cancelled(cancel) {
+        return None;
+    }
+    let under: [f32; 3] = match removed.and_then(|b| palette.get(b)) {
+        Some(c) => c.map(|v| v as f32),
+        None => [255.0; 3],
+    };
+    let over = |p: &Rgba<u8>| -> [f32; 3] {
+        let k = p[3] as f32 / 255.0;
+        std::array::from_fn(|c| p[c] as f32 * k + under[c] * (1.0 - k))
+    };
+    let pa: Vec<[f32; 3]> = img.pixels().map(over).collect();
+    let pb: Vec<[f32; 3]> = drawn.pixels().map(over).collect();
+    if pa.len() != w * h || pb.len() != w * h {
+        return Some((Vec::new(), Vec::new()));
+    }
+    let limit = (WRONG_DISTANCE * WRONG_DISTANCE) as f32;
+    let far = |x: usize, y: usize, c: [f32; 3]| {
+        (y.saturating_sub(1)..=(y + 1).min(h - 1)).all(|v| {
+            (x.saturating_sub(1)..=(x + 1).min(w - 1)).all(|u| {
+                let q = pb[v * w + u];
+                (0..3).map(|k| (q[k] - c[k]).powi(2)).sum::<f32>() > limit
+            })
+        })
+    };
+    let mut wrong = vec![false; w * h];
+    for y in 0..h {
+        if y % 32 == 0 && cancelled(cancel) {
+            return None;
+        }
+        for x in 0..w {
+            let i = y * w + x;
+            wrong[i] = img.as_raw()[i * 4 + 3] >= 128 && far(x, y, pa[i]);
+        }
+    }
+    Some((wrong, pb))
+}
+
+/// The second half of the check: each patch of `min_area` pixels or more
+/// of `wrong` (see [`differs`]; `pb` the colours drawn) takes the label
+/// of the one colour the picture is nearest there, when that is much
+/// nearer ([`CHECK_NEARER`]) and no shade of what is drawn. Gives the
+/// patches changed.
+fn recheck(
+    img: &RgbaImage,
+    wrong: &[bool],
+    pb: &[[f32; 3]],
+    labels: &mut [usize],
+    palette: &[[u8; 3]],
+    blends: &[Option<crate::trace_blend::Blend>],
+    min_area: usize,
+) -> Vec<Relabelled> {
+    let (w, h) = (img.width() as usize, img.height() as usize);
+    let mut changes = Vec::new();
+    if labels.len() != w * h || wrong.len() != w * h || pb.len() != w * h || w < 3 || h < 3 {
+        return changes;
+    }
+    let limit = (WRONG_DISTANCE * WRONG_DISTANCE) as f32;
+    let mut used = vec![false; palette.len()];
+    for l in labels.iter() {
+        if let Some(u) = used.get_mut(*l) {
+            *u = true;
+        }
+    }
+    let mut seen = vec![false; w * h];
+    let (mut stack, mut patch) = (Vec::new(), Vec::new());
+    for start in 0..w * h {
+        if !wrong[start] || seen[start] {
+            continue;
+        }
+        seen[start] = true;
+        stack.push(start);
+        patch.clear();
+        while let Some(i) = stack.pop() {
+            patch.push(i);
+            let (x, y) = (i % w, i / w);
+            for v in y.saturating_sub(1)..=(y + 1).min(h - 1) {
+                for u in x.saturating_sub(1)..=(x + 1).min(w - 1) {
+                    let j = v * w + u;
+                    if wrong[j] && !seen[j] {
+                        seen[j] = true;
+                        stack.push(j);
+                    }
+                }
+            }
+        }
+        if patch.len() < min_area.max(2) {
+            continue;
+        }
+        // How far a pixel's colour is from a label's: from the nearest
+        // colour of its blend when it is drawn as one.
+        let off = |i: usize, k: usize| -> f64 {
+            let p = img.as_raw();
+            let c = [p[i * 4], p[i * 4 + 1], p[i * 4 + 2]];
+            let Some(q) = palette.get(k).copied() else {
+                return f64::MAX;
+            };
+            let flat = distance2(q, c) as f64;
+            match blends.get(k).copied().flatten() {
+                Some(b) => off_segment(c, b.start, b.end)
+                    .map_or(flat, |(d, _)| d * d)
+                    .min(flat),
+                None => flat,
+            }
+            .sqrt()
+        };
+        // The whole patch takes the one colour its pixels are nearest
+        // in all, when that is much nearer than the colours they have.
+        let now: f64 = patch.iter().map(|i| off(*i, labels[*i])).sum();
+        let best = (0..palette.len())
+            .filter(|k| used[*k])
+            .map(|k| (patch.iter().map(|i| off(*i, k)).sum::<f64>(), k))
+            .min_by(|x, y| x.0.total_cmp(&y.0));
+        if let Some((sum, k)) = best {
+            // A shade of what is drawn there already is no wrong shape:
+            // as a patch of its own it would be a seam inside the shape.
+            let mean: [f32; 3] = std::array::from_fn(|c| {
+                patch.iter().map(|i| pb[*i][c]).sum::<f32>() / patch.len() as f32
+            });
+            let shade = palette.get(k).is_some_and(|q| {
+                (0..3).map(|c| (q[c] as f32 - mean[c]).powi(2)).sum::<f32>() <= limit
+            });
+            if !shade && sum <= CHECK_NEARER * now && patch.iter().any(|i| labels[*i] != k) {
+                let was = patch.iter().map(|i| labels[*i]).collect();
+                for &i in &patch {
+                    labels[i] = k;
+                }
+                changes.push(Relabelled {
+                    pixels: patch.clone(),
+                    was,
+                });
+            }
+        }
+    }
+    changes
+}
+
+/// How near (RGB distance) the colour of an edge's end must be to the
+/// colour of its label for the label to stand.
+const END_TRUE: u32 = 48;
+/// How near (RGB distance) a pixel beside an edge's end must be to it to
+/// be of the same stroke or area.
+const END_ALIKE: u32 = 24;
+
+/// Whether a colour along the picture's edge is paper: light and nearly
+/// grey, the surround a drawing is scanned or exported on.
+fn is_paper(c: [u8; 3]) -> bool {
+    let luma = (c[0] as u32 * 299 + c[1] as u32 * 587 + c[2] as u32 * 114) / 1000;
+    let (lo, hi) = (c[0].min(c[1]).min(c[2]), c[0].max(c[1]).max(c[2]));
+    luma >= PAPER_LIGHT && (hi - lo) as u32 <= PAPER_TINT
+}
+
+/// The darkest paper, and the most colour it has (the widest gap between
+/// two of its channels).
+const PAPER_LIGHT: u32 = 180;
+const PAPER_TINT: u32 = 48;
+
+/// How far (RGB distance) the background's soft shades may lie from its
+/// colour, and one such pixel from the next.
+const BACKGROUND_NEAR: u32 = 56;
+const BACKGROUND_STEP: u32 = 10;
+
+/// Give the label `bg` to the pixels the background runs on into from
+/// the picture's edge: those of its own label there, and from them every
+/// pixel within [`BACKGROUND_NEAR`] of the background colour whose colour
+/// is within [`BACKGROUND_STEP`] of its neighbour's and that lies on no
+/// edge (`edges`).
+fn spread_background(
+    labels: &mut [usize],
+    w: usize,
+    h: usize,
+    bg: usize,
+    palette: &[[u8; 3]],
+    colors: &[[u8; 3]],
+    edges: &crate::trace_fine::Edges,
+) {
+    let Some(&paper) = palette.get(bg) else {
+        return;
+    };
+    if labels.len() != w * h || colors.len() != w * h {
+        return;
+    }
+    let mut seen = vec![false; w * h];
+    let mut stack: Vec<usize> = Vec::new();
+    let border = (0..w)
+        .flat_map(|x| [x, (h - 1) * w + x])
+        .chain((0..h).flat_map(|y| [y * w, y * w + w - 1]));
+    for i in border {
+        if labels[i] == bg && !seen[i] {
+            seen[i] = true;
+            stack.push(i);
+        }
+    }
+    let near = |j: usize, i: usize| {
+        [
+            (!j.is_multiple_of(w)).then(|| j - 1),
+            (j % w + 1 < w).then(|| j + 1),
+            (j >= w).then(|| j - w),
+            (j + w < w * h).then(|| j + w),
+        ]
+        .into_iter()
+        .flatten()
+        .filter(move |n| *n != i)
+    };
+    // What each pixel was before the background took it.
+    let was = labels.to_vec();
+    let mut reached: Vec<usize> = Vec::new();
+    while let Some(i) = stack.pop() {
+        reached.push(i);
+        for j in near(i, usize::MAX) {
+            if seen[j] || labels[j] == usize::MAX {
+                continue;
+            }
+            let soft = edges.at(j).is_none()
+                && distance2(colors[j], paper) <= BACKGROUND_NEAR * BACKGROUND_NEAR
+                && distance2(colors[j], colors[i]) <= BACKGROUND_STEP * BACKGROUND_STEP;
+            if labels[j] == bg || soft {
+                seen[j] = true;
+                labels[j] = bg;
+                stack.push(j);
+            }
+        }
+    }
+    // A shade of the background all of whose flat pixels went leaves its
+    // edge pixels behind, a pale ring round the art: they go with it.
+    let mut flat = vec![false; palette.len()];
+    for (i, l) in labels.iter().enumerate() {
+        if edges.at(i).is_none() {
+            if let Some(f) = flat.get_mut(*l) {
+                *f = true;
+            }
+        }
+    }
+    let gone = |l: usize| {
+        l != bg
+            && flat.get(l) == Some(&false)
+            && palette
+                .get(l)
+                .is_some_and(|c| distance2(*c, paper) <= BACKGROUND_NEAR * BACKGROUND_NEAR)
+    };
+    // So do the edge pixels of a shade beside the pixels of it that
+    // went, when flat pixels of the shade stay elsewhere (inside the
+    // letters): in a picture traced on its own pixels they were a pale
+    // line round every letter.
+    let rim = |j: usize, i: usize| {
+        edges.at(j).is_some()
+            && was[j] != bg
+            && was[j] == was[i]
+            && palette
+                .get(was[j])
+                .is_some_and(|c| distance2(*c, paper) <= BACKGROUND_NEAR * BACKGROUND_NEAR)
+    };
+    while let Some(i) = reached.pop() {
+        for j in near(i, usize::MAX) {
+            if !seen[j] && (gone(labels[j]) || rim(j, i)) {
+                seen[j] = true;
+                labels[j] = bg;
+                reached.push(j);
+            }
+        }
+    }
+}
+
+/// Whether `img` is art drawn in flat colours: at least [`FLAT_SHARE`]
+/// of its opaque pixels lie inside one (their eight neighbours within
+/// [`FLAT_NOISE`] of them).
+fn flat_art(img: &RgbaImage) -> bool {
+    let (w, h) = (img.width() as usize, img.height() as usize);
+    let raw = img.as_raw();
+    let at = |i: usize| [raw[i * 4], raw[i * 4 + 1], raw[i * 4 + 2]];
+    let opaque = |i: usize| raw[i * 4 + 3] >= 128;
+    let (mut all, mut flat) = (0usize, 0usize);
+    for y in 0..h {
+        for x in 0..w {
+            let i = y * w + x;
+            if !opaque(i) {
+                continue;
+            }
+            all += 1;
+            if x == 0 || y == 0 || x + 1 == w || y + 1 == h {
+                continue;
+            }
+            let c = at(i);
+            flat += (y - 1..=y + 1).all(|v| {
+                (x - 1..=x + 1).all(|u| {
+                    let j = v * w + u;
+                    opaque(j) && distance2(at(j), c) <= FLAT_NOISE * FLAT_NOISE
+                })
+            }) as usize;
+        }
+    }
+    all > 0 && flat as f64 >= FLAT_SHARE * all as f64
+}
+
+/// How far along the way from the colour around it to a full colour a
+/// thin colour must lie to be that colour drawn thin.
+const THIN_SHARE: f64 = 0.3;
+
+/// The colours of thin strokes take the full colour they are a faint
+/// copy of (#2927): a colour with no flat pixel anywhere (every stroke
+/// of it thinner than three pixels, so the picture's blur never lets it
+/// reach its colour) that lies between the colour most around it and a
+/// colour with flat areas, at least [`THIN_SHARE`] of the way, is that
+/// colour: the grey small print of a black and white logo is black.
+fn full_thin_colors(labels: &mut [usize], w: usize, h: usize, palette: &[[u8; 3]]) {
+    let n = palette.len();
+    if labels.len() != w * h || n < 3 {
+        return;
+    }
+    let flat = flat_pixels(labels, w, h);
+    let mut has_flat = vec![false; n];
+    for (l, f) in labels.iter().zip(&flat) {
+        if let Some(v) = has_flat.get_mut(*l) {
+            *v |= *f;
+        }
+    }
+    let shared = shared_edges(labels, w, h, n);
+    let mut alias: Vec<usize> = (0..n).collect();
+    for g in 0..n {
+        if has_flat[g] {
+            continue;
+        }
+        let Some((around, _)) = (0..n)
+            .filter(|a| *a != g && has_flat[*a])
+            .map(|a| (a, shared[g * n + a]))
+            .filter(|(_, e)| *e > 0)
+            .max_by_key(|(a, e)| (*e, usize::MAX - *a))
+        else {
+            continue;
+        };
+        let (pg, pa) = (palette[g], palette[around]);
+        let mut best: Option<(f64, usize)> = None;
+        for b in (0..n).filter(|b| *b != g && *b != around && has_flat[*b]) {
+            let pb = palette[b];
+            let Some((d, slack)) = off_segment(pg, pa, pb) else {
+                continue;
+            };
+            let len2 = distance2(pa, pb) as f64;
+            let t = (0..3)
+                .map(|k| (pg[k] as f64 - pa[k] as f64) * (pb[k] as f64 - pa[k] as f64))
+                .sum::<f64>()
+                / len2.max(1.0);
+            if d <= 2.0 * slack && t >= THIN_SHARE && best.is_none_or(|(bd, _)| d < bd) {
+                best = Some((d, b));
+            }
+        }
+        if let Some((_, b)) = best {
+            alias[g] = b;
+        }
+    }
+    for l in labels.iter_mut() {
+        if let Some(a) = alias.get(*l) {
+            *l = *a;
+        }
+    }
 }
 
 /// How near (RGB distance) a colour of the Colors tab must come to a
@@ -989,7 +1742,7 @@ fn rings_path(
     w: usize,
     h: usize,
     offset: tracedraw_core::geometry::Vec2,
-    tolerance: f64,
+    _tolerance: f64,
     s: &Settings,
     cancel: Option<&Cancel>,
 ) -> Option<BezPath> {
@@ -997,7 +1750,14 @@ fn rings_path(
         .iter()
         .map(|m| if *m { 0 } else { usize::MAX })
         .collect();
-    let fitted = SharedBorders::new(&labels, w, h, tolerance, s, cancel)?;
+    let fitted = SharedBorders::new(
+        &labels,
+        w,
+        h,
+        &crate::trace_fine::Fit::of(s, 1.0, true, 0.0),
+        None,
+        cancel,
+    )?;
     let path = fitted.rings(mask, (0, 0), w, h, cancel)?;
     Some(tracedraw_core::geometry::Affine::translate(offset) * path)
 }
@@ -1193,8 +1953,8 @@ impl SharedBorders {
         labels: &[usize],
         w: usize,
         h: usize,
-        tolerance: f64,
-        s: &Settings,
+        fit: &crate::trace_fine::Fit,
+        faithful: Option<&FaithfulSource>,
         cancel: Option<&Cancel>,
     ) -> Option<SharedBorders> {
         let borders = borders(labels, w, h, cancel)?;
@@ -1203,7 +1963,7 @@ impl SharedBorders {
             if k % 256 == 0 && cancelled(cancel) {
                 return None;
             }
-            curves.push(fit_border(b, tolerance, s));
+            curves.push(fit_border(b, fit, faithful, labels));
         }
         let tiles_across = w / BORDER_TILE as usize + 1;
         let mut tiles = vec![Vec::new(); tiles_across * (h / BORDER_TILE as usize + 1)];
@@ -1382,37 +2142,72 @@ fn append_curve(path: &mut BezPath, curve: &BezPath, forwards: bool, closed: boo
     }
 }
 
+/// What the faithful fit of a picture's borders works from: how it
+/// fits, the picture's colours (`w` x `h`) and each label's colour, none
+/// for a label drawn as a blend.
+struct FaithfulSource<'a> {
+    fit: &'a crate::trace_fit::Faithful,
+    colors: &'a [[u8; 3]],
+    w: usize,
+    h: usize,
+    flat: &'a [Option<[f32; 3]>],
+    /// How many points of the grid each label covers.
+    covers: &'a [usize],
+    /// The points of the grid whose borders were drawn again
+    /// ([`crate::trace_strokes`]): they are not placed by the picture.
+    redrawn: Option<&'a [bool]>,
+}
+
 /// A border's curve, from its start to its end (closed round a loop):
-/// fitted as a ring is ([`fit_ring`], [`fit_open`]), or simplified to
-/// straight lines along the pixel edges without smoothing.
-fn fit_border(b: &Border, tolerance: f64, s: &Settings) -> BezPath {
+/// fitted with its corners kept ([`crate::trace_fine::fit`]), or
+/// simplified to straight lines along the pixel edges without smoothing.
+fn fit_border(
+    b: &Border,
+    fit: &crate::trace_fine::Fit,
+    faithful: Option<&FaithfulSource>,
+    labels: &[usize],
+) -> BezPath {
     let mut pts = b.corners();
     if b.closed {
         pts.pop();
     }
-    if s.smoothing <= 0.0 {
-        let simplified = tracedraw_core::geometry::simplify(&pts, tolerance);
-        if b.closed {
-            // A loop that simplifies to a line is left out, on both sides.
-            if simplified.len() < 3 {
-                return BezPath::new();
-            }
-            return polyline_closed(&simplified);
-        }
-        let mut out = BezPath::new();
-        if let Some(first) = simplified.first() {
-            out.move_to(*first);
-            for p in &simplified[1..] {
-                out.line_to(*p);
-            }
-        }
-        return out;
+    if let Some(f) = faithful {
+        let side = |pixel: Option<usize>| {
+            pixel
+                .and_then(|i| labels.get(i))
+                .and_then(|l| f.flat.get(*l).copied().flatten())
+        };
+        let picture = crate::trace_fit::Picture {
+            colors: f.colors,
+            w: f.w,
+            h: f.h,
+            a: side(b.a),
+            b: side(b.b),
+            a_less: {
+                let covers = |pixel: Option<usize>| {
+                    pixel
+                        .and_then(|i| labels.get(i))
+                        .and_then(|l| f.covers.get(*l).copied())
+                };
+                // The background taken out covers the most.
+                match (covers(b.a), covers(b.b)) {
+                    (Some(x), Some(y)) => Some(x < y),
+                    (None, Some(_)) => Some(false),
+                    (Some(_), None) => Some(true),
+                    (None, None) => None,
+                }
+            },
+        };
+        let drawn = f.redrawn.is_some_and(|r| {
+            [b.a, b.b]
+                .iter()
+                .flatten()
+                .any(|i| r.get(*i) == Some(&true))
+        });
+        let picture = (!drawn).then_some(&picture);
+        return crate::trace_fit::fit(&pts, b.closed, f.fit, picture).path;
     }
-    if b.closed {
-        fit_ring(&pts, s)
-    } else {
-        fit_open(&pts, s)
-    }
+    crate::trace_fine::fit(&pts, b.closed, fit)
 }
 
 /// Call `f` with the pixels of each hole of `mask` (`w` x `h`): each
@@ -1578,6 +2373,182 @@ fn label_patches(
     Some(p)
 }
 
+/// A picture enlarged before it is traced ([`Settings::pixel_scale`])
+/// has its corners rounded a little less than the blur of a small
+/// picture rounds them, and its edges placed more exactly: the measures
+/// of the corner finder are this share of a pixel of the art, and the
+/// curves may stray this share of what they may in a picture traced as
+/// it is.
+const ENLARGED_SHARP: f64 = 0.875;
+const ENLARGED_TOLERANCE: f64 = 0.5;
+/// How far (pixels of the picture, at the tolerance of full detail and
+/// more as the detail falls) the curves of an enlarged picture may stray
+/// from its smoothed borders.
+const FAITHFUL_TOLERANCE: f64 = 0.85;
+/// The tip of a narrow letter (the top of an A five pixels high) is as
+/// the enlarging drew it: the place its two sides meet may lie this
+/// share as far from it as in a picture traced as it is, where the blur
+/// wore the tip down.
+const ENLARGED_REACH: f64 = 0.4;
+/// The finest grid an enlarged picture is put on (times its own).
+const ENLARGED_FINE: usize = 2;
+/// The square end of a thin stroke is rounded by the enlarging to half a
+/// circle at most, which leaves its corners a fifth of its width from
+/// the border: a round end whose corners would lie further than this
+/// share of its width is a bend (of an S), and stays round.
+const ENLARGED_CAP_NEAR: f64 = 0.25;
+
+/// The largest piece of a shade (pixels) that joins a larger piece of a
+/// shade near its own beside it, and how near (RGB distance) the two
+/// shades are.
+const SHADE_AREA: usize = 16;
+const SHADE_NEAR: u32 = 48;
+
+/// The shading of small print is no detail of the art: a patch of at
+/// most `most` pixels beside a larger patch of a colour within
+/// [`SHADE_NEAR`] of its own takes that colour (the largest such), so a
+/// letter five pixels high is one colour, not three pieces with seams
+/// between them.
+fn join_shades(
+    labels: &mut [usize],
+    w: usize,
+    h: usize,
+    palette: &[[u8; 3]],
+    colors: &[[u8; 3]],
+    most: usize,
+    cancel: Option<&Cancel>,
+) -> Option<()> {
+    if labels.len() != w * h || colors.len() != w * h || w < 3 || h < 3 || most == 0 {
+        return Some(());
+    }
+    let solid = vec![false; w * h];
+    for _ in 0..3 {
+        let p = label_patches(labels, &solid, w, h, cancel)?;
+        // The colour each patch has in the picture, all in all.
+        let mut sums = vec![[0u64; 3]; p.label.len()];
+        for (i, c) in colors.iter().enumerate() {
+            if let Some(at) = p.of.get(i).and_then(|k| sums.get_mut(*k as usize)) {
+                for q in 0..3 {
+                    at[q] += c[q] as u64;
+                }
+            }
+        }
+        let mean = |k: usize| -> Option<[u8; 3]> {
+            let (sum, n) = (sums.get(k)?, (*p.area.get(k)? as u64).max(1));
+            Some(std::array::from_fn(|q| (sum[q] / n).min(255) as u8))
+        };
+        // The largest near patch beside each small one.
+        let mut to: Vec<Option<u32>> = vec![None; p.label.len()];
+        let mut offer = |k: u32, j: u32| {
+            if k == j || k == u32::MAX || j == u32::MAX {
+                return;
+            }
+            let (k, ju) = (k as usize, j as usize);
+            if p.area[k] as usize > most || p.area[ju] <= p.area[k] {
+                return;
+            }
+            if palette.get(p.label[k]).is_none() || palette.get(p.label[ju]).is_none() {
+                return;
+            }
+            let (Some(a), Some(b)) = (mean(k), mean(ju)) else {
+                return;
+            };
+            if distance2(a, b) > SHADE_NEAR * SHADE_NEAR {
+                return;
+            }
+            if to[k].is_none_or(|t| p.area[t as usize] < p.area[ju]) {
+                to[k] = Some(j);
+            }
+        };
+        for y in 0..h {
+            for x in 0..w {
+                let i = y * w + x;
+                if x + 1 < w {
+                    offer(p.of[i], p.of[i + 1]);
+                    offer(p.of[i + 1], p.of[i]);
+                }
+                if y + 1 < h {
+                    offer(p.of[i], p.of[i + w]);
+                    offer(p.of[i + w], p.of[i]);
+                }
+            }
+        }
+        let mut changed = false;
+        for (i, l) in labels.iter_mut().enumerate() {
+            if let Some(Some(j)) = to.get(p.of[i] as usize) {
+                *l = p.label[*j as usize];
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    Some(())
+}
+
+/// The largest gap of a letter (pixels) that takes the colour of the
+/// paper it opens onto, and how near (RGB distance) its colour must be
+/// to the paper's.
+const GAP_OPEN_AREA: usize = 40;
+const GAP_OPEN_NEAR: u32 = 48;
+
+/// The gap of a small letter that opens onto the paper (the inside of a
+/// G or a C) is paper: a patch of at most `most` pixels, most of its
+/// edge against a colour [`GAP_CONTRAST`] or more from its own, that
+/// touches a colour within [`GAP_OPEN_NEAR`] of its own takes that
+/// colour. The blur of small print leaves such a gap a shade darker
+/// than the paper, and it was a region of its own closing the letter.
+fn open_gaps(
+    labels: &mut [usize],
+    w: usize,
+    h: usize,
+    palette: &[[u8; 3]],
+    most: usize,
+    cancel: Option<&Cancel>,
+) -> Option<()> {
+    if labels.len() != w * h || w < 3 || h < 3 {
+        return Some(());
+    }
+    let solid = vec![false; w * h];
+    let p = label_patches(labels, &solid, w, h, cancel)?;
+    let mut to: Vec<Option<usize>> = vec![None; p.label.len()];
+    for k in 0..p.label.len() {
+        if p.area[k] as usize > most {
+            continue;
+        }
+        let Some(&own) = palette.get(p.label[k]) else {
+            continue;
+        };
+        let touch = &p.touches[k];
+        let Some(&(around, _, _)) = touch.first() else {
+            continue;
+        };
+        if !palette
+            .get(around)
+            .is_some_and(|c| distance2(*c, own) >= GAP_CONTRAST * GAP_CONTRAST)
+        {
+            continue;
+        }
+        to[k] = touch
+            .iter()
+            .skip(1)
+            .map(|t| t.0)
+            .filter(|l| {
+                palette
+                    .get(*l)
+                    .is_some_and(|c| distance2(*c, own) <= GAP_OPEN_NEAR * GAP_OPEN_NEAR)
+            })
+            .min_by_key(|l| distance2(palette[*l], own));
+    }
+    for (i, l) in labels.iter_mut().enumerate() {
+        if let Some(Some(b)) = to.get(p.of[i] as usize) {
+            *l = *b;
+        }
+    }
+    Some(())
+}
+
 /// How thick (twice the area over the edge count, pixels) a band along
 /// the edge of two colours can be and still be their soft edge.
 const FRINGE_WIDTH: f64 = 5.0;
@@ -1601,6 +2572,20 @@ fn dissolve_fringes(
     colors: &[[u8; 3]],
     cancel: Option<&Cancel>,
 ) -> Option<()> {
+    dissolve_fringes_of(labels, w, h, palette, colors, FRINGE_WIDTH, cancel)
+}
+
+/// [`dissolve_fringes`] for bands up to `width` thick (a picture
+/// enlarged has its soft edges as many times wider).
+fn dissolve_fringes_of(
+    labels: &mut [usize],
+    w: usize,
+    h: usize,
+    palette: &[[u8; 3]],
+    colors: &[[u8; 3]],
+    width: f64,
+    cancel: Option<&Cancel>,
+) -> Option<()> {
     if labels.len() != w * h || colors.len() != w * h || w < 3 || h < 3 {
         return Some(());
     }
@@ -1622,7 +2607,7 @@ fn dissolve_fringes(
     for (k, t) in to.iter_mut().enumerate() {
         let (area, edges) = (p.area[k] as f64, p.edges[k] as f64);
         let touch = &p.touches[k];
-        if edges <= 0.0 || touch.len() < 2 || 2.0 * area / edges > FRINGE_WIDTH {
+        if edges <= 0.0 || touch.len() < 2 || 2.0 * area / edges > width {
             continue;
         }
         let ((a, na, sa), (b, nb, sb)) = (touch[0], touch[1]);
@@ -2453,10 +3438,10 @@ fn denoise(img: &RgbaImage, cancel: Option<&Cancel>) -> Option<RgbaImage> {
     Some(out)
 }
 
-/// How many times noise is taken out: none at the highest detail (where
-/// specks stay too), once at high detail, twice below.
+/// How many times noise is taken out: none from [`NOISE_STAYS`] up,
+/// once at high detail, twice below.
 fn denoise_passes(detail: f64) -> usize {
-    if speck_area(detail) <= 1 {
+    if detail >= NOISE_STAYS {
         0
     } else if detail >= 75.0 {
         1
@@ -2465,12 +3450,24 @@ fn denoise_passes(detail: f64) -> usize {
     }
 }
 
-/// The smallest patch of one colour that is kept, in pixels: none
-/// below detail 100, a few pixels at 80, about 40 at 35.
+/// The smallest patch of one colour that is kept, in pixels: every
+/// patch at detail 100, two pixels just below it, a few at 80, about
+/// 40 at 35.
 fn speck_area(detail: f64) -> usize {
+    if detail >= ALL_DETAIL {
+        return 1;
+    }
     let k = (100.0 - detail.clamp(0.0, 100.0)) / 100.0 * 10.0;
-    (k * k).round().max(1.0) as usize
+    (k * k).round().max(2.0) as usize
 }
+
+/// From this detail up nothing is cleaned: every pixel of the picture
+/// is taken as art. Below it noise is taken out once at least and a
+/// patch of a single pixel goes, however high the detail.
+const ALL_DETAIL: f64 = 99.5;
+/// From this detail up noise is not taken out of the picture first:
+/// that would take the finest lines of the art with it.
+const NOISE_STAYS: f64 = 88.0;
 
 /// The smallest dot of the art kept however small the detail asks
 /// patches to be: a quarter of [`speck_area`], at least 2 pixels (4 at
@@ -2488,6 +3485,9 @@ const DOT_CONTRAST: u32 = 64;
 /// to be kept from `GLINT_AREA` pixels at any detail.
 const GLINT_CONTRAST: u32 = 160;
 const GLINT_AREA: usize = 4;
+/// How far (RGB distance) a patch of two pixels or more inside one
+/// colour must stand from it to be kept as a gap in it.
+const GAP_CONTRAST: u32 = 120;
 
 /// Give every 4-connected patch of one label smaller than `min_area`
 /// pixels the label of the neighbours outside it whose colour is
@@ -2509,12 +3509,30 @@ fn despeckle(
     palette: &[[u8; 3]],
     cancel: Option<&Cancel>,
 ) {
+    despeckle_of(labels, w, h, min_area, keep_area, 1, palette, cancel);
+}
+
+/// [`despeckle`] of a picture with `unit` pixels to each pixel of the
+/// art (16 for one enlarged four times): the areas given are in pixels
+/// of the picture, and so are the fixed ones it uses, times `unit`.
+#[allow(clippy::too_many_arguments)]
+fn despeckle_of(
+    labels: &mut [usize],
+    w: usize,
+    h: usize,
+    min_area: usize,
+    keep_area: usize,
+    unit: usize,
+    palette: &[[u8; 3]],
+    cancel: Option<&Cancel>,
+) {
     if min_area <= 1 || labels.len() != w * h {
         return;
     }
     join_tiny_colors(labels, min_area, palette);
     for _ in 0..4 {
-        if !despeckle_pass(labels, w, h, min_area, keep_area, palette, cancel) || cancelled(cancel)
+        if !despeckle_pass(labels, w, h, min_area, keep_area, unit, palette, cancel)
+            || cancelled(cancel)
         {
             break;
         }
@@ -2583,18 +3601,49 @@ fn join_tiny_colors(labels: &mut [usize], min_area: usize, palette: &[[u8; 3]]) 
     }
 }
 
+/// Whether the pixels of the label at `start` reached from it through
+/// sides and corners number at least `area`.
+fn reaches_by_corners(labels: &[usize], w: usize, h: usize, start: usize, area: usize) -> bool {
+    let l = labels[start];
+    let mut found = vec![start];
+    let mut next = 0;
+    while next < found.len() && found.len() < area {
+        let i = found[next];
+        next += 1;
+        let (x, y) = (i % w, i / w);
+        for v in y.saturating_sub(1)..=(y + 1).min(h - 1) {
+            for u in x.saturating_sub(1)..=(x + 1).min(w - 1) {
+                let j = v * w + u;
+                if labels[j] == l && !found.contains(&j) {
+                    found.push(j);
+                }
+            }
+        }
+    }
+    found.len() >= area
+}
+
 /// One pass of `despeckle`; whether it changed anything.
+#[allow(clippy::too_many_arguments)]
 fn despeckle_pass(
     labels: &mut [usize],
     w: usize,
     h: usize,
     min_area: usize,
     keep_area: usize,
+    unit: usize,
     palette: &[[u8; 3]],
     cancel: Option<&Cancel>,
 ) -> bool {
     let mut changed = false;
     let mut seen = vec![false; w * h];
+    // The patch each pixel was last gathered into: pixels given the
+    // patch's label earlier in this pass (seen already, as part of the
+    // patch they were) are gathered into it too, so a patch handed to
+    // its neighbour joins it at once instead of leaving it cut off
+    // (#1619: the steps of a slanted hairline went one by one to the
+    // page around them).
+    let mut gathered = vec![usize::MAX; w * h];
     let mut patch: Vec<usize> = Vec::new();
     let mut stack: Vec<usize> = Vec::new();
     let mut counts: std::collections::HashMap<usize, usize> = std::collections::HashMap::new();
@@ -2610,6 +3659,7 @@ fn despeckle_pass(
         counts.clear();
         stack.push(start);
         seen[start] = true;
+        gathered[start] = start;
         while let Some(i) = stack.pop() {
             patch.push(i);
             let (x, y) = (i % w, i / w);
@@ -2628,8 +3678,9 @@ fn despeckle_pass(
             }
             for j in near.into_iter().filter(|j| *j != usize::MAX) {
                 if labels[j] == l {
-                    if !seen[j] {
+                    if gathered[j] != start {
                         seen[j] = true;
+                        gathered[j] = start;
                         stack.push(j);
                     }
                 } else if labels[j] != usize::MAX && patch.len() < min_area {
@@ -2691,14 +3742,53 @@ fn despeckle_pass(
                     .min()
                     .unwrap_or(0);
                 let big_enough = patch.len() >= keep_area
-                    || (patch.len() >= GLINT_AREA && contrast >= GLINT_CONTRAST * GLINT_CONTRAST);
-                (big_enough && x1 > x0 && y1 > y0 && contrast >= DOT_CONTRAST * DOT_CONTRAST)
+                    || (patch.len() >= GLINT_AREA * unit
+                        && contrast >= GLINT_CONTRAST * GLINT_CONTRAST);
+                // The gap in a small letter (the bowls of a B seven
+                // pixels high): two pixels or more (half a pixel of the
+                // art in an enlarged picture, which draws the gap of an A
+                // smaller than it was), one colour all round, far from
+                // it.
+                let gap = patch.len() >= (unit / 2).max(2)
+                    && counts.len() == 1
+                    && contrast >= GAP_CONTRAST * GAP_CONTRAST;
+                (gap || big_enough && x1 > x0 && y1 > y0 && contrast >= DOT_CONTRAST * DOT_CONTRAST)
                     .then_some(())
             };
             if near.is_none() && side().is_none() && stands_out().is_some() {
                 continue;
             }
-            if let Some((&to, _)) = near.or_else(side).or_else(most) {
+            // A step of a thin slanted line: its pixels touch the line's
+            // next step by a corner only, so each step is a patch of two
+            // or three pixels, and the line went step by step (#2927).
+            // Counted with the steps it touches by a corner, it is big
+            // enough to stay.
+            let line = || {
+                let own = own?;
+                let contrast = counts
+                    .keys()
+                    .map(|k| palette.get(*k).map_or(0, |p| distance2(own, *p)))
+                    .min()?;
+                (contrast >= DOT_CONTRAST * DOT_CONTRAST
+                    && reaches_by_corners(labels, w, h, start, min_area))
+                .then_some(())
+            };
+            if near.is_none() && side().is_none() && line().is_some() {
+                continue;
+            }
+            // A piece of a thin line in a shade of its own (the dark core
+            // of a slanted hairline between lighter steps of it): the
+            // neighbour of a colour far nearer its own than the colour
+            // most of them have, so the line is not cut where the shade
+            // changes (#1619).
+            let nearest = || {
+                let (k, c) = counts
+                    .iter()
+                    .min_by_key(|(k, c)| (far(**k), usize::MAX - **c, **k))?;
+                let (m, _) = most()?;
+                (k != m && far(*k).saturating_mul(4) < far(*m)).then_some((k, c))
+            };
+            if let Some((&to, _)) = near.or_else(side).or_else(nearest).or_else(most) {
                 for &i in &patch {
                     labels[i] = to;
                 }
@@ -2707,238 +3797,6 @@ fn despeckle_pass(
         }
     }
     changed
-}
-
-/// A pixel-edge ring as smooth curves (#611): the ring through the
-/// middles of the pixel edges, so stair steps become slopes; its corners
-/// found where it turns sharply (fewer with more corner smoothness);
-/// the stretches between them smoothed (more with more smoothing) and
-/// fitted with as few cubic Beziers as stay within the detail's
-/// tolerance of them. Corners stay sharp, a ring without corners closes
-/// smoothly.
-fn fit_ring(ring: &[Point], s: &Settings) -> BezPath {
-    // One point per pixel edge: the middle of each unit step, with the
-    // pixel corner the step starts at.
-    let mut pts: Vec<Point> = Vec::new();
-    let mut starts: Vec<Point> = Vec::new();
-    let n = ring.len();
-    for i in 0..n {
-        let (a, b) = (ring[i], ring[(i + 1) % n]);
-        let steps = (b - a).hypot().round().max(1.0) as usize;
-        for k in 0..steps {
-            starts.push(a.lerp(b, k as f64 / steps as f64));
-            pts.push(a.lerp(b, (k as f64 + 0.5) / steps as f64));
-        }
-    }
-    let n = pts.len();
-    if n < 4 {
-        return polyline_closed(&pts);
-    }
-    // Corners: where the ring turns by more than the threshold over a
-    // few pixels, the sharpest of each run, and still turns that much
-    // seen from twice as far: a notch of a pixel or two along a smooth
-    // edge (a pixel that fell to the other colour) turns sharply only up
-    // close, and became a kink in the curve (#611).
-    let reach = 3usize.min(n / 4).max(1);
-    let wide = (2 * reach).min(n / 4).max(reach);
-    let threshold = (60.0 + s.corner_smoothness.clamp(0.0, 100.0) * 0.8).to_radians();
-    let at = |i: isize| pts[i.rem_euclid(n as isize) as usize];
-    let turn_over = |i: isize, r: usize| {
-        let (a, b, c) = (at(i - r as isize), at(i), at(i + r as isize));
-        let (u, v) = (b - a, c - b);
-        u.cross(v).atan2(u.dot(v)).abs()
-    };
-    let turn: Vec<f64> = (0..n as isize).map(|i| turn_over(i, reach)).collect();
-    let mut corners: Vec<usize> = (0..n)
-        .filter(|&i| {
-            turn[i] > threshold
-                && turn_over(i as isize, wide) > threshold
-                && (1..=reach as isize).all(|d| {
-                    let before = turn[(i as isize - d).rem_euclid(n as isize) as usize];
-                    let after = turn[(i as isize + d).rem_euclid(n as isize) as usize];
-                    turn[i] >= before && turn[i] > after
-                })
-        })
-        .collect();
-    // A corner sits on the pixel corner at one end of its edge: the one
-    // standing further out from its neighbours, so a square stays square.
-    let mut is_corner = vec![false; n];
-    for &c in &corners {
-        is_corner[c] = true;
-        let mid = pts[(c + n - 1) % n].midpoint(pts[(c + 1) % n]);
-        let (a, b) = (starts[c], starts[(c + 1) % n]);
-        pts[c] = if (a - mid).hypot() > (b - mid).hypot() {
-            a
-        } else {
-            b
-        };
-    }
-    // Smooth the stretches between corners.
-    let passes = (1.0 + s.smoothing.clamp(0.0, 100.0) / 100.0 * 12.0).round() as usize;
-    for _ in 0..passes {
-        let prev = pts.clone();
-        for i in 0..n {
-            if is_corner[i] {
-                continue;
-            }
-            let a = prev[(i + n - 1) % n];
-            let c = prev[(i + 1) % n];
-            pts[i] = Point::new(
-                (a.x + 2.0 * prev[i].x + c.x) / 4.0,
-                (a.y + 2.0 * prev[i].y + c.y) / 4.0,
-            );
-        }
-    }
-    // Within a pixel at the default detail: the smoothed points lie on a
-    // smooth curve already, and a tighter fit only adds nodes (#611).
-    let tolerance = 0.2 + (100.0 - s.detail.clamp(0.0, 100.0)) / 100.0 * 2.0;
-    let mut out = BezPath::new();
-    if corners.is_empty() {
-        // No corner: quarters meeting smoothly (a cubic bends through a
-        // quarter turn well, a half turn only roughly).
-        let tangent = |i: usize| unit(pts[(i + reach) % n] - pts[(i + n - reach) % n]);
-        let cuts: Vec<usize> = (0..4).map(|k| k * n / 4).collect();
-        out.move_to(pts[0]);
-        for k in 0..4 {
-            let (a, b) = (cuts[k], cuts[(k + 1) % 4]);
-            let mut piece: Vec<Point> = if b > a {
-                pts[a..=b].to_vec()
-            } else {
-                pts[a..].to_vec()
-            };
-            if b <= a {
-                piece.push(pts[0]);
-            }
-            fit_cubics(&piece, tangent(a), -tangent(b), tolerance, &mut out);
-        }
-        out.close_path();
-        return out;
-    }
-    corners.sort_unstable();
-    out.move_to(pts[corners[0]]);
-    for k in 0..corners.len() {
-        let a = corners[k];
-        let b = corners[(k + 1) % corners.len()];
-        let mut piece: Vec<Point> = Vec::new();
-        let mut i = a;
-        loop {
-            piece.push(pts[i]);
-            if i == b && piece.len() > 1 {
-                break;
-            }
-            i = (i + 1) % n;
-            if piece.len() > n + 1 {
-                break;
-            }
-        }
-        if piece.len() < 2 {
-            continue;
-        }
-        // The directions the sides leave and reach the corners in, over a
-        // few pixels so a stair step does not tilt them.
-        let m = piece.len();
-        let far = TANGENT_REACH.min(m - 1);
-        let t1 = unit(piece[far] - piece[0]);
-        let t2 = unit(piece[m - 1 - far] - piece[m - 1]);
-        fit_cubics(&piece, t1, t2, tolerance, &mut out);
-    }
-    out.close_path();
-    out
-}
-
-/// A border from one junction to another (`corners`, the pixel corners
-/// it passes) as smooth curves, fitted as [`fit_ring`] fits a ring: the
-/// middles of its pixel edges, its corners, the stretches between them
-/// smoothed and fitted. Its two ends stay on the junctions, where the
-/// borders of the other regions meeting there start and end too.
-fn fit_open(corners: &[Point], s: &Settings) -> BezPath {
-    let mut out = BezPath::new();
-    let Some(&first) = corners.first() else {
-        return out;
-    };
-    let last = corners[corners.len() - 1];
-    // The ends, and one point in the middle of each pixel edge between.
-    let mut pts: Vec<Point> = Vec::with_capacity(corners.len() + 1);
-    pts.push(first);
-    for e in corners.windows(2) {
-        pts.push(e[0].midpoint(e[1]));
-    }
-    pts.push(last);
-    let n = pts.len();
-    out.move_to(first);
-    if n < 5 {
-        for p in &pts[1..] {
-            out.line_to(*p);
-        }
-        return out;
-    }
-    let reach = 3usize.min(n / 4).max(1);
-    let wide = (2 * reach).min(n / 4).max(reach);
-    let threshold = (60.0 + s.corner_smoothness.clamp(0.0, 100.0) * 0.8).to_radians();
-    let at = |i: isize| pts[i.clamp(0, n as isize - 1) as usize];
-    let turn_over = |i: isize, r: usize| {
-        let (a, b, c) = (at(i - r as isize), at(i), at(i + r as isize));
-        let (u, v) = (b - a, c - b);
-        if u.hypot2() < 1e-12 || v.hypot2() < 1e-12 {
-            return 0.0;
-        }
-        u.cross(v).atan2(u.dot(v)).abs()
-    };
-    let turn: Vec<f64> = (0..n as isize).map(|i| turn_over(i, reach)).collect();
-    let corners_at: Vec<usize> = (1..n - 1)
-        .filter(|&i| {
-            turn[i] > threshold
-                && turn_over(i as isize, wide) > threshold
-                && (1..=reach as isize).all(|d| {
-                    let before = turn[(i as isize - d).clamp(0, n as isize - 1) as usize];
-                    let after = turn[(i as isize + d).clamp(0, n as isize - 1) as usize];
-                    turn[i] >= before && turn[i] > after
-                })
-        })
-        .collect();
-    // A corner sits on the pixel corner at one end of its edge (point i
-    // is the middle of the edge from corner i - 1 to corner i), the one
-    // standing further out from its neighbours.
-    let mut fixed = vec![false; n];
-    fixed[0] = true;
-    fixed[n - 1] = true;
-    for &c in &corners_at {
-        fixed[c] = true;
-        let mid = pts[c - 1].midpoint(pts[c + 1]);
-        let (a, b) = (corners[c - 1], corners[c]);
-        pts[c] = if (a - mid).hypot() > (b - mid).hypot() {
-            a
-        } else {
-            b
-        };
-    }
-    let passes = (1.0 + s.smoothing.clamp(0.0, 100.0) / 100.0 * 12.0).round() as usize;
-    for _ in 0..passes {
-        let prev = pts.clone();
-        for i in 1..n - 1 {
-            if fixed[i] {
-                continue;
-            }
-            let (a, c) = (prev[i - 1], prev[i + 1]);
-            pts[i] = Point::new(
-                (a.x + 2.0 * prev[i].x + c.x) / 4.0,
-                (a.y + 2.0 * prev[i].y + c.y) / 4.0,
-            );
-        }
-    }
-    let tolerance = 0.2 + (100.0 - s.detail.clamp(0.0, 100.0)) / 100.0 * 2.0;
-    let mut anchors = vec![0];
-    anchors.extend(corners_at);
-    anchors.push(n - 1);
-    for k in anchors.windows(2) {
-        let piece = &pts[k[0]..=k[1]];
-        let m = piece.len();
-        let far = TANGENT_REACH.min(m - 1);
-        let t1 = unit(piece[far] - piece[0]);
-        let t2 = unit(piece[m - 1 - far] - piece[m - 1]);
-        fit_cubics(piece, t1, t2, tolerance, &mut out);
-    }
-    out
 }
 
 /// How many points away a fitted curve's end direction is taken from.
@@ -2960,7 +3818,7 @@ fn unit(v: tracedraw_core::geometry::Vec2) -> tracedraw_core::geometry::Vec2 {
 /// chord-length parameters, improved by Newton steps, split at the worst
 /// point when it still does not fit (P. J. Schneider, "An Algorithm for
 /// Automatically Fitting Digitized Curves", Graphics Gems, 1990).
-fn fit_cubics(
+pub(crate) fn fit_cubics(
     pts: &[Point],
     t1: tracedraw_core::geometry::Vec2,
     t2: tracedraw_core::geometry::Vec2,
@@ -3083,18 +3941,6 @@ fn fit_cubics_depth(
     };
     fit_cubics_depth(&pts[..=split], t1, centre, tolerance, out, depth + 1);
     fit_cubics_depth(&pts[split..], -centre, t2, tolerance, out, depth + 1);
-}
-
-fn polyline_closed(pts: &[Point]) -> BezPath {
-    let mut p = BezPath::new();
-    if let Some(f) = pts.first() {
-        p.move_to(*f);
-        for q in &pts[1..] {
-            p.line_to(*q);
-        }
-        p.close_path();
-    }
-    p
 }
 
 fn luma(p: Rgba<u8>) -> f32 {
@@ -3459,6 +4305,7 @@ fn centerline(img: &RgbaImage, s: &Settings, cancel: Option<&Cancel>) -> Option<
             path,
             color: Color::rgb8(c[0], c[1], c[2]),
             closed: false,
+            blend: None,
         });
     }
     // Encode the stroke width in the first result's colour alpha? No: the
@@ -3478,7 +4325,7 @@ pub fn last_stroke_width_px() -> f64 {
 
 /// Zhang-Suen thinning, stopping between passes once `cancel` is set;
 /// whether it finished.
-fn thin_unless(mask: &mut [bool], w: usize, h: usize, cancel: Option<&Cancel>) -> bool {
+pub(crate) fn thin_unless(mask: &mut [bool], w: usize, h: usize, cancel: Option<&Cancel>) -> bool {
     let at = |m: &[bool], x: i64, y: i64| -> bool {
         x >= 0 && y >= 0 && (x as usize) < w && (y as usize) < h && m[y as usize * w + x as usize]
     };
@@ -3609,6 +4456,23 @@ fn paint_traced(traced: &[Traced], w: u32, h: u32, scale: f32, how: Paint) -> Rg
         let mut paint = tiny_skia::Paint::default();
         paint.set_color_rgba8(r, g, b, 255);
         paint.anti_alias = true;
+        if let (Some(blend), Paint::Filled(_)) = (&t.blend, &how) {
+            let stop = |at: f32, c: [u8; 3]| {
+                tiny_skia::GradientStop::new(
+                    at,
+                    tiny_skia::Color::from_rgba8(c[0], c[1], c[2], 255),
+                )
+            };
+            if let Some(shader) = tiny_skia::LinearGradient::new(
+                tiny_skia::Point::from_xy(blend.from.x as f32, blend.from.y as f32),
+                tiny_skia::Point::from_xy(blend.to.x as f32, blend.to.y as f32),
+                vec![stop(0.0, blend.start), stop(1.0, blend.end)],
+                tiny_skia::SpreadMode::Pad,
+                tiny_skia::Transform::identity(),
+            ) {
+                paint.shader = shader;
+            }
+        }
         match how {
             Paint::Wire => {
                 paint.set_color_rgba8(WIRE[0], WIRE[1], WIRE[2], WIRE[3]);
@@ -3648,6 +4512,45 @@ pub fn to_rect(path: &BezPath, img_w: u32, img_h: u32, rect: Rect) -> BezPath {
     let sx = rect.width() / img_w.max(1) as f64;
     let sy = rect.height() / img_h.max(1) as f64;
     tracedraw_core::geometry::Affine::new([sx, 0.0, 0.0, -sy, rect.x0, rect.y1]) * path.clone()
+}
+
+/// The fill of a traced region drawn as a blend: a linear fountain fill
+/// from the blend's first colour to its last, its two nodes where the
+/// blend's ends lie on the page (`rect` is the bitmap's rectangle, `b`
+/// the region's box there).
+pub fn blend_fill(
+    blend: &crate::trace_blend::Blend,
+    b: &Rect,
+    img_w: u32,
+    img_h: u32,
+    rect: Rect,
+) -> tracedraw_core::Fill {
+    use tracedraw_core::style::FountainHandles;
+    use tracedraw_core::{Fountain, FountainKind};
+    let sx = rect.width() / img_w.max(1) as f64;
+    let sy = rect.height() / img_h.max(1) as f64;
+    let page = |p: Point| Point::new(rect.x0 + sx * p.x, rect.y1 - sy * p.y);
+    let (from, to) = (page(blend.from), page(blend.to));
+    let d = to - from;
+    let color = |c: [u8; 3]| Color::rgb8(c[0], c[1], c[2]);
+    let mut f = Fountain::two(
+        FountainKind::Linear,
+        color(blend.start),
+        color(blend.end),
+        0.0,
+    );
+    if d.hypot() > 1e-9 && b.width() > 1e-9 && b.height() > 1e-9 {
+        let rel = |p: Point| Fountain::page_to_rel(*b, p);
+        f.set_handles(
+            *b,
+            FountainHandles {
+                start: rel(from),
+                end: rel(to),
+                skew: rel(from + tracedraw_core::geometry::Vec2::new(-d.y, d.x)),
+            },
+        );
+    }
+    tracedraw_core::Fill::Fountain(f)
 }
 
 #[cfg(test)]
@@ -3812,10 +4715,12 @@ mod tests {
             let mut s = Preset::Logo.settings();
             s.colors = colors;
             let t = trace(&img, &s);
-            let biggest = t
-                .iter()
-                .max_by(|a, b| a.path.area().abs().total_cmp(&b.path.area().abs()))
-                .expect("a region");
+            // The black around the disc is no paper: it stays (#2928),
+            // and the disc is the biggest region after it.
+            let mut by_area: Vec<&Traced> = t.iter().collect();
+            by_area.sort_by(|a, b| b.path.area().abs().total_cmp(&a.path.area().abs()));
+            assert_eq!(by_area[0].color.to_rgb8(), [0, 0, 0], "the surround stays");
+            let biggest = by_area.get(1).expect("the disc");
             let [r, g, b] = biggest.color.to_rgb8();
             assert!(
                 r > 240 && g > 240 && b > 240,
@@ -4043,8 +4948,22 @@ mod tests {
         let mut s = Preset::HighQualityImage.settings();
         s.colors = 96;
         s.remove = Remove::None;
-        let n = trace(&ramp, &s).len();
-        assert!(n > 24, "{n} colours of 96");
+        // Its shades are kept: drawn as the blend they are (#2929), not
+        // cut down to a few bands.
+        let t = trace(&ramp, &s);
+        assert!(
+            t.len() > 24 || t.iter().all(|t| t.blend.is_some()),
+            "{}",
+            t.len()
+        );
+        let drawn = render_traced(&t, 256, 8, 1.0);
+        let far = ramp
+            .pixels()
+            .zip(drawn.pixels())
+            .map(|(a, b)| (a[0] as i32 - b[0] as i32).abs())
+            .max()
+            .unwrap_or(0);
+        assert!(far <= 6, "a shade {far} levels off");
     }
 
     /// A hairline two pixels wide in a colour of its own, crossing a
@@ -4073,23 +4992,119 @@ mod tests {
         }
     }
 
-    /// At the highest detail an orange line of one pixel between red and
-    /// yellow stays, as the specks do.
+    /// #1619: a detailed logo with thin slanted spokes (dark blue, a
+    /// pixel and a half wide, anti-aliased) around a yellow disc, traced
+    /// with the Detailed Logo preset. The steps of a slanted hairline
+    /// take several shades, its dark core among them; the core's small
+    /// patches went to the white around them, so each spoke fell apart
+    /// into dashes and dots. Every spoke stays one unbroken line.
     #[test]
-    fn the_highest_detail_keeps_thin_lines() {
+    fn thin_slanted_lines_of_a_detailed_logo_stay_lines() {
+        const N: u32 = 240;
+        const SS: u32 = 4;
+        let (cx, cy) = (120.0f64, 120.0f64);
+        let angles: Vec<f64> = (0..12)
+            .map(|i| i as f64 * std::f64::consts::PI / 6.0 + 0.2)
+            .collect();
+        let navy = [29.0, 41.0, 108.0];
+        let yellow = [241.0, 181.0, 22.0];
+        let img: RgbaImage = ImageBuffer::from_fn(N, N, |x, y| {
+            let mut acc = [0.0f64; 3];
+            for sy in 0..SS {
+                for sx in 0..SS {
+                    let px = x as f64 + (sx as f64 + 0.5) / SS as f64;
+                    let py = y as f64 + (sy as f64 + 0.5) / SS as f64;
+                    let (dx, dy) = (px - cx, py - cy);
+                    let r = dx.hypot(dy);
+                    let c = if r < 30.0 {
+                        yellow
+                    } else if r < 33.0 {
+                        navy
+                    } else if r < 105.0
+                        && angles.iter().any(|a| {
+                            (dx * a.sin() - dy * a.cos()).abs() < 0.75
+                                && dx * a.cos() + dy * a.sin() > 0.0
+                        })
+                    {
+                        navy
+                    } else {
+                        [255.0; 3]
+                    };
+                    for (a, c) in acc.iter_mut().zip(c) {
+                        *a += c;
+                    }
+                }
+            }
+            let n = (SS * SS) as f64;
+            Rgba([
+                (acc[0] / n) as u8,
+                (acc[1] / n) as u8,
+                (acc[2] / n) as u8,
+                255,
+            ])
+        });
+        let t = trace(&img, &Preset::DetailedLogo.settings());
+        let out = render_traced(&t, N, N, 1.0);
+        for a in &angles {
+            // Along the spoke from just outside the ring to near its end:
+            // the longest run of page showing through.
+            let (mut gap, mut worst) = (0, 0);
+            for step in 0..(100 - 40) * 2 {
+                let r = 40.0 + step as f64 / 2.0;
+                let (x, y) = (cx + r * a.cos(), cy + r * a.sin());
+                // The darkest pixel across the line here.
+                let dark = (-1i64..=1)
+                    .flat_map(|o| [(o, 0), (0, o)])
+                    .map(|(ox, oy)| {
+                        let p = out.get_pixel(
+                            (x.round() as i64 + ox) as u32,
+                            (y.round() as i64 + oy) as u32,
+                        );
+                        if p[3] < 128 {
+                            255
+                        } else {
+                            p[0].max(p[1]).max(p[2]) as i32
+                        }
+                    })
+                    .min()
+                    .unwrap_or(255);
+                if dark > 200 {
+                    gap += 1;
+                    worst = worst.max(gap);
+                } else {
+                    gap = 0;
+                }
+            }
+            assert!(
+                worst <= 2,
+                "the spoke at {a:.2} rad breaks for {} px: {:?}",
+                worst / 2,
+                stats(&t)
+            );
+        }
+    }
+
+    /// A line one pixel wide of the colour half way between the two
+    /// beside it is their edge's anti-aliasing at every detail, the
+    /// highest too (#2929): no shape of its own.
+    #[test]
+    fn the_blend_of_two_colours_is_no_shape_at_any_detail() {
         let img: RgbaImage = ImageBuffer::from_fn(40, 40, |_, y| match y {
             0..=19 => Rgba([230, 20, 20, 255]),
             20 => Rgba([240, 120, 20, 255]),
             _ => Rgba([250, 220, 20, 255]),
         });
-        let mut s = Preset::Logo.settings();
-        s.detail = 100.0;
-        s.remove = Remove::None;
-        let colours: Vec<[u8; 3]> = trace(&img, &s).iter().map(|t| t.color.to_rgb8()).collect();
-        assert!(
-            colours.iter().any(|c| c[1] > 90 && c[1] < 160),
-            "the orange line: {colours:?}"
-        );
+        for detail in [50.0, 100.0] {
+            let mut s = Preset::Logo.settings();
+            s.detail = detail;
+            s.remove = Remove::None;
+            let colours: Vec<[u8; 3]> = trace(&img, &s).iter().map(|t| t.color.to_rgb8()).collect();
+            assert_eq!(colours.len(), 2, "detail {detail}: {colours:?}");
+            assert!(
+                !colours.iter().any(|c| c[1] > 90 && c[1] < 160),
+                "detail {detail}, no orange band: {colours:?}"
+            );
+        }
     }
 
     /// Flat art saved as a compressed image (#611: a bee with a black
@@ -5030,8 +6045,10 @@ mod tests {
         for (k, c) in t.iter().enumerate() {
             for el in c.path.elements() {
                 if let PathEl::MoveTo(p) | PathEl::LineTo(p) | PathEl::CurveTo(_, _, p) = el {
-                    if p.x.fract() == 0.0 && p.y.fract() == 0.0 {
-                        let v = nodes.entry((p.x as i64, p.y as i64)).or_default();
+                    // On a corner of the finer grid (a quarter pixel).
+                    let (qx, qy) = (p.x * 4.0, p.y * 4.0);
+                    if qx.fract() == 0.0 && qy.fract() == 0.0 {
+                        let v = nodes.entry((qx as i64, qy as i64)).or_default();
                         if !v.contains(&k) {
                             v.push(k);
                         }
@@ -5042,7 +6059,7 @@ mod tests {
         let junctions: Vec<Point> = nodes
             .iter()
             .filter(|(_, v)| v.len() >= 2)
-            .map(|((x, y), _)| Point::new(*x as f64, *y as f64))
+            .map(|((x, y), _)| Point::new(*x as f64 / 4.0, *y as f64 / 4.0))
             .collect();
         let near_junction = |p: Point| junctions.iter().any(|j| (p - *j).hypot2() < 9.0);
         let mut segments: Vec<(usize, Point, Point)> = Vec::new();
@@ -5423,5 +6440,771 @@ mod tests {
         noisy.put_pixel(20, 20, Rgba([240, 190, 60, 255]));
         let t = trace(&noisy, &s);
         assert_eq!(t.len(), colours.len(), "{:?}", color_counts(&t));
+    }
+    /// A picture of `n` x `n` pixels drawn with anti-aliasing: each pixel
+    /// the mean of `colour` at 8 x 8 places inside it.
+    fn antialiased(n: u32, colour: impl Fn(f64, f64) -> [u8; 3]) -> RgbaImage {
+        ImageBuffer::from_fn(n, n, |x, y| {
+            let mut sum = [0u32; 3];
+            for sy in 0..8 {
+                for sx in 0..8 {
+                    let c = colour(
+                        x as f64 + (sx as f64 + 0.5) / 8.0,
+                        y as f64 + (sy as f64 + 0.5) / 8.0,
+                    );
+                    for k in 0..3 {
+                        sum[k] += c[k] as u32;
+                    }
+                }
+            }
+            Rgba([
+                (sum[0] / 64) as u8,
+                (sum[1] / 64) as u8,
+                (sum[2] / 64) as u8,
+                255,
+            ])
+        })
+    }
+
+    const WHITE: [u8; 3] = [255, 255, 255];
+    const BLACK: [u8; 3] = [0, 0, 0];
+
+    /// With all the detail and no smoothing, anti-aliased art is fitted
+    /// with curves and lines, not walked pixel by pixel (#2925): a disc
+    /// is a few curves that stay on the circle, a tilted square four
+    /// straight lines with its corners where the art has them.
+    #[test]
+    fn anti_aliased_art_is_fitted_at_the_highest_detail() {
+        use tracedraw_core::geometry::PathEl;
+        let mut s = Preset::Logo.settings();
+        s.detail = 100.0;
+        s.smoothing = 0.0;
+        let centre = Point::new(60.3, 59.6);
+        let disc = antialiased(120, |x, y| {
+            if (Point::new(x, y) - centre).hypot() < 31.4 {
+                BLACK
+            } else {
+                WHITE
+            }
+        });
+        let t = trace(&disc, &s);
+        assert_eq!(t.len(), 1, "the disc alone");
+        let nodes = stats(&t).nodes;
+        assert!(nodes <= 16, "{nodes} nodes for a disc");
+        for seg in t[0].path.segments() {
+            for k in 0..=8 {
+                let p = tracedraw_core::geometry::ParamCurve::eval(&seg, k as f64 / 8.0);
+                let r = (p - centre).hypot();
+                assert!((r - 31.4).abs() < 0.25, "radius {r} at {p:?}");
+            }
+        }
+        // A square turned by 30 degrees, its corners off the pixel grid.
+        let (c, sn) = (30f64.to_radians().cos(), 30f64.to_radians().sin());
+        let square = antialiased(120, |x, y| {
+            let (dx, dy) = (x - 60.2, y - 60.7);
+            let (u, v) = (dx * c + dy * sn, -dx * sn + dy * c);
+            if u.abs() < 30.0 && v.abs() < 30.0 {
+                BLACK
+            } else {
+                WHITE
+            }
+        });
+        let t = trace(&square, &s);
+        assert_eq!(t.len(), 1);
+        let els = t[0].path.elements();
+        let lines = els
+            .iter()
+            .filter(|e| matches!(e, PathEl::LineTo(_)))
+            .count();
+        let curves = els
+            .iter()
+            .filter(|e| matches!(e, PathEl::CurveTo(..)))
+            .count();
+        assert!((3..=4).contains(&lines) && curves == 0, "{els:?}");
+        let corners: Vec<Point> = [(-30.0, -30.0), (30.0, -30.0), (30.0, 30.0), (-30.0, 30.0)]
+            .iter()
+            .map(|(u, v)| Point::new(60.2 + u * c - v * sn, 60.7 + u * sn + v * c))
+            .collect();
+        for corner in corners {
+            let nearest = els
+                .iter()
+                .filter_map(|e| match e {
+                    PathEl::MoveTo(p) | PathEl::LineTo(p) => Some((*p - corner).hypot()),
+                    _ => None,
+                })
+                .fold(f64::MAX, f64::min);
+            assert!(
+                nearest < 0.3,
+                "a node {nearest} px from the corner {corner:?}"
+            );
+        }
+    }
+
+    /// The edge of two colours is traced where it runs inside the pixels
+    /// that blend them (#2925, #2926): an edge three tenths into a
+    /// column of pixels is drawn there, not on the pixel grid.
+    #[test]
+    fn an_edge_is_traced_where_it_runs_inside_its_pixels() {
+        let img = antialiased(60, |x, _| if x < 20.3 { BLACK } else { WHITE });
+        let mut s = Preset::Logo.settings();
+        s.remove = Remove::None;
+        let t = trace(&img, &s);
+        let black = t
+            .iter()
+            .find(|t| t.color.to_rgb8() == [0, 0, 0])
+            .expect("the black half");
+        let b = black.path.bounding_box();
+        assert!((b.x1 - 20.3).abs() < 0.1, "{b:?}");
+        assert!(b.x0.abs() < 1e-3 && b.y0.abs() < 1e-3 && (b.y1 - 60.0).abs() < 1e-3);
+    }
+
+    /// The pixels blending two colours along their edge are no shape of
+    /// a third colour that looks like the blend (#2929), at any detail: a
+    /// navy disc on white beside a square of the blue half way between
+    /// them gives a disc and a square, no blue ring round the disc.
+    #[test]
+    fn edge_pixels_make_no_ring_of_a_look_alike_colour() {
+        let navy = [0u8, 40, 104];
+        let blue = [128u8, 148, 180];
+        let img = antialiased(140, |x, y| {
+            if (Point::new(x, y) - Point::new(45.3, 70.2)).hypot() < 30.0 {
+                navy
+            } else if (95.0..125.0).contains(&x) && (50.0..90.0).contains(&y) {
+                blue
+            } else {
+                WHITE
+            }
+        });
+        for detail in [60.0, 100.0] {
+            let mut s = Preset::Logo.settings();
+            s.detail = detail;
+            s.merge_adjacent = false;
+            let t = trace(&img, &s);
+            let colours: Vec<[u8; 3]> = t.iter().map(|t| t.color.to_rgb8()).collect();
+            assert_eq!(t.len(), 2, "detail {detail}: {colours:?}");
+            let blue_shape = t
+                .iter()
+                .find(|t| t.color.to_rgb8()[0] > 100)
+                .expect("the square");
+            let b = blue_shape.path.bounding_box();
+            assert!(b.x0 > 90.0, "detail {detail}: blue reaches {b:?}");
+        }
+    }
+
+    /// A thin faint stroke and small print stay (#2927): a ring seven
+    /// pixels across drawn a pixel wide, never darker than mid grey,
+    /// comes out as a black ring with its hole.
+    #[test]
+    fn thin_faint_strokes_keep_their_shape_and_take_the_full_colour() {
+        use tracedraw_core::geometry::PathEl;
+        let img = antialiased(80, |x, y| {
+            let big = (10.0..40.0).contains(&x) && (10.0..30.0).contains(&y);
+            let r = (Point::new(x, y) - Point::new(55.4, 55.6)).hypot();
+            // The ring's ink is spread thin: grey at its darkest.
+            let ring = (2.9..3.9).contains(&r);
+            if big {
+                BLACK
+            } else if ring {
+                [110, 110, 110]
+            } else {
+                WHITE
+            }
+        });
+        for preset in [Preset::Logo, Preset::DetailedLogo, Preset::Optimized] {
+            let mut s = preset.settings();
+            s.merge_adjacent = false;
+            let t = trace(&img, &s);
+            let ring = t
+                .iter()
+                .find(|t| t.path.bounding_box().x0 > 45.0)
+                .unwrap_or_else(|| panic!("{preset:?}: the ring is gone"));
+            assert_eq!(ring.color.to_rgb8(), [0, 0, 0], "{preset:?}");
+            let subpaths = ring
+                .path
+                .elements()
+                .iter()
+                .filter(|e| matches!(e, PathEl::MoveTo(_)))
+                .count();
+            // The hole: a ring of its own in the curve, or the white in
+            // it drawn above.
+            let above = t.iter().any(|o| {
+                let c = o.path.bounding_box();
+                o.color.to_rgb8() == [255, 255, 255] && c.x0 > 50.0 && c.y0 > 50.0
+            });
+            assert!(
+                subpaths == 2 || above,
+                "{preset:?}: the ring keeps its hole"
+            );
+            let b = ring.path.bounding_box();
+            assert!(
+                (b.width() - 7.8).abs() < 1.2 && (b.height() - 7.8).abs() < 1.2,
+                "{preset:?}: {b:?}"
+            );
+        }
+    }
+
+    /// Removing the background automatically (#2928): a dark surround is
+    /// part of the design and stays; light paper goes whole, its soft
+    /// shades too, leaving the art alone.
+    #[test]
+    fn only_paper_is_removed_and_all_of_it() {
+        let gold = [212u8, 170, 80];
+        let dark = [24u8, 22, 28];
+        let emblem = antialiased(100, |x, y| {
+            if (Point::new(x, y) - Point::new(50.0, 50.0)).hypot() < 25.0 {
+                gold
+            } else {
+                dark
+            }
+        });
+        let t = trace(&emblem, &Preset::Logo.settings());
+        let colours: Vec<[u8; 3]> = t.iter().map(|t| t.color.to_rgb8()).collect();
+        assert_eq!(t.len(), 2, "{colours:?}");
+        assert!(colours.iter().any(|c| c[0] < 60), "the dark square stays");
+        // The dark colour specified goes all the same.
+        let mut s = Preset::Logo.settings();
+        s.background = Some(dark);
+        assert_eq!(trace(&emblem, &s).len(), 1);
+        // Paper that darkens towards the corners.
+        let vignette = antialiased(120, |x, y| {
+            let d = (Point::new(x, y) - Point::new(60.0, 54.0)).hypot();
+            if d < 22.0 {
+                [40, 60, 200]
+            } else {
+                let v = (246.0 - d * 0.45) as u8;
+                [v, v, v]
+            }
+        });
+        for preset in [Preset::Logo, Preset::DetailedLogo, Preset::Clipart] {
+            let t = trace(&vignette, &preset.settings());
+            let colours: Vec<[u8; 3]> = t.iter().map(|t| t.color.to_rgb8()).collect();
+            assert_eq!(t.len(), 1, "{preset:?}: {colours:?}");
+            assert!(colours[0][2] > 150 && colours[0][0] < 90, "{preset:?}");
+        }
+    }
+
+    /// A gradient is one region filled with a blend, not a row of bands
+    /// (#2929): a bar running from red to yellow comes out as one curve
+    /// whose blend runs along the bar from red to yellow.
+    #[test]
+    fn a_gradient_is_one_region_with_a_blend() {
+        let img = antialiased(160, |x, y| {
+            if (20.0..140.0).contains(&x) && (50.0..110.0).contains(&y) {
+                let t = (x - 20.0) / 120.0;
+                [230, (30.0 + 190.0 * t) as u8, 20]
+            } else {
+                WHITE
+            }
+        });
+        for preset in [Preset::DetailedLogo, Preset::Clipart, Preset::Optimized] {
+            let t = trace(&img, &preset.settings());
+            assert_eq!(t.len(), 1, "{preset:?}: {:?}", stats(&t));
+            let blend = t[0].blend.expect("a blend");
+            assert!(
+                blend.start[1] < 60 && blend.end[1] > 190,
+                "{preset:?}: {blend:?}"
+            );
+            let along = blend.to - blend.from;
+            assert!(
+                along.x > 100.0 && along.y.abs() < 0.1 * along.x,
+                "{preset:?}: {blend:?}"
+            );
+            // Drawn back, it is the picture.
+            let drawn = render_traced(&t, 160, 160, 1.0);
+            let wrong = wrong_share(&img, &drawn, None).expect("compared");
+            assert!(wrong < 0.5, "{preset:?}: {wrong}% wrong");
+        }
+        // Flat colours side by side stay apart, however soft their edge.
+        let flat = antialiased(100, |x, _| {
+            if x < 50.0 {
+                [200, 60, 60]
+            } else {
+                [230, 120, 60]
+            }
+        });
+        let soft = image::imageops::blur(&flat, 1.5);
+        let mut s = Preset::DetailedLogo.settings();
+        s.remove = Remove::None;
+        let t = trace(&soft, &s);
+        assert_eq!(t.len(), 2, "{:?}", stats(&t));
+        assert!(t.iter().all(|t| t.blend.is_none()));
+    }
+
+    /// Best optimization never leaves a trace worse than the one it
+    /// started from (#2930): the detail the settings have is among those
+    /// tried, and a second search from the result changes nothing.
+    #[test]
+    fn the_search_keeps_the_detail_when_none_is_better() {
+        let img = antialiased(120, |x, y| {
+            let r = (Point::new(x, y) - Point::new(60.0, 60.0)).hypot();
+            if r < 40.0 && !((57.0..63.0).contains(&x) && y > 40.0) {
+                BLACK
+            } else {
+                WHITE
+            }
+        });
+        let score = |s: &Settings| {
+            let t = trace(&img, s);
+            let drawn = render_traced(&t, 120, 120, 1.0);
+            wrong_share(&img, &drawn, None).expect("compared")
+                + NODE_COST * stats(&t).nodes as f64 / 240.0
+        };
+        for detail in [35.0, 73.0, 100.0] {
+            let mut s = Preset::Logo.settings();
+            s.detail = detail;
+            let found = optimize(&img, &s, None).expect("searched");
+            assert!(
+                score(&found) <= score(&s) + 1e-9,
+                "from {detail}: {} is worse than {}",
+                score(&found),
+                score(&s)
+            );
+            let again = optimize(&img, &found, None).expect("searched");
+            assert_eq!(again.detail, found.detail, "from {detail}");
+        }
+    }
+
+    /// Small print that the picture's blur has softened comes out with
+    /// straight sides and sharp corners: an H and an L seven pixels
+    /// high, strokes under two pixels wide, are straight lines only,
+    /// each level or upright, twelve and six corners.
+    #[test]
+    fn soft_small_capitals_have_straight_sides_and_sharp_corners() {
+        use tracedraw_core::geometry::PathEl;
+        let orange = [255u8, 136, 0];
+        let inside = |x: f64, y: f64, x0: f64, y0: f64, x1: f64, y1: f64| {
+            x >= x0 && x < x1 && y >= y0 && y < y1
+        };
+        let crisp = antialiased(48, |x, y| {
+            // H: two stems and a bar. L: a stem and a foot.
+            let h = inside(x, y, 10.2, 16.3, 11.9, 23.9)
+                || inside(x, y, 14.6, 16.3, 16.3, 23.9)
+                || inside(x, y, 10.2, 19.3, 16.3, 20.9);
+            let l = inside(x, y, 26.4, 16.3, 28.1, 23.9) || inside(x, y, 26.4, 22.2, 31.8, 23.9);
+            if h || l {
+                orange
+            } else {
+                WHITE
+            }
+        });
+        let soft = image::imageops::blur(&crisp, 0.7);
+        let t = trace(&soft, &Preset::Logo.settings());
+        let letters: Vec<&Traced> = t.iter().filter(|t| t.color.to_rgb8()[2] < 128).collect();
+        assert_eq!(letters.len(), 1, "one curve of the two letters");
+        let els = letters[0].path.elements();
+        let curves = els
+            .iter()
+            .filter(|e| matches!(e, PathEl::CurveTo(..)))
+            .count();
+        assert_eq!(curves, 0, "{els:?}");
+        let nodes = stats(&[letters[0].clone()]).nodes;
+        assert_eq!(nodes, 18, "{els:?}");
+        for seg in letters[0].path.segments() {
+            let (a, b) = (
+                tracedraw_core::geometry::ParamCurve::eval(&seg, 0.0),
+                tracedraw_core::geometry::ParamCurve::eval(&seg, 1.0),
+            );
+            assert!(
+                (a.x - b.x).abs() < 0.05 || (a.y - b.y).abs() < 0.05,
+                "{a:?} to {b:?} is neither level nor upright"
+            );
+        }
+    }
+
+    /// An edge between two colours equally bright is traced where it
+    /// runs inside its pixels too: purple beside a blue of the same
+    /// brightness, the edge three tenths into a column of pixels.
+    #[test]
+    fn an_edge_between_colours_equally_bright_is_found() {
+        let (purple, blue) = ([170u8, 70, 220], [60u8, 120, 255]);
+        let img = antialiased(60, |x, _| if x < 20.3 { purple } else { blue });
+        let mut s = Preset::Logo.settings();
+        s.remove = Remove::None;
+        let t = trace(&img, &s);
+        let left = t
+            .iter()
+            .find(|t| t.color.to_rgb8()[0] > 120)
+            .expect("the purple part");
+        let b = left.path.bounding_box();
+        assert!((b.x1 - 20.3).abs() < 0.15, "{b:?}");
+    }
+
+    /// A shape filled with a gradient, alone on its paper, is one region
+    /// with a blend, not bands of flat colours.
+    #[test]
+    fn a_single_shape_with_a_gradient_is_one_blend() {
+        let img = antialiased(120, |x, y| {
+            if (Point::new(x, y) - Point::new(60.0, 60.0)).hypot() < 40.0 {
+                let t = ((x - 20.0) / 80.0).clamp(0.0, 1.0);
+                [
+                    (255.0 - 100.0 * t) as u8,
+                    (120.0 + 60.0 * t) as u8,
+                    (180.0 + 70.0 * t) as u8,
+                ]
+            } else {
+                WHITE
+            }
+        });
+        let mut s = Preset::Logo.settings();
+        s.remove = Remove::None;
+        let t = trace(&img, &s);
+        assert_eq!(t.len(), 2, "the paper and the disc");
+        assert!(t.iter().any(|t| t.blend.is_some()), "the disc is a blend");
+    }
+
+    /// A high Smoothing takes the ripples out of a round shape without
+    /// drawing it in: a disc keeps its area.
+    #[test]
+    fn a_high_smoothing_keeps_the_size_of_a_round_shape() {
+        let img = antialiased(60, |x, y| {
+            if (Point::new(x, y) - Point::new(30.4, 29.7)).hypot() < 8.0 {
+                BLACK
+            } else {
+                WHITE
+            }
+        });
+        let mut s = Preset::Logo.settings();
+        s.smoothing = 100.0;
+        let t = trace(&img, &s);
+        assert_eq!(t.len(), 1);
+        let (area, disc) = (t[0].path.area().abs(), std::f64::consts::PI * 64.0);
+        assert!((area - disc).abs() < 0.02 * disc, "{area} for {disc}");
+    }
+
+    /// Below detail 100 a patch of a single pixel is a speck, however
+    /// high the detail; noise is not taken out of the picture first from
+    /// detail 88 up, where that would take fine lines too.
+    #[test]
+    fn single_pixels_are_specks_below_the_highest_detail() {
+        assert_eq!(speck_area(100.0), 1);
+        assert_eq!(speck_area(95.0), 2);
+        assert_eq!(speck_area(90.0), 2);
+        assert_eq!(speck_area(80.0), 4);
+        assert_eq!(denoise_passes(90.0), 0);
+        assert_eq!(denoise_passes(80.0), 1);
+        assert_eq!(denoise_passes(60.0), 2);
+    }
+
+    /// A picture enlarged four times is measured in pixels of the art:
+    /// a dot of two by two pixels is a quarter of a pixel of the art and
+    /// a speck, where it stays in a picture traced as it is; the curves
+    /// stay in the pixels of the picture given.
+    #[test]
+    fn an_enlarged_picture_is_measured_in_pixels_of_the_art() {
+        let black = [0u8, 0, 0];
+        let img = antialiased(200, |x, y| {
+            let square = (40.0..80.0).contains(&x) && (40.0..80.0).contains(&y);
+            let dot = (140.0..142.0).contains(&x) && (100.0..102.0).contains(&y);
+            if square || dot {
+                black
+            } else {
+                WHITE
+            }
+        });
+        let patches = |scale: f64| {
+            let mut s = Preset::Logo.settings();
+            s.pixel_scale = scale;
+            let t = trace(&img, &s);
+            assert_eq!(t.len(), 1, "one colour");
+            let b = t[0].path.bounding_box();
+            let moves = t[0]
+                .path
+                .elements()
+                .iter()
+                .filter(|e| matches!(e, tracedraw_core::geometry::PathEl::MoveTo(..)))
+                .count();
+            (moves, b)
+        };
+        let (as_it_is, _) = patches(1.0);
+        let (enlarged, b) = patches(4.0);
+        assert_eq!(as_it_is, 2, "the dot is kept");
+        assert_eq!(enlarged, 1, "the dot is a speck");
+        for (got, want) in [(b.x0, 40.0), (b.y0, 40.0), (b.x1, 80.0), (b.y1, 80.0)] {
+            assert!((got - want).abs() < 0.6, "{b:?}");
+        }
+    }
+
+    /// Removing a shaded background from a picture traced on its own
+    /// pixels leaves no pale line round the letters: the edge pixels of
+    /// a shade of the background go with the shade.
+    #[test]
+    fn no_pale_line_is_left_round_a_letter_on_a_shaded_background() {
+        let crisp = antialiased(240, |x, y| {
+            let r = ((x - 120.0).powi(2) + (y - 120.0).powi(2)).sqrt();
+            if (22.0..40.0).contains(&r) {
+                [50, 18, 81]
+            } else {
+                // Two flat shades of paper, the lighter round the letter.
+                let v = (236.0 - ((r - 70.0) * 0.8).clamp(0.0, 24.0)).round() as u8;
+                [v, v, v]
+            }
+        });
+        let img = image::imageops::blur(&crisp, 1.5);
+        let mut s = Preset::Logo.settings();
+        s.pixel_scale = 4.0;
+        let t = trace(&img, &s);
+        assert!(t.iter().any(|t| t.color.to_rgb8()[0] < 100), "the letter");
+        for t in &t {
+            let c = t.color.to_rgb8();
+            if c[0] < 150 {
+                continue;
+            }
+            let b = t.path.bounding_box();
+            assert!(
+                b.x0 > 92.0 && b.x1 < 148.0 && b.y0 > 92.0 && b.y1 < 148.0,
+                "a pale curve outside the letter: {c:?} {b:?}"
+            );
+        }
+    }
+
+    /// The pale inside of a small letter that opens onto the paper is
+    /// paper; one closed all round (the bowl of a B) stays a gap.
+    #[test]
+    fn the_gap_of_a_letter_open_to_the_paper_is_paper() {
+        let (w, h) = (12usize, 12usize);
+        let palette = [[255u8; 3], [0u8; 3], [232u8; 3]];
+        let draw = |open: bool| -> Vec<usize> {
+            (0..w * h)
+                .map(|i| {
+                    let (x, y) = (i % w, i / w);
+                    let ring = (2..10).contains(&x) && (2..10).contains(&y);
+                    let inside = (4..8).contains(&x) && (4..8).contains(&y);
+                    let mouth = open && (8..10).contains(&x) && (5..7).contains(&y);
+                    if inside || mouth {
+                        2
+                    } else if ring {
+                        1
+                    } else {
+                        0
+                    }
+                })
+                .collect()
+        };
+        let mut c = draw(true);
+        open_gaps(&mut c, w, h, &palette, 40, None).unwrap();
+        assert!(c.iter().all(|l| *l != 2), "{c:?}");
+        let mut b = draw(false);
+        open_gaps(&mut b, w, h, &palette, 40, None).unwrap();
+        assert_eq!(b.iter().filter(|l| **l == 2).count(), 16);
+    }
+
+    /// The gap of a small A in a picture enlarged four times, smaller
+    /// than a pixel of the art (the enlarging draws it small), stays;
+    /// a few pixels of the picture do not.
+    #[test]
+    fn the_gap_of_a_small_letter_in_an_enlarged_picture_stays() {
+        let (w, h) = (40usize, 40usize);
+        let palette = [[255u8; 3], [0u8; 3]];
+        let mut labels: Vec<usize> = (0..w * h)
+            .map(|i| {
+                let (x, y) = (i % w, i / w);
+                let letter = (4..36).contains(&x) && (4..36).contains(&y);
+                let gap = (10..13).contains(&x) && (10..14).contains(&y);
+                let speck = (24..26).contains(&x) && (24..26).contains(&y);
+                (letter && !gap && !speck) as usize
+            })
+            .collect();
+        despeckle_of(&mut labels, w, h, 64, 16, 16, &palette, None);
+        let at = |x: usize, y: usize| labels[y * w + x];
+        assert_eq!(at(11, 12), 0, "the gap of twelve pixels stays");
+        assert_eq!(at(24, 24), 1, "four pixels are a speck");
+    }
+
+    /// Enlarging leaves a darker rim along the edge of a colour with a
+    /// lighter one. The rim is the colour's, not a line of the nearest
+    /// darker colour of the picture.
+    #[test]
+    fn the_dark_rim_of_an_enlarged_edge_is_no_line() {
+        let (blue, rim, navy) = ([28u8, 92, 168], [5u8, 45, 125], [0u8, 40, 100]);
+        let img = antialiased(200, |x, y| {
+            let r = ((x - 90.0).powi(2) + (y - 110.0).powi(2)).sqrt();
+            if (150.0..190.0).contains(&x) && (10.0..40.0).contains(&y) {
+                navy
+            } else if r < 59.0 {
+                blue
+            } else if r < 60.0 {
+                rim
+            } else {
+                WHITE
+            }
+        });
+        let mut s = Preset::Logo.settings();
+        s.pixel_scale = 4.0;
+        let t = trace(&img, &s);
+        let dark: Vec<&Traced> = t.iter().filter(|c| c.color.to_rgb8()[2] < 130).collect();
+        assert_eq!(
+            dark.len(),
+            1,
+            "{:?}",
+            t.iter().map(|c| c.color).collect::<Vec<_>>()
+        );
+        let b = dark[0].path.bounding_box();
+        assert!(
+            b.x0 > 145.0 && b.y1 < 45.0,
+            "only the square is navy: {b:?}"
+        );
+    }
+
+    /// A small piece of a letter in a second shade of its colour is the
+    /// letter (its colour runs from one shade to the other); a small
+    /// piece whose own colour in the picture is far from the letter's
+    /// is a shape, though the two colours of the palette are as near.
+    #[test]
+    fn a_small_piece_of_a_shade_joins_the_letter_it_is_of() {
+        let (w, h) = (24usize, 24usize);
+        let palette = [[20u8, 20, 28], [204, 163, 84], [232, 189, 101]];
+        let labels: Vec<usize> = (0..w * h)
+            .map(|i| {
+                let (x, y) = (i % w, i / w);
+                if !(4..20).contains(&x) || !(4..20).contains(&y) {
+                    0
+                } else if y < 9 {
+                    2
+                } else {
+                    1
+                }
+            })
+            .collect();
+        let picture = |light: [u8; 3]| -> Vec<[u8; 3]> {
+            labels
+                .iter()
+                .map(|l| if *l == 2 { light } else { palette[*l] })
+                .collect()
+        };
+        let mut joined = labels.clone();
+        join_shades(
+            &mut joined,
+            w,
+            h,
+            &palette,
+            &picture([226, 184, 98]),
+            256,
+            None,
+        )
+        .unwrap();
+        assert!(joined.iter().all(|l| *l != 2), "one letter");
+        assert_eq!(joined.iter().filter(|l| **l == 1).count(), 256);
+        let mut apart = labels.clone();
+        join_shades(
+            &mut apart,
+            w,
+            h,
+            &palette,
+            &picture([250, 225, 150]),
+            256,
+            None,
+        )
+        .unwrap();
+        assert_eq!(apart, labels, "a shape of its own");
+        let mut large = labels.clone();
+        join_shades(
+            &mut large,
+            w,
+            h,
+            &palette,
+            &picture([226, 184, 98]),
+            40,
+            None,
+        )
+        .unwrap();
+        assert_eq!(large, labels, "too large to be a piece of a shade");
+    }
+
+    /// The check draws the trace and compares it with the picture: a gap
+    /// the trace closed is found and given the picture's colour there,
+    /// and a shade of the colour drawn is left alone.
+    #[test]
+    fn the_check_finds_a_closed_gap_and_leaves_a_shade() {
+        let ink = [30u8, 20, 90];
+        let whole = antialiased(80, |x, y| {
+            if (20.0..60.0).contains(&x) && (20.0..60.0).contains(&y) {
+                ink
+            } else {
+                WHITE
+            }
+        });
+        let mut s = Preset::Logo.settings();
+        s.remove = Remove::None;
+        let traced = trace(&whole, &s);
+        let (w, h) = (80usize, 80usize);
+        let palette = [WHITE, ink];
+        let labels: Vec<usize> = (0..w * h)
+            .map(|i| ((20..60).contains(&(i % w)) && (20..60).contains(&(i / w))) as usize)
+            .collect();
+        let with = |c: [u8; 3]| {
+            let mut img = whole.clone();
+            for y in 34..42 {
+                for x in 34..42 {
+                    img.put_pixel(x, y, Rgba([c[0], c[1], c[2], 255]));
+                }
+            }
+            img
+        };
+        // A white gap of eight by eight the trace has not.
+        let img = with(WHITE);
+        let (wrong, drawn) = differs(&img, &traced, &palette, None, None).unwrap();
+        assert_eq!(wrong.iter().filter(|x| **x).count(), 64);
+        let mut l = labels.clone();
+        let changes = recheck(&img, &wrong, &drawn, &mut l, &palette, &[None, None], 12);
+        assert_eq!(changes.len(), 1);
+        assert_eq!(changes[0].pixels.len(), 64);
+        assert!(changes[0].was.iter().all(|k| *k == 1));
+        assert!(changes[0].pixels.iter().all(|i| l[*i] == 0));
+        assert_eq!(l.iter().filter(|k| **k == 0).count(), 80 * 80 - 1600 + 64);
+        // Too small a patch to be made again.
+        let mut l = labels.clone();
+        assert!(recheck(&img, &wrong, &drawn, &mut l, &palette, &[None, None], 100).is_empty());
+        assert_eq!(l, labels);
+        // A patch a shade lighter than the ink differs from nothing.
+        let img = with([50, 40, 110]);
+        let (wrong, drawn) = differs(&img, &traced, &palette, None, None).unwrap();
+        assert!(wrong.iter().all(|x| !*x));
+        let mut l = labels.clone();
+        assert!(recheck(&img, &wrong, &drawn, &mut l, &palette, &[None, None], 12).is_empty());
+        // Sizes that do not match change nothing.
+        assert!(recheck(&img, &wrong[..10], &drawn, &mut l, &palette, &[], 1).is_empty());
+    }
+
+    /// A small letter in a picture enlarged four times is traced as it
+    /// is drawn: its straight sides are lines level and upright where
+    /// the picture has them, its corners sharp, in as few nodes as the
+    /// letter has corners.
+    #[test]
+    fn a_small_letter_of_an_enlarged_picture_is_traced_as_drawn() {
+        // An L: a stem of 12 by 60 and a foot of 40 by 12, edges between
+        // the pixels.
+        let img = antialiased(160, |x, y| {
+            let stem = (50.5..62.5).contains(&x) && (40.5..100.5).contains(&y);
+            let foot = (50.5..90.5).contains(&x) && (88.5..100.5).contains(&y);
+            if stem || foot {
+                [255, 140, 0]
+            } else {
+                WHITE
+            }
+        });
+        let mut s = Preset::Logo.settings();
+        s.pixel_scale = 4.0;
+        let t = trace(&img, &s);
+        assert_eq!(t.len(), 1, "one colour");
+        let path = &t[0].path;
+        use tracedraw_core::geometry::ParamCurve;
+        let segs: Vec<_> = path.segments().collect();
+        assert_eq!(segs.len(), 6, "{path:?}");
+        for seg in &segs {
+            let (a, b) = (seg.start(), seg.end());
+            assert!(
+                (a.x - b.x).abs() < 0.05 || (a.y - b.y).abs() < 0.05,
+                "a side neither level nor upright: {a:?} {b:?}"
+            );
+            for p in [a, b] {
+                let near = |v: f64, at: &[f64]| at.iter().any(|w| (v - w).abs() < 0.3);
+                assert!(
+                    near(p.x, &[50.5, 62.5, 90.5]) && near(p.y, &[40.5, 88.5, 100.5]),
+                    "a corner off the letter's: {p:?}"
+                );
+            }
+        }
+        let drawn = render_traced(&t, 160, 160, 1.0);
+        assert_eq!(wrong_share(&img, &drawn, None), Some(0.0));
     }
 }

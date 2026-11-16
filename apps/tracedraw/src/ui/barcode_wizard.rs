@@ -40,6 +40,107 @@ pub struct BarcodeState {
     /// Opened from the Print Merge panel with On every page: Finish puts
     /// the barcode in the same place on every page too.
     pub merge_all_pages: bool,
+    /// A serial number in the data (#2158): Finish adds a number field
+    /// counting it to the Print Merge data.
+    pub serial: Serial,
+    /// Opened from the Print Merge panel's Place Inside Frame (#1084):
+    /// Finish puts a barcode inside each of these shapes, as large as it
+    /// fits.
+    pub frames: Vec<tracedraw_core::ShapeId>,
+}
+
+/// The serial number of a Print Merge barcode (#2158): none, the same
+/// number on every record, or numbers that go on from record to record.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Serial {
+    /// 0 none, 1 the same on every record, 2 counting on.
+    pub mode: usize,
+    pub start: i64,
+    pub step: i64,
+    pub digits: u32,
+    /// Records to make when the data has fewer (0: as many as it has).
+    pub records: usize,
+    /// The field it becomes, named in the data as `<field>`.
+    pub field: String,
+}
+
+impl Default for Serial {
+    fn default() -> Self {
+        Serial {
+            mode: 0,
+            start: 1,
+            step: 1,
+            digits: 4,
+            records: 0,
+            field: String::new(),
+        }
+    }
+}
+
+/// The choices of the Serial number list, in [`Serial::mode`] order.
+pub const SERIAL_KEYS: [&str; 3] = [
+    "barcode.serial_none",
+    "barcode.serial_same",
+    "barcode.serial_continue",
+];
+
+impl Serial {
+    /// The serial number of record `k` (from 0), as the field writes it.
+    pub fn value(&self, k: usize) -> String {
+        let step = if self.mode == 2 { self.step } else { 0 };
+        let n = self
+            .start
+            .saturating_add(step.saturating_mul(k.min(i64::MAX as usize) as i64));
+        crate::print_merge::NumberFormat::Digits.write(n, self.digits.clamp(1, 12))
+    }
+
+    /// `data` with the serial's `<field>` holding record `k`'s number.
+    pub fn fill(&self, data: &str, k: usize) -> String {
+        if self.mode == 0 || self.field.is_empty() {
+            return data.to_string();
+        }
+        data.replace(&format!("<{}>", self.field), &self.value(k))
+    }
+
+    /// Add the serial's number field to the Print Merge data `st`, with
+    /// at least [`Self::records`] records.
+    pub fn add_to(&self, st: &mut crate::ui::dialogs::PrintMergeState) {
+        if self.mode == 0 || self.field.is_empty() || st.headers.contains(&self.field) {
+            return;
+        }
+        let step = if self.mode == 2 { self.step } else { 0 };
+        crate::print_merge::add_number_field(
+            st,
+            &self.field,
+            self.start,
+            step,
+            self.digits,
+            crate::print_merge::NumberFormat::Digits,
+            None,
+        );
+        let want = self.records.min(crate::print_merge::MAX_RANGE_RECORDS);
+        while st.rows.len() < want {
+            crate::print_merge::add_record(st);
+        }
+    }
+}
+
+/// A field name for a new serial number, "Serial", else "Serial 2" and
+/// so on, that no field of `headers` has.
+pub fn serial_field_name(headers: &[String]) -> String {
+    let base = tr("barcode.serial_field");
+    let base = if base.trim().is_empty() || base.contains(['<', '>']) {
+        "Serial".to_string()
+    } else {
+        base
+    };
+    let mut name = base.clone();
+    let mut n = 2;
+    while headers.contains(&name) {
+        name = format!("{base} {n}");
+        n += 1;
+    }
+    name
 }
 
 impl Default for BarcodeState {
@@ -55,6 +156,8 @@ impl Default for BarcodeState {
             advanced: false,
             error: String::new(),
             merge_all_pages: false,
+            serial: Serial::default(),
+            frames: Vec::new(),
         }
     }
 }
@@ -88,6 +191,7 @@ pub fn dialog(app: &mut App, ctx: &Context, st: &mut BarcodeState, close: &mut b
         .as_ref()
         .map(|m| m.headers.clone())
         .unwrap_or_default();
+    let merging = app.merge_state.is_some();
     window(ctx, tr("barcode.title")).show(ctx, |ui| {
         ui.horizontal_top(|ui| {
             picture(ui, st.step);
@@ -95,13 +199,13 @@ pub fn dialog(app: &mut App, ctx: &Context, st: &mut BarcodeState, close: &mut b
             ui.vertical(|ui| {
                 ui.set_width(FORM_W);
                 match st.step {
-                    0 => step_standard(ui, st, &fields),
+                    0 => step_standard(ui, st, &fields, merging),
                     1 => step_printer(ui, st),
                     _ => step_text(ui, st),
                 }
                 ui.add_space(8.0);
                 ui.label(tr("barcode.sample_preview"));
-                preview(ui, &st.spec.template());
+                preview(ui, &st.shown().template());
                 if !st.error.is_empty() {
                     ui.colored_label(Color32::from_rgb(0xC4, 0x2B, 0x1C), &st.error);
                 }
@@ -144,7 +248,7 @@ pub fn dialog(app: &mut App, ctx: &Context, st: &mut BarcodeState, close: &mut b
                 if button(ui, tr(next), true, crate::ui::tips::keyed(next)) || enter_pressed(ui) {
                     // Data naming merge fields is checked for each record
                     // when merged; the wizard checks the sample it shows.
-                    match barcode::build(&st.spec.template()) {
+                    match barcode::build(&st.shown().template()) {
                         Ok(_) if last => finish = true,
                         Ok(_) => {
                             st.error.clear();
@@ -169,23 +273,118 @@ pub fn dialog(app: &mut App, ctx: &Context, st: &mut BarcodeState, close: &mut b
         app.open_dialog_help();
     }
     if finish {
-        match insert(app, &st.spec) {
-            Ok(()) => {
-                *close = true;
-                if st.merge_all_pages {
-                    if let Some(id) = app.selection.first().copied() {
-                        app.copy_merge_field_to_other_pages(id);
-                    }
+        finish_wizard(app, st, close);
+    }
+}
+
+/// Finish: the serial number's field joins the Print Merge data, then
+/// the barcode is placed (inside each chosen frame, else at the page
+/// centre, on every page too with On every page).
+pub fn finish_wizard(app: &mut App, st: &mut BarcodeState, close: &mut bool) {
+    let placed = if st.frames.is_empty() {
+        insert(app, &st.spec).map(|()| app.selection.first().copied().into_iter().collect())
+    } else {
+        insert_in_frames(app, &st.spec, &st.frames)
+    };
+    match placed {
+        Ok(ids) => {
+            *close = true;
+            if let Some(m) = app.merge_state.as_mut() {
+                st.serial.add_to(m);
+            }
+            if st.merge_all_pages {
+                let ids: Vec<tracedraw_core::ShapeId> = ids;
+                for id in ids {
+                    app.copy_merge_field_to_other_pages(id);
                 }
             }
-            Err(key) => st.error = tr(key),
+        }
+        Err(key) => st.error = tr(key),
+    }
+}
+
+impl BarcodeState {
+    /// The settings as the preview shows them: the serial number's field
+    /// holding the first record's number.
+    pub fn shown(&self) -> BarcodeSpec {
+        BarcodeSpec {
+            data: self.serial.fill(&self.spec.data, 0),
+            ..self.spec.clone()
         }
     }
 }
 
+/// The serial number choices (#2158): the list, and for a number the
+/// start, the step, the digits and the records to make; the first two
+/// numbers show under them. Choosing a number puts its `<field>` at the
+/// end of the data, choosing none takes it out.
+fn serial_number(ui: &mut Ui, st: &mut BarcodeState, fields: &[String]) {
+    let before = st.serial.mode;
+    ui.horizontal(|ui| {
+        ui.label(tr("barcode.serial"));
+        crate::ui::keynav::ComboBox::from_id_salt("barcode_serial")
+            .width(200.0)
+            .selected_text(tr(SERIAL_KEYS[st.serial.mode.min(2)]))
+            .show_ui(ui, |ui| {
+                for (i, k) in SERIAL_KEYS.iter().enumerate() {
+                    ui.selectable_value(&mut st.serial.mode, i, tr(k));
+                }
+            })
+            .response
+            .rich_tip(crate::ui::tips::keyed("barcode.serial"));
+    });
+    if st.serial.mode != before {
+        let placeholder = |f: &str| format!("<{f}>");
+        if before == 0 {
+            st.serial.field = serial_field_name(fields);
+            st.spec.data.push_str(&placeholder(&st.serial.field));
+        } else if st.serial.mode == 0 && !st.serial.field.is_empty() {
+            st.spec.data = st.spec.data.replace(&placeholder(&st.serial.field), "");
+            st.serial.field.clear();
+        }
+        st.error.clear();
+    }
+    if st.serial.mode == 0 {
+        return;
+    }
+    let f = &mut st.serial;
+    ui.horizontal(|ui| {
+        ui.add(crate::ui::field::NumField::new(&mut f.start).prefix(tr("merge.start")))
+            .rich_tip(crate::ui::tips::keyed("merge.start"));
+        ui.add_enabled(
+            f.mode == 2,
+            crate::ui::field::NumField::new(&mut f.step).prefix(tr("merge.step")),
+        )
+        .rich_tip_always(crate::ui::tips::keyed("merge.step"));
+        ui.add(
+            crate::ui::field::NumField::new(&mut f.digits)
+                .range(1..=12)
+                .prefix(tr("merge.digits")),
+        )
+        .rich_tip(crate::ui::tips::keyed("merge.digits"));
+    });
+    ui.add(
+        crate::ui::field::NumField::new(&mut f.records)
+            .range(0..=crate::print_merge::MAX_RANGE_RECORDS)
+            .prefix(tr("barcode.serial_records")),
+    )
+    .rich_tip(crate::ui::tips::keyed("barcode.serial_records"));
+    ui.label(
+        egui::RichText::new(trf(
+            "barcode.serial_example",
+            &[
+                ("first", &f.fill(&st.spec.data, 0)),
+                ("second", &f.fill(&st.spec.data, 1)),
+            ],
+        ))
+        .color(Tokens::text_dim()),
+    );
+}
+
 /// Step 1: the industry standard and the data; with Print Merge data,
-/// Insert Field puts a field's `<Name>` in the data.
-fn step_standard(ui: &mut Ui, st: &mut BarcodeState, fields: &[String]) {
+/// Insert Field puts a field's `<Name>` in the data and a serial number
+/// can count on from record to record.
+fn step_standard(ui: &mut Ui, st: &mut BarcodeState, fields: &[String], merging: bool) {
     ui.label(tr("barcode.welcome"));
     ui.add_space(10.0);
     ui.label(tr("barcode.select_standard"));
@@ -244,6 +443,10 @@ fn step_standard(ui: &mut Ui, st: &mut BarcodeState, fields: &[String]) {
                 st.error.clear();
             }
         });
+    }
+    if merging {
+        ui.add_space(6.0);
+        serial_number(ui, st, fields);
     }
 }
 
@@ -746,6 +949,115 @@ pub fn insert(app: &mut App, spec: &BarcodeSpec) -> Result<(), &'static str> {
         app.select(vec![id]);
     }
     Ok(())
+}
+
+/// A barcode of `spec` inside each shape of `frames` (#1084): placed as
+/// [`insert`] places it, then scaled to fill nine tenths of the shape's
+/// box, centred in it and put inside it as its contents, all in one undo
+/// step. Returns the shapes that now hold a barcode, selected.
+pub fn insert_in_frames(
+    app: &mut App,
+    spec: &BarcodeSpec,
+    frames: &[tracedraw_core::ShapeId],
+) -> Result<Vec<tracedraw_core::ShapeId>, &'static str> {
+    let mut held = Vec::new();
+    for &frame in frames {
+        let Some(area) = app.doc().find_shape(frame).map(|s| s.bounds()) else {
+            continue;
+        };
+        if held.is_empty() {
+            insert(app, spec)?;
+        } else {
+            // The later ones join the first one's undo step.
+            let label = "Insert Barcode";
+            let made = barcode_shapes_for(app, spec)?;
+            if let Err(e) = app.engine.amend_batch(label, &made) {
+                app.status = e.to_string();
+                continue;
+            }
+            let last = app.active_layer().and_then(|layer| {
+                app.doc()
+                    .page(app.page)
+                    .ok()
+                    .and_then(|p| p.layers.iter().find(|l| l.id == layer))
+                    .and_then(|l| l.shapes.last())
+                    .map(|s| s.id)
+            });
+            if let Some(id) = last {
+                app.select(vec![id]);
+            }
+        }
+        let Some(code) = app.selection.first().copied().filter(|id| {
+            *id != frame
+                && app
+                    .doc()
+                    .find_shape(*id)
+                    .and_then(BarcodeSpec::of_shape)
+                    .is_some()
+        }) else {
+            continue;
+        };
+        let Some(b) = app.doc().find_shape(code).map(|s| s.bounds()) else {
+            continue;
+        };
+        if b.width() <= 0.0 || b.height() <= 0.0 || area.width() <= 0.0 || area.height() <= 0.0 {
+            continue;
+        }
+        let k = (area.width() * 0.9 / b.width()).min(area.height() * 0.9 / b.height());
+        let t = tracedraw_core::geometry::Affine::translate(area.center().to_vec2())
+            * tracedraw_core::geometry::Affine::scale(k)
+            * tracedraw_core::geometry::Affine::translate(-b.center().to_vec2());
+        let cmds = [
+            Command::TransformShapes {
+                shapes: vec![code],
+                transform: t,
+            },
+            Command::PlaceInside {
+                contents: vec![code],
+                frame,
+            },
+        ];
+        match app.engine.amend_batch("Insert Barcode", &cmds) {
+            Ok(()) => held.push(frame),
+            Err(e) => app.status = e.to_string(),
+        }
+    }
+    if held.is_empty() {
+        return Err("merge.place_inside_none");
+    }
+    app.select(held.clone());
+    Ok(held)
+}
+
+/// The commands that add one more barcode of `spec` at the page centre
+/// on the active layer, keeping its settings (as [`insert`] does).
+fn barcode_shapes_for(app: &mut App, spec: &BarcodeSpec) -> Result<Vec<Command>, &'static str> {
+    let shown = spec.template();
+    let (built, _) = barcode::build(&shown)?;
+    let Some(layer) = app.active_layer() else {
+        return Ok(Vec::new());
+    };
+    let c = app.page_rect().center();
+    let at = Point::new(c.x - built.width / 2.0, c.y - shown.bar_height_mm / 2.0);
+    let mut new_id = || app.engine.new_shape_id();
+    let mut shapes = barcode_shapes(&shown, at, &mut new_id)?;
+    let data = vec![(barcode::DATA_KEY.to_string(), spec.to_data())];
+    if let [only] = shapes.as_mut_slice() {
+        only.data = data;
+        return Ok(vec![Command::AddShape {
+            layer,
+            shape: shapes.remove(0),
+        }]);
+    }
+    let gid = app.engine.new_shape_id();
+    let mut group = Shape::new(gid, ShapeKind::Group { children: shapes });
+    group.data = data;
+    group.stroke = None;
+    group.fill = Fill::None;
+    Ok(vec![Command::AddShape {
+        layer,
+        shape: group,
+    }])
 }
 
 #[cfg(test)]

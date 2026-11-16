@@ -94,7 +94,7 @@ pub fn show(app: &mut App, ctx: &Context) {
                             app.select_clip_contents(clip);
                         }
                         if button(ui, "clip.extract") {
-                            app.run(tracedraw_core::Command::ExtractContents { clip });
+                            app.extract_keeping_frame(clip);
                             app.select(vec![clip]);
                         }
                         let locked = app.clip_frame_locked(clip);

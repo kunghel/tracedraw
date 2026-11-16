@@ -20,6 +20,11 @@ impl SharedBytes {
         Arc::ptr_eq(&a.0, &b.0)
     }
 
+    /// The shared buffer itself.
+    pub fn arc(&self) -> &Arc<[u8]> {
+        &self.0
+    }
+
     /// The bytes as a slice.
     pub fn as_slice(&self) -> &[u8] {
         &self.0
@@ -109,16 +114,207 @@ impl std::fmt::Debug for SharedBytes {
     }
 }
 
-/// Base64 text, as `png_bytes` writes a byte vector.
+/// Base64 text, as `png_bytes` writes a byte vector; in a packed
+/// `.tdraw` file ([`BlobTable`]), a reference to the file's table.
 impl Serialize for SharedBytes {
     fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
-        crate::document::png_bytes::serialize(&self.0, s)
+        match blob_reference(Blob::Shared(self.0.clone())) {
+            Some(r) => s.serialize_str(&r),
+            None => crate::document::png_bytes::serialize(&self.0, s),
+        }
     }
 }
 
 impl<'de> Deserialize<'de> for SharedBytes {
     fn deserialize<D: Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
-        crate::document::png_bytes::deserialize(d).map(SharedBytes::from)
+        let text = String::deserialize(d)?;
+        if let Some(found) = blob_read(&text) {
+            return found.map_err(serde::de::Error::custom);
+        }
+        decode_base64(&text)
+            .map(SharedBytes::from)
+            .map_err(serde::de::Error::custom)
+    }
+}
+
+pub(crate) fn decode_base64(text: &str) -> Result<Vec<u8>, String> {
+    use base64::Engine;
+    base64::engine::general_purpose::STANDARD
+        .decode(text)
+        .map_err(|e| e.to_string())
+}
+
+/// The start of a reference to a packed file's table of pictures and
+/// fonts: `"blob:12"` stands for the table's entry 12. Base64 has no
+/// colon, so no picture's text is ever taken for one.
+pub const BLOB_PREFIX: &str = "blob:";
+
+/// Bytes the table keeps until it is written.
+#[derive(Clone)]
+pub(crate) enum Blob {
+    Shared(Arc<[u8]>),
+    Font(Arc<Vec<u8>>),
+}
+
+impl Blob {
+    fn bytes(&self) -> &[u8] {
+        match self {
+            Blob::Shared(b) => b,
+            Blob::Font(b) => b,
+        }
+    }
+}
+
+/// The pictures and fonts of a `.tdraw` file being written packed (#2849):
+/// each distinct one once, however many objects use it (copies,
+/// symbols, an effect's original and its result, a pattern on many
+/// shapes); the objects hold references ([`BLOB_PREFIX`]).
+#[derive(Default)]
+pub(crate) struct BlobTable {
+    list: Vec<Blob>,
+    /// Entries by their bytes' hash and length (equal bytes are checked).
+    by_hash: std::collections::HashMap<(u64, usize), Vec<usize>>,
+}
+
+impl BlobTable {
+    fn add(&mut self, blob: Blob) -> usize {
+        use std::hash::{Hash, Hasher};
+        let bytes = blob.bytes();
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        bytes.hash(&mut h);
+        let key = (h.finish(), bytes.len());
+        let slot = self.by_hash.entry(key).or_default();
+        if let Some(&i) = slot.iter().find(|&&i| self.list[i].bytes() == bytes) {
+            return i;
+        }
+        let i = self.list.len();
+        slot.push(i);
+        self.list.push(blob);
+        i
+    }
+}
+
+/// An entry of the table being read: its text and, once decoded, its
+/// bytes (shared by every object that refers to it).
+type ReadEntry = (String, Option<SharedBytes>);
+
+thread_local! {
+    /// The table of the packed file being written on this thread.
+    static WRITING: std::cell::RefCell<Option<BlobTable>> = const { std::cell::RefCell::new(None) };
+    /// The table of the packed file being read on this thread.
+    static READING: std::cell::RefCell<Option<Vec<ReadEntry>>> = const { std::cell::RefCell::new(None) };
+}
+
+/// While a packed file is written: `blob`'s reference, the bytes kept
+/// in the table. `None` otherwise (the bytes are written in place).
+pub(crate) fn blob_reference(blob: Blob) -> Option<String> {
+    WRITING.with(|w| {
+        w.borrow_mut()
+            .as_mut()
+            .map(|t| format!("{BLOB_PREFIX}{}", t.add(blob)))
+    })
+}
+
+/// While a packed file is read: the bytes `text` refers to, or `None`
+/// when it is no reference (or no table is being read).
+pub(crate) fn blob_read(text: &str) -> Option<Result<SharedBytes, String>> {
+    let n: usize = text.strip_prefix(BLOB_PREFIX)?.parse().ok()?;
+    READING.with(|r| {
+        let mut r = r.borrow_mut();
+        let table = r.as_mut()?;
+        let Some((text, done)) = table.get_mut(n) else {
+            return Some(Err(format!("picture {n} is not in the file's table")));
+        };
+        if let Some(b) = done {
+            return Some(Ok(b.clone()));
+        }
+        // A picture saved as the JPEG it was imported from (#2849).
+        let b = match text.strip_prefix(crate::jpeg_source::JPEG_PREFIX) {
+            Some(jpeg) => decode_base64(jpeg).and_then(|j| crate::jpeg_source::png_of_jpeg(&j)),
+            None => decode_base64(text).map(SharedBytes::from),
+        };
+        if let Ok(b) = &b {
+            *done = Some(b.clone());
+            // The text is not needed once decoded.
+            *text = String::new();
+        }
+        Some(b)
+    })
+}
+
+/// Writing a packed file on this thread until dropped: the table that
+/// [`BlobsOut`] writes.
+pub(crate) struct WritingTable;
+
+impl WritingTable {
+    pub(crate) fn start() -> Self {
+        WRITING.with(|w| *w.borrow_mut() = Some(BlobTable::default()));
+        WritingTable
+    }
+}
+
+impl Drop for WritingTable {
+    fn drop(&mut self) {
+        WRITING.with(|w| *w.borrow_mut() = None);
+    }
+}
+
+/// Reading a packed file's `table` (each entry's base64 text) on this
+/// thread until dropped.
+pub(crate) struct ReadingTable;
+
+impl ReadingTable {
+    pub(crate) fn start(table: Vec<String>) -> Self {
+        READING.with(|r| *r.borrow_mut() = Some(table.into_iter().map(|t| (t, None)).collect()));
+        ReadingTable
+    }
+}
+
+impl Drop for ReadingTable {
+    fn drop(&mut self) {
+        READING.with(|r| *r.borrow_mut() = None);
+    }
+}
+
+/// The table of the file being written, as a list of base64 texts;
+/// serialized after the drawing, whose pictures and fonts filled it.
+pub(crate) struct BlobsOut;
+
+impl Serialize for BlobsOut {
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeSeq;
+        let list = WRITING.with(|w| w.borrow_mut().as_mut().map(|t| std::mem::take(&mut t.list)));
+        let list = list.unwrap_or_default();
+        let mut seq = s.serialize_seq(Some(list.len()))?;
+        for b in &list {
+            // A picture imported from a JPEG goes out as that JPEG.
+            let jpeg = match b {
+                Blob::Shared(png) => crate::jpeg_source::jpeg_of(png),
+                Blob::Font(_) => None,
+            };
+            match jpeg {
+                Some(j) => seq.serialize_element(&format!(
+                    "{}{}",
+                    crate::jpeg_source::JPEG_PREFIX,
+                    base64_text(&j)
+                ))?,
+                None => seq.serialize_element(&Base64(b.bytes()))?,
+            }
+        }
+        seq.end()
+    }
+}
+
+struct Base64<'a>(&'a [u8]);
+
+fn base64_text(b: &[u8]) -> String {
+    use base64::Engine;
+    base64::engine::general_purpose::STANDARD.encode(b)
+}
+
+impl Serialize for Base64<'_> {
+    fn serialize<S: Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        crate::document::png_bytes::serialize(self.0, s)
     }
 }
 

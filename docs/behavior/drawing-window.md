@@ -200,6 +200,9 @@ window shows.
   shown (one of an earlier state would bring back what was deleted), it
   is painted only where the render does not reach (never under it:
   see-through objects would show twice as dense) and not at all at rest.
+  The two meet edge to edge: no strip of bare paper shows between them
+  while the view zooms out (#2899,
+  `canvas::tests::the_backdrop_meets_the_shrunk_picture_without_a_gap`).
   It covers the page, not what lies off it, and is not drawn while a
   drag is previewed, in the Pixels view or while only some objects show.
   The browser build, which has no thread to draw it on, has none.
@@ -223,6 +226,18 @@ window shows.
   browser build, which draws on one thread, keeps the wait too.
   `frame_times_of_a_zoom_burst` (in `pick_drag_tests.rs`) measures the
   wait from the last step to the sharp picture.
+- The main canvas's picture drawn on a thread comes a band at a time
+  (`render_page_progressive`): about three bands for each core, the
+  band at the middle of the window first and the others outward from
+  it, each laid over the last picture as soon as it is done
+  (`Raster::incoming`, a see-through texture the picture's size). After
+  a zoom on a large drawing the window sharpens from the middle out
+  while the rest is still drawn, as CorelDRAW fills its window in,
+  instead of showing the scaled, blurry picture until the whole new one
+  is ready (discussion #2389). The bands of a render that gave up are
+  not shown; the pages beside the current one come whole.
+  (`band_tests::a_picture_comes_a_band_at_a_time_from_the_middle` in the
+  render crate.)
 - Only what can show is drawn: an object (or, inside a group, each of
   its objects) whose bounds, grown by what its outline may reach, lie
   wholly off the canvas is skipped, while objects with effects or a

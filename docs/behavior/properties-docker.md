@@ -31,6 +31,20 @@ has, lit while its section is open.
 `ui::dockers::pick_section`; test
 `a_section_button_shows_its_section_alone`.
 
+## Groups in the Outline section (#2573)
+
+The Outline section's settings come in titled groups, each with its
+title in bold in the full text colour and a light rule to the right
+edge, a little space above: Appearance (paint, Hairline, width), Caps
+and corners, Arrowheads, Line style (dash patterns, Align dashes, Edit
+Line Style), Position and behavior (Outside, Center, Inside, Behind
+fill, Scale with object), and, with objects selected, Opacity and
+printing (object opacity, other outlines, Overprint outline, Outline
+Pen...). Advanced stays a header that opens. An open section's header
+bar has the accent down its left edge, so sections stand apart from
+the groups inside them (`group_heading`, `section_header`; test
+`every_outline_option_is_in_the_properties_docker`).
+
 ## Fill and Outline (#1200)
 
 Besides the editors described in `gradient-fill.md` and `outline-pen.md`,

@@ -1,7 +1,26 @@
 //! TraceDraw: a window's minimum and maximum size kept in logical units,
-//! so that they follow the monitor's scaling on Windows (see
+//! so that they follow the monitor's scaling on Windows, and where a
+//! window moved to a monitor of another scaling goes (see
 //! `vendor/README.md`, #2487). The file has no dependency on the rest of
 //! the crate, so that TraceDraw's tests can include and run it.
+
+/// The first build of Windows 11.
+const WINDOWS_11_BUILD: u32 = 22000;
+
+/// Whether a window whose scaling changed (`WM_DPICHANGED`) takes the
+/// rectangle Windows suggests as it is, on Windows build `build` (`None`
+/// when the version is not Windows 10 or 11). Windows 11 works that
+/// rectangle out for the window being dragged: the pointer keeps its
+/// place on the title bar, across and along the monitors' edge, and the
+/// window lies on the monitor whose scaling it takes. winit's own
+/// rectangle, made for Windows 10, kept only the pointer's place across
+/// the title bar and moved the window step by step onto that monitor:
+/// on Windows 11 the window then stopped following the pointer, jumped
+/// and went back and forth between the monitors (winit 0.31 takes the
+/// suggested rectangle on Windows 11 too).
+pub(crate) fn takes_suggested_rect(build: Option<u32>) -> bool {
+    build.is_none_or(|b| b >= WINDOWS_11_BUILD)
+}
 
 /// A bound given in physical pixels (`width` by `height`) at the scaling
 /// `scale`, in logical units: the same bound on a monitor of any
@@ -16,7 +35,18 @@ pub(crate) fn logical_bound(width: f64, height: f64, scale: f64) -> Option<(f64,
 
 #[cfg(test)]
 mod tests {
-    use super::logical_bound;
+    use super::{logical_bound, takes_suggested_rect};
+
+    #[test]
+    fn windows_11_places_a_window_moved_to_another_scaling() {
+        assert!(takes_suggested_rect(Some(22000)));
+        assert!(takes_suggested_rect(Some(26100)));
+        // Windows 10 keeps winit's own rectangle.
+        assert!(!takes_suggested_rect(Some(19045)));
+        assert!(!takes_suggested_rect(Some(10240)));
+        // A version not read as Windows 10 or 11 (a later Windows).
+        assert!(takes_suggested_rect(None));
+    }
 
     #[test]
     fn a_bound_in_pixels_becomes_one_in_logical_units() {

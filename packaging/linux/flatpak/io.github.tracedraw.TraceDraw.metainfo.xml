@@ -1,0 +1,46 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- TraceDraw's AppStream description, for the Flatpak package and
+     Flathub (manifest.sh puts the version in place of the release line). -->
+<component type="desktop-application">
+  <id>io.github.tracedraw.TraceDraw</id>
+  <name>TraceDraw</name>
+  <summary>Vector illustration, page layout and print</summary>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT OR Apache-2.0</project_license>
+  <developer id="io.github.tracedraw">
+    <name>TraceDraw members and contributors</name>
+  </developer>
+  <description>
+    <p>
+      TraceDraw is an open-source vector editor written from scratch in Rust,
+      with a classic desktop workflow.
+    </p>
+    <ul>
+      <li>Pages and layers, curves and nodes, artistic and paragraph text</li>
+      <li>Fills, outlines and live effects: drop and block shadows, contours,
+        blends, envelopes, extrusions</li>
+      <li>Symbols, print preview and PDF/X export</li>
+      <li>Opens and saves .cdr files</li>
+      <li>19 interface languages</li>
+    </ul>
+  </description>
+  <launchable type="desktop-id">io.github.tracedraw.TraceDraw.desktop</launchable>
+  <provides>
+    <binary>tracedraw</binary>
+  </provides>
+  <url type="homepage">https://github.com/tracedraw/tracedraw</url>
+  <url type="bugtracker">https://github.com/tracedraw/tracedraw/issues</url>
+  <url type="vcs-browser">https://github.com/tracedraw/tracedraw</url>
+  <categories>
+    <category>Graphics</category>
+    <category>VectorGraphics</category>
+  </categories>
+  <content_rating type="oars-1.1"/>
+  <supports>
+    <control>pointing</control>
+    <control>keyboard</control>
+  </supports>
+  <releases>
+    <release version="@VERSION@" date="@DATE@"/>
+  </releases>
+</component>

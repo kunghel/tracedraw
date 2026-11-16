@@ -148,6 +148,9 @@ le dessin, ses images et ses polices dans un dossier (voir
 conserve les dessins dans un dépôt GitHub (voir [GitHub](github.md)).
 [[menu.file.revert]] revient à la dernière version enregistrée.
 
+Faites glisser l'onglet d'un dessin le long de la barre pour changer l'ordre
+des onglets : les autres s'écartent pour montrer où il ira.
+
 ## Fermer des dessins {#closing}
 
 Choisissez [[menu.file > menu.file.close]] (<kbd>Ctrl+F4</kbd>), cliquez sur

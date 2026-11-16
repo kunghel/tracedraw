@@ -69,6 +69,26 @@ Shift and Alt work as on a pane. A colour picked on the drawing has no
 seed point (the click may be off the bitmap). With the eyedropper off no
 request is left waiting.
 
+### Brushes (#1723, #1915)
+
+Erase and Restore paint on the preview: one is on at a time (clicked
+again, it is off, as is the pan button or an eyedropper). While a brush
+is on a drag on a pane paints instead of panning and a click is a dab;
+the stroke shows over the panes in red (Erase) or green (Restore) and
+a ring shows the brush under the pointer. Letting go makes the stroke one
+step of the settings (undo and redo as for a slider). Brush size is a
+percentage (0.5 to 25, default 3) of the picture's larger side, and the
+stroke's points are fractions of the picture, so the preview copy and the
+bitmap are painted in the same places. Clear strokes takes them all
+away. Strokes belong to the bitmap and are not remembered for the next
+time; the other settings are.
+
+### Fill background (#1915)
+
+Off by default. On, it starts white, with a Top and a Bottom colour: the
+backdrop fades from one to the other down the picture (the same colour
+twice is a plain fill) and the result is opaque, ready to export.
+
 The preview is the shared live preview (`before-after-preview.md`): the
 result is cached under a hash of the settings and the copy, made again only
 when they change; while a slider is dragged it is worked on a small copy,
@@ -116,7 +136,16 @@ and the shown size follows when the pointer is released.
 7. Clean edge colors: for 0.05 < opacity < 1, the colour is solved from
    C = a F + (1 - a) B with B the pixel's background colour (step 2),
    clamped.
-8. The new opacity multiplies the pixel's own alpha.
+8. Brush strokes, in order, after Remove specks and before Edge
+   softness: within the radius of the polyline through a stroke's points
+   (a lone point is a dab), Erase sets the opacity to 0 and Restore to 1,
+   blended over the last pixel of the rim (v = clamp(r - d + 0.5, 0, 1)).
+   When nothing is taken by colour (a transparent border) the strokes
+   still apply.
+9. The new opacity multiplies the pixel's own alpha.
+10. Fill background: each pixel is put over the backdrop's colour on its
+    row (linear from Top on the first row to Bottom on the last), alpha
+    255.
 
 ## Checks
 
@@ -141,6 +170,13 @@ and the shown size follows when the pointer is released.
   everywhere (off); feathering keeps the subject.
 - `bg_remove::tests::each_colour_has_its_own_tolerance`
 - `bg_remove::tests::the_colour_list_adds_and_removes`
+- `bg_remove::tests::the_brushes_erase_and_restore_where_painted`,
+  `strokes_follow_the_picture_at_any_size`,
+  `the_brushes_work_on_a_transparent_picture`,
+  `a_backdrop_fills_behind_the_subject`
+- `pick_drag_tests::remove_background_brushes_paint_on_the_preview`: Erase
+  drag paints a stroke without panning, Restore click is a dab, the brush
+  turns off, Clear strokes, Fill background.
 - `pick_drag_tests::remove_background_adds_and_removes_colours`: "+" and a
   click add a row, Shift+click adds and keeps the eyedropper, Alt+click
   removes the nearest, x removes a row, the wheel sets a row's own whole

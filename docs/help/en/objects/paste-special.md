@@ -24,3 +24,11 @@ When the clipboard holds nothing that can be pasted, the dialog box says
 The ordinary [[menu.edit.paste]] (<kbd>Ctrl+V</kbd>) pastes in the first form
 available, and [[menu.edit.paste_in_view]] (<kbd>Ctrl+Shift+V</kbd>) pastes
 in the middle of the window.
+
+On Windows, copy and paste also work with CorelDRAW in both directions.
+Objects copied in CorelDRAW paste as objects, with their colors, outlines,
+text and fonts: TraceDraw reads the copy data CorelDRAW leaves on the
+clipboard when it is CMX or CDR data, and otherwise the metafile or PDF
+copy beside it. Objects copied in TraceDraw go to the clipboard as an
+enhanced metafile and a PDF, as well as SVG, so CorelDRAW and office
+programs paste them as objects too.

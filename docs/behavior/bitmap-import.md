@@ -26,6 +26,29 @@ file as inverted and leaving the colour management out, so the picture
 came in brighter than the same inks in the drawing (#2163,
 `bitmap_file::tests::a_cmyk_jpeg_imports_with_its_inks_as_the_drawing_shows_them`).
 
+## Opening a picture (#2600)
+
+A picture file opened (Open With TraceDraw in the file manager, the
+command line, a recent file: PNG, JPG, BMP, GIF, WebP, TIFF) becomes a
+new, untitled drawing named after the file, whose page is the picture's
+size at the resolution the file records; the picture fills the page.
+There is nothing to undo or save yet, and Save asks where. A file that
+cannot be read opens nothing and the status bar says why. File > Open
+lists drawings only, as before. The Windows installer adds TraceDraw to
+the pictures' Open With list without taking their default, as the Linux
+desktop file and the macOS bundle do (check
+`clipboard::linked_watch_tests::an_opened_picture_becomes_a_new_drawing`).
+
+## Replace Image (#2598)
+
+Image > Replace Image..., the bitmap's right-click menu and the Pick
+tool's property bar (Replace Image) put another picture file in the
+selected bitmap's place: the same position, turn and size. A picture of
+other proportions fits inside the old box, centred, uncut and
+undistorted. The bitmap's effects go (they were made for the old
+pixels) and its link names the new file. One undo step (check
+`clipboard::linked_watch_tests::replace_image_keeps_the_place_and_size`).
+
 ## The bitmap editor
 
 Edit Bitmap writes the picture to a file in the temporary folder, links

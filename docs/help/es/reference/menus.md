@@ -473,6 +473,7 @@ pueden mostrar sus propios atajos; vea
 | [[menu.help.whats_new]] | [Novedades](../welcome/whats-new.md) |
 | [[menu.help.highlight_whats_new]] | [Novedades](../welcome/whats-new.md) |
 | [[menu.help.updates]] | [Acerca de TraceDraw y actualizaciones](../welcome/about-and-updates.md) |
+| [[menu.help.benchmark]] | [Opciones de TraceDraw](../customize/options-app.md#benchmark) |
 | [[menu.help.message_settings]] | [Acerca de TraceDraw y actualizaciones](../welcome/about-and-updates.md) |
 | [[menu.help.community]] | [Acerca de TraceDraw y actualizaciones](../welcome/about-and-updates.md) |
 | [[menu.help.support]] | [Acerca de TraceDraw y actualizaciones](../welcome/about-and-updates.md) |

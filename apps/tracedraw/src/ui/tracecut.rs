@@ -38,6 +38,10 @@ const SCORED: Color32 = Color32::from_rgb(
     crate::tracecut_make::GROOVE_COLOR.1,
     crate::tracecut_make::GROOVE_COLOR.2,
 );
+/// Eyelets' guide line and grommets in the preview (#2759).
+const GUIDE: Color32 = Color32::from_rgb(0x33, 0x33, 0xFF);
+const GROMMET_METAL: Color32 = Color32::from_rgb(0xB8, 0xBC, 0xC2);
+const GROMMET_SHINE: Color32 = Color32::from_rgb(0xE6, 0xE9, 0xED);
 /// The status line under the preview.
 const STRIP: Color32 = Color32::from_rgb(0xFF, 0xF4, 0xB0);
 
@@ -515,6 +519,11 @@ fn full_extent(scene: &Scene) -> Option<tracedraw_core::geometry::Rect> {
         add(*a);
         add(*b);
     }
+    for (q, d) in &scene.rings {
+        let r = d * 0.9;
+        add(Point::new(q.x - r, q.y - r));
+        add(Point::new(q.x + r, q.y + r));
+    }
     e
 }
 
@@ -842,6 +851,52 @@ fn preview(
         draw(path, Stroke::new(2.5, MARKED));
     }
     let shown = rect.expand(8.0);
+    // Where the eyelets go, dashed (#2759).
+    for path in &scene.guides {
+        if zoomed && !visible(path.bounding_box()) {
+            continue;
+        }
+        let mut pts: Vec<Pos2> = Vec::new();
+        tracedraw_core::geometry::flatten(path, tol, &mut |el| match el {
+            PathEl::MoveTo(q) => {
+                if pts.len() > 1 {
+                    p.extend(egui::Shape::dashed_line(
+                        &pts,
+                        Stroke::new(1.0, GUIDE),
+                        5.0,
+                        4.0,
+                    ));
+                }
+                pts.clear();
+                pts.push(to(q));
+            }
+            PathEl::LineTo(q) => pts.push(to(q)),
+            PathEl::ClosePath => {
+                if let Some(a) = pts.first().copied() {
+                    pts.push(a);
+                }
+            }
+            _ => {}
+        });
+        if pts.len() > 1 {
+            p.extend(egui::Shape::dashed_line(
+                &pts,
+                Stroke::new(1.0, GUIDE),
+                5.0,
+                4.0,
+            ));
+        }
+    }
+    // Eyelets as grommets: a metal flange round the hole, at their size.
+    for (q, d) in &scene.rings {
+        let a = to(*q);
+        let hole = (d / 2.0 * s) as f32;
+        let flange = (hole * 1.8).max(hole + 2.0).max(4.0);
+        if !shown.expand(flange).contains(a) {
+            continue;
+        }
+        draw_grommet(&p, a, hole.max(1.5), flange);
+    }
     for q in &scene.points {
         let a = to(*q);
         if shown.contains(a) {
@@ -873,6 +928,25 @@ fn preview(
         );
     }
     view
+}
+
+/// One grommet at `at`: a metal ring of radius `flange` with a shine on
+/// its upper left, and the hole of radius `hole` showing the white box.
+fn draw_grommet(p: &egui::Painter, at: Pos2, hole: f32, flange: f32) {
+    let rim = Stroke::new(1.0, Color32::from_gray(80));
+    p.circle(at, flange, GROMMET_METAL, rim);
+    let band = (flange - hole).max(1.0);
+    if band >= 3.0 {
+        // The rolled edge: a lighter ring half way across the flange.
+        let mid = hole + band * 0.5;
+        p.circle_stroke(at, mid, Stroke::new((band * 0.35).max(1.0), GROMMET_SHINE));
+        p.circle_stroke(
+            at + Vec2::new(band * 0.08, band * 0.08),
+            mid,
+            Stroke::new(0.8, Color32::from_gray(140)),
+        );
+    }
+    p.circle(at, hole, Color32::WHITE, rim);
 }
 
 /// A calculation's result, to read beside the preview.

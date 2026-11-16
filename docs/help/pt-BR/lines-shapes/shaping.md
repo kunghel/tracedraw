@@ -74,6 +74,23 @@ Abra o painel [[docker.shaping]] com
 4. Clique no botão com o nome da operação. Ele fica claro até haver objetos
    suficientes selecionados, e uma linha diz quantos são necessários.
 
+## Deslocamento de contorno {#outline-offset}
+
+[[menu.object.outline_offset]] (menu Objeto) desenha um novo contorno a uma
+distância definida dos objetos selecionados, como uma curva separada:
+
+1. Selecione os objetos e escolha [[menu.object.outline_offset]].
+2. Digite a [[dialog.outline_offset_distance]], nas unidades do desenho.
+3. Escolha [[dialog.outline_offset_outside]] ou [[dialog.outline_offset_inside]]
+   e clique em OK.
+
+Cada objeto ganha uma curva nova com cantos vivos e o preenchimento e o
+contorno do objeto; o original fica como está. Uma curva externa vai para
+trás do seu objeto e uma interna, para a frente, e as curvas novas ficam
+selecionadas. Uma linha aberta ganha uma faixa fechada em volta dos dois
+lados. A janela lembra a última distância. Para vários contornos de uma vez,
+ou cantos arredondados, use a ferramenta Contorno.
+
 Relacionado: [[menu.object.combine]] (<kbd>Ctrl+L</kbd>) torna vários objetos
 uma única curva sem mudar as formas, e [[menu.object.break_apart]] separa uma
 curva em suas partes de novo. Veja

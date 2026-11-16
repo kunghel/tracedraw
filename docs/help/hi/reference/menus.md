@@ -472,6 +472,7 @@
 | [[menu.help.whats_new]] | [नया क्या है](../welcome/whats-new.md) |
 | [[menu.help.highlight_whats_new]] | [नया क्या है](../welcome/whats-new.md) |
 | [[menu.help.updates]] | [TraceDraw के बारे में और अपडेट](../welcome/about-and-updates.md) |
+| [[menu.help.benchmark]] | [TraceDraw के विकल्प](../customize/options-app.md#benchmark) |
 | [[menu.help.message_settings]] | [TraceDraw के बारे में और अपडेट](../welcome/about-and-updates.md) |
 | [[menu.help.community]] | [TraceDraw के बारे में और अपडेट](../welcome/about-and-updates.md) |
 | [[menu.help.support]] | [TraceDraw के बारे में और अपडेट](../welcome/about-and-updates.md) |

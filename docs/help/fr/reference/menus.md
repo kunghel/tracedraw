@@ -473,6 +473,7 @@ propres raccourcis ; voir
 | [[menu.help.whats_new]] | [Nouveautés](../welcome/whats-new.md) |
 | [[menu.help.highlight_whats_new]] | [Nouveautés](../welcome/whats-new.md) |
 | [[menu.help.updates]] | [À propos de TraceDraw et mises à jour](../welcome/about-and-updates.md) |
+| [[menu.help.benchmark]] | [Options de TraceDraw](../customize/options-app.md#benchmark) |
 | [[menu.help.message_settings]] | [À propos de TraceDraw et mises à jour](../welcome/about-and-updates.md) |
 | [[menu.help.community]] | [À propos de TraceDraw et mises à jour](../welcome/about-and-updates.md) |
 | [[menu.help.support]] | [À propos de TraceDraw et mises à jour](../welcome/about-and-updates.md) |

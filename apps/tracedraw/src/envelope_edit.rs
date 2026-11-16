@@ -1,5 +1,6 @@
-//! Editing envelopes. The Envelope tool gives the object it clicks an
-//! envelope and drags its nodes; the Shape tool drags them too. A node
+//! Editing envelopes. The Envelope tool shows a frame on the object it
+//! clicks, which becomes its envelope when it is edited (#2611), and
+//! drags its nodes; the Shape tool drags them too. A node
 //! moves the way the chosen mode says (straight line, single arc, double
 //! arc or unconstrained); in the Unconstrained mode the selected node's
 //! handles show and move on their own. Dragging a segment of the frame
@@ -175,11 +176,57 @@ impl App {
         last_envelope(&s.effects)
     }
 
-    /// The selected objects with an envelope, as on the page.
+    /// Object `id`'s effects with the envelope that is edited, where it
+    /// sits and its frame: its last envelope or, with the Envelope tool
+    /// on a selected object that has none, a frame around the object as
+    /// it now looks. That frame only shows: it becomes the object's
+    /// envelope when a node, handle or side of it is moved, as in
+    /// CorelDRAW. A click put an envelope on the object at once (#2611).
+    pub fn editable_envelope(&self, id: ShapeId) -> Option<(Vec<Effect>, usize, Frame)> {
+        let s = self.doc().find_shape(id)?;
+        if let Some((at, f)) = last_envelope(&s.effects) {
+            return Some((s.effects.clone(), at, f));
+        }
+        if self.tool != crate::tools::Tool::Envelope || !self.selection.contains(&id) {
+            return None;
+        }
+        let b = self.unenveloped_box(s);
+        if b.width() < 1e-9 || b.height() < 1e-9 {
+            return None;
+        }
+        let mut effects = s.effects.clone();
+        let mut e = Effect::envelope_around(b, self.envelope_keep_lines);
+        if let Effect::Envelope { mapping, .. } = &mut e {
+            *mapping = self.envelope_mapping;
+        }
+        effects.push(e);
+        let at = effects.len() - 1;
+        let f = effects[at].envelope_frame()?;
+        Some((effects, at, f))
+    }
+
+    /// The box a new envelope takes around `s`, kept for the document's
+    /// revision: the frame shows every frame and measuring a long text
+    /// each time would be slow.
+    fn unenveloped_box(&self, s: &Shape) -> Rect {
+        let key = (self.engine.instance(), self.engine.revision());
+        if let Ok(mut cache) = self.envelope_box_cache.try_borrow_mut() {
+            if (cache.0, cache.1) != key {
+                *cache = (key.0, key.1, Default::default());
+            }
+            return *cache
+                .2
+                .entry(s.id)
+                .or_insert_with(|| box_at(s, s.effects.len()));
+        }
+        box_at(s, s.effects.len())
+    }
+
+    /// The selected objects with an envelope to edit, as on the page.
     fn enveloped_selection(&self) -> Vec<(Shape, Frame)> {
         self.selected_shapes()
             .into_iter()
-            .filter_map(|s| last_envelope(&s.effects).map(|(_, f)| (s, f)))
+            .filter_map(|s| self.editable_envelope(s.id).map(|(_, _, f)| (s, f)))
             .collect()
     }
 
@@ -251,11 +298,15 @@ impl App {
 
     /// Put `frame` in place of the envelope at `at` of object `id`, one
     /// undo step.
-    fn set_envelope_frame(&mut self, id: ShapeId, at: usize, frame: &Frame, label: &'static str) {
-        let Some(s) = self.doc().find_shape(id) else {
-            return;
-        };
-        let effects = with_frame(&s.effects, at, frame);
+    fn set_envelope_frame(
+        &mut self,
+        id: ShapeId,
+        base: &[Effect],
+        at: usize,
+        frame: &Frame,
+        label: &'static str,
+    ) {
+        let effects = with_frame(base, at, frame);
         if let Err(e) = self
             .engine
             .run_with_label(&Command::SetEffects { shape: id, effects }, label)
@@ -279,27 +330,27 @@ impl App {
     /// Add a node to segment `seg` of object `id`'s envelope at `t`; it
     /// becomes the selected node.
     pub fn add_envelope_node(&mut self, id: ShapeId, seg: usize, t: f64) -> bool {
-        let Some((at, mut f)) = self.envelope_of(id) else {
+        let Some((base, at, mut f)) = self.editable_envelope(id) else {
             return false;
         };
         let Some(i) = f.add_node(seg, t) else {
             return false;
         };
-        self.set_envelope_frame(id, at, &f, "Add Envelope Node");
+        self.set_envelope_frame(id, &base, at, &f, "Add Envelope Node");
         self.selected_effect_node = Some((id, i));
         true
     }
 
     /// Remove node `i` (not a corner) of object `id`'s envelope.
     pub fn remove_envelope_node(&mut self, id: ShapeId, i: usize) -> bool {
-        let Some((at, mut f)) = self.envelope_of(id) else {
+        let Some((base, at, mut f)) = self.editable_envelope(id) else {
             return false;
         };
         if !f.remove_node(i) {
             self.status = tr("status.envelope_corner_stays");
             return false;
         }
-        self.set_envelope_frame(id, at, &f, "Delete Envelope Node");
+        self.set_envelope_frame(id, &base, at, &f, "Delete Envelope Node");
         self.selected_effect_node = None;
         true
     }
@@ -307,7 +358,7 @@ impl App {
     /// The selected envelope node, if it is one of a selected object.
     pub fn selected_envelope_node(&self) -> Option<(ShapeId, usize)> {
         let (id, i) = self.selected_effect_node?;
-        let (_, f) = self.envelope_of(id)?;
+        let (_, _, f) = self.editable_envelope(id)?;
         (self.selection.contains(&id) && i < f.len()).then_some((id, i))
     }
 
@@ -327,14 +378,16 @@ impl App {
     }
 
     pub(crate) fn begin_envelope_drag(&mut self, id: ShapeId, part: Part, p: Point) {
-        let Some(s) = self.doc().find_shape(id) else {
+        // An object the Envelope tool shows a frame on takes it as its
+        // envelope with the first move of the drag (#2611).
+        let Some((original, _, _)) = self.editable_envelope(id) else {
             return;
         };
         self.envelope_drag = Some(EnvelopeDrag {
             shape: id,
             part,
             start: p,
-            original: s.effects.clone(),
+            original,
             stepped: false,
         });
         if let Part::Node(i) = part {
@@ -423,8 +476,9 @@ impl App {
     }
 
     /// The Envelope tool: the frame's parts as with the Shape tool; a click
-    /// on an object selects it and gives it an envelope if it has none;
-    /// a click on nothing clears the selection.
+    /// on an object selects it and shows a frame on it, which becomes an
+    /// envelope only when it is edited (#2611); a click on nothing clears
+    /// the selection.
     pub fn envelope_tool_input(&mut self, response: &Response, p: Point) {
         if self.envelope_input(response, p) {
             return;
@@ -434,9 +488,6 @@ impl App {
                 Some(id) => {
                     self.select(vec![id]);
                     self.selected_effect_node = None;
-                    if self.envelope_of(id).is_none() {
-                        self.add_new_envelope();
-                    }
                 }
                 None => {
                     self.select(Vec::new());

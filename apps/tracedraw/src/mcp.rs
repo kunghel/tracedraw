@@ -271,6 +271,8 @@ fn export_document_to(
     page_index: usize,
     dpi: f64,
 ) -> Result<(), String> {
+    let output = tracedraw_io::for_output(doc);
+    let doc = output.as_ref();
     if page_index >= doc.pages.len() {
         return Err(format!("page_index {page_index} out of range"));
     }

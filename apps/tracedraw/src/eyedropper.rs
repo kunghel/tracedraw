@@ -133,26 +133,28 @@ pub struct Reading {
     pub lines: Vec<String>,
 }
 
-/// The readout for `c` in a drawing of `mode`: a CMYK or RGB colour's
-/// values in its own model (so a colour converted to RGB reads as RGB,
-/// #1254), another model's in the drawing's (CMYK or RGB), a spot ink as
-/// its tint; then its hex value.
+/// The readout for `c`: its values in its own model, whatever the
+/// drawing's, one component a line: a colour converted to RGB reads as
+/// RGB (#1254), one set in HSB, HSL, Lab, YIQ or grayscale in that model
+/// (#2612: they all read as CMYK), a spot ink as its tint; then its hex
+/// value. `_mode`, the drawing's model, no longer changes the reading.
 pub fn reading_of(
     c: Color,
     name: String,
-    mode: tracedraw_core::document::PrimaryColorMode,
+    _mode: tracedraw_core::document::PrimaryColorMode,
 ) -> Reading {
-    use tracedraw_core::document::PrimaryColorMode;
-    let shown = match (c, mode) {
-        (Color::Spot { .. }, _) | (Color::Registration, _) => c,
-        (Color::Cmyk { .. }, _) | (Color::Rgb { .. }, _) => c,
-        (_, PrimaryColorMode::Cmyk) => c.convert_to("CMYK"),
-        (_, PrimaryColorMode::Rgb) => c.convert_to("RGB"),
+    let mut lines: Vec<String> = match c {
+        Color::Hsb { .. } | Color::Hsl { .. } | Color::Lab { .. } | Color::Yiq { .. } => {
+            crate::app::color_description(c)
+                .split(' ')
+                .map(str::to_string)
+                .collect()
+        }
+        _ => crate::ui::palette::color_lines(c)
+            .lines()
+            .map(str::to_string)
+            .collect(),
     };
-    let mut lines: Vec<String> = crate::ui::palette::color_lines(shown)
-        .lines()
-        .map(str::to_string)
-        .collect();
     lines.push(c.to_hex().to_uppercase());
     Reading {
         color: c,
@@ -698,6 +700,17 @@ impl App {
         }
     }
 
+    /// The Color docker's eyedropper button: the Color Eyedropper tool,
+    /// sampling. After a colour was picked the tool stays in Apply mode
+    /// (the bucket), and the button only chose the tool again, so it could
+    /// not go back to picking (discussion #2673). The colour picked last
+    /// is kept for the docker's "Use" button.
+    pub fn docker_eyedropper(&mut self) {
+        self.set_tool(crate::tools::Tool::ColorEyedropper);
+        self.eyedropper_apply = false;
+        self.mask.picking = false;
+    }
+
     /// Esc or the Select Color button: back to sampling.
     pub fn eyedropper_reset(&mut self) {
         self.eyedropper_color = None;
@@ -812,6 +825,37 @@ mod tests {
         );
     }
 
+    /// Discussion #2673: after a colour was picked, the Color docker's
+    /// eyedropper button goes back to picking; the next click on the
+    /// drawing samples instead of pouring the colour picked before.
+    #[test]
+    fn the_docker_eyedropper_button_goes_back_to_picking() {
+        let mut app = App::headless();
+        let a = rect(&mut app, Rect::new(0.0, 0.0, 10.0, 10.0));
+        let b = rect(&mut app, Rect::new(20.0, 0.0, 30.0, 10.0));
+        let (red, green) = (Color::rgb8(200, 10, 10), Color::rgb8(10, 200, 10));
+        app.run(Command::SetFill {
+            shapes: vec![a],
+            fill: Fill::Solid(red),
+        });
+        app.run(Command::SetFill {
+            shapes: vec![b],
+            fill: Fill::Solid(green),
+        });
+        app.select(Vec::new());
+        app.docker_eyedropper();
+        assert_eq!(app.tool, crate::tools::Tool::ColorEyedropper);
+        app.eyedropper_click(Point::new(5.0, 5.0), false, false, false);
+        assert!(app.eyedropper_apply, "the bucket, after picking");
+        app.docker_eyedropper();
+        assert!(!app.eyedropper_apply, "picking again");
+        assert_eq!(app.eyedropper_color, Some(red), "the colour is kept");
+        app.eyedropper_click(Point::new(25.0, 5.0), false, false, false);
+        assert_eq!(app.eyedropper_color, Some(green));
+        let fill = |id| app.doc().find_shape(id).expect("shape").fill.clone();
+        assert_eq!(fill(b), Fill::Solid(green), "sampled, not poured over");
+    }
+
     /// With "Sample again after applying" on, each eyedropper goes back
     /// to sampling after the object it was applied to, so the next click
     /// picks up a colour without a key held; off, it stays in Apply mode
@@ -856,6 +900,36 @@ mod tests {
         app.eyedropper_click(Point::new(25.0, 5.0), true, false, false);
         assert_eq!(fill(&app, b), Fill::Solid(red));
         assert!(!app.eyedropper_apply);
+    }
+
+    /// An eyedropper chosen again (after the Pick tool, by Space or the
+    /// toolbox) starts out sampling, not in Apply mode with the old
+    /// colour (#2701); the colour stays for the Color docker.
+    #[test]
+    fn choosing_an_eyedropper_again_starts_sampling() {
+        use crate::tools::Tool;
+        let mut app = App::headless();
+        let a = rect(&mut app, Rect::new(0.0, 0.0, 10.0, 10.0));
+        let red = Color::rgb8(200, 10, 10);
+        app.run(Command::SetFill {
+            shapes: vec![a],
+            fill: Fill::Solid(red),
+        });
+        app.select(Vec::new());
+        for tool in [Tool::ColorEyedropper, Tool::AttributesEyedropper] {
+            app.choose_tool(tool);
+            app.eyedropper_click(
+                Point::new(5.0, 5.0),
+                tool == Tool::AttributesEyedropper,
+                false,
+                false,
+            );
+            assert!(app.eyedropper_apply, "{tool:?}: the bucket, after picking");
+            app.choose_tool(Tool::Pick);
+            app.choose_tool(tool);
+            assert!(!app.eyedropper_apply, "{tool:?}: sampling again");
+        }
+        assert_eq!(app.eyedropper_color, Some(red), "the colour is kept");
     }
 
     /// Ctrl+click in Apply mode samples again, with either eyedropper,
@@ -1267,15 +1341,32 @@ mod tests {
         assert!(r.lines[0].starts_with("C:"), "{:?}", r.lines);
         assert_eq!(r.lines.len(), 5, "C, M, Y, K, hex: {:?}", r.lines);
         assert_eq!(r.lines[4], c.to_hex().to_uppercase());
-        // A CMYK or RGB colour reads in its own model whatever the
-        // drawing's (#1254); another model's in the drawing's.
+        // Every colour reads in its own model whatever the drawing's:
+        // CMYK and RGB (#1254), HSB, HSL, Lab, YIQ and grayscale too, one
+        // component a line, then the hex (#2612: they read as CMYK).
         let cmyk = reading_of(c, String::new(), PrimaryColorMode::Rgb);
         assert!(cmyk.lines[0].starts_with("C:"), "{:?}", cmyk.lines);
-        let hsb = Color::rgb8(200, 30, 30).convert_to("HSB");
-        let rgb = reading_of(hsb, String::new(), PrimaryColorMode::Rgb);
-        assert!(rgb.lines[0].starts_with("R:"), "{:?}", rgb.lines);
-        let in_cmyk = reading_of(hsb, String::new(), PrimaryColorMode::Cmyk);
-        assert!(in_cmyk.lines[0].starts_with("C:"), "{:?}", in_cmyk.lines);
+        let red = Color::rgb8(200, 30, 30);
+        for mode in [PrimaryColorMode::Rgb, PrimaryColorMode::Cmyk] {
+            for (model, first) in [
+                ("HSB", ["H:", "S:", "B:"]),
+                ("HSL", ["H:", "S:", "L:"]),
+                ("Lab", ["L:", "a:", "b:"]),
+                ("YIQ", ["Y:", "I:", "Q:"]),
+            ] {
+                let v = red.convert_to(model);
+                let r = reading_of(v, String::new(), mode);
+                assert_eq!(r.lines.len(), 4, "{model}: {:?}", r.lines);
+                for (line, start) in r.lines.iter().zip(first) {
+                    assert!(line.starts_with(start), "{model}: {:?}", r.lines);
+                }
+                assert_eq!(r.lines[3], v.to_hex().to_uppercase());
+            }
+            let gray = reading_of(Color::Gray { v: 0.5 }, String::new(), mode);
+            assert_eq!(gray.lines.len(), 2, "{:?}", gray.lines);
+            assert!(!gray.lines[0].starts_with("C:"), "{:?}", gray.lines);
+            assert!(gray.lines[0].contains("128"), "{:?}", gray.lines);
+        }
         // A colour of no palette has no name.
         let odd = reading_of(Color::rgb8(1, 2, 3), String::new(), PrimaryColorMode::Cmyk);
         assert!(odd.lines[0].starts_with("R:"), "{:?}", odd.lines);

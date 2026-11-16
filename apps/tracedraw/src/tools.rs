@@ -18,11 +18,13 @@ pub enum Tool {
     Smudge,
     Roughen,
     VariableOutline,
+    Join,
     // Crop group
     Crop,
     Knife,
     SegmentDelete,
     Eraser,
+    ShapeBuilder,
     // Zoom group
     Zoom,
     Pan,
@@ -51,6 +53,7 @@ pub enum Tool {
     Spiral,
     CommonShapes,
     ActionLines,
+    Balloon,
     GraphPaper,
     // Text group
     Text,
@@ -104,6 +107,7 @@ pub const GROUPS: &[ToolGroup] = &[
     ToolGroup {
         tools: &[
             Tool::Shape,
+            Tool::Join,
             Tool::Smooth,
             Tool::Smear,
             Tool::Twirl,
@@ -114,7 +118,13 @@ pub const GROUPS: &[ToolGroup] = &[
         hidden: false,
     },
     ToolGroup {
-        tools: &[Tool::Crop, Tool::Knife, Tool::SegmentDelete, Tool::Eraser],
+        tools: &[
+            Tool::Crop,
+            Tool::Knife,
+            Tool::SegmentDelete,
+            Tool::Eraser,
+            Tool::ShapeBuilder,
+        ],
         hidden: false,
     },
     ToolGroup {
@@ -163,6 +173,7 @@ pub const GROUPS: &[ToolGroup] = &[
             Tool::Spiral,
             Tool::CommonShapes,
             Tool::ActionLines,
+            Tool::Balloon,
             Tool::GraphPaper,
         ],
         hidden: false,
@@ -222,7 +233,7 @@ pub const GROUPS: &[ToolGroup] = &[
 ];
 
 impl Tool {
-    pub const ALL: [Tool; 65] = [
+    pub const ALL: [Tool; 68] = [
         Tool::Pick,
         Tool::FreeformPick,
         Tool::FreeTransform,
@@ -234,10 +245,12 @@ impl Tool {
         Tool::Smudge,
         Tool::Roughen,
         Tool::VariableOutline,
+        Tool::Join,
         Tool::Crop,
         Tool::Knife,
         Tool::SegmentDelete,
         Tool::Eraser,
+        Tool::ShapeBuilder,
         Tool::Zoom,
         Tool::Pan,
         Tool::Freehand,
@@ -260,6 +273,7 @@ impl Tool {
         Tool::Spiral,
         Tool::CommonShapes,
         Tool::ActionLines,
+        Tool::Balloon,
         Tool::GraphPaper,
         Tool::Text,
         Tool::Table,
@@ -304,10 +318,12 @@ impl Tool {
             Tool::Smudge => "smudge",
             Tool::Roughen => "roughen",
             Tool::VariableOutline => "variable_outline",
+            Tool::Join => "join",
             Tool::Crop => "crop",
             Tool::Knife => "knife",
             Tool::SegmentDelete => "segment_delete",
             Tool::Eraser => "eraser",
+            Tool::ShapeBuilder => "shape_builder",
             Tool::Zoom => "zoom",
             Tool::Pan => "pan",
             Tool::Freehand => "freehand",
@@ -330,6 +346,7 @@ impl Tool {
             Tool::Spiral => "spiral",
             Tool::CommonShapes => "common_shapes",
             Tool::ActionLines => "action_lines",
+            Tool::Balloon => "balloon",
             Tool::GraphPaper => "graph_paper",
             Tool::Text => "text",
             Tool::Table => "table",
@@ -509,6 +526,7 @@ impl Tool {
                 | Tool::Star
                 | Tool::GraphPaper
                 | Tool::ActionLines
+                | Tool::Balloon
         )
     }
 

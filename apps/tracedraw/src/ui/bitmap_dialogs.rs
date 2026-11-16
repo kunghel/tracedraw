@@ -401,7 +401,7 @@ pub fn paletted_dialog(app: &mut App, ctx: &Context, s: &mut PalettedSettings, c
         });
         if super::dialogs::ok_cancel(ui, close) {
             let settings = s.clone();
-            app.apply_to_bitmaps("Paletted", move |img, _| paletted(img, &settings));
+            app.paletted_bitmaps(&settings);
         }
     });
 }
@@ -488,12 +488,89 @@ fn paletted_settings(ui: &mut Ui, s: &mut PalettedSettings, thumb: Option<&RgbaI
 /// The Remove Background dialog's state: the settings, whether a click
 /// on the preview picks a colour, and what a plain click picks: the
 /// colour of list entry `row`, or a new entry while `adding`.
-#[derive(Debug, Clone, PartialEq, Default)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct BgRemoveState {
     pub settings: crate::bg_remove::BgSettings,
     pub picking: bool,
     pub adding: bool,
     pub row: usize,
+    /// The brush painting on the preview: Some(true) Restore,
+    /// Some(false) Erase, None for no brush (#1723, #1915).
+    pub brush: Option<bool>,
+    /// The brush's size, a percentage of the picture's larger side.
+    pub brush_size: f32,
+    /// The stroke being painted, until the pointer is let go.
+    pub stroke: Vec<[f32; 2]>,
+}
+
+impl Default for BgRemoveState {
+    fn default() -> Self {
+        BgRemoveState {
+            settings: Default::default(),
+            picking: false,
+            adding: false,
+            row: 0,
+            brush: None,
+            brush_size: 3.0,
+            stroke: Vec::new(),
+        }
+    }
+}
+
+/// Paint with the brush on the preview: points under the held pointer
+/// join the stroke being painted (shown over the panes until let go),
+/// which becomes one of the settings' strokes when the pointer is let
+/// go; a ring shows the brush's size under the pointer.
+fn bg_brush_paint(ui: &Ui, st: &mut BgRemoveState, live: &before_after::Live) {
+    let Some(restore) = st.brush else {
+        return;
+    };
+    let radius = (st.brush_size / 100.0).clamp(0.001, 0.5);
+    let v = &live.view;
+    if let Some(at) = v.held {
+        let p = [at.x, at.y];
+        // A new point once the pointer moved a fifth of the radius.
+        let far = st.stroke.last().is_none_or(|q| {
+            let (dx, dy) = (p[0] - q[0], p[1] - q[1]);
+            (dx * dx + dy * dy).sqrt() > radius * 0.2
+        });
+        if far && p[0].is_finite() && p[1].is_finite() {
+            st.stroke.push(p);
+        }
+    }
+    let colour = if restore {
+        Color32::from_rgba_unmultiplied(40, 180, 70, 110)
+    } else {
+        Color32::from_rgba_unmultiplied(220, 40, 40, 110)
+    };
+    let painter = ui.painter();
+    let back = (4 - v.turns % 4) % 4;
+    for r in &v.image_rects {
+        let side = r.width().max(r.height());
+        let rad = radius * side;
+        let on_screen = |p: &[f32; 2]| {
+            let d = before_after::unturn(egui::vec2(p[0], p[1]), back);
+            r.min + d * r.size()
+        };
+        let pts: Vec<egui::Pos2> = st.stroke.iter().map(on_screen).collect();
+        for w in pts.windows(2) {
+            painter.line_segment([w[0], w[1]], egui::Stroke::new(rad * 2.0, colour));
+        }
+        for p in &pts {
+            painter.circle_filled(*p, rad, colour);
+        }
+        if let Some(h) = ui.ctx().pointer_hover_pos().filter(|h| r.contains(*h)) {
+            painter.circle_stroke(h, rad, egui::Stroke::new(1.0, Color32::BLACK));
+            painter.circle_stroke(h, rad + 1.0, egui::Stroke::new(1.0, Color32::WHITE));
+        }
+    }
+    if v.let_go && !st.stroke.is_empty() {
+        st.settings.strokes.push(crate::bg_remove::BgStroke {
+            restore,
+            radius,
+            points: std::mem::take(&mut st.stroke),
+        });
+    }
 }
 
 /// Open Remove Background with this session's last settings (the list
@@ -575,9 +652,18 @@ pub fn remove_background_dialog(
                 &mut st.picking,
                 |img, scale| remove_background(img, &settings, scale),
             );
+            // The brush paints while it is on (the panes then neither
+            // pan nor pick colours).
+            if !st.picking {
+                st.brush = None;
+                st.stroke.clear();
+            }
+            if let (Some(_), Some(p)) = (st.brush, &p) {
+                bg_brush_paint(left, st, p);
+            }
             // A click on a picture takes the colour under it from the
             // picture as it was, so a removed pixel can be picked too.
-            if let (true, Some(p)) = (st.picking, &p) {
+            if let (true, None, Some(p)) = (st.picking, st.brush, &p) {
                 if let Some((x, y)) = p.picked {
                     let (w, h) = p.img.dimensions();
                     let (x, y) = (x.min(w.saturating_sub(1)), y.min(h.saturating_sub(1)));
@@ -592,7 +678,7 @@ pub fn remove_background_dialog(
             }
             // With the eyedropper on, a click on the drawing picks there
             // too (no seed point: it may be outside the bitmap).
-            let on = st.picking;
+            let on = st.picking && st.brush.is_none();
             if let Some(c) =
                 crate::ui::color_picker::pick_for(ctx, egui::Id::new("bg_remove_pick"), on)
             {
@@ -615,6 +701,8 @@ pub fn remove_background_dialog(
                 st.picking = false;
                 st.adding = false;
                 st.row = 0;
+                st.brush = None;
+                st.stroke.clear();
             }
         });
         if super::dialogs::ok_cancel(ui, close) {
@@ -625,6 +713,7 @@ pub fn remove_background_dialog(
             for p in &mut kept.colors {
                 p.seed = None;
             }
+            kept.strokes.clear();
             app.last_bg_remove = Some(kept);
             app.apply_to_bitmaps("Remove Background", move |img, _| {
                 remove_background(img, &settings, 1.0)
@@ -721,7 +810,7 @@ fn bg_color_list(ui: &mut Ui, st: &mut BgRemoveState) {
                     "dialog.bg_colors_auto",
                 )),
             };
-            let picking_here = st.picking && !st.adding && st.row == i;
+            let picking_here = st.picking && st.brush.is_none() && !st.adding && st.row == i;
             let pick = bg_icon_button(ui, picking_here, true, |p, r, c| {
                 crate::ui::icons::draw(p, r, crate::tools::Tool::ColorEyedropper, c)
             });
@@ -738,6 +827,7 @@ fn bg_color_list(ui: &mut Ui, st: &mut BgRemoveState) {
                 st.picking = !picking_here;
                 st.adding = false;
                 st.row = i;
+                st.brush = None;
             }
             if i == 0 {
                 if entry.color.is_none() {
@@ -802,7 +892,7 @@ fn bg_color_list(ui: &mut Ui, st: &mut BgRemoveState) {
         st.row = st.row.min(st.settings.colors.len() - 1);
         st.picking &= st.adding;
     }
-    let adding = st.picking && st.adding;
+    let adding = st.picking && st.brush.is_none() && st.adding;
     ui.horizontal(|ui| {
         let add = bg_icon_button(ui, adding, true, |p, r, c| {
             let r = r.shrink(3.0);
@@ -820,6 +910,7 @@ fn bg_color_list(ui: &mut Ui, st: &mut BgRemoveState) {
         {
             st.picking = !adding;
             st.adding = !adding;
+            st.brush = None;
         }
         ui.label(tr("dialog.bg_add_color"));
     });
@@ -866,5 +957,83 @@ fn bg_remove_settings(ui: &mut Ui, st: &mut BgRemoveState) {
                 "dialog.bg_clean_edges",
                 "dialog.bg_clean_edges_tip",
             ));
+        before_after::rule(ui);
+        bg_brushes(ui, st);
+        before_after::rule(ui);
+        bg_backdrop(ui, st);
+    }
+}
+
+/// The brushes: Erase and Restore (one on at a time; clicked again, off),
+/// the brush size and Clear strokes (#1723, #1915).
+fn bg_brushes(ui: &mut Ui, st: &mut BgRemoveState) {
+    ui.label(tr("dialog.bg_brushes"));
+    ui.horizontal(|ui| {
+        for (restore, key, mark) in [
+            (false, "dialog.bg_brush_erase", "bg_brush_erase"),
+            (true, "dialog.bg_brush_restore", "bg_brush_restore"),
+        ] {
+            let on = st.brush == Some(restore) && st.picking;
+            let b = ui.selectable_label(on, tr(key));
+            before_after::mark(ui, mark, b.rect);
+            if b.rich_tip(crate::ui::tips::pair(key, &format!("{key}_tip")))
+                .clicked()
+            {
+                if on {
+                    st.brush = None;
+                    st.picking = false;
+                } else {
+                    st.brush = Some(restore);
+                    st.picking = true;
+                    st.adding = false;
+                }
+                st.stroke.clear();
+            }
+        }
+    });
+    panel_slider(
+        ui,
+        "bg_brush_size",
+        "dialog.bg_brush_size",
+        crate::ui::Slider::new(&mut st.brush_size, 0.5..=25.0).suffix(" %"),
+    );
+    let any = !st.settings.strokes.is_empty();
+    let clear = ui.add_enabled(any, egui::Button::new(tr("dialog.bg_brush_clear")));
+    before_after::mark(ui, "bg_brush_clear", clear.rect);
+    if clear
+        .rich_tip(crate::ui::tips::pair(
+            "dialog.bg_brush_clear",
+            "dialog.bg_brush_clear_tip",
+        ))
+        .clicked()
+    {
+        st.settings.strokes.clear();
+    }
+}
+
+/// Fill background: off leaves it transparent; on, a colour at the top
+/// and one at the bottom (the same colour twice is a plain fill) (#1915).
+fn bg_backdrop(ui: &mut Ui, st: &mut BgRemoveState) {
+    use crate::bg_remove::BgBackdrop;
+    let mut on = st.settings.backdrop.is_some();
+    let r = ui
+        .checkbox(&mut on, tr("dialog.bg_backdrop"))
+        .rich_tip(crate::ui::tips::pair(
+            "dialog.bg_backdrop",
+            "dialog.bg_backdrop_tip",
+        ));
+    before_after::mark(ui, "bg_backdrop", r.rect);
+    if r.changed() {
+        st.settings.backdrop = on.then_some(BgBackdrop::WHITE);
+    }
+    if let Some(b) = &mut st.settings.backdrop {
+        ui.horizontal(|ui| {
+            ui.label(tr("dialog.bg_backdrop_top"));
+            ui.color_edit_button_srgb(&mut b.top)
+                .rich_tip(crate::ui::tips::keyed("dialog.bg_backdrop_top"));
+            ui.label(tr("dialog.bg_backdrop_bottom"));
+            ui.color_edit_button_srgb(&mut b.bottom)
+                .rich_tip(crate::ui::tips::keyed("dialog.bg_backdrop_bottom"));
+        });
     }
 }

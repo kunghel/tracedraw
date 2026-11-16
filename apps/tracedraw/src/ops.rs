@@ -378,11 +378,161 @@ impl App {
             return;
         }
         let shapes = self.selection.clone();
+        // Objects of one group (selected inside it): the curve they make
+        // stays in the group, where the bottom one was (#2640: Combine
+        // did nothing there).
+        if self.shared_group(&shapes).is_some() {
+            self.combine_in_group(shapes);
+            return;
+        }
         // Make everything a curve first so Combine has paths to merge.
         self.convert_to_curves();
         let keep = shapes.last().copied();
         self.run(Command::Combine { shapes });
         self.selection = keep.into_iter().collect();
+    }
+
+    /// [`Self::combine`] on objects of one group: made curves, then one
+    /// curve of them all with the top one's fill and outline, in the
+    /// group where the bottom one was; one undo step.
+    fn combine_in_group(&mut self, ids: Vec<tracedraw_core::ShapeId>) {
+        let mark = self.engine.begin_group();
+        self.convert_to_curves();
+        let Some(group) = self.shared_group(&ids) else {
+            self.engine.end_group(mark, "Combine");
+            return;
+        };
+        let mut parts: Vec<Shape> = ids
+            .iter()
+            .filter_map(|id| self.doc().shape_on_page(*id))
+            .collect();
+        parts.sort_by_key(|s| self.z_key(s.id));
+        let (Some(bottom), Some(top)) = (parts.first().cloned(), parts.last().cloned()) else {
+            self.engine.end_group(mark, "Combine");
+            return;
+        };
+        let open = |s: &Shape| matches!(s.kind, ShapeKind::Path { closed: false, .. });
+        let any_open = parts.iter().any(open);
+        let mut path = tracedraw_core::BezPath::new();
+        for s in &parts {
+            let part = s.page_path();
+            if any_open && !open(s) {
+                path.extend(tracedraw_core::command::close_subpaths(&part));
+            } else {
+                path.extend(part);
+            }
+        }
+        let mut combined = Shape::new(
+            top.id,
+            ShapeKind::Path {
+                path,
+                closed: !any_open,
+            },
+        );
+        combined.fill = top.fill.for_result(top.transform, &combined.page_path());
+        combined.stroke = top.stroke.clone();
+        combined.opacity = top.opacity;
+        let gone: Vec<_> = parts.iter().map(|s| s.id).collect();
+        if let Some(cmd) = self.regroup_command(group, &gone, bottom.id, vec![combined]) {
+            if let Err(e) = self.engine.run(&cmd) {
+                self.status = e.to_string();
+            }
+        }
+        self.engine.end_group(mark, "Combine");
+        self.select(vec![top.id]);
+    }
+
+    /// The group that directly holds every one of `ids`, when they are
+    /// all objects of one group (selected inside it, #2640).
+    pub(crate) fn shared_group(
+        &self,
+        ids: &[tracedraw_core::ShapeId],
+    ) -> Option<tracedraw_core::ShapeId> {
+        let doc = self.doc();
+        let mut shared = None;
+        for id in ids {
+            let parent = *doc.ancestors(*id).last()?;
+            if !matches!(doc.find_shape(parent)?.kind, ShapeKind::Group { .. }) {
+                return None;
+            }
+            match shared {
+                None => shared = Some(parent),
+                Some(p) if p == parent => {}
+                _ => return None,
+            }
+        }
+        shared
+    }
+
+    /// Where `id` lies in the stacking order: the place of the object on
+    /// its layer that holds it, then its own place in the group or clip
+    /// frame holding it, so objects of one group sort as they are
+    /// stacked in it.
+    pub(crate) fn z_key(&self, id: tracedraw_core::ShapeId) -> (usize, usize) {
+        let doc = self.doc();
+        let up = doc.ancestors(id);
+        let outer = up.first().copied().unwrap_or(id);
+        let top = doc.locate(outer).map(|(_, i)| i).unwrap_or(0);
+        let inner = up
+            .last()
+            .and_then(|p| doc.find_shape(*p))
+            .and_then(|p| match &p.kind {
+                ShapeKind::Group { children } => children.iter().position(|c| c.id == id),
+                ShapeKind::ClipFrame { contents, .. } => contents.iter().position(|c| c.id == id),
+                _ => None,
+            })
+            .unwrap_or(0);
+        (top, inner)
+    }
+
+    /// The command that takes objects `gone` out of `group` and puts
+    /// `made` (in page space) in it where `at` is: in its place when it
+    /// goes, else right above it. `None` when the group cannot hold them
+    /// (no such group, or one squashed flat).
+    pub(crate) fn regroup_command(
+        &self,
+        group: tracedraw_core::ShapeId,
+        gone: &[tracedraw_core::ShapeId],
+        at: tracedraw_core::ShapeId,
+        made: Vec<Shape>,
+    ) -> Option<Command> {
+        let doc = self.doc();
+        let g = doc.find_shape(group)?;
+        let ShapeKind::Group { children } = &g.kind else {
+            return None;
+        };
+        // The space the group's objects are drawn in.
+        let space = doc.parent_transform(group)? * g.transform;
+        let det = space.determinant();
+        if !det.is_finite() || det.abs() < 1e-12 {
+            return None;
+        }
+        let back = space.inverse();
+        let index = children
+            .iter()
+            .position(|c| c.id == at)
+            .or_else(|| children.iter().position(|c| gone.contains(&c.id)))?;
+        let mut made = made.into_iter().map(|mut m| {
+            m.transform = back * m.transform;
+            m
+        });
+        let mut out = Vec::with_capacity(children.len() + 1);
+        for (i, c) in children.iter().enumerate() {
+            let stays = !gone.contains(&c.id);
+            if i == index && !stays {
+                out.extend(made.by_ref());
+            }
+            if stays {
+                out.push(c.clone());
+            }
+            if i == index && stays {
+                out.extend(made.by_ref());
+            }
+        }
+        Some(Command::SetShapeKind {
+            shape: group,
+            kind: ShapeKind::Group { children: out },
+        })
     }
 
     /// The menu label of the group Break Apart breaks first when a
@@ -404,7 +554,9 @@ impl App {
     /// The label and shortcut state of Break Apart for the menus: the
     /// drop shadow's, an effect group's, else plain Break Apart.
     pub fn break_apart_label(&self) -> &'static str {
-        if self.can_break_shadow_apart() {
+        if self.breaks_effect_shadow() {
+            "menu.object.break_shadows_apart"
+        } else if self.can_break_shadow_apart() {
             "menu.object.break_shadow_apart"
         } else {
             self.effect_group_to_break()
@@ -662,7 +814,14 @@ impl App {
                 return;
             }
         };
-        let name = path.file_name().and_then(|n| n.to_str()).map(String::from);
+        // A picture dragged in from another program (#2349) lies in a file
+        // of the drag's own: no name and no link to it.
+        let dropped = is_dropped_picture(path);
+        let name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .map(String::from)
+            .filter(|_| !dropped);
         // At the resolution the file records, else 96 dpi; a picture its
         // orientation stands upright has its across and down swapped.
         let dpi = crate::image_dpi::resolution(&bytes).map(|(x, y)| {
@@ -673,9 +832,21 @@ impl App {
             }
         });
         let planes = picture.planes;
+        // A JPEG whose pixels are the picture's (not turned by its Exif
+        // orientation, not CMYK) is kept, so a packed .tdraw saves the
+        // JPEG instead of a PNG two to three times its size (#2849).
+        let (w, h) = picture.rgba.dimensions();
+        let keep_jpeg = planes.is_none()
+            && tracedraw_core::jpeg_source::decodes_to(&bytes, w, h, picture.rgba.as_raw());
         let Some(id) = self.place_image_at(picture.rgba, name, dpi) else {
             return;
         };
+        if keep_jpeg {
+            if let Some(ShapeKind::Bitmap { png, .. }) = self.doc().find_shape(id).map(|s| &s.kind)
+            {
+                tracedraw_core::jpeg_source::remember(png, bytes.as_slice().into());
+            }
+        }
         if let Some(planes) = planes {
             // The pixels as the object keeps them, with the inks beside.
             let png = match self.doc().find_shape(id).map(|s| &s.kind) {
@@ -695,23 +866,45 @@ impl App {
             }
         }
         // Remember where it came from: Image > Update from Link re-reads it.
-        self.run(Command::SetObjectData {
-            shape: id,
-            data: vec![("bitmap.link".into(), path.display().to_string())],
-        });
+        if !dropped {
+            self.run(Command::SetObjectData {
+                shape: id,
+                data: vec![("bitmap.link".into(), path.display().to_string())],
+            });
+        }
         self.select(vec![id]);
     }
 
     /// Double-clicking the Rectangle tool: a rectangle exactly the size of
-    /// the page (a page frame), selected.
+    /// the page (a page frame), behind every object of the layer, as
+    /// CorelDRAW puts it (#2640: it came in front and hid the drawing),
+    /// selected; one undo step.
     pub fn add_page_frame(&mut self) {
         let size = self.page_size();
-        if let Some(id) = self.new_shape(tracedraw_core::ShapeKind::Rect {
-            rect: tracedraw_core::geometry::Rect::new(0.0, 0.0, size.width, size.height),
-            radius: 0.0,
-            corners: None,
-        }) {
-            self.select(vec![id]);
+        let Some(layer) = self.active_layer() else {
+            return;
+        };
+        let id = self.engine.new_shape_id();
+        let mut shape = Shape::new(
+            id,
+            ShapeKind::Rect {
+                rect: Rect::new(0.0, 0.0, size.width, size.height),
+                radius: 0.0,
+                corners: None,
+            },
+        );
+        self.doc().defaults.apply_to(&mut shape);
+        let cmds = [
+            Command::AddShape { layer, shape },
+            Command::Reorder {
+                shape: id,
+                layer,
+                index: 0,
+            },
+        ];
+        match self.engine.run_batch("Create Object", &cmds) {
+            Ok(_) => self.select(vec![id]),
+            Err(e) => self.status = e.to_string(),
         }
     }
 
@@ -948,7 +1141,7 @@ fn group_leaves(s: &Shape) -> Vec<Shape> {
 /// objects' outlines one after the other, so where two of them overlapped
 /// the even-odd rule left a hole, and Weld, Trim and Intersect cut it
 /// out of their results (#555).
-fn shaping_area(s: &Shape) -> tracedraw_core::BezPath {
+pub(crate) fn shaping_area(s: &Shape) -> tracedraw_core::BezPath {
     use tracedraw_core::shaping::{nonzero_as_even_odd, overlay, overlay_with, FillRule, Op};
     let own = |s: &Shape| {
         if matches!(s.kind, ShapeKind::Text { .. }) || s.fill_rule == FillRule::NonZero {
@@ -1174,10 +1367,10 @@ impl App {
         {
             return;
         }
-        let doc = self.doc();
-        // Z-order: lowest index first within the layer.
+        // Z-order: lowest index first within the layer, objects of a
+        // group by their place in it (#2640).
         let mut ordered = shapes.clone();
-        ordered.sort_by_key(|s| doc.locate(s.id).map(|(_, i)| i).unwrap_or(0));
+        ordered.sort_by_key(|s| self.z_key(s.id));
         let target = shapes.last().cloned().unwrap_or_else(|| ordered[0].clone());
         // The object that keeps its attributes and is cut: the target, the
         // front one (Front Minus Back) or the back one (Back Minus Front).
@@ -1577,6 +1770,24 @@ impl App {
             shape.opacity = first.opacity;
             shape
         };
+        // Create Boundary draws an outline around the selection, with no
+        // fill, as in CorelDRAW: it took the target's fill, so the new
+        // object covered what it was drawn around (#2640). The outline is
+        // the target's, or a hairline when the target has none.
+        let unfilled = |mut s: Shape| {
+            if op == Shaping::Boundary {
+                s.fill = tracedraw_core::Fill::None;
+                if s.stroke.is_none() {
+                    s.stroke = Some(tracedraw_core::Stroke::new(
+                        tracedraw_core::Color::BLACK,
+                        tracedraw_core::Stroke::HAIRLINE,
+                    ));
+                }
+            }
+            s
+        };
+        let shape = unfilled(shape);
+        let extra: Vec<Shape> = extra.into_iter().map(unfilled).collect();
         let mut ids = vec![id];
         let mut cmds = vec![Command::AddShape { layer, shape }];
         for shape in extra {
@@ -1595,7 +1806,24 @@ impl App {
                 }
             })
             .collect();
-        if !gone.is_empty() {
+        // Objects of one group (selected inside it): what is made stays in
+        // the group where the kept object was, the others of the group
+        // kept, instead of going on top of the layer (#2640).
+        let group = self.shared_group(&used);
+        if let Some(group) = group {
+            let made: Vec<Shape> = cmds
+                .iter()
+                .filter_map(|c| match c {
+                    Command::AddShape { shape, .. } => Some(shape.clone()),
+                    _ => None,
+                })
+                .collect();
+            if let Some(cmd) = self.regroup_command(group, &gone, target.id, made) {
+                cmds = vec![cmd];
+            } else if !gone.is_empty() {
+                cmds.push(Command::DeleteShapes { shapes: gone });
+            }
+        } else if !gone.is_empty() {
             cmds.push(Command::DeleteShapes { shapes: gone });
         }
         let label = match op {
@@ -1621,10 +1849,22 @@ impl App {
             return;
         }
         let shapes = self.selection.clone();
-        if collapse && matches!(self.engine.undo_label(), Some("Drop Shadow")) {
+        // A drag or a field typed in again replaces the step it made, but
+        // only that step: the same objects, nothing done since. A shadow
+        // just given to another object was taken back when the next
+        // object got one (#2890).
+        let same_step = self.engine.at_recorded_step()
+            && self.shadow_step.as_ref().is_some_and(|(step, ids)| {
+                Some(*step) == self.engine.last_step_id() && *ids == shapes
+            });
+        if collapse && same_step && matches!(self.engine.undo_label(), Some("Drop Shadow")) {
             let _ = self.engine.undo();
         }
-        self.run(Command::SetShadow { shapes, shadow });
+        self.run(Command::SetShadow {
+            shapes: shapes.clone(),
+            shadow,
+        });
+        self.shadow_step = self.engine.last_step_id().map(|step| (step, shapes));
     }
 }
 
@@ -1827,7 +2067,12 @@ mod smoke_tests {
         app.create_box_shape(Point::new(50.0, 150.0), Point::new(80.0, 180.0));
         app.tool = Tool::Spiral;
         let r = Rect::new(10.0, 150.0, 40.0, 180.0);
-        let path = crate::tools2::spiral_path(r, app.spiral_revolutions, app.spiral_logarithmic);
+        let path = crate::tools2::spiral_path(
+            r,
+            app.spiral_revolutions,
+            app.spiral_logarithmic,
+            app.settings.spiral_expansion,
+        );
         app.new_shape(ShapeKind::Path {
             path,
             closed: false,
@@ -1889,6 +2134,33 @@ mod smoke_tests {
         assert!((b.width() - size.width).abs() < 1e-6);
         assert!((b.height() - size.height).abs() < 1e-6);
         assert!(b.x0.abs() < 1e-6 && b.y0.abs() < 1e-6);
+    }
+
+    /// The page frame goes behind every object already on the layer, as
+    /// in CorelDRAW, and one undo takes it away (#2640).
+    #[test]
+    fn page_frame_goes_behind_the_drawing() {
+        let mut app = App::headless();
+        let rect = |x: f64| ShapeKind::Rect {
+            rect: Rect::new(x, 10.0, x + 20.0, 30.0),
+            radius: 0.0,
+            corners: None,
+        };
+        let a = app.new_shape(rect(10.0)).expect("a");
+        let b = app.new_shape(rect(40.0)).expect("b");
+        app.select(Vec::new());
+        app.add_page_frame();
+        let frame = app.selection[0];
+        let doc = app.doc();
+        let (layer, idx) = doc.locate(frame).expect("frame");
+        assert_eq!(idx, 0, "behind everything");
+        let order = &doc.layer(layer).expect("layer").shapes;
+        assert_eq!(order.len(), 3);
+        assert_eq!(doc.locate(a).expect("a").1, 1);
+        assert_eq!(doc.locate(b).expect("b").1, 2);
+        app.undo();
+        assert!(app.doc().find_shape(frame).is_none(), "one undo step");
+        assert!(app.doc().find_shape(a).is_some());
     }
 
     #[test]
@@ -2979,5 +3251,19 @@ mod curves_and_target_tests {
         let rev = app.engine.revision();
         app.convert_to_curves();
         assert_eq!(app.engine.revision(), rev);
+    }
+}
+
+/// Whether `path` is the file of a picture dragged in from another
+/// program (#2349, `vendor/winit/src/picture_drop.rs`).
+fn is_dropped_picture(path: &std::path::Path) -> bool {
+    #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+    {
+        crate::winit_picture_drop::is_dropped_picture(path)
+    }
+    #[cfg(any(target_arch = "wasm32", target_os = "android"))]
+    {
+        let _ = path;
+        false
     }
 }

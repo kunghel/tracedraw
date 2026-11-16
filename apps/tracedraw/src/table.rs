@@ -990,7 +990,7 @@ fn grow_row_to_fit(t: &mut Table, r: u32, c: u32) {
 /// Widen each column to hold its widest text on one line (cell margins
 /// and a little room included), so no word of a converted text is cut;
 /// columns stay as wide as they were when the text is narrower.
-fn fit_columns_to_text(t: &mut Table) {
+pub(crate) fn fit_columns_to_text(t: &mut Table) {
     let para = tracedraw_core::ParagraphStyle::default();
     let mut widths = t.col_widths.clone();
     for cell in &t.cells {

@@ -336,6 +336,7 @@ impl<N: Numeric> NumField<'_, N> {
         // The wheel over the box or the arrows, a step a notch; the bar or
         // panel around the field does not scroll with it (#783).
         let wheel_here = self.wheel_on_hover || resp.has_focus();
+        let mut by_wheel = false;
         if stepped.is_some() {
             // Dragged this frame: the wheel waits.
         } else if wheel_here
@@ -355,14 +356,19 @@ impl<N: Numeric> NumField<'_, N> {
                 });
                 if steps != 0 {
                     stepped = Some((f64::from(steps), mods));
+                    by_wheel = true;
                 }
             }
         } else {
             ui.data_mut(|d| d.remove::<f32>(id.with("wheel")));
         }
         if let Some((dir, mods)) = stepped {
-            let step = if mods.command {
-                self.fine_step.unwrap_or(self.step / 10.0)
+            let fine = self.fine_step.unwrap_or(self.step / 10.0);
+            let span = self.range.map(|(lo, hi)| (hi - lo).abs());
+            let step = if by_wheel && !N::INTEGRAL {
+                wheel_step(self.step, fine, span, mods)
+            } else if mods.command {
+                fine
             } else if mods.shift {
                 self.step * 10.0
             } else {
@@ -448,6 +454,35 @@ fn with_arrows(mut resp: Response, arrows: Response) -> Response {
         resp.flags.set(egui::response::Flags::HOVERED, true);
     }
     resp
+}
+
+/// What one wheel notch adds to a decimal field whose arrows step by
+/// `step` (`fine` with Ctrl) over a range `span` wide (`None`: no
+/// range). A field stepping by less than a whole unit over a range of
+/// ten units or more steps the whole units with the plain wheel and its
+/// own step, the decimals, with Ctrl, so typical values need no key
+/// held (#2705); Shift steps ten units. Any other field steps as its
+/// arrows do: `step`, `fine` with Ctrl, ten steps with Shift.
+pub fn wheel_step(step: f64, fine: f64, span: Option<f64>, mods: egui::Modifiers) -> f64 {
+    let wide = span.is_none_or(|s| s >= 10.0);
+    // A whole unit must be a run of steps, or the field's snapping would
+    // pull the value back between two of them.
+    let units_fit = step > 0.0 && ((1.0 / step) - (1.0 / step).round()).abs() < 1e-6;
+    if step < 1.0 && wide && units_fit {
+        if mods.command {
+            step
+        } else if mods.shift {
+            10.0
+        } else {
+            1.0
+        }
+    } else if mods.command {
+        fine
+    } else if mods.shift {
+        step * 10.0
+    } else {
+        step
+    }
 }
 
 /// Raw wheel units one notch of a mouse wheel sends. The desktop
@@ -1325,14 +1360,15 @@ mod tests {
                 }],
             );
         };
-        // The wheel over the first field: half a unit up, ten halves
-        // with Shift, within the range; Ctrl a twentieth.
+        // The wheel over the first field (half-unit steps over twelve
+        // units): a whole unit up, ten units with Shift, within the
+        // range; Ctrl its own half step (#2705).
         wheel(&mut v, &mut n, a.center(), true, egui::Modifiers::NONE);
-        assert_eq!(v, 10.5);
+        assert_eq!(v, 11.0);
         wheel(&mut v, &mut n, a.center(), true, egui::Modifiers::SHIFT);
         assert_eq!(v, 12.0, "clamped to the range");
         wheel(&mut v, &mut n, a.center(), false, egui::Modifiers::COMMAND);
-        assert!((v - 11.95).abs() < 1e-9, "{v}");
+        assert!((v - 11.5).abs() < 1e-9, "{v}");
         // The arrows at the right of the second field (past its box): up
         // then down.
         let spin_x = b.right() + SPIN_W / 2.0;
@@ -1374,6 +1410,32 @@ mod tests {
         assert_eq!(n, 2);
         wheel(&mut v, &mut n, b.center(), true, egui::Modifiers::NONE);
         assert_eq!(n, 3);
+    }
+
+    /// The plain wheel steps the whole units of a decimal field over a
+    /// wide range and Ctrl its decimals (#2705); a narrow range (an
+    /// opacity from 0 to 1), a step a unit cannot be made of, or a step
+    /// of a unit or more keeps the field's own steps.
+    #[test]
+    fn the_plain_wheel_steps_whole_units_and_ctrl_the_decimals() {
+        use egui::Modifiers as M;
+        // A depth from 0.1 to 50 stepping by 0.5.
+        let depth = Some(49.9);
+        assert_eq!(wheel_step(0.5, 0.05, depth, M::NONE), 1.0);
+        assert_eq!(wheel_step(0.5, 0.05, depth, M::COMMAND), 0.5);
+        assert_eq!(wheel_step(0.5, 0.05, depth, M::SHIFT), 10.0);
+        // A length with no range, stepping by a tenth.
+        assert_eq!(wheel_step(0.1, 0.01, None, M::NONE), 1.0);
+        assert_eq!(wheel_step(0.1, 0.01, None, M::COMMAND), 0.1);
+        // A fraction from 0 to 1: its own steps.
+        assert_eq!(wheel_step(0.05, 0.005, Some(1.0), M::NONE), 0.05);
+        assert_eq!(wheel_step(0.05, 0.005, Some(1.0), M::COMMAND), 0.005);
+        // Steps of 0.3: a unit is not a run of them.
+        assert_eq!(wheel_step(0.3, 0.03, None, M::NONE), 0.3);
+        // A whole-unit step or more: unchanged.
+        assert_eq!(wheel_step(5.0, 0.5, Some(360.0), M::NONE), 5.0);
+        assert_eq!(wheel_step(5.0, 0.5, Some(360.0), M::COMMAND), 0.5);
+        assert_eq!(wheel_step(5.0, 0.5, Some(360.0), M::SHIFT), 50.0);
     }
 
     /// A drag right on a field's arrows or its label slides the value up,

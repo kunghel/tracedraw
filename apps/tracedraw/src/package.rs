@@ -580,7 +580,7 @@ impl App {
         relink(&mut doc, &pictures.0);
         let drawing = folder.join(format!("{name}.tdraw"));
         crate::files::write_with(&drawing, |w| {
-            doc.write_json_version(w, tracedraw_core::document::TDRAW_FORMAT_VERSION)
+            doc.write_tdraw_version(w, tracedraw_core::document::TDRAW_FORMAT_VERSION)
                 .map_err(std::io::Error::other)
         })
         .map_err(|e| e.to_string())?;
@@ -806,8 +806,8 @@ mod tests {
         assert!(folder.join("Pictures/logo.png").is_file());
         assert!(folder.join("Pictures/logo-2.png").is_file());
         // The copy opens with its links on the copies, relative to it.
-        let text = std::fs::read_to_string(folder.join("Poster.tdraw")).expect("drawing");
-        let copy = Document::from_json(&text).expect("reads");
+        let bytes = std::fs::read(folder.join("Poster.tdraw")).expect("drawing");
+        let copy = Document::from_tdraw_bytes(&bytes).expect("reads");
         let mut got = links(&copy);
         got.sort();
         assert_eq!(got.len(), 4);
@@ -881,13 +881,13 @@ mod tests {
         assert!(names.contains(&format!("Poster/{report}")), "{names:?}");
         assert!(names.iter().all(|n| n.starts_with("Poster/")));
         // The drawing in the zip links to the pictures beside it.
-        let mut text = String::new();
-        std::io::Read::read_to_string(
+        let mut bytes = Vec::new();
+        std::io::Read::read_to_end(
             &mut archive.by_name("Poster/Poster.tdraw").expect("drawing"),
-            &mut text,
+            &mut bytes,
         )
         .expect("read");
-        let copy = Document::from_json(&text).expect("reads");
+        let copy = Document::from_tdraw_bytes(&bytes).expect("reads");
         assert!(links(&copy).iter().any(|l| l == "Pictures/logo.png"));
         // The status names the zip.
         assert!(status_in(&r, "Poster.zip").contains("Poster.zip"));

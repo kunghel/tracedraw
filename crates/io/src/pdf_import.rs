@@ -176,6 +176,7 @@ pub fn parse_with_options(
     }
     let mut tounicode_fixes = HashMap::new();
     let mut line_widths = HashMap::new();
+    let mut char_xs = HashMap::new();
     for (index, page_id) in pages.iter().enumerate() {
         let mut imp = Importer {
             doc: &doc,
@@ -193,9 +194,11 @@ pub fn parse_with_options(
             shrunk: Vec::new(),
             in_mask: false,
             line_widths: std::mem::take(&mut line_widths),
+            char_xs: std::mem::take(&mut char_xs),
         };
         let page = imp.import_page(*page_id, index);
         line_widths = std::mem::take(&mut imp.line_widths);
+        char_xs = std::mem::take(&mut imp.char_xs);
         out.inks = std::mem::take(&mut imp.inks);
         out.shrunk_pictures.extend(
             imp.shrunk
@@ -207,7 +210,7 @@ pub fn parse_with_options(
     }
     out.warnings.dedup();
     if options.text_as_paragraphs && !options.text_as_curves {
-        crate::pdf_paragraphs::make_paragraphs(&mut out.pages, &line_widths);
+        crate::pdf_paragraphs::make_paragraphs(&mut out.pages, &line_widths, &char_xs);
     }
     Ok(out)
 }
@@ -855,6 +858,11 @@ struct Importer<'a> {
     /// How long each text made of a run is along its baseline, mm, as
     /// the file draws it: for [`crate::pdf_paragraphs`].
     line_widths: HashMap<ShapeId, f64>,
+    /// Where each character of such a text starts along its baseline,
+    /// mm from the text's origin, as the file draws it: for the
+    /// underlines [`crate::pdf_paragraphs`] gives back to the letters
+    /// they are drawn under (#2569).
+    char_xs: HashMap<ShapeId, Vec<f64>>,
 }
 
 /// The text marked content gives its glyphs, shown in place of their own
@@ -894,6 +902,12 @@ struct TextRun {
     typed: Vec<std::ops::Range<usize>>,
     /// The run holds a reph glyph (one glyph for र् with no advance).
     reph_glyph: bool,
+    /// Where each character of `text` starts along the baseline, in the
+    /// units of `end_x`; `None` once they no longer match.
+    xs: Option<Vec<f64>>,
+    /// Filled and outlined (render mode 2 or 6): the way a word processor
+    /// draws bold in a font that has no bold face (#2569).
+    stroked_bold: bool,
 }
 
 /// A Devanagari consonant (with the nukta forms).
@@ -1280,22 +1294,25 @@ fn devanagari_piece(p: &[char]) -> bool {
 /// letter ड was mapped to र्; in सम्प्रभुता the half म glyph to म्प्.
 ///
 /// `nominal` gives the glyphs whose letter the font's `cmap` names, which
-/// are taken as they are; `marks` the glyphs with no advance (only they
-/// can be a reph); `units` the codes each text operator shows, in
-/// drawing order. Each other glyph gets, at its first appearance, the
-/// text that gives back the map's entries for the new glyphs of its unit
-/// under that rule, tried among the pieces of the text those entries
-/// spell, the short i sign and the reph (at most three such glyphs in one
-/// unit). Gives the codes whose
-/// text changes.
+/// are taken as they are, and `shaped` the glyphs whose text their
+/// outlines tell (see [`crate::pdf_indic_shapes`]), taken the same way;
+/// `marks` the glyphs with no advance (only they can be a reph); `units`
+/// the codes each text operator shows, in drawing order. Each other
+/// glyph gets, at its first appearance, the text that gives back the
+/// map's entries for the new glyphs of its unit under that rule, tried
+/// among the pieces of the text those entries spell, the short i sign
+/// and the reph (at most three such glyphs in one unit). Gives the codes
+/// whose text changes.
 fn unscramble_tounicode(
     map: &HashMap<u32, String>,
     nominal: &HashMap<u32, char>,
+    shaped: &HashMap<u32, String>,
     marks: &std::collections::HashSet<u32>,
     units: &[Vec<u32>],
 ) -> HashMap<u32, String> {
     let mut known: HashMap<u32, String> =
         nominal.iter().map(|(k, c)| (*k, c.to_string())).collect();
+    known.extend(shaped.iter().map(|(k, t)| (*k, t.clone())));
     let mut seen: std::collections::HashSet<u32> = std::collections::HashSet::new();
     for unit in units {
         // The first appearance of each code new in this unit.
@@ -3684,7 +3701,10 @@ impl<'a> Importer<'a> {
             .any(|(code, c)| map.get(code).is_some_and(|t| *t != c.to_string()));
         let fixes = if scrambled {
             let units = self.text_units(key, map);
-            let mut fixes = unscramble_tounicode(map, &nominal, marks, &units);
+            // The glyphs whose text their own outlines tell (a letter
+            // with a sign, a half form, a longer short i sign).
+            let shaped = self.outline_indic(desc_font, descriptor, &units);
+            let mut fixes = unscramble_tounicode(map, &nominal, &shaped, marks, &units);
             // The same font installed here says outright what each of its
             // glyphs stands for; the map is worked out only for the
             // others.
@@ -3778,6 +3798,50 @@ impl<'a> Importer<'a> {
         families.retain(|f| !f.trim().is_empty());
         families.dedup();
         let texts = crate::pdf_indic::glyph_texts(&data, &families, &used);
+        for code in codes {
+            if let Some(t) = gid_of(code).and_then(|g| texts.get(&g)) {
+                out.insert(code, t.clone());
+            }
+        }
+        out
+    }
+
+    /// The text of the codes `units` show in a two-byte TrueType font
+    /// whose glyphs the font's `cmap` does not name, as far as their
+    /// outlines tell (see [`crate::pdf_indic_shapes`]).
+    fn outline_indic(
+        &self,
+        desc_font: &Dictionary,
+        descriptor: Option<&Dictionary>,
+        units: &[Vec<u32>],
+    ) -> HashMap<u32, String> {
+        let mut out = HashMap::new();
+        let Some(Object::Stream(s)) = descriptor.and_then(|d| self.get(d, b"FontFile2")) else {
+            return out;
+        };
+        let Some(data) = s.decompressed_content().ok() else {
+            return out;
+        };
+        let Ok(face) = ttf_parser::Face::parse(&data, 0) else {
+            return out;
+        };
+        let cid_to_gid: Option<Vec<u16>> = match self.get(desc_font, b"CIDToGIDMap") {
+            Some(Object::Stream(m)) => m.decompressed_content().ok().map(|b| {
+                b.chunks_exact(2)
+                    .map(|c| u16::from_be_bytes([c[0], c[1]]))
+                    .collect()
+            }),
+            _ => None,
+        };
+        let gid_of = |code: u32| match &cid_to_gid {
+            Some(m) => m.get(code as usize).copied(),
+            None => u16::try_from(code).ok(),
+        };
+        let mut codes: Vec<u32> = units.iter().flatten().copied().collect();
+        codes.sort_unstable();
+        codes.dedup();
+        let used: Vec<u16> = codes.iter().filter_map(|c| gid_of(*c)).collect();
+        let texts = crate::pdf_indic_shapes::glyph_texts(&face, &used);
         for code in codes {
             if let Some(t) = gid_of(code).and_then(|g| texts.get(&g)) {
                 out.insert(code, t.clone());
@@ -4024,7 +4088,14 @@ impl<'a> Importer<'a> {
             if !path.elements().is_empty() {
                 let mut shape = self.new_shape(ShapeKind::Path { path, closed: true });
                 shape.fill = Fill::Solid(gs.fill.unwrap_or(Color::BLACK));
-                shape.stroke = None;
+                // Filled and outlined text (bold made up for a font with
+                // no bold face) keeps its outline, so it stays bold.
+                shape.stroke = gs.stroke.filter(|_| fake_bold(gs)).map(|c| {
+                    let w = (gs.line_width * Self::scale_of(gs.ctm)).max(Stroke::HAIRLINE);
+                    let mut st = Stroke::new(c, w);
+                    st.join = LineJoin::Round;
+                    st
+                });
                 shape.opacity = gs.fill_alpha;
                 let clip = gs.clip.clone();
                 self.push(shape, &clip);
@@ -4085,6 +4156,7 @@ impl<'a> Importer<'a> {
         let same_run = match run {
             Some(r) => {
                 std::rc::Rc::ptr_eq(&r.font, &font)
+                    && r.stroked_bold == fake_bold(gs)
                     && (r.size_pt - size_pt).abs() < 1e-6
                     && r.fill == gs.fill
                     && (same_line(&r.matrix, &trm, r.end_x, gs.font_size)
@@ -4107,6 +4179,7 @@ impl<'a> Importer<'a> {
                     if let Some(a) = self.actual.as_mut() {
                         a.broken = true;
                         if let Some(at) = a.at {
+                            r.xs = None;
                             r.text.truncate(at);
                             r.text.push_str(&a.own);
                             r.typed.retain(|t| t.start < at);
@@ -4130,6 +4203,8 @@ impl<'a> Importer<'a> {
                     reach: 0.0,
                     typed: Vec::new(),
                     reph_glyph: false,
+                    xs: Some(Vec::new()),
+                    stroked_bold: fake_bold(gs),
                 });
             }
         } else if let (Some(r), Some((new_end, len))) = (run.as_mut(), along) {
@@ -4139,6 +4214,9 @@ impl<'a> Importer<'a> {
             let em = r.size_pt * PT_MM;
             if (gap > em * 0.18 || r.space_pending) && !joins && !r.text.ends_with(' ') {
                 r.text.push(' ');
+                if let Some(xs) = r.xs.as_mut() {
+                    xs.push(r.reach);
+                }
             }
             r.space_pending = false;
             r.end_x = new_end;
@@ -4163,11 +4241,19 @@ impl<'a> Importer<'a> {
                             a.at = Some(r.text.len());
                             let at = r.text.len();
                             r.text.push_str(&a.text);
+                            if let Some(xs) = r.xs.as_mut() {
+                                xs.extend(a.text.chars().map(|_| r.end_x + advance));
+                            }
                             r.typed.push(at..r.text.len());
                         }
                         a.own.push_str(&own);
                     }
-                    _ => r.text.push_str(&own),
+                    _ => {
+                        r.text.push_str(&own);
+                        if let Some(xs) = r.xs.as_mut() {
+                            xs.extend(own.chars().map(|_| r.end_x + advance));
+                        }
+                    }
                 }
             } else if let Some(a) = self.actual.as_mut().filter(|_| given.is_some()) {
                 a.shown = true;
@@ -4191,7 +4277,22 @@ impl<'a> Importer<'a> {
             return;
         }
         // Take the size out of the matrix: the span carries it in points.
-        let transform = r.matrix * Affine::scale(1.0 / scale);
+        let mut transform = r.matrix * Affine::scale(1.0 / scale);
+        // Upright text slanted forward by its matrix is italic made up for
+        // a font with no italic face: the span says italic and the slant
+        // goes, so the letters are not slanted twice (#2569).
+        let mut slanted = false;
+        {
+            let c = transform.as_coeffs();
+            let det = c[0] * c[3] - c[1] * c[2];
+            if c[1].abs() < 1e-6 && c[0] > 0.0 && c[3] > 0.0 && det > 0.0 {
+                let shear = c[2] / c[3];
+                if (0.1..0.5).contains(&shear) {
+                    slanted = true;
+                    transform = Affine::new([c[0], 0.0, 0.0, c[3], c[4], c[5]]);
+                }
+            }
+        }
         // Hindi and the other Devanagari languages: back from the order
         // the glyphs are drawn in to the order they are typed (#585).
         // Vowels drawn as two glyphs become one character again first.
@@ -4216,9 +4317,15 @@ impl<'a> Importer<'a> {
             }
             from = part.end;
         }
+        // The characters' places hold only while the text is as drawn.
+        let text_chars = if text == r.text {
+            text.chars().count()
+        } else {
+            usize::MAX
+        };
         let span = TextSpan {
-            bold: r.font.bold,
-            italic: r.font.italic,
+            bold: r.font.bold || r.stroked_bold,
+            italic: r.font.italic || slanted,
             ..TextSpan::new(text, r.font.family.clone(), r.size_pt)
         };
         let mut shape = self.new_shape(ShapeKind::Text {
@@ -4238,8 +4345,18 @@ impl<'a> Importer<'a> {
         shape.opacity = r.alpha;
         let _ = r.font.type3_matrix;
         self.line_widths.insert(shape.id, r.reach * scale);
+        if let Some(xs) = r.xs.filter(|xs| xs.len() == text_chars) {
+            self.char_xs
+                .insert(shape.id, xs.iter().map(|x| x * scale).collect());
+        }
         self.push(shape, &r.clip);
     }
+}
+
+/// Text drawn filled and outlined (render mode 2, or 6 with clipping) with
+/// an outline: how bold is made up for a font with no bold face.
+fn fake_bold(gs: &GState) -> bool {
+    matches!(gs.render_mode, 2 | 6) && gs.stroke.is_some() && gs.line_width > 0.0
 }
 
 /// Same baseline and direction, continuing after the previous advance.
@@ -5757,6 +5874,7 @@ mod tests {
         let fixes = unscramble_tounicode(
             &map,
             &nominal,
+            &HashMap::new(),
             &marks,
             &[vec![1, 2, 3, 4, 5, 6], vec![8, 6, 7, 4]],
         );
@@ -5789,7 +5907,10 @@ mod tests {
         assert_eq!(devanagari_typed_order("पिश्चम", false, false), "पिश्चम");
         // A map that agrees with the font is left alone.
         let ok: HashMap<u32, String> = nominal.iter().map(|(k, c)| (*k, c.to_string())).collect();
-        assert!(unscramble_tounicode(&ok, &nominal, &marks, &[vec![1, 2, 3]]).is_empty());
+        assert!(
+            unscramble_tounicode(&ok, &nominal, &HashMap::new(), &marks, &[vec![1, 2, 3]])
+                .is_empty()
+        );
     }
 
     /// The Devanagari test corpus written to PDF by an office suite
@@ -6846,6 +6967,48 @@ mod tests {
         })
     }
 
+    /// Bold and italic a word processor makes up for a font with no such
+    /// faces, text filled and outlined and text slanted by its matrix,
+    /// come in as bold and italic text, the slant taken out (#2569).
+    #[test]
+    fn made_up_bold_and_italic_are_bold_and_italic() {
+        let font =
+            "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>";
+        let bytes = one_page(
+            "BT /F1 12 Tf 0.3 w 2 Tr 20 60 Td (Bold) Tj 0 Tr ET \
+             BT /F1 12 Tf 1 0 0.33 1 20 30 Tm (Slanted) Tj ET \
+             BT /F1 12 Tf 20 10 Td (Plain) Tj ET",
+            "<< /Font << /F1 5 0 R >> >>",
+            &[font.to_string()],
+        );
+        let mut ids = IdSource::default();
+        let imp = parse(&bytes, &mut ids).expect("parse");
+        let texts: Vec<(&str, bool, bool, f64)> = imp.pages[0]
+            .shapes
+            .iter()
+            .filter_map(|s| match &s.kind {
+                ShapeKind::Text { spans, .. } => Some((
+                    spans[0].text.as_str(),
+                    spans[0].bold,
+                    spans[0].italic,
+                    s.transform.as_coeffs()[2],
+                )),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(texts.len(), 3, "{texts:?}");
+        assert_eq!((texts[0].0, texts[0].1, texts[0].2), ("Bold", true, false));
+        assert_eq!(
+            (texts[1].0, texts[1].1, texts[1].2),
+            ("Slanted", false, true)
+        );
+        assert!(texts[1].3.abs() < 1e-9, "{texts:?}");
+        assert_eq!(
+            (texts[2].0, texts[2].1, texts[2].2),
+            ("Plain", false, false)
+        );
+    }
+
     /// A one-page file with a rectangle, a text run and a title, as the
     /// other reader holds it, ready to be protected by it.
     fn plain_for_protection() -> PdfDoc {
@@ -7179,5 +7342,139 @@ mod tests {
             b"<< /TDcrypt 5 0 R /EncryptMetadata false >> (/TDcrypt)/TDcrypt".to_vec()
         );
         assert!(hide_encryption(b"<< /EncryptMetadata true >>").is_none());
+    }
+
+    /// A PDF of a word processor's kind: a two-byte TrueType font (the
+    /// test font of [`crate::pdf_indic_shapes`]) shows `words` as glyph
+    /// numbers, with `map` as its ToUnicode map.
+    fn glyph_pdf(words: &[&[u16]], map: &[(u16, &str)]) -> Vec<u8> {
+        use crate::pdf_indic_shapes::tests::{deva_glyphs, tiny_font};
+        use lopdf::{dictionary, Object, Stream};
+        let glyphs = deva_glyphs();
+        let data = tiny_font(&glyphs);
+        let mut content = String::from("BT /F1 12 Tf\n");
+        for (i, w) in words.iter().enumerate() {
+            let hex: String = w.iter().map(|g| format!("{g:04X}")).collect();
+            let y = 800 - 20 * i as i32;
+            content.push_str(&format!("1 0 0 1 20 {y} Tm <{hex}> Tj\n"));
+        }
+        content.push_str("ET\n");
+        let utf16 = |s: &str| -> String { s.encode_utf16().map(|u| format!("{u:04X}")).collect() };
+        let entries: String = map
+            .iter()
+            .map(|(g, t)| format!("<{g:04X}> <{}>\n", utf16(t)))
+            .collect();
+        let cmap = format!(
+            "/CIDInit /ProcSet findresource begin 12 dict begin begincmap\n\
+             /CMapName /Adobe-Identity-UCS def /CMapType 2 def\n\
+             1 begincodespacerange <0000> <FFFF> endcodespacerange\n\
+             {} beginbfchar\n{entries}endbfchar\n\
+             endcmap CMapName currentdict /CMap defineresource pop end end",
+            map.len()
+        );
+        let widths: Vec<Object> = glyphs
+            .iter()
+            .enumerate()
+            .flat_map(|(g, glyph)| {
+                [
+                    Object::Integer(g as i64),
+                    Object::Array(vec![Object::Integer(i64::from(glyph.advance))]),
+                ]
+            })
+            .collect();
+        let mut doc = lopdf::Document::with_version("1.7");
+        let file = doc.add_object(Stream::new(dictionary! {}, data));
+        let descriptor = doc.add_object(dictionary! {
+            "Type" => "FontDescriptor", "FontName" => "ABCDEF+Tiny", "Flags" => 32,
+            "FontBBox" => vec![0.into(), (-300).into(), 1000.into(), 1000.into()],
+            "ItalicAngle" => 0, "Ascent" => 800, "Descent" => -200, "CapHeight" => 700,
+            "StemV" => 80, "FontFile2" => file,
+        });
+        let cid = doc.add_object(dictionary! {
+            "Type" => "Font", "Subtype" => "CIDFontType2", "BaseFont" => "ABCDEF+Tiny",
+            "CIDSystemInfo" => dictionary! { "Registry" => Object::string_literal("Adobe"),
+                "Ordering" => Object::string_literal("Identity"), "Supplement" => 0 },
+            "FontDescriptor" => descriptor, "CIDToGIDMap" => "Identity", "W" => widths,
+        });
+        let to_unicode = doc.add_object(Stream::new(dictionary! {}, cmap.into_bytes()));
+        let font = doc.add_object(dictionary! {
+            "Type" => "Font", "Subtype" => "Type0", "BaseFont" => "ABCDEF+Tiny",
+            "Encoding" => "Identity-H", "DescendantFonts" => vec![cid.into()],
+            "ToUnicode" => to_unicode,
+        });
+        let contents = doc.add_object(Stream::new(dictionary! {}, content.into_bytes()));
+        let pages_id = doc.new_object_id();
+        let page = doc.add_object(dictionary! {
+            "Type" => "Page", "Parent" => pages_id,
+            "MediaBox" => vec![0.into(), 0.into(), 595.into(), 842.into()],
+            "Contents" => contents,
+            "Resources" => dictionary! { "Font" => dictionary! { "F1" => font } },
+        });
+        doc.objects.insert(
+            pages_id,
+            Object::Dictionary(
+                dictionary! { "Type" => "Pages", "Kids" => vec![page.into()], "Count" => 1 },
+            ),
+        );
+        let catalog = doc.add_object(dictionary! { "Type" => "Catalog", "Pages" => pages_id });
+        doc.trailer.set("Root", catalog);
+        let mut out = Vec::new();
+        doc.save_to(&mut out).expect("writes");
+        out
+    }
+
+    /// Glyphs the map holds the characters of nowhere, as in the second
+    /// file sent with #1806 (स्कूल came in as स्ूल, मुश्किल as मुक्किल,
+    /// विश्वास as विविास, उपयुक्त as उपयुति): the glyph of क with the uu
+    /// sign, the half form of श and a longer short i sign take their
+    /// text from their outlines, and the half form of क, which is drawn
+    /// unlike क, follows from the short i sign being known.
+    #[test]
+    fn glyphs_the_map_holds_nowhere_are_read_off_their_outlines() {
+        // Glyphs of the test font: 1 क, 2 श, 3 ू, 4 ि, 6 कू, 7 श्, 8 a long
+        // ि, 10 क् (its own shape), 12 स्, 13 ल, 14 म, 15 ु, 16 व, 17 ा,
+        // 18 स, 19 उ, 20 प, 21 य, 22 त. The map gives each syllable's
+        // characters in typed order to its glyphs in drawn order, the
+        // first glyph getting the rest; a glyph keeps its first text.
+        let words: [&[u16]; 5] = [
+            &[21, 15, 8, 10, 22],      // युक्ति, drawn य ु ि क् त
+            &[14, 15, 8, 7, 1, 13],    // मुश्किल, drawn म ु ि श् क ल
+            &[12, 6, 13],              // स्कूल, drawn स् कू ल
+            &[4, 16, 7, 16, 17, 18],   // विश्वास, drawn ि व श् व ा स
+            &[19, 20, 21, 15, 10, 22], // उपयुक्त
+        ];
+        let map = [
+            (21, "\u{092F}"),
+            (15, "\u{0941}"),
+            (8, "\u{0915}\u{094D}"),
+            (10, "\u{0924}"),
+            (22, "\u{093F}"),
+            (14, "\u{092E}"),
+            (7, "\u{0915}"),
+            (1, "\u{0915}"),
+            (13, "\u{0932}"),
+            (12, "\u{0938}\u{094D}\u{0915}"),
+            (6, "\u{0942}"),
+            (4, "\u{093F}"),
+            (16, "\u{0935}"),
+            (17, "\u{093E}"),
+            (18, "\u{0938}"),
+            (19, "\u{0909}"),
+            (20, "\u{092A}"),
+        ];
+        let bytes = glyph_pdf(&words, &map);
+        let mut ids = IdSource::default();
+        let imp = parse(&bytes, &mut ids).expect("parse");
+        let texts: Vec<String> = imp.pages[0]
+            .shapes
+            .iter()
+            .filter_map(|s| match &s.kind {
+                ShapeKind::Text { spans, .. } => {
+                    Some(spans.iter().map(|s| s.text.as_str()).collect())
+                }
+                _ => None,
+            })
+            .collect();
+        assert_eq!(texts, ["युक्ति", "मुश्किल", "स्कूल", "विश्वास", "उपयुक्त"]);
     }
 }

@@ -11,6 +11,7 @@
 - [[options.center_dialogs]]：对话框在窗口中央打开；关闭时，它们在你上次放置的位置打开。
 - [[options.ui_shadows]]（阴影越少，对较慢的显卡越有利）。
 - [[options.colored_icons]]：每组工具都有自己的颜色。
+- [[options.docker_tabs_icons_only]]：窗口两侧的面板标签只显示图标，名称显示在提示中。关闭时显示图标和名称，放不下所有标签的列可以滚动。
 - [[options.ui_size]]：菜单、栏、图标和面板的大小，相对于系统为显示器设置的缩放比例（起初为 100%）。[[options.reset_to_default]] 恢复为 100%。界面大小从不改变绘图的大小。[[options.follow_text_size]] 使其随桌面文本大小变大。
 - [[options.color_section]]：[[options.theme]]（浅色、中浅色、中深色、深色或高对比度）、[[options.follow_high_contrast]]，以及页面周围的 [[options.desktop_color]]。状态栏右端的按钮在浅色和深色之间切换。
 

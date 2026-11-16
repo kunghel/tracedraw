@@ -42,8 +42,12 @@ fonte de dados que você criou ou carregou:
   escolha [[merge.scale_actual]], [[merge.scale_fit]], [[merge.scale_fill]]
   (a moldura corta o que sobra) ou [[merge.scale_stretch]].
 - **[[merge.insert_field]]** põe o campo no texto que você está editando, ou
-  cria um texto, uma moldura de imagem ou um quadrado de QR no meio da
-  visualização. Mova e redimensione como qualquer objeto.
+  cria um texto, uma moldura de imagem ou um código QR de amostra no meio da
+  visualização. Mova e redimensione como qualquer objeto. Pinte o código QR
+  de amostra com qualquer cor e coloque-o dentro de uma forma com Colocar
+  dentro do quadro: o código de cada registro sai nessa cor, dentro dessa
+  forma. Um código de barras mantém do mesmo jeito as cores dadas às barras,
+  ao fundo e aos dígitos.
 - Para colocar cada foto dentro de uma forma sua (um círculo, um oval,
   qualquer contorno, também dentro de um cartão agrupado), escolha Imagem e a
   coluna da foto, selecione a forma e clique em **[[merge.place_inside]]**. A

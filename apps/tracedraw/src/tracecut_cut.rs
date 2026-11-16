@@ -130,13 +130,24 @@ impl Default for OrderSettings {
 }
 
 /// CutContour: the outline width (0: a hairline) and whether the fill
-/// goes.
+/// goes; a bleed around each object in its own colour, and cut lines
+/// that go round each object's (or group's) outer edge as one, its
+/// overlaps merged (#2098).
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(default)]
 pub struct CutContourSettings {
     pub width: f64,
     pub remove_fill: bool,
+    /// How far the bleed reaches outside each object, mm (0: none).
+    pub bleed: f64,
+    /// The cut line is a new curve round each object's area, its
+    /// overlapping parts (letters, pieces of a design) merged into one
+    /// outline; a group always gets one shared line.
+    pub merge: bool,
 }
+
+/// The bleed CutContour adds reaches up to 20 mm (#2098).
+pub const BLEED_RANGE: (f64, f64) = (0.0, 20.0);
 
 /// Registration marks: their look, and whether they go inside the page
 /// (else around the selection).
@@ -165,6 +176,17 @@ pub enum Change {
     },
     /// A command as it is.
     Cmd(Box<Command>),
+    /// A new curve `path` (page space) just behind (or, `above`, just in
+    /// front of) the object `near`, on its layer, named by the i18n key
+    /// `name`, filled and outlined as given (#2098).
+    AddNear {
+        near: ShapeId,
+        above: bool,
+        name: &'static str,
+        path: BezPath,
+        fill: Fill,
+        stroke: Option<Stroke>,
+    },
 }
 
 /// How new objects look.
@@ -193,6 +215,11 @@ pub struct Changes {
     pub points: Vec<Point>,
     /// Moves with the knife up, for the preview.
     pub moves: Vec<(Point, Point)>,
+    /// Eyelets for the preview: centre and hole diameter, drawn as
+    /// grommet rings (#2759).
+    pub rings: Vec<(Point, f64)>,
+    /// Guide lines drawn dashed in the preview (where the eyelets go).
+    pub guides: Vec<BezPath>,
     pub summary: String,
     /// The preview shows the result in place of the objects (nesting).
     pub hide_objects: bool,
@@ -719,18 +746,70 @@ impl App {
         };
         let mut stroke = Stroke::hairline(color);
         stroke.width = width;
-        out.changes.push(Change::Cmd(Box::new(Command::SetStroke {
-            shapes: ids.clone(),
-            stroke: Some(stroke),
-        })));
+        let bleed = if s.bleed.is_finite() {
+            s.bleed.clamp(BLEED_RANGE.0, BLEED_RANGE.1)
+        } else {
+            0.0
+        };
+        // Objects whose cut line is their own outline, and the areas of
+        // those (groups, or all with Merge overlaps) that get a new one.
+        let mut own = Vec::new();
+        for id in &ids {
+            let Some(sh) = self.doc().shape_on_page(*id) else {
+                continue;
+            };
+            let group = matches!(sh.kind, ShapeKind::Group { .. });
+            let area = (s.merge || group || bleed > 0.0).then(|| outer_area(&sh));
+            if area.as_ref().is_some_and(|a| a.elements().is_empty()) {
+                // Nothing closed to go round: the outline as it is.
+                own.push(*id);
+                continue;
+            }
+            if bleed > 0.0 {
+                if let Some(area) = &area {
+                    let band = tracedraw_core::shaping::offset(area, bleed);
+                    if !band.elements().is_empty() {
+                        out.preview.push(band.clone());
+                        out.changes.push(Change::AddNear {
+                            near: *id,
+                            above: false,
+                            name: "tracecut.bleed_name",
+                            path: band,
+                            fill: Fill::Solid(object_color(&sh)),
+                            stroke: None,
+                        });
+                    }
+                }
+            }
+            match area {
+                Some(area) if s.merge || group => {
+                    out.preview.push(area.clone());
+                    out.changes.push(Change::AddNear {
+                        near: *id,
+                        above: true,
+                        name: "tracecut.cut_line_name",
+                        path: area,
+                        fill: Fill::None,
+                        stroke: Some(stroke.clone()),
+                    });
+                }
+                _ => own.push(*id),
+            }
+        }
+        if !own.is_empty() {
+            out.changes.push(Change::Cmd(Box::new(Command::SetStroke {
+                shapes: own.clone(),
+                stroke: Some(stroke),
+            })));
+        }
         if s.remove_fill {
             out.changes.push(Change::Cmd(Box::new(Command::SetFill {
                 shapes: ids.clone(),
                 fill: Fill::None,
             })));
         }
-        let outlines = self.tracecut_outlines(&ids);
-        out.preview = outlines.into_iter().flatten().collect();
+        let outlines = self.tracecut_outlines(&own);
+        out.preview.extend(outlines.into_iter().flatten());
         out.summary = trf("tracecut.contour_found", &[("n", &ids.len().to_string())]);
         out
     }
@@ -785,9 +864,63 @@ impl App {
         }
         let mut cmds = Vec::new();
         let mut added = Vec::new();
+        // Objects put in each layer so far, below the ones still to come
+        // (the targets go bottom to top), and in front of each target.
+        let mut put: std::collections::HashMap<LayerId, usize> = std::collections::HashMap::new();
+        let mut in_front: std::collections::HashMap<ShapeId, usize> =
+            std::collections::HashMap::new();
         for ch in &c.changes {
             match ch {
                 Change::Cmd(cmd) => cmds.push((**cmd).clone()),
+                Change::AddNear {
+                    near,
+                    above,
+                    name,
+                    path,
+                    fill,
+                    stroke,
+                } => {
+                    let id = self.engine.new_shape_id();
+                    let mut sh = Shape::new(
+                        id,
+                        ShapeKind::Path {
+                            path: path.clone(),
+                            closed: all_closed(path),
+                        },
+                    );
+                    sh.fill = fill.clone();
+                    sh.stroke = stroke.clone();
+                    sh.name = Some(tr(name));
+                    // Beside a top-level object; one inside a group gets
+                    // it on top of the active layer.
+                    match self.doc().locate(*near) {
+                        Ok((layer, index)) => {
+                            let shift = put.get(&layer).copied().unwrap_or(0);
+                            let behind = index + shift;
+                            let at = if *above {
+                                behind + 1 + in_front.get(near).copied().unwrap_or(0)
+                            } else {
+                                behind
+                            };
+                            cmds.push(Command::AddShape { layer, shape: sh });
+                            cmds.push(Command::Reorder {
+                                shape: id,
+                                layer,
+                                index: at,
+                            });
+                            *put.entry(layer).or_default() += 1;
+                            if *above {
+                                *in_front.entry(*near).or_default() += 1;
+                            }
+                        }
+                        Err(_) => {
+                            let Some(layer) = self.active_layer() else {
+                                continue;
+                            };
+                            cmds.push(Command::AddShape { layer, shape: sh });
+                        }
+                    }
+                }
                 Change::AddGroup { name, paths, style } => {
                     let Some(layer) = self.active_layer() else {
                         continue;
@@ -874,6 +1007,56 @@ impl App {
         g.name = Some(tr(name));
         g
     }
+}
+
+/// The area `shape` covers (page space; its outlines welded into one,
+/// holes kept), for a cut line round it or a bleed (#2098).
+fn outer_area(shape: &Shape) -> BezPath {
+    let mut area = BezPath::new();
+    for p in tracedraw_tracecut::outlines(shape) {
+        if !all_closed(&p) || p.elements().is_empty() {
+            continue;
+        }
+        area = if area.elements().is_empty() {
+            tracedraw_core::shaping::simplify(&p)
+        } else {
+            tracedraw_core::shaping::overlay(&area, &p, tracedraw_core::shaping::Op::Weld)
+        };
+    }
+    area
+}
+
+/// The colour a bleed takes: the object's fill (a gradient's first
+/// colour), the first of a group's members that has one, else its
+/// outline's, else black.
+fn object_color(shape: &Shape) -> Color {
+    fn fill_color(s: &Shape) -> Option<Color> {
+        match &s.fill {
+            Fill::Solid(c) => return Some(*c),
+            Fill::Fountain(f) => {
+                if let Some(st) = f.stops.first() {
+                    return Some(st.color);
+                }
+            }
+            _ => {}
+        }
+        if let ShapeKind::Group { children } = &s.kind {
+            return children.iter().find_map(fill_color);
+        }
+        None
+    }
+    fn line_color(s: &Shape) -> Option<Color> {
+        if let Some(st) = &s.stroke {
+            return Some(st.color);
+        }
+        if let ShapeKind::Group { children } = &s.kind {
+            return children.iter().find_map(line_color);
+        }
+        None
+    }
+    fill_color(shape)
+        .or_else(|| line_color(shape))
+        .unwrap_or(Color::BLACK)
 }
 
 #[cfg(test)]
@@ -1067,6 +1250,7 @@ mod tests {
         let s = CutContourSettings {
             width: 0.0,
             remove_fill: true,
+            ..Default::default()
         };
         let c = app.tracecut_cut_contour(&s);
         let before = undo_len(&app);
@@ -1177,6 +1361,69 @@ mod tests {
         assert!(children
             .iter()
             .all(|s| s.fill == Fill::Solid(Color::BLACK) && s.stroke.is_none()));
+    }
+
+    /// #2098: with a bleed and Merge, a group of two overlapping
+    /// rectangles gets one Bleed behind it, grown by the bleed, in its
+    /// own colour, and one Cut line above it round both, in one step.
+    #[test]
+    fn bleed_and_merged_cut_line_go_round_the_outer_shape() {
+        let mut app = App::headless();
+        let a = rect(&mut app, 0.0, 0.0, 20.0, 20.0);
+        let b = rect(&mut app, 10.0, 0.0, 20.0, 20.0);
+        let red = Color::Rgb {
+            r: 1.0,
+            g: 0.0,
+            b: 0.0,
+        };
+        for id in [a, b] {
+            app.engine
+                .run(&Command::SetFill {
+                    shapes: vec![id],
+                    fill: Fill::Solid(red),
+                })
+                .expect("fill");
+        }
+        app.select(vec![a, b]);
+        app.group_selection();
+        let g = app.selection[0];
+        let s = CutContourSettings {
+            bleed: 2.0,
+            merge: true,
+            ..Default::default()
+        };
+        let c = app.tracecut_cut_contour(&s);
+        let before = undo_len(&app);
+        assert!(app.tracecut_apply_changes(&c));
+        assert_eq!(undo_len(&app), before + 1);
+        let shapes = &app.doc().pages[0].layers[0].shapes;
+        assert_eq!(shapes.len(), 3);
+        let (bleed, group, line) = (&shapes[0], &shapes[1], &shapes[2]);
+        assert_eq!(group.id, g);
+        assert_eq!(
+            bleed.name.as_deref(),
+            Some(tr("tracecut.bleed_name").as_str())
+        );
+        assert_eq!(bleed.fill, Fill::Solid(red));
+        assert!(bleed.stroke.is_none());
+        let bb = bleed.bounds();
+        assert!(
+            (bb.x0 + 2.0).abs() < 0.05 && (bb.x1 - 32.0).abs() < 0.05,
+            "{bb:?}"
+        );
+        assert_eq!(
+            line.name.as_deref(),
+            Some(tr("tracecut.cut_line_name").as_str())
+        );
+        assert_eq!(line.fill, Fill::None);
+        assert!(matches!(
+            line.stroke.as_ref().map(|s| s.color),
+            Some(Color::Spot { .. })
+        ));
+        let lb = line.bounds();
+        assert!(lb.x0.abs() < 1e-6 && (lb.x1 - 30.0).abs() < 1e-6, "{lb:?}");
+        app.undo();
+        assert_eq!(app.doc().pages[0].layers[0].shapes.len(), 1);
     }
 
     #[test]

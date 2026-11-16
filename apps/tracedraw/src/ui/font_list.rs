@@ -752,7 +752,8 @@ fn font_list_with(
                     ui.vertical(|ui| {
                         ui.set_width(FILTER_W);
                         let folders = app.font_previews.folders().to_vec();
-                        filter_panel(ui, &mut st, &folders);
+                        let lib = collections_of(&app.settings.font_manager);
+                        filter_panel(ui, &mut st, &folders, &lib);
                     });
                 }
             });
@@ -906,6 +907,7 @@ fn list_body(
         }
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             filter_button(ui, st);
+            english_button(ui, st, &mut app.settings.font_english_names);
         });
     });
     let sample = app
@@ -1189,6 +1191,22 @@ fn filter_button(ui: &mut Ui, st: &mut ListState) {
     }
 }
 
+/// The EN button beside Filter: the families' English names beside
+/// names in other languages, on or off (#1249).
+fn english_button(ui: &mut Ui, st: &mut ListState, on: &mut bool) {
+    let label = tr("font_list.english");
+    let r = ui
+        .add(egui::Button::selectable(
+            *on,
+            egui::RichText::new(label.clone()).size(11.5),
+        ))
+        .rich_tip(tr("font_list.english_tip"));
+    st.filter_hits.push((label, r.rect));
+    if r.clicked() {
+        *on = !*on;
+    }
+}
+
 /// A check box of the filter: `on` as it is, the new value when clicked.
 fn filter_box(ui: &mut Ui, st: &mut ListState, label: String, on: bool) -> Option<bool> {
     let mut v = on;
@@ -1216,11 +1234,31 @@ where
     *field = if on { *field | bit } else { *field & !bit };
 }
 
-/// The filter's choices, beside the list: which fonts show, the Font
-/// Manager's folders, then a section each for the style, weight, width,
-/// technology, scripts, OpenType features and embedding rights, every
-/// value read from the font files (#867). Ticking a box filters at once and leaves the list open.
-fn filter_panel(ui: &mut Ui, st: &mut ListState, folders: &[std::path::PathBuf]) {
+/// The Font Manager's Favorites and collections, each by its name with
+/// the keys of its faces, for the filter (#867).
+fn collections_of(prefs: &crate::ui::font_manager::FontManagerPrefs) -> Vec<(String, Vec<String>)> {
+    std::iter::once((tr("font_manager.favorites"), prefs.favorites.clone()))
+        .chain(
+            prefs
+                .collections
+                .iter()
+                .map(|c| (c.name.clone(), c.fonts.clone())),
+        )
+        .collect()
+}
+
+/// The filter's choices, beside the list: which fonts show (and the
+/// protected system fonts alone), the Font Manager's folders, its
+/// Favorites and collections, then a section each for the style,
+/// weight, width, technology, scripts, OpenType features and embedding
+/// rights, every value read from the font files (#867). Ticking a box
+/// filters at once and leaves the list open.
+fn filter_panel(
+    ui: &mut Ui,
+    st: &mut ListState,
+    folders: &[std::path::PathBuf],
+    collections: &[(String, Vec<String>)],
+) {
     let before = (st.filter.clone(), st.show);
     if ui
         .add_enabled(
@@ -1263,6 +1301,10 @@ fn filter_panel(ui: &mut Ui, st: &mut ListState, folders: &[std::path::PathBuf])
                         st.show = s;
                     }
                 }
+                let on = st.filter.system;
+                if let Some(v) = filter_box(ui, st, tr("font_manager.protected"), on) {
+                    st.filter.system = v;
+                }
             });
             filter_section(ui, &tr("font_manager.folders"), |ui| {
                 if folders.is_empty() {
@@ -1285,6 +1327,14 @@ fn filter_panel(ui: &mut Ui, st: &mut ListState, folders: &[std::path::PathBuf])
                     st.filter_hits.push((name, r.rect));
                     if r.changed() {
                         st.filter.set_folder(dir, v);
+                    }
+                }
+            });
+            filter_section(ui, &tr("font_manager.my_collections"), |ui| {
+                for (name, keys) in collections {
+                    let on = st.filter.has_collection(name);
+                    if let Some(v) = filter_box(ui, st, name.clone(), on) {
+                        st.filter.set_collection(name, keys, v);
                     }
                 }
             });
@@ -1466,6 +1516,25 @@ fn draw_row(
             false,
         );
         right = tag.left() - 6.0;
+    }
+    // The English name, light, at the end of a family listed by a name
+    // in another language (#1249).
+    if matches!(row, Row::Family(_)) && app.settings.font_english_names {
+        if let Some(en) = info.as_ref().and_then(|i| i.english.as_deref()) {
+            let font = egui::FontId::proportional(11.0);
+            let galley = painter.layout_no_wrap(en.to_string(), font, Tokens::text_dim());
+            let room = (right - left) * 0.5;
+            let w = galley.size().x.min(room);
+            let at = egui::pos2(right - w, rect.center().y - galley.size().y / 2.0);
+            let clip = Rect::from_min_max(
+                egui::pos2(right - w, rect.top()),
+                egui::pos2(right, rect.bottom()),
+            );
+            painter
+                .with_clip_rect(clip)
+                .galley(at, galley, Tokens::text_dim());
+            right -= w + 6.0;
+        }
     }
     // The name in its own font; symbol fonts, families to download and
     // names it cannot draw in the interface font.
@@ -2005,12 +2074,29 @@ mod tests {
             } else {
                 vec![std::path::PathBuf::from("/usr/share/fonts/truetype")]
             };
-            let mut out = ctx.run_ui(input, |ui| filter_panel(ui, &mut st, &folders));
+            // The Font Manager's Favorites and a collection (#867).
+            let mut prefs = crate::ui::font_manager::FontManagerPrefs::default();
+            prefs.favorites = vec!["Sans-Bold".into()];
+            prefs
+                .collections
+                .push(crate::ui::font_manager::FontCollection {
+                    name: "Book".into(),
+                    fonts: vec!["Serif-Regular".into()],
+                });
+            let lib = collections_of(&prefs);
+            let mut out = ctx.run_ui(input, |ui| filter_panel(ui, &mut st, &folders, &lib));
             out.textures_delta.clear();
-            assert!(st
-                .filter_hits
-                .iter()
-                .any(|(l, _)| *l == tr("font_manager.w_bold")));
+            for label in [
+                tr("font_manager.w_bold"),
+                tr("font_manager.favorites"),
+                "Book".to_string(),
+                tr("font_manager.protected"),
+            ] {
+                assert!(
+                    st.filter_hits.iter().any(|(l, _)| *l == label),
+                    "{label} in the filter"
+                );
+            }
         }
         // A pick keeps the family first among the fonts used last.
         remember(&mut app.settings.recent_fonts, "Picked");

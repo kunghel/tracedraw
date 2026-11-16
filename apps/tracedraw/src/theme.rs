@@ -1079,10 +1079,52 @@ const UI_SCRIPT_FONTS: &[&[&str]] = &[
     ],
 ];
 
+/// The first family of the CJK group the interface language `code` reads
+/// its Han characters with, when that is not the Simplified Chinese one.
+fn cjk_lead(code: &str) -> Option<&'static str> {
+    match code {
+        "ja" => Some("Noto Sans CJK JP"),
+        "zh-TW" => Some("Noto Sans CJK TC"),
+        _ => None,
+    }
+}
+
+/// [`UI_SCRIPT_FONTS`] in the order the interface language `code` wants
+/// them. Chinese and Japanese share the Han characters, which take the
+/// shapes of the first CJK font installed, so a Japanese interface puts
+/// its own font before the Chinese ones (it showed Chinese shapes of the
+/// kanji, #2634), as Traditional Chinese does.
+fn script_groups_for(code: &str) -> Vec<&'static [&'static str]> {
+    let mut groups: Vec<&'static [&'static str]> = UI_SCRIPT_FONTS.to_vec();
+    let Some(lead) = cjk_lead(code) else {
+        return groups;
+    };
+    let Some(i) = groups.iter().position(|g| g.first() == Some(&lead)) else {
+        return groups;
+    };
+    let group = groups.remove(i);
+    let at = groups
+        .iter()
+        .position(|g| g.first() == Some(&"Noto Sans CJK SC"))
+        .unwrap_or(0);
+    groups.insert(at, group);
+    groups
+}
+
+/// After the interface language changed from `old` to `new`: read the
+/// system fonts again in the new order when the two languages want the
+/// Han characters from different fonts (see [`script_groups_for`]).
+#[cfg(not(target_arch = "wasm32"))]
+pub fn language_changed(ctx: &egui::Context, old: &str, new: &str) {
+    if cjk_lead(old) != cjk_lead(new) {
+        install_fonts(ctx);
+    }
+}
+
 /// Add the system fonts covering the non-Latin UI languages to `defs`;
 /// returns their keys.
 fn fallback_fonts(defs: &mut egui::FontDefinitions) -> Vec<String> {
-    let groups = UI_SCRIPT_FONTS;
+    let groups = script_groups_for(&crate::i18n::language());
     let fs = tracedraw_text::fonts();
     let mut added = Vec::new();
     for group in groups {
@@ -1257,6 +1299,37 @@ mod theme_tests {
         assert_eq!(Theme::from_id("purple"), Theme::Light);
         assert_eq!(toggled(Theme::MediumLight), Theme::Dark);
         assert_eq!(toggled(Theme::MediumDark), Theme::Light);
+    }
+
+    /// A Japanese interface takes the kanji from a Japanese font, not a
+    /// Chinese one (#2634); Traditional Chinese from its own; the others
+    /// keep the list as it is.
+    #[test]
+    fn the_interface_language_picks_its_own_cjk_font_first() {
+        let lead = |code: &str| {
+            script_groups_for(code)
+                .iter()
+                .map(|g| g[0])
+                .find(|f| f.starts_with("Noto Sans CJK"))
+        };
+        assert_eq!(lead("ja"), Some("Noto Sans CJK JP"));
+        assert_eq!(lead("zh-TW"), Some("Noto Sans CJK TC"));
+        assert_eq!(lead("zh-CN"), Some("Noto Sans CJK SC"));
+        assert_eq!(lead("en"), Some("Noto Sans CJK SC"));
+        assert_eq!(script_groups_for("en"), UI_SCRIPT_FONTS.to_vec());
+        for code in ["ja", "zh-TW"] {
+            let mut a = script_groups_for(code);
+            let mut b = UI_SCRIPT_FONTS.to_vec();
+            a.sort();
+            b.sort();
+            assert_eq!(a, b, "{code}: the same groups, reordered");
+        }
+        // The Japanese group holds the fonts Japanese systems have.
+        let ja = script_groups_for("ja");
+        let jp = ja.iter().find(|g| g[0] == "Noto Sans CJK JP").expect("JP");
+        for f in ["Meiryo", "Yu Gothic UI", "Hiragino Sans"] {
+            assert!(jp.contains(&f), "{f}");
+        }
     }
 
     /// The browser build fetches a font for the interface languages no
@@ -1446,7 +1519,9 @@ mod glyph_tests {
                 .strip_prefix(&root)
                 .map(|p| p.to_string_lossy().replace('\\', "/"))
                 .unwrap_or_default();
-            if !name.ends_with(".rs") || name.ends_with("tests.rs") {
+            // The signs of formulas are drawn in the formula's own font
+            // (#2183), not in the interface's.
+            if !name.ends_with(".rs") || name.ends_with("tests.rs") || name == "formula.rs" {
                 continue;
             }
             let src = std::fs::read_to_string(&path).expect("source file");

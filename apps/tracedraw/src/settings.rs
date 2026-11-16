@@ -170,6 +170,11 @@ pub struct Settings {
     pub default_dpi: f64,
     pub snap: SnapPrefs,
     pub shortcuts: Vec<(String, String)>,
+    /// Pictures the user chose for menu commands (#2100): the command's
+    /// key and the picture's source, another command's key or a tool
+    /// ("tool:" and its id). Shown in the menus and on toolbar buttons.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub command_icons: Vec<(String, String)>,
     /// The program Edit Bitmap opens pictures in (a path; empty for the
     /// system's program for PNG files, #593).
     #[serde(default)]
@@ -302,9 +307,10 @@ pub struct Settings {
     pub working_renderer: String,
     /// Options > General, Linux: on a Wayland desktop that leaves the
     /// title bar to the application, open the window through XWayland so
-    /// that the desktop draws its own, from the next start (#2070,
-    /// `title_bar.rs`).
-    #[serde(default)]
+    /// that the desktop draws its own and file drops arrive, from the
+    /// next start (#2070, #2486, `title_bar.rs`). On by default; off keeps
+    /// the native Wayland window.
+    #[serde(default = "default_true")]
     pub system_title_bar: bool,
     /// Customization > Appearance: dialogs open in the middle of the
     /// window and stay there; off, they move by their title bar and open
@@ -319,6 +325,12 @@ pub struct Settings {
     /// theme's icon colour.
     #[serde(default)]
     pub colored_icons: bool,
+    /// Appearance: the panel tabs at the window's sides show their
+    /// pictures alone, the name in the tab's tip. Off (the default) they
+    /// show the picture and the name, the column sliding when the tabs
+    /// do not fit (#2902).
+    #[serde(default)]
+    pub docker_tabs_icons_only: bool,
     /// Customization > Appearance > Theme: "light", "medium_light",
     /// "medium_dark" or "dark".
     #[serde(default)]
@@ -363,6 +375,10 @@ pub struct Settings {
     /// where there is a touch screen (#1996).
     #[serde(default = "default_true")]
     pub touch_keys: bool,
+    /// Options > Display: the touch bars beside the selection, where
+    /// there is a touch screen (#1691).
+    #[serde(default = "default_true")]
+    pub touch_selection_bar: bool,
     #[serde(default = "default_true")]
     pub preview_page_border: bool,
     /// Options > Edit: Ctrl constrains rotation and line angles to
@@ -427,6 +443,35 @@ pub struct Settings {
     /// touches (off by default; Alt does it either way round).
     #[serde(default)]
     pub marquee_touching: bool,
+    /// Options > Tools > Pick, Ctrl and Shift keys: off (Traditional,
+    /// the default) Ctrl constrains and Shift works from the centre; on
+    /// (Windows standard) Shift constrains and Ctrl held when a move is
+    /// let go leaves the original, a copy taking the new place (#1436).
+    #[serde(default)]
+    pub pick_windows_keys: bool,
+    /// Options > Tools > Eraser: the curves the Eraser leaves lose the
+    /// nodes they do not need (#1436).
+    #[serde(default)]
+    pub eraser_reduce_nodes: bool,
+    /// Options > Tools > Ellipse: new pies and arcs run clockwise from
+    /// the starting to the ending angle (#1436). The tool's stored arc is
+    /// always counterclockwise; with this on its angles are the other
+    /// way round.
+    #[serde(default)]
+    pub ellipse_clockwise: bool,
+    /// Options > Tools > Spiral and the property bar: how fast a
+    /// logarithmic spiral widens, 1 (almost even) to 100 (#1436).
+    #[serde(default = "default_spiral_expansion")]
+    pub spiral_expansion: u32,
+    /// Options > Tools > Angular Dimension: the decimals, degree sign,
+    /// prefix and suffix new angular dimensions take (#1436).
+    pub angular_dimension: crate::dimensions::AngularDefaults,
+    /// Options > Tools > Connector: an object's own nodes are anchors
+    /// too, besides its side midpoints and custom anchors (#1436).
+    pub connector_geometric_anchors: bool,
+    /// Options > Tools > Connector: how far new right-angle connectors
+    /// run straight out of an object before they turn, mm (#1436).
+    pub connector_gap: f64,
     /// The one-time changes already made to preferences saved by older
     /// versions (see `Settings::upgrade`); 0 in files that predate them.
     #[serde(default)]
@@ -458,6 +503,17 @@ pub struct Settings {
     /// off, each notch zooms at once (#1648, #895).
     #[serde(default = "default_true")]
     pub smooth_zoom: bool,
+    /// Options > Tools > Zoom/Pan > Light zoom: for slow computers. A
+    /// wheel notch zooms at once (no glide) and the drawing is drawn
+    /// anew once, after the zoom stops, instead of at every step; the
+    /// scaled picture shows meanwhile. Turned on by Help > Benchmark
+    /// when the score is low (`benchmark.rs`).
+    #[serde(default)]
+    pub light_zoom: bool,
+    /// The last Help > Benchmark results, one with hardware acceleration
+    /// on and one with it off, to compare them.
+    #[serde(default)]
+    pub benchmarks: Vec<crate::benchmark::Measured>,
     /// Options > Tools > Zoom/Pan: how much one wheel notch zooms, in
     /// percent (15 by default); see [`Settings::wheel_zoom_factor`].
     #[serde(default = "default_wheel_zoom_step")]
@@ -528,6 +584,11 @@ pub struct Settings {
     /// they show again the next time a font list opens (#867).
     #[serde(default)]
     pub font_filter_open: bool,
+    /// The font lists show a family's English name, light, beside a
+    /// name in another language (#1249); the EN button beside Filter
+    /// turns it off.
+    #[serde(default = "default_true")]
+    pub font_english_names: bool,
     /// Options > Text > Fonts: the fonts used last shown at the top of
     /// the font lists, and how many (1 to 20).
     #[serde(default = "default_true")]
@@ -575,6 +636,12 @@ pub struct Settings {
     /// (#1477).
     #[serde(default = "default_true")]
     pub objects_all_pages: bool,
+    /// Page size changes apply to every page (the page bar's All pages
+    /// and the Page Size dialog's Apply to all pages). Off by default so
+    /// a new size changes only the current page, and kept between
+    /// sessions (#2696).
+    #[serde(default)]
+    pub page_size_all: bool,
     /// The font lists' sample size, in points.
     #[serde(default = "default_font_sample")]
     pub font_sample_px: f32,
@@ -595,6 +662,10 @@ pub struct Settings {
     /// set up with the user's key).
     #[serde(default = "ai_enabled_default")]
     pub ai_enabled: bool,
+    /// Tools > Options > AI > Vectorization: the vectorization service
+    /// of Vectorize with AI (#2713).
+    #[serde(default)]
+    pub ai_vectorize: crate::ai_vectorize::VectorizePrefs,
     /// The separate image service older versions saved. Read once and
     /// folded into `ai` (see `migrate_ai`); it stays in the file only
     /// when it holds a remembered key the one service could not take, so
@@ -630,6 +701,14 @@ pub struct Settings {
     /// or write (see `behavior/script-filters.md`).
     #[serde(default)]
     pub script_filters: Vec<crate::scripting::ScriptFilter>,
+    /// The plugins of Tools > Plugins, on or off (#1802, see
+    /// `behavior/plugins.md`).
+    #[serde(default)]
+    pub plugins: Vec<crate::scripting::Plugin>,
+    /// Minimize, Maximize and Close at the right end of the menu bar,
+    /// for windows without the desktop's title bar (#2574).
+    #[serde(default)]
+    pub window_buttons: bool,
     /// File > GitHub's last repository, branch, path (and the token, when
     /// the user asked to remember it).
     #[serde(default)]
@@ -662,6 +741,22 @@ pub struct Settings {
     /// keeps clear of the camera cutout and the screen's rounded corners.
     #[serde(default)]
     pub screen_margins: crate::ui::screen_margins::ScreenMargins,
+    /// The looks saved in the Effects docker's Presets (#2160).
+    #[serde(default)]
+    pub style_presets: Vec<crate::style_presets::StylePreset>,
+    /// The settings saved in a bitmap effect's dialog, by effect (#1129).
+    #[serde(default)]
+    pub fx_presets: Vec<crate::ui::effect_dialog::FxPreset>,
+    /// The bitmap effect dialogs show their settings alone, the effect
+    /// seen on the drawing instead of in Before and After panes (#2799).
+    #[serde(default)]
+    pub fx_settings_only: bool,
+    /// The programs of Object > Insert > Insert Object, each opened with
+    /// one click (#1025).
+    pub object_apps: Vec<crate::insert_object::ObjectApp>,
+    /// Bitmaps > Picture Captions, as last used (#2180).
+    #[serde(default)]
+    pub picture_captions: crate::captions::Captions,
 }
 
 fn default_path_tick() -> f64 {
@@ -696,7 +791,21 @@ pub struct DockerSetup {
     pub left_inner_front: String,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub left_inner_shown: bool,
+    /// The dockers shown under the front one of a column (#2312).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub stacks: Vec<StackSetup>,
     pub floating: Vec<FloatingSetup>,
+}
+
+/// A docker stacked under the front one of a column: the column ("right",
+/// "left", "inner", "left_inner"), the docker's name key and the upper
+/// docker's share of the height.
+#[derive(Debug, Clone, PartialEq, Default, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct StackSetup {
+    pub column: String,
+    pub tab: String,
+    pub split: f32,
 }
 
 /// A floating docker as it was left: its name key, the window's top left
@@ -747,10 +856,14 @@ fn default_desktop() -> [u8; 3] {
 }
 
 /// How many one-time upgrades `Settings::upgrade` knows.
-const UPGRADES: u32 = 7;
+const UPGRADES: u32 = 8;
 
 fn default_outline_units() -> String {
     "pt".into()
+}
+
+fn default_spiral_expansion() -> u32 {
+    100
 }
 
 fn default_true() -> bool {
@@ -823,7 +936,8 @@ pub fn effective_ui_size(s: &Settings) -> f32 {
 }
 
 /// The theme in use: the high contrast one while the desktop has high
-/// contrast on (unless turned off), else the one picked.
+/// contrast on (unless turned off), else the one picked; with none picked
+/// yet, the dark one while the desktop asks for dark windows (#2748).
 pub fn effective_theme(s: &Settings) -> String {
     effective_theme_with(s, crate::system_prefs::get())
 }
@@ -831,6 +945,16 @@ pub fn effective_theme(s: &Settings) -> String {
 pub fn effective_theme_with(s: &Settings, sys: crate::system_prefs::SystemPrefs) -> String {
     if s.follow_high_contrast && sys.high_contrast.is_some() {
         crate::theme::Theme::HighContrast.id().to_string()
+    } else {
+        chosen_theme_with(s, sys)
+    }
+}
+
+/// The theme picked in Options, or the desktop's light or dark one while
+/// none was picked (#2748).
+pub fn chosen_theme_with(s: &Settings, sys: crate::system_prefs::SystemPrefs) -> String {
+    if s.theme.is_empty() && sys.dark {
+        crate::theme::Theme::Dark.id().to_string()
     } else {
         s.theme.clone()
     }
@@ -1041,7 +1165,10 @@ pub struct NodePrefs {
     pub secondary_rgb: [u8; 3],
     /// Unselected nodes are filled white (Ctrl+Shift+G).
     pub unselected_filled: bool,
-    /// An arrow at the start node shows the curve's direction.
+    /// Arrows at the first node of every subpath and the last node of
+    /// every open one show the curve's direction. On by default, as the
+    /// reference program shows it, so the parts of a broken curve show
+    /// which way a cutting plotter follows them (#2578).
     pub show_direction: bool,
     /// How near, in screen pixels, a press must land on a node or a
     /// control handle to take it (Shape tool, and the curve tools'
@@ -1076,7 +1203,7 @@ impl Default for NodePrefs {
             main_rgb: [0x00, 0x8C, 0xFF],
             secondary_rgb: [0xFF, 0x00, 0x00],
             unselected_filled: true,
-            show_direction: false,
+            show_direction: true,
             pick_distance: 6.0,
             object_pick_distance: 3.0,
             corner_widgets: true,
@@ -1175,6 +1302,12 @@ pub struct PalettePrefs {
     /// [`SWATCH_STEP`] a notch. Preferences written before it existed
     /// keep the 20 px swatches.
     pub swatch_size: u8,
+    /// The side of a swatch of the document palette row, as
+    /// [`Self::swatch_size`] and set the same ways over that row, so
+    /// Ctrl+wheel over one palette leaves the other's size alone
+    /// (#2900). 0 (preferences written before it existed): the default
+    /// palette's, until either is sized.
+    pub document_swatch_size: u8,
     /// The room asked for the floating palette's swatches (points, the
     /// title left out): its rows or columns flow from it (see
     /// `ui::palette::floating_flow`).
@@ -1210,6 +1343,15 @@ impl PalettePrefs {
     /// [`Self::swatch_size`] brought into its range, as points.
     pub fn swatch_size(&self) -> f32 {
         f32::from(self.swatch_size.clamp(SWATCH_MIN, SWATCH_MAX))
+    }
+
+    /// The document palette row's swatch side setting: its own, or the
+    /// default palette's while it has none.
+    pub fn document_swatch(&self) -> u8 {
+        match self.document_swatch_size {
+            0 => self.swatch_size,
+            s => s,
+        }
     }
 }
 
@@ -1381,6 +1523,7 @@ impl Default for PalettePrefs {
             show_palette: true,
             rows: 1,
             swatch_size: SWATCH_DEFAULT,
+            document_swatch_size: 0,
             float_size: FLOAT_SIZE,
         }
     }
@@ -1915,6 +2058,7 @@ impl Default for Settings {
             default_dpi: 300.0,
             snap: SnapPrefs::default(),
             shortcuts: Vec::new(),
+            command_icons: Vec::new(),
             bitmap_editor: String::new(),
             last_dir: None,
             last_export_dir: None,
@@ -1939,6 +2083,7 @@ impl Default for Settings {
             hide_bbox_curve_tools: false,
             node_tracking: false,
             touch_keys: true,
+            touch_selection_bar: true,
             preview_page_border: true,
             constrain_angle: default_constrain_angle(),
             symmetry_show_lines: true,
@@ -1957,6 +2102,13 @@ impl Default for Settings {
             follow_text_size: true,
             follow_high_contrast: true,
             marquee_touching: false,
+            pick_windows_keys: false,
+            eraser_reduce_nodes: false,
+            ellipse_clockwise: false,
+            spiral_expansion: 100,
+            angular_dimension: Default::default(),
+            connector_geometric_anchors: false,
+            connector_gap: 0.0,
             upgrades: UPGRADES,
             crosshair_cursor: false,
             screen_ppi: default_screen_ppi(),
@@ -1964,6 +2116,8 @@ impl Default for Settings {
             zoom_relative_1to1: true,
             wheel_zoom_centers: false,
             smooth_zoom: true,
+            light_zoom: false,
+            benchmarks: Vec::new(),
             wheel_zoom_step: default_wheel_zoom_step(),
             pan_right_click_out: false,
             pan_inertia: false,
@@ -1996,10 +2150,11 @@ impl Default for Settings {
             gpu_adapter: String::new(),
             gpu_effects: false,
             working_renderer: String::new(),
-            system_title_bar: false,
+            system_title_bar: true,
             center_dialogs: true,
             ui_shadows: true,
             colored_icons: false,
+            docker_tabs_icons_only: false,
             theme: String::new(),
             bars: crate::ui::bars::BarLayout::default(),
             bar_items: Default::default(),
@@ -2013,6 +2168,7 @@ impl Default for Settings {
             dockers: None,
             recent_fonts: Vec::new(),
             font_filter_open: false,
+            font_english_names: true,
             show_recent_fonts: true,
             recent_font_count: default_recent_font_count(),
             properties_closed: Vec::new(),
@@ -2027,12 +2183,14 @@ impl Default for Settings {
             object_thumb_size: default_object_thumb(),
             master_in_front: [false; 3],
             objects_all_pages: true,
+            page_size_all: false,
             font_sample_px: default_font_sample(),
             workspace_parts: crate::workspace_file::WorkspaceParts::default(),
             printing: Default::default(),
             formats: Default::default(),
             ai: Default::default(),
             ai_enabled: true,
+            ai_vectorize: Default::default(),
             ai_image: None,
             mcp_window: false,
             check_updates: true,
@@ -2041,6 +2199,8 @@ impl Default for Settings {
             skipped_update: String::new(),
             pending_update: String::new(),
             script_filters: Vec::new(),
+            plugins: Vec::new(),
+            window_buttons: false,
             github: Default::default(),
             tracing: Default::default(),
             warnings: Default::default(),
@@ -2050,6 +2210,11 @@ impl Default for Settings {
             path_tick_snap: false,
             path_tick_mm: default_path_tick(),
             screen_margins: crate::ui::screen_margins::ScreenMargins::default(),
+            style_presets: Vec::new(),
+            fx_presets: Vec::new(),
+            fx_settings_only: false,
+            object_apps: Vec::new(),
+            picture_captions: Default::default(),
         }
     }
 }
@@ -2123,7 +2288,8 @@ impl Settings {
     ///    guides start off; 4. the last export's settings are remembered;
     /// 5. Duplicate's old default offset (6.35 mm) becomes none; 6. the
     ///    Crop tool cuts a picture's pixels; 7. File > Export shows its
-    ///    options again.
+    ///    options again; 8. the window goes through XWayland on a
+    ///    Wayland desktop without title bars for programs (#2486).
     pub fn upgrade(mut self) -> Settings {
         self.autocorrect.upgrade();
         if self.upgrades < 1 {
@@ -2173,6 +2339,14 @@ impl Settings {
         // Global > File Formats) stays.
         if self.upgrades < 7 {
             self.formats.skip_export_dialog = false;
+        }
+        // On a Wayland desktop that draws no title bars for programs
+        // (GNOME), the native window took no file drops from the file
+        // manager (#2486). The window goes there through XWayland by
+        // default now, as "Use the desktop's title bar" did; on once,
+        // switched off afterwards (native Wayland) it stays off.
+        if self.upgrades < 8 {
+            self.system_title_bar = true;
         }
         self.upgrades = self.upgrades.max(UPGRADES);
         self.migrate_ai();
@@ -2583,6 +2757,7 @@ mod tests {
             high_contrast: Some(ContrastColors::BLACK),
             text_scale_known: true,
             contrast_known: true,
+            dark: false,
         };
         assert!((effective_ui_size_with(&s, big) - 1.5).abs() < 1e-6);
         assert_eq!(effective_theme_with(&s, big), "high_contrast");
@@ -2595,6 +2770,28 @@ mod tests {
         s.ui_size = 3.0;
         assert!(effective_ui_size_with(&s, big) <= 4.0);
         assert_eq!(effective_theme_with(&s, SystemPrefs::default()), s.theme);
+    }
+
+    /// #2748: with no theme picked, a dark desktop gives the dark theme;
+    /// a picked theme stays whatever the desktop asks.
+    #[test]
+    fn a_dark_desktop_gives_the_dark_theme_until_one_is_picked() {
+        use crate::system_prefs::SystemPrefs;
+        let mut s = Settings::default();
+        assert!(s.theme.is_empty());
+        let dark = SystemPrefs {
+            dark: true,
+            ..SystemPrefs::default()
+        };
+        assert_eq!(effective_theme_with(&s, dark), "dark");
+        assert_eq!(effective_theme_with(&s, SystemPrefs::default()), "");
+        s.theme = "light".into();
+        assert_eq!(effective_theme_with(&s, dark), "light");
+        s.theme = "medium_dark".into();
+        assert_eq!(
+            effective_theme_with(&s, SystemPrefs::default()),
+            "medium_dark"
+        );
     }
 
     #[test]

@@ -53,8 +53,8 @@ are spread:
 - Set spacing (#2005): the first object stays and the others follow it
   the spacing apart, as gaps or between edges or centres. Under the
   spacing box is a slider from 0 to 100 mm (in the ruler unit; the box
-  takes any value), and the wheel over the box steps it by a tenth of the
-  unit. Once a Distribute button has spread the selection with a set
+  takes any value), and the wheel over the box steps it by a whole unit
+  (Ctrl+wheel a tenth, #2705). Once a Distribute button has spread the selection with a set
   spacing (the button and the selection are kept in
   `App::distribute_last`), a new spacing from the box, the wheel or the
   slider spreads the same selection again at once, as a preview on the

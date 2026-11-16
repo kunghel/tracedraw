@@ -14,6 +14,9 @@ kolorów.
   wyłączeniu otwierają się tam, gdzie je zostawiono.
 - [[options.ui_shadows]] (mniej cieni pomaga przy wolniejszej grafice).
 - [[options.colored_icons]]: każda grupa narzędzi otrzymuje własny kolor.
+- [[options.docker_tabs_icons_only]]: karty paneli po bokach okna pokazują
+  tylko obrazek, a nazwę w podpowiedzi. Wyłączone pokazują obrazek i nazwę,
+  a kolumna z większą liczbą kart, niż się mieści, przewija się.
 - [[options.ui_size]]: wielkość menu, pasków, ikon i paneli względem skalowania,
   jakie system nadaje monitorowi (domyślnie 100%).
   [[options.reset_to_default]] przywraca 100%. Rozmiar interfejsu nigdy nie

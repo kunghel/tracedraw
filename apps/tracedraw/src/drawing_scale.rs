@@ -121,6 +121,36 @@ pub fn set(r: &mut RulerSettings, page: f64, page_unit: Units, world: f64, world
     r.scale_world_units = world_unit.id().to_string();
 }
 
+/// Set the scale to a typical one. A ratio keeps the units in use; inch
+/// and foot scales bring theirs. Returns the world unit when the rulers
+/// should change to it.
+pub fn apply_preset(r: &mut RulerSettings, p: &Preset) -> Option<Units> {
+    let (page_unit, world_unit) = units_of(r);
+    let (pu, wu) = if p.page_unit == Units::Inches {
+        (p.page_unit, p.world_unit)
+    } else {
+        (page_unit, world_unit)
+    };
+    let world = p.ratio() * pu.to_mm(p.page) / wu.mm();
+    set(r, p.page, pu, world, wu);
+    (wu != world_unit || p.page_unit == Units::Inches).then_some(wu)
+}
+
+impl crate::app::App {
+    /// Set the drawing's scale to a typical one (one Undo step); the
+    /// rulers change to its world unit when it brings one.
+    pub fn set_drawing_scale_preset(&mut self, p: &Preset) {
+        let mut metadata = self.doc().metadata.clone();
+        let units = apply_preset(&mut metadata.rulers, p);
+        if metadata != self.doc().metadata {
+            self.run(tracedraw_core::Command::SetMetadata { metadata });
+        }
+        if let Some(u) = units {
+            self.units = u;
+        }
+    }
+}
+
 /// The scale as a short ratio for labels: "1:100", "2:1", "1:48"; `None`
 /// at 1:1.
 pub fn short_label(r: &RulerSettings) -> Option<String> {
@@ -187,6 +217,34 @@ mod tests {
             Units::Millimeters,
         );
         assert_eq!(short_label(&r).as_deref(), Some("5:1"));
+    }
+
+    /// #2772, #1891: a typical scale picked on the dimension bar sets
+    /// the drawing's scale in one Undo step; a ratio keeps the units in
+    /// use, a foot scale brings feet to the rulers.
+    #[test]
+    fn a_typical_scale_can_be_picked_from_the_dimension_bar() {
+        let mut app = crate::app::App::headless();
+        let find = |l: &str| PRESETS.iter().find(|p| p.label == l).copied();
+        let Some(hundred) = find("1:100") else {
+            panic!("no 1:100");
+        };
+        app.set_drawing_scale_preset(&hundred);
+        let r = app.doc().metadata.rulers.clone();
+        assert!((r.world_per_page() - 100.0).abs() < 1e-9);
+        assert_eq!(matching_preset(&r).map(|p| p.label), Some("1:100"));
+        assert_eq!(app.units, Units::Millimeters);
+        app.undo();
+        assert!(!app.doc().metadata.rulers.is_scaled());
+        let Some(feet) = find("1/4 in = 1 ft") else {
+            panic!("no foot scale");
+        };
+        app.set_drawing_scale_preset(&feet);
+        assert_eq!(app.units, Units::Feet);
+        assert_eq!(
+            units_of(&app.doc().metadata.rulers),
+            (Units::Inches, Units::Feet)
+        );
     }
 
     #[test]

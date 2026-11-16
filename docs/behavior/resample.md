@@ -23,3 +23,27 @@ bitmaps a new pixel size; their place and size on the page stay.
 
 Sizes are 1 to 20000 pixels. With several bitmaps selected, each is
 scaled by the same factors as the first. One undo step per bitmap.
+
+## Save as file
+
+The lower part of the dialog writes the first selected bitmap, at the
+size set above, as a file, for forms that limit the size of an upload
+(#1901). The drawing does not change.
+
+- Format: JPG, PNG or PDF. A PDF is one page the bitmap's size on the
+  page, the picture in it as JPEG. Transparent pixels go on white in JPG
+  and PDF.
+- Quality (JPG and PDF, 1 to 100, 85 at first): lower makes the file
+  smaller, with less detail. PNG has no quality: it keeps every pixel.
+- File size: what the file would be, worked out again once the settings
+  rest (not while a slider is dragged).
+- Target size (KB) and Fit: the quality goes down (not under 10) to the
+  highest that fits, found by halving; when even 10 is too big, the
+  pixels go down by the square root of how far the file is over, keeping
+  the aspect, and the quality is searched again. The fields take what
+  fits. When even a picture 8 pixels across does not fit, the status line
+  says so.
+- Save As: the save dialog, then the file.
+
+Checks: `resample::tests::quality_sets_the_file_size_and_pdf_wraps_the_jpeg`,
+`resample::tests::a_target_size_lowers_quality_then_pixels`.

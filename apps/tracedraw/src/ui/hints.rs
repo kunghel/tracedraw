@@ -311,12 +311,14 @@ impl Topic {
                 Tool::CommonShapes,
                 Tool::GraphPaper,
                 Tool::ActionLines,
+                Tool::Balloon,
             ],
             Topic::Select => &[Tool::Pick, Tool::FreeformPick],
             Topic::MoveScale => &[Tool::Pick, Tool::FreeTransform],
             Topic::RotateSkew => &[Tool::Pick, Tool::FreeTransform],
             Topic::ShapeObjects => &[
                 Tool::Shape,
+                Tool::Join,
                 Tool::Smooth,
                 Tool::Smear,
                 Tool::Twirl,
@@ -327,6 +329,7 @@ impl Topic {
                 Tool::Knife,
                 Tool::SegmentDelete,
                 Tool::Eraser,
+                Tool::ShapeBuilder,
             ],
             Topic::Effects => &[
                 Tool::DropShadow,

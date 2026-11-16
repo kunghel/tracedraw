@@ -169,6 +169,33 @@ pub fn add_font_in(
         .file_name()
         .map(|n| n.to_string_lossy().to_string())
         .unwrap_or_else(|| "font.ttf".into());
+    // A Type 1 font (.pfb, or the .pfm beside one) copied or stored is
+    // kept as the OpenType font it is turned into, the .pfm's names
+    // with it (#193).
+    let type1 = tracedraw_text::type1::is_type1_file(path) && keep != Keep::InPlace;
+    let name = if type1 {
+        let stem = path
+            .file_stem()
+            .map_or("font".into(), |s| s.to_string_lossy().to_string());
+        format!("{stem}.otf")
+    } else {
+        name
+    };
+    let read = |p: &std::path::Path| -> std::io::Result<Vec<u8>> {
+        if !type1 {
+            return read(p);
+        }
+        let converted = if keep == Keep::Stored {
+            read(p)
+                .ok()
+                .and_then(|b| tracedraw_text::type1::convert(&b, None))
+        } else {
+            tracedraw_text::type1::convert_file(p)
+        };
+        converted.ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::InvalidData, p.display().to_string())
+        })
+    };
     let (kept, added) = match keep {
         Keep::InPlace => {
             let added = fonts.install_paths(&[path.to_path_buf()]);
@@ -907,14 +934,20 @@ fn run(app: &mut App, st: &mut FontManagerState, a: Action) {
             // several at once, and added as Add Font adds one (#1399).
             crate::files::FolderAction::OpenFiles => {
                 crate::files::Dialog::new()
-                    .add_filter(tr("font_manager.font_files"), &["ttf", "otf", "ttc", "otc"])
+                    .add_filter(
+                        tr("font_manager.font_files"),
+                        &["ttf", "otf", "ttc", "otc", "pfb", "pfm"],
+                    )
                     .pick_files(app, |app, paths| add_picked_fonts(app, &paths));
             }
             crate::files::FolderAction::SaveZip | crate::files::FolderAction::Unavailable(_) => {}
         },
         Action::AddFont => {
             crate::files::Dialog::new()
-                .add_filter(tr("font_manager.font_files"), &["ttf", "otf", "ttc", "otc"])
+                .add_filter(
+                    tr("font_manager.font_files"),
+                    &["ttf", "otf", "ttc", "otc", "pfb", "pfm"],
+                )
                 .pick_file(app, |app, path| add_picked_fonts(app, &[path]));
         }
         Action::Install(faces) => {

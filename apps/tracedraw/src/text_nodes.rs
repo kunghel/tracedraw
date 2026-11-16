@@ -35,6 +35,18 @@ fn editable(s: &Shape) -> bool {
     matches!(&s.kind, ShapeKind::Text { on_path: None, .. })
 }
 
+/// Text fitted to a path: the Shape tool shows its horizontal spacing
+/// arrow only (#193).
+pub fn on_path(s: &Shape) -> bool {
+    matches!(
+        &s.kind,
+        ShapeKind::Text {
+            on_path: Some(_),
+            ..
+        }
+    )
+}
+
 /// The character nodes of a text object: (character index, page point) at
 /// each character's origin on its baseline, moved by its offsets.
 /// Newlines have none, nor has text fitted to a path.
@@ -233,6 +245,11 @@ pub fn spacing_after_drag(s: &Shape, horizontal: bool, word: bool, d: Vec2) -> O
 /// character spacing, in percent of a space's width.
 pub const CHAR_SPACING_STEP: f64 = 5.0;
 
+/// What one press of the letter spacing keys adds to or takes from the
+/// space after chosen letters (their range kerning), in percent of the
+/// font size (#2171).
+pub const LETTER_KERN_STEP: f64 = 2.0;
+
 impl App {
     /// Ctrl+Shift+> and Ctrl+Shift+<: the letters of the text being
     /// edited, else of every selected text (one fitted to a path too),
@@ -240,6 +257,9 @@ impl App {
     /// Paragraphs with a spacing of their own change by the same amount
     /// (#193). False when no text took it.
     pub fn step_char_spacing(&mut self, wider: bool) -> bool {
+        if self.step_letter_kerning(wider) {
+            return true;
+        }
         let delta = if wider {
             CHAR_SPACING_STEP
         } else {
@@ -271,6 +291,60 @@ impl App {
             return false;
         }
         true
+    }
+
+    /// The letter spacing keys on some letters only, as in CorelDRAW
+    /// (#2171): in the text being edited, the selected characters, or
+    /// with no selection the gap at the caret (the space after the
+    /// letter before it; nothing before the first letter); with the
+    /// Shape tool, the chosen characters.
+    /// Each takes one step more or less space after it (its range
+    /// kerning), one undo step. False when no letters are picked out
+    /// that way: the whole text's character spacing changes then.
+    fn step_letter_kerning(&mut self, wider: bool) -> bool {
+        let delta = if wider {
+            LETTER_KERN_STEP
+        } else {
+            -LETTER_KERN_STEP
+        };
+        let kern = move |sp: &mut TextSpan| {
+            sp.tracking_pct = (sp.tracking_pct + delta).clamp(-100.0, 2000.0);
+        };
+        if let Some(te) = self.text_edit.clone() {
+            let Some(mut spans) = self.edit_spans() else {
+                return false;
+            };
+            let (a, b) = if te.has_selection() {
+                te.selection()
+            } else if te.caret > 0 && te.caret <= spans_char_count(&spans) {
+                (te.caret - 1, te.caret)
+            } else {
+                // The caret before the first letter: no gap there.
+                return true;
+            };
+            spans_apply(&mut spans, a, b, kern);
+            self.set_edit_spans_as(spans, "Character Spacing", false);
+            return true;
+        }
+        if !self.chosen_chars_active() {
+            return false;
+        }
+        let cmds: Vec<Command> = self
+            .node_texts()
+            .iter()
+            .filter_map(|s| {
+                let chosen = self.chosen_chars(s.id);
+                if chosen.is_empty() {
+                    return None;
+                }
+                let mut kind = s.kind.clone();
+                if let ShapeKind::Text { spans, .. } = &mut kind {
+                    *spans = apply_to_chars(spans, &chosen, kern);
+                }
+                Some(Command::SetShapeKind { shape: s.id, kind })
+            })
+            .collect();
+        !cmds.is_empty() && self.engine.run_batch("Character Spacing", &cmds).is_ok()
     }
 
     /// Selected text objects the Shape tool edits.
@@ -362,7 +436,12 @@ impl App {
                 return Some((s.id, false));
             }
         }
-        None
+        // Text fitted to a path has the horizontal arrow only (#193).
+        self.selected_shapes()
+            .into_iter()
+            .filter(on_path)
+            .find(|s| self.spacing_arrow_spots(s).0.distance(at) <= 8.0)
+            .map(|s| (s.id, true))
     }
 
     /// Move the characters `chars` of the text as it was (`start`) by the
@@ -463,6 +542,17 @@ impl App {
             0.0
         };
         Some((sp.offset_x_pct, v, sp.angle_deg))
+    }
+
+    /// The character width (percent) and the superscript or subscript
+    /// of the first target character (#2190, #2164).
+    pub fn char_width_position(&self) -> Option<(f64, tracedraw_core::TextPosition)> {
+        let (s, chars) = self.char_targets().into_iter().next()?;
+        let ShapeKind::Text { spans, .. } = &s.kind else {
+            return None;
+        };
+        let sp = span_at(spans, chars.first().copied().unwrap_or(0)).or(spans.first())?;
+        Some((sp.width_pct, sp.position))
     }
 
     /// Change the character attributes of the targets in one undo step.
@@ -717,6 +807,49 @@ mod tests {
         assert_eq!(spans.len(), 1, "{spans:?}");
     }
 
+    /// The Shape tool's bar sets the character width and superscript or
+    /// subscript of the chosen characters only, each one undo step, and
+    /// shows those of the first chosen one; a second click on the lit
+    /// position puts them back on the baseline (#2190, #2164).
+    #[test]
+    fn chosen_characters_take_width_and_superscript() {
+        use tracedraw_core::TextPosition;
+        let (mut app, id) = text_app("H2O");
+        app.node_selection = vec![(id, 1)];
+        assert_eq!(
+            app.char_width_position(),
+            Some((100.0, TextPosition::Normal))
+        );
+        let depth = app.engine.history_labels().0.len();
+        app.set_char_attrs("Character Width", |sp| sp.width_pct = 80.0);
+        app.set_char_attrs("Character Position", |sp| {
+            sp.position = TextPosition::Subscript
+        });
+        assert_eq!(app.engine.history_labels().0.len(), depth + 2);
+        assert_eq!(
+            app.char_width_position(),
+            Some((80.0, TextPosition::Subscript))
+        );
+        let spans = |app: &App| match &app.doc().find_shape(id).expect("text").kind {
+            ShapeKind::Text { spans, .. } => spans.clone(),
+            _ => panic!(),
+        };
+        let sp = spans(&app);
+        assert_eq!(sp.len(), 3, "{sp:?}");
+        assert_eq!(
+            (sp[0].width_pct, sp[0].position),
+            (100.0, TextPosition::Normal)
+        );
+        assert_eq!((sp[1].text.as_str(), sp[1].width_pct), ("2", 80.0));
+        assert_eq!(sp[1].position, TextPosition::Subscript);
+        assert_eq!(sp[2].position, TextPosition::Normal);
+        app.set_char_attrs("Character Position", |sp| {
+            sp.position = TextPosition::Normal
+        });
+        app.set_char_attrs("Character Width", |sp| sp.width_pct = 100.0);
+        assert_eq!(spans(&app).len(), 1);
+    }
+
     /// Text Properties (Ctrl+T), the palette and the outline colour on
     /// characters chosen with the Shape tool: the format goes to those
     /// characters, not to the whole text, as to characters selected while
@@ -843,6 +976,66 @@ mod tests {
         assert!(!app.step_char_spacing(true));
     }
 
+    /// The letter spacing keys on one letter, as in CorelDRAW (#2171):
+    /// with the caret in the text being edited, only the gap at the caret
+    /// widens (the letter before it gets range kerning); with letters
+    /// selected, or chosen with the Shape tool, only those. The whole
+    /// text's character spacing stays.
+    #[test]
+    fn the_spacing_keys_space_one_letter_at_the_caret_or_the_chosen_ones() {
+        use crate::text_editing::TextEdit;
+        let (mut app, id) = text_app("abcd");
+        let kerns = |app: &App| -> Vec<f64> {
+            match &app.doc().find_shape(id).expect("text").kind {
+                ShapeKind::Text { spans, para, .. } => {
+                    assert_eq!(para.char_spacing_pct, 0.0, "the whole text's spacing stays");
+                    spans
+                        .iter()
+                        .flat_map(|sp| sp.text.chars().map(move |_| sp.tracking_pct))
+                        .collect()
+                }
+                _ => panic!("text"),
+            }
+        };
+        let edit = |caret: usize, anchor: usize| TextEdit {
+            shape: id,
+            caret,
+            anchor,
+            goal_x: None,
+            step: None,
+            created: None,
+        };
+        // The caret between "b" and "c": the space after "b" only.
+        app.text_edit = Some(edit(2, 2));
+        let steps = app.engine.history_labels().0.len();
+        assert!(app.step_char_spacing(true));
+        assert!(app.step_char_spacing(true));
+        assert_eq!(kerns(&app), vec![0.0, 2.0 * LETTER_KERN_STEP, 0.0, 0.0]);
+        assert_eq!(app.engine.history_labels().0.len(), steps + 2);
+        assert!(app.step_char_spacing(false));
+        assert_eq!(kerns(&app), vec![0.0, LETTER_KERN_STEP, 0.0, 0.0]);
+        // "cd" selected: those two.
+        app.text_edit = Some(edit(2, 4));
+        assert!(app.step_char_spacing(true));
+        assert_eq!(
+            kerns(&app),
+            vec![0.0, LETTER_KERN_STEP, LETTER_KERN_STEP, LETTER_KERN_STEP]
+        );
+        // The Shape tool with "a" chosen.
+        app.text_edit = None;
+        app.node_selection = vec![(id, 0)];
+        assert!(app.step_char_spacing(false));
+        assert_eq!(
+            kerns(&app),
+            vec![
+                -LETTER_KERN_STEP,
+                LETTER_KERN_STEP,
+                LETTER_KERN_STEP,
+                LETTER_KERN_STEP
+            ]
+        );
+    }
+
     #[test]
     fn spacing_arrows_change_character_word_and_line_spacing() {
         if !has_fonts() {
@@ -879,6 +1072,46 @@ mod tests {
             para.leading_pct
         );
         assert_eq!(app.text_arrow_at(Point::new(-1000.0, -1000.0)), None);
+    }
+
+    /// Text fitted to a path (a stamp's line round its circle) shows the
+    /// Shape tool's horizontal spacing arrow, and dragging it opens up the
+    /// letters along the path; it has no vertical arrow (#193).
+    #[test]
+    fn text_on_a_path_has_the_horizontal_spacing_arrow() {
+        if !has_fonts() {
+            return;
+        }
+        let mut app = App::headless();
+        let mut path = tracedraw_core::BezPath::new();
+        path.move_to(Point::new(0.0, 0.0));
+        path.line_to(Point::new(200.0, 0.0));
+        let id = app
+            .new_shape(ShapeKind::Text {
+                spans: vec![TextSpan::new("STAMPS", "DejaVu Sans", 24.0)],
+                origin: Point::ZERO,
+                frame: None,
+                align: TextAlign::Left,
+                para: ParagraphStyle::default(),
+                on_path: Some(tracedraw_core::TextOnPath {
+                    path,
+                    ..Default::default()
+                }),
+            })
+            .expect("a text");
+        app.select(vec![id]);
+        app.tool = crate::tools::Tool::Shape;
+        let s = app.doc().find_shape(id).cloned().expect("text");
+        assert!(on_path(&s));
+        let (h, v) = app.spacing_arrow_spots(&s);
+        let page = |q: egui::Pos2| app.view.to_page(q);
+        assert_eq!(app.text_arrow_at(page(h)), Some((id, true)));
+        assert_eq!(app.text_arrow_at(page(v)), None);
+        app.drag_text_spacing(&s, true, false, Vec2::new(10.0, 0.0), false);
+        let ShapeKind::Text { para, .. } = &app.doc().find_shape(id).expect("text").kind else {
+            panic!();
+        };
+        assert!(para.char_spacing_pct > 0.0, "{}", para.char_spacing_pct);
     }
 
     #[test]

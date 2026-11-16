@@ -21,8 +21,14 @@ use tracedraw_core::{
     geometry::Point, live::Effect, shaping::Join, Color, Command, ShapeId, ShapeKind,
 };
 
-/// How near (screen pixels) a press takes a contour handle.
-pub const HANDLE_PX: f64 = 9.0;
+/// How near (screen pixels) a press takes a contour handle, at least:
+/// the Options pick distance widens it (#2731: the handles were hard to
+/// take, above all by touch).
+pub const HANDLE_PX: f64 = 12.0;
+
+/// Side of the offset handle's square, screen pixels, at least: a larger
+/// node size in Options makes it larger (#2731).
+pub const HANDLE_SIDE_PX: f32 = 11.0;
 
 /// A handle of the selected contour on the canvas.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -157,6 +163,8 @@ pub struct ContourSettings {
     /// The last step's fill and outline colours.
     pub fill_to: Color,
     pub outline_to: Color,
+    /// The last step's colour for the end of a fountain fill (#1265).
+    pub fill_end_to: Color,
     /// -1 to 1.
     pub accel_objects: f64,
     pub accel_colors: f64,
@@ -172,6 +180,7 @@ impl Default for ContourSettings {
             color_blend: 0,
             fill_to: Color::WHITE,
             outline_to: Color::BLACK,
+            fill_end_to: Color::WHITE,
             accel_objects: 0.0,
             accel_colors: 0.0,
         }
@@ -208,6 +217,7 @@ impl ContourSettings {
             to_center: s.direction == ContourDirection::ToCenter,
             fill_to: s.fill_to,
             outline_to: Some(s.outline_to),
+            fill_end_to: Some(s.fill_end_to),
             color_blend: s.color_blend,
             corners: Some(s.corners),
             accel_objects: s.accel_objects,
@@ -224,6 +234,7 @@ impl ContourSettings {
             to_center,
             fill_to,
             outline_to,
+            fill_end_to,
             color_blend,
             corners,
             accel_objects,
@@ -245,6 +256,7 @@ impl ContourSettings {
         self.color_blend = *color_blend;
         self.fill_to = *fill_to;
         self.outline_to = outline_to.unwrap_or(*fill_to);
+        self.fill_end_to = fill_end_to.unwrap_or(*fill_to);
         self.accel_objects = *accel_objects;
         self.accel_colors = *accel_colors;
         *self = self.clamped();
@@ -311,7 +323,7 @@ impl App {
     /// over the offset handle when they meet).
     pub fn contour_handle_at(&self, p: Point) -> Option<ContourHandle> {
         let h = self.contour_handles()?;
-        let tol = HANDLE_PX / f64::from(self.view.zoom.max(1e-6));
+        let tol = (HANDLE_PX / f64::from(self.view.zoom.max(1e-6))).max(self.line_pick_tol());
         if h.steps.is_some_and(|q| (q - p).hypot() <= tol) {
             return Some(ContourHandle::Steps);
         }
@@ -625,6 +637,23 @@ mod tests {
             Some(ContourHandle::Steps)
         );
         assert_eq!(app.contour_handle_at(Point::new(40.0, 40.0)), None);
+        // A press 11 screen pixels off still takes it (#2731), and a
+        // larger pick distance in Options reaches further.
+        let px = 1.0 / f64::from(app.view.zoom.max(1e-6));
+        assert_eq!(
+            app.contour_handle_at(Point::new(26.0, 10.0 + 11.0 * px)),
+            Some(ContourHandle::Offset)
+        );
+        assert_eq!(
+            app.contour_handle_at(Point::new(26.0, 10.0 + 18.0 * px)),
+            None
+        );
+        app.settings.nodes.pick_distance = 20.0;
+        assert_eq!(
+            app.contour_handle_at(Point::new(26.0, 10.0 + 18.0 * px)),
+            Some(ContourHandle::Offset)
+        );
+        app.settings.nodes.pick_distance = 6.0;
         let steps = app.engine.history_labels().0.len();
         // The offset handle to 32 mm: 3 steps of 4 mm, live at each move.
         app.drag_contour_handle(ContourHandle::Offset, Point::new(29.0, 10.0), false);
@@ -703,11 +732,14 @@ mod tests {
         assert_eq!(app.contour.direction, ContourDirection::ToCenter);
         app.contour.corners = Join::Round;
         app.contour.accel_colors = 0.5;
+        // The last fill colour, for fountain fills (#1265).
+        app.contour.fill_end_to = Color::BLACK;
         app.apply_contour_settings();
         let Some(Effect::Contour {
             to_center,
             corners,
             accel_colors,
+            fill_end_to,
             ..
         }) = contour_of(&app, id)
         else {
@@ -716,6 +748,10 @@ mod tests {
         assert!(to_center);
         assert_eq!(corners, Some(Join::Round));
         assert_eq!(accel_colors, 0.5);
+        assert_eq!(fill_end_to, Some(Color::BLACK));
+        app.contour = ContourSettings::default();
+        app.sync_contour_settings();
+        assert_eq!(app.contour.fill_end_to, Color::BLACK);
         app.clear_contour();
         assert!(contour_of(&app, id).is_none());
         // Settings from an older contour and odd values.
@@ -727,6 +763,7 @@ mod tests {
             to_center: false,
             fill_to: Color::BLACK,
             outline_to: None,
+            fill_end_to: None,
             color_blend: 9,
             corners: None,
             accel_objects: 3.0,

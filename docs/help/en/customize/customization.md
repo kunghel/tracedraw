@@ -12,6 +12,9 @@ the color palette behaves.
   off, they open where you left them.
 - [[options.ui_shadows]] (fewer shadows help slower graphics).
 - [[options.colored_icons]]: each group of tools gets a color of its own.
+- [[options.docker_tabs_icons_only]]: the panel tabs at the window's sides
+  show their pictures alone, the name in the tip. Off, each tab shows its
+  picture and name, and a column with more tabs than fit slides.
 - [[options.ui_size]]: how large menus, bars, icons and panels are, relative
   to the scaling your system gives the monitor (100% at first).
   [[options.reset_to_default]] goes back to 100%. The interface size never
@@ -47,6 +50,12 @@ Undo, Zoom In and others) take shortcuts too, the same keys as their menu
 command, and so do rows the menus show only at times (such as Finish Editing
 Contents). A **Toolbar buttons** list holds every button of the Standard and
 Zoom toolbars: drag a button you removed from a bar back onto it from there.
+
+A command dragged onto a toolbar shows its picture there, or its name when
+it has none. On the **General** tab, **Icon** shows the command's picture:
+**Choose...** opens the pictures of the other commands and of the tools, and
+a click gives the command that one, in the menus and on the toolbars;
+**Reset to Default** gives it its own back.
 
 ## Command Bars {#command-bars}
 

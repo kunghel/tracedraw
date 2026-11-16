@@ -28,6 +28,12 @@
 | PNG, JPEG, BMP, GIF, WebP, TIFF | bitmaps |
 | TXT, RTF, DOCX | texto de parágrafo com a formatação |
 
+Alguns aplicativos mantêm fechado o formato dos seus próprios arquivos, sem
+uma descrição pública para lê-los (por exemplo arquivos `.af`, `.afdesign`,
+`.afphoto` e `.afpub`). O TraceDraw não os abre; ao abrir um, ele avisa. Exporte
+o desenho no aplicativo que o criou como PDF, que mantém curvas, textos e
+imagens editáveis, ou como SVG, e abra esse arquivo.
+
 ## Exportar {#export}
 
 | Formato | Tipo |

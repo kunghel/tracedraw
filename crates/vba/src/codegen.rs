@@ -1574,6 +1574,9 @@ impl<'a> Gen<'a> {
             (Expr::Call(..), Some(args)) => Expr::Call(Box::new(e.clone()), args.to_vec()),
             (_, Some(_)) => return self.err(cx, "Expected a procedure call"),
         };
+        if let Some(js) = self.out_args_call(cx, &call)? {
+            return Ok(js);
+        }
         let js = match &call {
             Expr::Member(base, name) => {
                 if let Expr::Ident(b) = base.as_ref() {
@@ -1598,6 +1601,46 @@ impl<'a> Gen<'a> {
             _ => self.expr(cx, &call)?,
         };
         Ok(format!("{js};"))
+    }
+
+    /// A call to an object method that hands its results back through
+    /// the variables it is given (`s.GetBoundingBox x, y, w, h, True`):
+    /// the object model returns them as an array, and each one goes into
+    /// its variable. Without this the variables kept 0, and a crop-marks
+    /// macro drew its marks around the page's corner (#2165).
+    fn out_args_call(&mut self, cx: &mut Ctx, call: &Expr) -> R<Option<String>> {
+        let Expr::Call(callee, args) = call else {
+            return Ok(None);
+        };
+        let Expr::Member(_, name) = callee.as_ref() else {
+            return Ok(None);
+        };
+        // The argument each item of the returned array goes into.
+        let outs: &[usize] = match low(name).as_str() {
+            "getboundingbox" => &[0, 1, 2, 3],
+            "getposition" | "getsize" => &[0, 1],
+            "getdashandgaplength" => &[1, 2],
+            _ => return Ok(None),
+        };
+        let js = self.expr(cx, call)?;
+        let mut sets = String::new();
+        for (i, &at) in outs.iter().enumerate() {
+            let Some(Arg {
+                value: Some(target @ Expr::Ident(_)),
+                name: None,
+                ..
+            }) = args.get(at)
+            else {
+                continue;
+            };
+            if !matches!(target, Expr::Ident(n) if matches!(self.resolve(cx, n), Res::Var { .. })) {
+                continue;
+            }
+            sets.push_str(&self.assign(cx, target, format!("__o[{i}]"), false)?);
+        }
+        Ok(Some(format!(
+            "{{const __o={js};if(Array.isArray(__o)){{{sets}}}}}"
+        )))
     }
 
     // ----- Expressions ------------------------------------------------------

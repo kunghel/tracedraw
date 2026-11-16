@@ -98,6 +98,42 @@ fn box_settings(ui: &mut Ui, units: Units, st: &mut TraceCutState) {
     });
 }
 
+/// Cutting Grid: the size (or the selection's), the columns and rows
+/// (#2098).
+fn grid_settings(ui: &mut Ui, units: Units, st: &mut TraceCutState, has_selection: bool) {
+    use crate::tracecut_make::{GRID_COUNT_MAX, GRID_SIZE_RANGE};
+    let s = &mut st.settings.grid;
+    tick(ui, "tracecut.grid_fit", &mut s.fit_selection);
+    if !(s.fit_selection && has_selection) {
+        len_row(
+            ui,
+            units,
+            "tracecut.grid_width",
+            &mut s.width,
+            GRID_SIZE_RANGE,
+        );
+        len_row(
+            ui,
+            units,
+            "tracecut.grid_height",
+            &mut s.height,
+            GRID_SIZE_RANGE,
+        );
+    }
+    for (key, v) in [
+        ("tracecut.grid_columns", &mut s.columns),
+        ("tracecut.grid_rows", &mut s.rows),
+    ] {
+        row(ui, &tr(key), |ui| {
+            ui.add_sized(
+                [110.0, 22.0],
+                crate::ui::field::NumField::new(v).range(1..=GRID_COUNT_MAX),
+            )
+            .rich_tip(crate::ui::tips::keyed(key));
+        });
+    }
+}
+
 /// A length row: its label is the key's string, its tip the key's.
 fn len_row(ui: &mut Ui, units: Units, key: &str, v: &mut f64, range: (f64, f64)) {
     row(ui, &tr(key), |ui| length(ui, units, v, range, key));
@@ -360,6 +396,9 @@ pub fn settings(ui: &mut Ui, units: Units, st: &mut TraceCutState, has_selection
     if st.tool == ToolId::BoxMaker {
         box_settings(ui, units, st);
     }
+    if st.tool == ToolId::CuttingGrid {
+        grid_settings(ui, units, st, has_selection);
+    }
     if st.tool == ToolId::Eyelets {
         let s = &mut st.settings.eyelets;
         row(ui, &tr("tracecut.eyelet_along"), |ui| {
@@ -374,6 +413,31 @@ pub fn settings(ui: &mut Ui, units: Units, st: &mut TraceCutState, has_selection
                 "tracecut.eyelet_along",
             )
         });
+        if s.along == Along::Box {
+            // Which corners and sides get eyelets, with the buttons of
+            // Banner Hems and Eyelets (#2759).
+            row(ui, &tr("border_grommet.placement"), |ui| {
+                ui.horizontal(|ui| {
+                    for (i, (on, key)) in [
+                        (&mut s.corners, "border_grommet.place_corners"),
+                        (&mut s.top, "border_grommet.place_top"),
+                        (&mut s.bottom, "border_grommet.place_bottom"),
+                        (&mut s.left, "border_grommet.place_left"),
+                        (&mut s.right, "border_grommet.place_right"),
+                    ]
+                    .into_iter()
+                    .enumerate()
+                    {
+                        if crate::ui::dialogs::placement_button(ui, i, *on)
+                            .rich_tip_always(crate::ui::tips::keyed(key))
+                            .clicked()
+                        {
+                            *on = !*on;
+                        }
+                    }
+                });
+            });
+        }
         row(ui, &tr("tracecut.eyelet_diameter"), |ui| {
             length(
                 ui,

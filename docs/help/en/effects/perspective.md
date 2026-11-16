@@ -10,6 +10,10 @@ straight onto a perspective grid.
 2. Choose [[menu.object > menu.object.add_perspective]].
 3. Drag the four corner nodes with the [[tool.shape]] tool to tilt it.
 
+Pictures (bitmaps) take a perspective too: the picture is redrawn inside
+the four corners, as if printed on the tilted plane. A group holding
+pictures gets them in perspective with the rest of its objects.
+
 To copy the perspective of another object, use
 [[menu.object > menu.object.copy_effect > menu.object.copy_perspective_from]].
 

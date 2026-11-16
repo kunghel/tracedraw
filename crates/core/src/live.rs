@@ -27,6 +27,12 @@ pub enum Effect {
         to_center: bool,
         fill_to: Color,
         outline_to: Option<Color>,
+        /// The last step's colour for the end of a fountain fill (#1265):
+        /// a fountain-filled object's steps keep its fountain, its first
+        /// colour going to `fill_to` and its last to this one. None (older
+        /// files): `fill_to` for both.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        fill_end_to: Option<Color>,
         /// 0 = direct RGB, 1 = clockwise HSB, 2 = counter-clockwise HSB.
         color_blend: u8,
         /// How the steps turn their corners; older files have none (round).
@@ -117,8 +123,9 @@ pub enum Effect {
         distance: f64,
         light_angle: f64,
         intensity: f64,
-        /// Soft edge (0, the band inside the outline) or emboss (1, the
-        /// band around it, so the object stands out of the page).
+        /// Soft edge (0, the band inside the outline), emboss (1, the
+        /// band around it, so the object stands out of the page) or
+        /// centre (2, the band half inside and half outside, #1144).
         style: u8,
         shadow_color: Color,
         light_color: Color,
@@ -131,6 +138,12 @@ pub enum Effect {
         /// own fill; older files use the fill.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         emboss_color: Option<Color>,
+        /// The light falls round the band by direction: each part of
+        /// the band as lit as it faces the light, fading from lit to
+        /// shaded, instead of two halves cut through the middle (#1144).
+        /// Older files have the halves.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        directional: bool,
     },
     /// Block shadow: a solid extrusion behind the object.
     BlockShadow {
@@ -161,6 +174,47 @@ pub enum Effect {
         angle: f64,
         lines: u8,
     },
+    /// Outer shadow (#1141): a soft shadow cast beneath the object by its
+    /// shape, moved by `offset`; one of a stack of them, beside the
+    /// object's own drop shadow. Drawn by the renderer.
+    OuterShadow {
+        offset: Vec2,
+        color: Color,
+        /// 0..1
+        opacity: f64,
+        /// Feathering, millimetres.
+        blur: f64,
+        merge: MergeMode,
+    },
+    /// Glow (#1141): a soft light in `color` round the edge, spreading
+    /// `blur` mm outside the object, or inside it (`inner`). Drawn by the
+    /// renderer, as an outer shadow or an inner shadow that does not move.
+    Glow {
+        inner: bool,
+        color: Color,
+        /// 0..1
+        opacity: f64,
+        /// Spread, millimetres.
+        blur: f64,
+        merge: MergeMode,
+    },
+    /// Colour overlay (#1141): the object's shape in one colour over it,
+    /// `opacity` 0..1.
+    ColorOverlay { color: Color, opacity: f64 },
+    /// Gradient overlay (#1141): the object's shape filled with a linear
+    /// gradient from `from` to `to` at `angle` degrees over it.
+    GradientOverlay {
+        from: Color,
+        to: Color,
+        angle: f64,
+        opacity: f64,
+    },
+    /// Gaussian blur (#1141): the object drawn blurred by `radius` mm.
+    /// Drawn by the renderer.
+    GaussianBlur { radius: f64 },
+    /// Fill opacity (#1141): the object itself drawn at `opacity` 0..1
+    /// while what its other effects draw keeps its own.
+    FillOpacity { opacity: f64 },
     /// Lens over everything beneath (evaluated by the renderer).
     Lens(Lens),
     /// Non-uniform transparency: the fill's luminance is the opacity.
@@ -419,13 +473,19 @@ impl Lens {
             Lens::Invert => [1.0 - c[0], 1.0 - c[1], 1.0 - c[2]],
             Lens::TintedGrayscale { color } => {
                 let y = 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
-                let k = k(*color);
-                // Tint: black stays black, white becomes the tint colour's complement-free mix.
+                // The grey as a tint of the lens colour (#2800): black
+                // becomes the colour, white stays white, so a black lens
+                // gives plain grays. A white lens (what the panel gave
+                // before) would whiten everything; it means plain grays.
+                let k = if *color == Color::WHITE {
+                    [0.0; 3]
+                } else {
+                    k(*color)
+                };
                 [
-                    y * (1.0 - (1.0 - k[0]) * 0.0) * (0.5 + 0.5 * k[0])
-                        + y * 0.5 * (1.0 - k[0]) * 0.0,
-                    y * (0.5 + 0.5 * k[1]),
-                    y * (0.5 + 0.5 * k[2]),
+                    k[0] + (1.0 - k[0]) * y,
+                    k[1] + (1.0 - k[1]) * y,
+                    k[2] + (1.0 - k[2]) * y,
                 ]
             }
             Lens::Transparency { rate, color } => {
@@ -464,8 +524,28 @@ impl Effect {
         !self.warps_outline()
             && !matches!(
                 self,
-                Effect::Lens(_) | Effect::Transparency { .. } | Effect::InnerShadow { .. }
+                Effect::Lens(_)
+                    | Effect::Transparency { .. }
+                    | Effect::InnerShadow { .. }
+                    | Effect::OuterShadow { .. }
+                    | Effect::Glow { .. }
+                    | Effect::GaussianBlur { .. }
+                    | Effect::FillOpacity { .. }
             )
+    }
+
+    /// Drawn by the renderer from the object as it is drawn, adding no
+    /// objects of its own (#1141).
+    pub fn drawn_by_renderer(&self) -> bool {
+        matches!(
+            self,
+            Effect::Lens(_)
+                | Effect::Transparency { .. }
+                | Effect::InnerShadow { .. }
+                | Effect::OuterShadow { .. }
+                | Effect::Glow { .. }
+                | Effect::GaussianBlur { .. }
+        )
     }
 }
 
@@ -918,6 +998,33 @@ impl Effect {
     }
 }
 
+/// A colour or gradient overlay (#1141): the object's shape over it,
+/// filled with `fill` and its outline in `line`, at `opacity` of the
+/// object's own; nothing at no opacity.
+fn overlay(main: &Shape, fill: Fill, line: Color, opacity: f64) -> Option<Shape> {
+    let opacity = if opacity.is_finite() {
+        opacity.clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    if opacity <= 0.0 {
+        return None;
+    }
+    let mut s = main.clone();
+    s.effects.clear();
+    s.parked_effects.clear();
+    s.shadow = None;
+    if !matches!(s.fill, Fill::None) {
+        s.fill = fill;
+    }
+    if let Some(st) = s.stroke.as_mut() {
+        st.color = line;
+        st.painterly = None;
+    }
+    s.opacity *= opacity;
+    Some(s)
+}
+
 /// Result of evaluating a shape's effect stack.
 #[derive(Clone)]
 pub struct Evaluated {
@@ -996,7 +1103,65 @@ fn warp_shape(main: &mut Shape, effect: &Effect) {
             }
         }
         Effect::Perspective { corners } => {
+            // Pictures first, through the same map: their pixels are
+            // resampled (#2691); the outlines of the rest bend.
+            let b = main.local_path().bounding_box();
+            perspective_pictures(main, None, b, corners);
             reshape(main, &|p, b| perspective_in(p, b, corners));
+        }
+        _ => {}
+    }
+}
+
+/// The pictures of `shape` (it, or the ones inside it), in the space
+/// `parent` maps them into (`None`: the shape's own space, the top of the
+/// warp), put in the perspective that takes box `b` of that space onto
+/// `corners` (#2691). A warped picture covers the box the warp takes it
+/// to, transparent outside, in the top shape's space.
+fn perspective_pictures(shape: &mut Shape, parent: Option<Affine>, b: Rect, corners: &[Point; 4]) {
+    let t = parent.map(|p| p * shape.transform);
+    let m = t.unwrap_or(Affine::IDENTITY);
+    match &mut shape.kind {
+        ShapeKind::Group { children } => {
+            for c in children.iter_mut() {
+                perspective_pictures(c, Some(m), b, corners);
+            }
+        }
+        ShapeKind::ClipFrame { frame, contents } => {
+            perspective_pictures(frame, Some(m), b, corners);
+            for c in contents.iter_mut() {
+                perspective_pictures(c, Some(m), b, corners);
+            }
+        }
+        ShapeKind::Bitmap {
+            rect,
+            width_px,
+            height_px,
+            png,
+            ..
+        } => {
+            let pic = crate::bitmap_warp::Picture {
+                rect: *rect,
+                width_px: *width_px,
+                height_px: *height_px,
+                png: png.clone(),
+            };
+            if let Some(out) = crate::bitmap_warp::perspective(&pic, m, b, corners) {
+                shape.kind = ShapeKind::Bitmap {
+                    rect: out.rect,
+                    width_px: out.width_px,
+                    height_px: out.height_px,
+                    png: out.png,
+                    fx: None,
+                };
+                // Inside a group the warped picture is in the group's
+                // space: its own transform takes the parents' back.
+                if let Some(p) = parent {
+                    if p.determinant().abs() > 1e-12 {
+                        shape.transform = p.inverse();
+                    }
+                }
+            }
         }
         _ => {}
     }
@@ -1023,6 +1188,7 @@ fn evaluate_now(shape: &Shape) -> Evaluated {
                 to_center,
                 fill_to,
                 outline_to,
+                fill_end_to,
                 color_blend,
                 corners,
                 accel_objects,
@@ -1038,6 +1204,7 @@ fn evaluate_now(shape: &Shape) -> Evaluated {
                         to_center: *to_center,
                         fill_to: *fill_to,
                         outline_to: *outline_to,
+                        fill_end_to: *fill_end_to,
                         color_blend: *color_blend,
                         corners: corners.unwrap_or(crate::shaping::Join::Round),
                         accel_objects: *accel_objects,
@@ -1161,7 +1328,42 @@ fn evaluate_now(shape: &Shape) -> Evaluated {
             // Mirrored last, whatever its place in the list: the copies
             // carry every other effect of the object (#2121).
             Effect::Symmetry { .. } => {}
-            Effect::Lens(_) | Effect::Transparency { .. } | Effect::InnerShadow { .. } => {}
+            Effect::ColorOverlay { color, opacity } => {
+                above.extend(overlay(&main, Fill::Solid(*color), *color, *opacity));
+            }
+            Effect::GradientOverlay {
+                from,
+                to,
+                angle,
+                opacity,
+            } => {
+                let f = crate::style::Fountain::two(
+                    crate::style::FountainKind::Linear,
+                    *from,
+                    *to,
+                    *angle,
+                );
+                above.extend(overlay(&main, Fill::Fountain(f), *to, *opacity));
+            }
+            Effect::FillOpacity { .. } => {}
+            Effect::Lens(_)
+            | Effect::Transparency { .. }
+            | Effect::InnerShadow { .. }
+            | Effect::OuterShadow { .. }
+            | Effect::Glow { .. }
+            | Effect::GaussianBlur { .. } => {}
+        }
+    }
+    // Fill opacity: the object alone, after the overlays and the other
+    // effects took it as it was (#1141).
+    for effect in &shape.effects {
+        if let Effect::FillOpacity { opacity } = effect {
+            let o = if opacity.is_finite() {
+                opacity.clamp(0.0, 1.0)
+            } else {
+                1.0
+            };
+            main.opacity *= o;
         }
     }
     for effect in &shape.effects {
@@ -1294,6 +1496,10 @@ fn reshape(shape: &mut Shape, f: &dyn Fn(&BezPath, Rect) -> BezPath) {
                 reshape_inside(c, Affine::IDENTITY, b, f);
             }
         }
+        // A picture has no outline to bend: a perspective resamples it
+        // ahead (`perspective_pictures`); the other warps leave it as it
+        // is. It became an empty frame, so the picture went (#2691).
+        ShapeKind::Bitmap { .. } => {}
         _ => {
             let p = f(&shape.local_path(), b);
             set_path(shape, p);
@@ -1322,6 +1528,7 @@ fn reshape_inside(
                 reshape_inside(c, t, b, f);
             }
         }
+        ShapeKind::Bitmap { .. } => {}
         _ => {
             if t.determinant().abs() < 1e-12 {
                 return;
@@ -1350,6 +1557,12 @@ fn set_path(shape: &mut Shape, path: BezPath) {
         .elements()
         .iter()
         .any(|e| matches!(e, PathEl::ClosePath));
+    // The letters of a text overlap (strokes of one letter, letters set
+    // tight): their outline fills with the nonzero rule, as the text did,
+    // also once it is a curve written to a file or broken apart (#2733).
+    if matches!(shape.kind, ShapeKind::Text { .. }) {
+        shape.fill_rule = crate::shaping::FillRule::NonZero;
+    }
     shape.kind = ShapeKind::Path { path, closed };
     // A warped outline is no longer the B-spline of its control points,
     // and its nodes are new (#647).
@@ -1411,6 +1624,8 @@ pub struct ContourParams {
     pub to_center: bool,
     pub fill_to: Color,
     pub outline_to: Option<Color>,
+    /// The last step's colour for the end of a fountain fill.
+    pub fill_end_to: Option<Color>,
     pub color_blend: u8,
     pub corners: crate::shaping::Join,
     pub accel_objects: f64,
@@ -1482,6 +1697,28 @@ const MAX_CONTOUR_STEPS: u32 = 999;
 /// one value can never fill the memory with steps (#980).
 pub const MAX_BLEND_STEPS: u32 = 999;
 
+/// Some subpath of `path` ends away from where it starts.
+fn has_loose_end(path: &BezPath) -> bool {
+    let mut start: Option<Point> = None;
+    let mut last: Option<Point> = None;
+    let mut loose = false;
+    for e in path.elements() {
+        if let PathEl::MoveTo(p) = e {
+            if let (Some(a), Some(b)) = (start, last) {
+                loose |= (a - b).hypot() > 1e-6;
+            }
+            start = Some(*p);
+            last = None;
+        } else if let Some(p) = e.end_point() {
+            last = Some(p);
+        }
+    }
+    if let (Some(a), Some(b)) = (start, last) {
+        loose |= (a - b).hypot() > 1e-6;
+    }
+    loose
+}
+
 /// The contour steps of `shape`: step `i` of `n` is its outline offset by
 /// `n * offset * accelerate(i / n, accel_objects)` (to the centre: by
 /// `i * offset` until nothing is left), coloured `accelerate(i / n,
@@ -1507,8 +1744,27 @@ fn contour(shape: &Shape, rule: crate::shaping::FillRule, p: &ContourParams) -> 
     } else {
         return Vec::new();
     };
+    // An open curve: each step is a closed band round both sides of it,
+    // the two offsets joined across its ends (#2577). Read as a filled
+    // area, the curve was closed by a straight line from end to end and
+    // the contour ran round that line too.
+    // A line whose ends meet (as some files give a closed shape) is read
+    // as the area it closes, as before.
+    let open = matches!(shape.kind, ShapeKind::Path { closed: false, .. })
+        && !base
+            .elements()
+            .iter()
+            .any(|e| matches!(e, PathEl::ClosePath))
+        && has_loose_end(&base);
+    let step_path = |d: f64| {
+        if open {
+            crate::shaping::open_offset_band(&base, d, p.corners)
+        } else {
+            crate::shaping::offset_filled(&base, sign * d, p.corners, rule)
+        }
+    };
     let mut paths = Vec::new();
-    if p.to_center {
+    if p.to_center && !open {
         for i in 1..=MAX_CONTOUR_STEPS {
             let q = crate::shaping::offset_filled(&base, sign * offset * i as f64, p.corners, rule);
             if q.elements().is_empty() {
@@ -1521,7 +1777,7 @@ fn contour(shape: &Shape, rule: crate::shaping::FillRule, p: &ContourParams) -> 
         let total = offset * n as f64;
         for i in 1..=n {
             let d = total * accelerate(i as f64 / n as f64, p.accel_objects);
-            let q = crate::shaping::offset_filled(&base, sign * d, p.corners, rule);
+            let q = step_path(d);
             if q.elements().is_empty() {
                 break;
             }
@@ -1538,8 +1794,21 @@ fn contour(shape: &Shape, rule: crate::shaping::FillRule, p: &ContourParams) -> 
             s.effects.clear();
             s.shadow = None;
             s.kind = ShapeKind::Path { path, closed: true };
-            if !matches!(shape.fill, Fill::None) {
-                s.fill = Fill::Solid(mix(from_fill, p.fill_to, t, p.color_blend));
+            match &shape.fill {
+                Fill::None => {}
+                // A fountain stays a fountain (#1265): each stop goes
+                // toward the last step's colour at its place between the
+                // first (fill) and the last (last fill) colours.
+                Fill::Fountain(f) => {
+                    let end = p.fill_end_to.unwrap_or(p.fill_to);
+                    let mut g = f.clone();
+                    for st in &mut g.stops {
+                        let to = mix(p.fill_to, end, st.pos.clamp(0.0, 1.0), 0);
+                        st.color = mix(st.color, to, t, p.color_blend);
+                    }
+                    s.fill = Fill::Fountain(g);
+                }
+                _ => s.fill = Fill::Solid(mix(from_fill, p.fill_to, t, p.color_blend)),
             }
             if let (Some(st), Some(from)) = (&mut s.stroke, from_outline) {
                 st.color = mix(from, p.outline_to.unwrap_or(p.fill_to), t, p.color_blend);
@@ -1920,6 +2189,9 @@ pub fn extrude_body(
 /// The most steps a bevel band is cut into.
 pub const MAX_BEVEL_LEVEL: u8 = 8;
 
+/// The wedges a directional bevel's light is toned in, round the object.
+const BEVEL_WEDGES: usize = 24;
+
 fn one_level() -> u8 {
     1
 }
@@ -1937,6 +2209,7 @@ fn bevel(shape: &Shape, effect: &Effect) -> Vec<Shape> {
         light_color,
         level,
         emboss_color,
+        directional,
     } = effect
     else {
         return Vec::new();
@@ -1951,10 +2224,10 @@ fn bevel(shape: &Shape, effect: &Effect) -> Vec<Shape> {
     // Offsets of the step boundaries, from the band's outer edge in.
     let reach = |j: usize| {
         let t = j as f64 / steps as f64;
-        if *style == 1 {
-            width * (1.0 - t)
-        } else {
-            -width * t
+        match style {
+            1 => width * (1.0 - t),
+            2 => width * (0.5 - t),
+            _ => -width * t,
         }
     };
     let edge = |j: usize| {
@@ -1984,6 +2257,24 @@ fn bevel(shape: &Shape, effect: &Effect) -> Vec<Shape> {
         c + Vec2::new(ldir.y, -ldir.x) * big.width() * 2.0 + ldir * big.width() * 2.0,
         c + Vec2::new(-ldir.y, ldir.x) * big.width() * 2.0 + ldir * big.width() * 2.0,
     ]);
+    // Directional light: wedges round the centre, each toned by how
+    // squarely it faces the light (1 facing it, -1 facing away).
+    let wedges: Vec<(BezPath, f64)> = if *directional {
+        let reach = big.width().max(big.height()) * 2.0;
+        (0..BEVEL_WEDGES)
+            .map(|w| {
+                let step = std::f64::consts::TAU / BEVEL_WEDGES as f64;
+                let a0 = step * w as f64;
+                let a1 = a0 + step;
+                let at = |a: f64| c + Vec2::new(a.cos(), a.sin()) * reach;
+                let mid = a0 + step / 2.0;
+                let facing = mid.cos() * ldir.x + mid.sin() * ldir.y;
+                (crate::effects::polygon(&[c, at(a0), at(a1)]), facing)
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
     let mut out = Vec::new();
     for i in 0..steps {
         let inner = edge(i + 1);
@@ -1993,12 +2284,29 @@ fn bevel(shape: &Shape, effect: &Effect) -> Vec<Shape> {
         let band = crate::shaping::overlay(&outer, &inner, crate::shaping::Op::Trim);
         // The light fades from the band's outer edge inwards.
         let strength = (k * (steps - i) as f64 / steps as f64) as f32;
-        let lit = crate::shaping::overlay(&band, &half, crate::shaping::Op::Intersect);
-        let dark = crate::shaping::overlay(&band, &half, crate::shaping::Op::Trim);
-        for (p, col) in [
-            (lit, lerp_color(base, *light_color, strength)),
-            (dark, lerp_color(base, *shadow_color, strength)),
-        ] {
+        let parts: Vec<(BezPath, Color)> = if *directional {
+            wedges
+                .iter()
+                .map(|(wedge, facing)| {
+                    let p = crate::shaping::overlay(&band, wedge, crate::shaping::Op::Intersect);
+                    let f = (*facing as f32 * strength).clamp(-1.0, 1.0);
+                    let col = if f >= 0.0 {
+                        lerp_color(base, *light_color, f)
+                    } else {
+                        lerp_color(base, *shadow_color, -f)
+                    };
+                    (p, col)
+                })
+                .collect()
+        } else {
+            let lit = crate::shaping::overlay(&band, &half, crate::shaping::Op::Intersect);
+            let dark = crate::shaping::overlay(&band, &half, crate::shaping::Op::Trim);
+            vec![
+                (lit, lerp_color(base, *light_color, strength)),
+                (dark, lerp_color(base, *shadow_color, strength)),
+            ]
+        };
+        for (p, col) in parts {
             if p.elements().is_empty() {
                 continue;
             }
@@ -2459,7 +2767,7 @@ pub fn perspective_in(path: &BezPath, b: Rect, corners: &[Point; 4]) -> BezPath 
 /// the box to, and the outline comes to a tip there (#879). Corners that
 /// crossed by more than a fiftieth of the frame (a frame folded on
 /// purpose) and all others stay as given.
-fn corners_apart(corners: &[Point; 4]) -> [Point; 4] {
+pub(crate) fn corners_apart(corners: &[Point; 4]) -> [Point; 4] {
     let mut c = *corners;
     let span = c
         .iter()
@@ -2610,6 +2918,72 @@ pub fn homography(src: &[Point; 4], dst: &[Point; 4]) -> Option<[f64; 8]> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Colour and gradient overlays draw the object's shape over it at
+    /// their opacity; fill opacity fades the object alone; the shadows,
+    /// glows and blur add no objects (the renderer draws them) (#1141).
+    #[test]
+    fn layer_effect_overlays_and_fill_opacity() {
+        let mut s = Shape::new(
+            crate::ShapeId(1),
+            ShapeKind::Rect {
+                rect: Rect::new(0.0, 0.0, 10.0, 10.0),
+                radius: 0.0,
+                corners: None,
+            },
+        );
+        s.fill = Fill::Solid(Color::BLACK);
+        s.stroke = Some(crate::Stroke::new(Color::BLACK, 1.0));
+        s.effects = vec![
+            Effect::ColorOverlay {
+                color: Color::rgb8(255, 0, 0),
+                opacity: 0.5,
+            },
+            Effect::GradientOverlay {
+                from: Color::WHITE,
+                to: Color::BLACK,
+                angle: 0.0,
+                opacity: 1.0,
+            },
+            Effect::FillOpacity { opacity: 0.25 },
+            Effect::Glow {
+                inner: false,
+                color: Color::WHITE,
+                opacity: 1.0,
+                blur: 2.0,
+                merge: MergeMode::Screen,
+            },
+            Effect::GaussianBlur { radius: 1.0 },
+        ];
+        let ev = evaluate(&s);
+        assert!(ev.below.is_empty());
+        assert_eq!(ev.above.len(), 2);
+        assert_eq!(ev.above[0].fill, Fill::Solid(Color::rgb8(255, 0, 0)));
+        assert!((ev.above[0].opacity - 0.5).abs() < 1e-9);
+        assert_eq!(
+            ev.above[0].stroke.as_ref().map(|st| st.color),
+            Some(Color::rgb8(255, 0, 0))
+        );
+        assert!(matches!(ev.above[1].fill, Fill::Fountain(_)));
+        assert!((ev.above[1].opacity - 1.0).abs() < 1e-9);
+        assert!((ev.main.opacity - 0.25).abs() < 1e-9);
+        // Nothing at no opacity.
+        s.effects = vec![Effect::ColorOverlay {
+            color: Color::WHITE,
+            opacity: 0.0,
+        }];
+        assert!(evaluate(&s).above.is_empty());
+        // Saved and read back.
+        let e = Effect::OuterShadow {
+            offset: Vec2::new(1.0, -1.0),
+            color: Color::BLACK,
+            opacity: 0.5,
+            blur: 1.0,
+            merge: MergeMode::Multiply,
+        };
+        let back: Effect = serde_json::from_str(&serde_json::to_string(&e).unwrap()).unwrap();
+        assert_eq!(back, e);
+    }
 
     /// The parts a transparency's target fades (live test of 0.41: the
     /// target made no difference): the fill and the outline apart, the
@@ -2775,8 +3149,69 @@ mod tests {
             light_color: Color::WHITE,
             level: 1,
             emboss_color: None,
+            directional: false,
         });
         evaluate(&s)
+    }
+
+    /// #1144: the centre style puts the band half inside and half
+    /// outside the outline; directional light tones it round the object,
+    /// brightest where it faces the light and darkest opposite.
+    #[test]
+    fn centre_bevel_straddles_the_outline_and_directional_light_fades_round_it() {
+        let ev = bevelled(2);
+        let all = ev
+            .above
+            .iter()
+            .map(|p| p.bounds())
+            .reduce(|a, b| a.union(b))
+            .expect("a band");
+        assert!(
+            (all.x0 + 1.0).abs() < 1e-3 && (all.x1 - 21.0).abs() < 1e-3,
+            "{all:?}"
+        );
+        let mut s = rect_shape();
+        s.effects.push(Effect::Bevel {
+            distance: 2.0,
+            light_angle: 0.0,
+            intensity: 100.0,
+            style: 0,
+            shadow_color: Color::BLACK,
+            light_color: Color::WHITE,
+            level: 1,
+            emboss_color: None,
+            directional: true,
+        });
+        let ev = evaluate(&s);
+        assert!(ev.above.len() > 8, "toned in wedges: {}", ev.above.len());
+        let lum = |p: &Shape| match p.fill {
+            Fill::Solid(c) => {
+                let [r, g, b] = c.to_rgb8();
+                r as u32 + g as u32 + b as u32
+            }
+            _ => 0,
+        };
+        // The light comes from the right (+x): the right edge is the
+        // brightest part, the left edge the darkest, the top in between.
+        let at = |x: f64, y: f64| {
+            ev.above
+                .iter()
+                .find(|p| {
+                    p.bounds().contains(Point::new(x, y)) && {
+                        let path = p.local_path();
+                        path.winding(Point::new(x, y)) != 0
+                    }
+                })
+                .map(lum)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "no wedge at {x},{y}: {:?}",
+                        ev.above.iter().map(|p| p.bounds()).collect::<Vec<_>>()
+                    )
+                })
+        };
+        let (right, top, left) = (at(19.5, 11.0), at(11.0, 19.5), at(0.5, 11.0));
+        assert!(right > top && top > left, "{right} {top} {left}");
     }
 
     #[test]
@@ -2824,6 +3259,7 @@ mod tests {
             light_color: Color::WHITE,
             level,
             emboss_color,
+            directional: false,
         });
         evaluate(&s)
     }
@@ -2881,6 +3317,7 @@ mod tests {
             light_color: Color::WHITE,
             level: 1,
             emboss_color: None,
+            directional: false,
         })
         .unwrap_or_default();
         // The new fields are left out while they hold their defaults ...
@@ -3058,6 +3495,45 @@ mod tests {
         assert!(trimmed.area().abs() < shadow.area().abs() - 1.0);
     }
 
+    /// A warped text's outline keeps the nonzero rule the text is drawn
+    /// with: saved to `.cdr` it went out as an even-odd curve, and the
+    /// program that opened it showed holes where its letters overlapped
+    /// (#2733).
+    #[test]
+    fn a_warped_texts_outline_fills_with_the_nonzero_rule() {
+        use crate::shaping::FillRule;
+        let mut text = Shape::new(
+            crate::ShapeId(1),
+            ShapeKind::Text {
+                spans: Vec::new(),
+                origin: Point::ZERO,
+                frame: None,
+                align: Default::default(),
+                para: Default::default(),
+                on_path: None,
+            },
+        );
+        text.effects.push(Effect::Perspective {
+            corners: [
+                Point::new(0.0, 0.0),
+                Point::new(10.0, 0.0),
+                Point::new(8.0, 5.0),
+                Point::new(2.0, 5.0),
+            ],
+        });
+        let main = evaluate(&text).main;
+        assert!(
+            matches!(main.kind, ShapeKind::Path { .. }),
+            "{:?}",
+            main.kind
+        );
+        assert_eq!(main.fill_rule, FillRule::NonZero);
+        // A curve keeps its own rule.
+        let mut curve = rect_shape();
+        curve.effects = text.effects.clone();
+        assert_eq!(evaluate(&curve).main.fill_rule, FillRule::EvenOdd);
+    }
+
     /// Text and objects set to the nonzero rule are read with it, so the
     /// overlapping strokes of a letter make no holes in its contour or
     /// block shadow (#2156).
@@ -3093,6 +3569,7 @@ mod tests {
             to_center: false,
             fill_to: Color::BLACK,
             outline_to: None,
+            fill_end_to: None,
             color_blend: 0,
             corners: Some(crate::shaping::Join::Miter),
             accel_objects: 0.0,
@@ -3147,6 +3624,7 @@ mod tests {
             to_center: false,
             fill_to: Color::WHITE,
             outline_to: None,
+            fill_end_to: None,
             color_blend: 0,
             corners: Some(crate::shaping::Join::Miter),
             accel_objects: 0.0,
@@ -3209,6 +3687,7 @@ mod tests {
             to_center: false,
             fill_to: Color::WHITE,
             outline_to: None,
+            fill_end_to: None,
             color_blend: 0,
             corners: Some(crate::shaping::Join::Miter),
             accel_objects: 0.0,
@@ -3235,6 +3714,105 @@ mod tests {
         assert!((dx - 10.0).abs() < 1e-6, "{dx}");
     }
 
+    /// #2577: the contour of an open curve is a closed band round both
+    /// sides of it, joined across its ends, not the outline of the area
+    /// between the curve and the straight line from end to end.
+    #[test]
+    fn an_open_curve_contours_into_a_closed_band() {
+        use crate::geometry::Shape as _;
+        let mut path = BezPath::new();
+        path.move_to((0.0, 0.0));
+        path.curve_to((10.0, 20.0), (30.0, 20.0), (40.0, 0.0));
+        let mut s = Shape::new(
+            crate::ShapeId(1),
+            ShapeKind::Path {
+                path,
+                closed: false,
+            },
+        );
+        s.fill = Fill::None;
+        s.effects.push(Effect::Contour {
+            steps: 2,
+            offset: 2.0,
+            outside: true,
+            to_center: false,
+            fill_to: Color::WHITE,
+            outline_to: None,
+            fill_end_to: None,
+            color_blend: 0,
+            corners: Some(crate::shaping::Join::Round),
+            accel_objects: 0.0,
+            accel_colors: 0.0,
+        });
+        let ev = evaluate(&s);
+        assert_eq!(ev.below.len(), 2);
+        // The outer step: 4 mm to each side of the curve, closed.
+        let outer = ev.below[0].local_path();
+        assert!(matches!(
+            ev.below[0].kind,
+            ShapeKind::Path { closed: true, .. }
+        ));
+        let top = Point::new(20.0, 15.0);
+        let winds = |q: Point| outer.winding(q) != 0;
+        assert!(winds(top), "on the curve");
+        assert!(winds(top + Vec2::new(0.0, 3.5)), "above the curve");
+        assert!(winds(top - Vec2::new(0.0, 3.5)), "below the curve");
+        assert!(!winds(top + Vec2::new(0.0, 4.5)));
+        assert!(!winds(top - Vec2::new(0.0, 4.5)));
+        // Not round the chord: its middle stays outside.
+        assert!(!winds(Point::new(20.0, 0.0)));
+        // Cut straight at the ends: nothing past the start along the
+        // curve's way out of it.
+        assert!(!winds(Point::new(-1.5, -3.0)));
+    }
+
+    /// A fountain-filled object's contour steps keep the fountain (#1265):
+    /// its first colour goes to the fill colour and its last to the last
+    /// fill colour, the outermost step reaching both.
+    #[test]
+    fn contour_steps_keep_a_fountain_toward_both_end_colours() {
+        let mut s = rect_shape();
+        s.fill = Fill::linear(Color::rgb8(255, 0, 0), Color::rgb8(0, 0, 255), 0.0);
+        let effect = |end: Option<Color>| Effect::Contour {
+            steps: 2,
+            offset: 2.0,
+            outside: true,
+            to_center: false,
+            fill_to: Color::WHITE,
+            outline_to: None,
+            fill_end_to: end,
+            color_blend: 0,
+            corners: None,
+            accel_objects: 0.0,
+            accel_colors: 0.0,
+        };
+        s.effects.push(effect(Some(Color::BLACK)));
+        let ev = evaluate(&s);
+        assert_eq!(ev.below.len(), 2);
+        let stops = |f: &Fill| match f {
+            Fill::Fountain(g) => g
+                .stops
+                .iter()
+                .map(|st| st.color.to_rgb8())
+                .collect::<Vec<_>>(),
+            other => panic!("a fountain, not {other:?}"),
+        };
+        // Outermost first: the last step, all the way to white and black.
+        let outer = stops(&ev.below[0].fill);
+        assert_eq!(outer.first(), Some(&Color::WHITE.to_rgb8()));
+        assert_eq!(outer.last(), Some(&Color::BLACK.to_rgb8()));
+        // The step nearer the object is half way from red and blue.
+        let near = stops(&ev.below[1].fill);
+        let close = |a: [u8; 3], b: [u8; 3]| (0..3).all(|k| a[k].abs_diff(b[k]) <= 4);
+        assert!(close(near[0], [255, 128, 128]), "{near:?}");
+        assert!(close(near[near.len() - 1], [0, 0, 128]), "{near:?}");
+        // Without a last fill colour (older files) both ends go to the
+        // fill colour.
+        s.effects[0] = effect(None);
+        let outer = stops(&evaluate(&s).below[0].fill);
+        assert!(outer.iter().all(|c| *c == Color::WHITE.to_rgb8()), "{outer:?}");
+    }
+
     #[test]
     fn contour_outside_three_steps() {
         let mut s = rect_shape();
@@ -3245,6 +3823,7 @@ mod tests {
             to_center: false,
             fill_to: Color::WHITE,
             outline_to: None,
+            fill_end_to: None,
             color_blend: 0,
             corners: Some(crate::shaping::Join::Miter),
             accel_objects: 0.0,
@@ -3276,6 +3855,7 @@ mod tests {
             to_center: true,
             fill_to: Color::WHITE,
             outline_to: None,
+            fill_end_to: None,
             color_blend: 0,
             corners: None,
             accel_objects: 0.0,
@@ -3650,6 +4230,7 @@ mod tests {
             to_center: false,
             fill_to: Color::WHITE,
             outline_to: None,
+            fill_end_to: None,
             color_blend: 0,
             corners: None,
             accel_objects: 0.0,
@@ -4735,6 +5316,7 @@ mod warped_extrusion_tests {
             to_center: false,
             fill_to: Color::WHITE,
             outline_to: None,
+            fill_end_to: None,
             color_blend: 0,
             corners: None,
             accel_objects: 0.0,
@@ -4958,6 +5540,7 @@ mod symmetry_tests {
                 to_center: false,
                 fill_to: crate::color::Color::WHITE,
                 outline_to: None,
+                fill_end_to: None,
                 color_blend: 0,
                 corners: None,
                 accel_objects: 0.0,

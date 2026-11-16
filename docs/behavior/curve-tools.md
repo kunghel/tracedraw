@@ -196,6 +196,12 @@ delete the selection as everywhere (#1527,
   in the curve made, which keeps the flags (`CurveInProgress::
   spline_fixed`, `Shape::spline_fixed`; #2060,
   `pick_drag_tests::bspline_points_placed_with_c_or_v_held_are_fixed`).
+  C or V held on the click that closes the curve fixes its first point,
+  so it ends there with a corner however it began; with Ctrl held for a
+  straight line, Ctrl+C and Ctrl+V fix the point the same way and copy
+  or paste nothing (#2694, `pick_drag_tests::
+  bspline_closed_with_c_held_fixes_the_first_point`, `pick_drag_tests::
+  bspline_ctrl_c_and_ctrl_v_fix_the_point_instead_of_copying`).
 - Double-click, Enter or Esc finishes (Esc with one point drops it);
   clicking the first point (once there are three) closes it into the periodic spline,
   smooth all round. The result is a curve object (its nodes are the

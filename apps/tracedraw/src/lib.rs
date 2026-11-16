@@ -15,9 +15,11 @@
 //! [`run`], and on Android the library is the app itself (`android.rs`,
 //! loaded by the system as a shared library).
 
+mod action_lines;
 mod ai;
 mod ai_image;
 mod ai_retry;
+mod ai_vectorize;
 mod anchors;
 #[cfg(target_os = "android")]
 mod android;
@@ -28,6 +30,7 @@ mod android_package;
 mod app;
 mod autocorrect;
 mod barcode;
+pub mod benchmark;
 mod bg_remove;
 mod bitmap_file;
 mod bitmap_fx;
@@ -36,12 +39,16 @@ mod blend_link;
 mod blend_tool;
 mod border_grommet;
 mod brushes;
+mod balloons;
 mod callouts;
+mod captions;
+mod chinese;
 mod canvas;
 mod clipboard;
 mod clone_effect;
 mod color_drop;
 mod color_policy;
+mod color_styles;
 mod comments;
 mod common_shapes;
 mod connectors;
@@ -84,12 +91,14 @@ mod fill_page;
 mod fill_tool;
 mod fit_path;
 mod focus;
+mod formula;
 #[cfg(any(target_arch = "wasm32", test))]
 mod font_folder;
 #[cfg(not(target_arch = "wasm32"))]
 mod frame_stats;
 mod frame_type;
 mod fx;
+mod gather_pages;
 mod github;
 #[cfg(not(target_arch = "wasm32"))]
 mod gpu;
@@ -104,6 +113,7 @@ mod help_shots;
 mod hunspell;
 mod i18n;
 mod image_dpi;
+mod insert_object;
 mod import_place;
 mod imposition;
 #[cfg(test)]
@@ -112,6 +122,7 @@ mod input_method_tests;
 mod instance;
 mod interaction;
 mod interaction2;
+mod join_tool;
 mod kind_nodes;
 mod knife;
 mod lens;
@@ -135,8 +146,10 @@ mod new_document;
 mod node_edit;
 mod object_clone;
 mod object_thumbs;
+mod offset_shadow_handle;
 mod ops;
 mod ops2;
+mod opening;
 mod package;
 mod page_drop;
 mod page_names;
@@ -151,6 +164,8 @@ mod pick_drag_tests;
 mod picture_mosaic;
 mod picture_plates;
 mod placeholder;
+mod plugins;
+mod pmd_open;
 mod preflight;
 mod prefs;
 mod print_merge;
@@ -168,11 +183,15 @@ mod select_region;
 mod select_similar;
 mod settings;
 mod shadow_tool;
+#[cfg(test)]
+mod shadow_split_tests;
+mod shape_builder;
 mod shape_tool;
 #[cfg(test)]
 mod shaping_tests;
 mod shelf;
 mod shortcuts;
+mod sizes;
 mod snap;
 mod snap_points;
 mod soft_canvas;
@@ -188,6 +207,7 @@ mod step_merge;
 mod step_repeat;
 mod storage_full;
 mod straighten;
+mod style_presets;
 mod styles;
 mod symbol_paste;
 mod symmetry_edit;
@@ -197,6 +217,7 @@ mod system_prefs;
 #[cfg(any(target_os = "macos", test))]
 mod system_quit;
 mod tab_ruler;
+mod spreadsheet_import;
 mod table;
 mod table_tool;
 mod templates;
@@ -206,6 +227,7 @@ mod text_effect_tests;
 mod text_frames;
 mod text_nodes;
 mod text_path;
+mod toc;
 #[cfg(test)]
 mod text_wrap_tests;
 mod textflow;
@@ -217,10 +239,17 @@ mod time_tracker;
 mod title_bar;
 mod tools;
 mod tools2;
+mod touch_bars;
 mod touch_modifiers;
 mod touch_taps;
 mod trace;
+mod trace_blend;
+mod trace_fine;
+mod trace_fit;
+mod trace_fonts;
 mod trace_preview;
+mod trace_strokes;
+mod trace_text;
 mod tracecut;
 mod tracecut_cut;
 mod tracecut_make;
@@ -228,6 +257,9 @@ mod tracecut_nest;
 mod tracecut_send;
 mod ui;
 mod updates;
+mod upscale;
+#[cfg(not(target_arch = "wasm32"))]
+mod upscale_net;
 mod variable_outline;
 mod vector_mosaic;
 mod view;
@@ -240,6 +272,7 @@ mod web;
 mod web_page;
 #[cfg(windows)]
 mod win_clipboard;
+mod window_buttons;
 #[cfg(all(unix, not(any(target_os = "macos", target_os = "android"))))]
 mod x11_clipboard;
 #[cfg(all(unix, not(any(target_os = "macos", target_os = "android"))))]
@@ -273,6 +306,13 @@ mod winit_quit_request;
 #[allow(dead_code)]
 #[path = "../../../vendor/winit/src/file_drop.rs"]
 mod winit_file_drop;
+// Pictures dragged in from other programs, of the same copy (#2349): the
+// mark of a dropped picture's file and the bitmap reading of the Windows
+// clipboard, with its tests.
+#[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+#[allow(dead_code)]
+#[path = "../../../vendor/winit/src/picture_drop.rs"]
+pub(crate) mod winit_picture_drop;
 // The pointer kept on a shortcut with Alt on Windows, of the same copy
 // (#1922).
 #[cfg(all(test, not(target_arch = "wasm32")))]
@@ -400,11 +440,15 @@ pub fn run() -> eframe::Result<()> {
     // system's (docs/behavior/language.md).
     i18n::set_language(i18n::startup_language_here(&settings.language));
     // Options > General > "Use the desktop's title bar": through XWayland
-    // when the Wayland compositor draws no title bars (#2070).
+    // when the Wayland compositor draws no title bars (#2070), on by
+    // default so that file drops arrive there (#2486). `--wayland` keeps
+    // the native Wayland window for one start.
+    #[cfg(target_os = "linux")]
+    let wayland_asked = args.iter().any(|a| a == "--wayland");
     #[cfg(target_os = "linux")]
     let x11 = x11_asked
         || title_bar::through_x11(
-            settings.system_title_bar,
+            settings.system_title_bar && !wayland_asked,
             title_bar::env_set("WAYLAND_DISPLAY"),
             title_bar::env_set("DISPLAY"),
             title_bar::compositor_offers_title_bars,
@@ -877,6 +921,16 @@ fn paint_probe(ctx: &egui::Context) -> [usize; 2] {
 #[cfg(not(target_arch = "wasm32"))]
 const RENDERER_CHECK: &str = "renderer-check";
 
+/// The end of a step of the frame, named for the slow-frame log
+/// (`frame_stats::mark`, d#2729).
+#[inline]
+pub(crate) fn frame_mark(name: &'static str) {
+    #[cfg(not(target_arch = "wasm32"))]
+    frame_stats::mark(name);
+    #[cfg(target_arch = "wasm32")]
+    let _ = name;
+}
+
 impl eframe::App for Shell {
     /// Characters the windowing layer lost (input methods on Windows,
     /// #1151) and what Android's on-screen keyboard typed (#1309) join the
@@ -899,6 +953,7 @@ impl eframe::App for Shell {
         // (#2362).
         if let Some(app) = self.app.as_mut() {
             touch_modifiers::fingers_on_keys(app, raw_input);
+            touch_bars::second_finger_copies(app, raw_input);
             app.touch_mods.apply(ctx, raw_input);
         }
     }
@@ -1029,6 +1084,11 @@ impl eframe::App for Shell {
         if app.sync_mcp_link(ui.ctx()) {
             ui.ctx().request_repaint();
         }
+        // A large drawing being opened off the interface's thread (#2849).
+        if app.poll_opening() {
+            ui.ctx()
+                .request_repaint_after(std::time::Duration::from_millis(50));
+        }
         // An answer from GitHub (File > GitHub).
         if app.poll_github() {
             ui.ctx()
@@ -1044,12 +1104,19 @@ impl eframe::App for Shell {
             ui.ctx()
                 .request_repaint_after(std::time::Duration::from_millis(100));
         }
+        // Curves from the vectorization service (Vectorize with AI).
+        if app.poll_ai_vectorize() {
+            ui.ctx()
+                .request_repaint_after(std::time::Duration::from_millis(100));
+        }
         // A Picture Mosaic library indexed on worker threads.
         if app.poll_picture_mosaic_index() {
             ui.ctx()
                 .request_repaint_after(std::time::Duration::from_millis(100));
         }
+        frame_mark("before the interface");
         ui::root(app, ui);
+        frame_mark("the dialogs");
         // The frame around the safe area (#1917).
         ui::screen_margins::paint(ui.ctx(), &app.settings);
         // The emulator check's typing test (Android, soft_keyboard.rs).

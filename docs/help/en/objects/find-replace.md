@@ -47,5 +47,11 @@ search covers the current page. To name objects, see
 A fill colour looked for is replaced wherever it is used, in gradients
 too. Locked objects are left as they are.
 
+A new font can go to every character, or with **Numbers only** only
+to the numbers (to set the digits of a text in another font) or with
+**Letters only** only to the letters. **Digits to 0-9** writes
+the digits of other scripts, such as Arabic-Indic or Devanagari digits,
+as 0 to 9 and leaves the letters alone.
+
 For every option, how colors are compared and what each replacement does,
 see [Finding and replacing by properties](find-by-properties.md).

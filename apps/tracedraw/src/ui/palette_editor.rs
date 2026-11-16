@@ -62,6 +62,9 @@ pub struct PaletteEditorState {
     last_edit: Option<Edit>,
     /// A swatch being dragged to another place.
     pub dragging: Option<usize>,
+    /// The selected colour is scrolled into view once, when the editor
+    /// opens on it.
+    pub reveal: bool,
 }
 
 impl PaletteEditorState {
@@ -69,6 +72,19 @@ impl PaletteEditorState {
     pub fn on(i: usize) -> Self {
         PaletteEditorState {
             palette: i,
+            ..Default::default()
+        }
+    }
+
+    /// The editor on palette `i` with its colour `color` selected, in
+    /// view, its name, value and spot ink ready to edit: a double click
+    /// on a palette swatch, as in the reference program (#2580).
+    pub fn on_color(i: usize, color: usize) -> Self {
+        PaletteEditorState {
+            palette: i,
+            selected: vec![color],
+            anchor: Some(color),
+            reveal: true,
             ..Default::default()
         }
     }
@@ -258,6 +274,24 @@ impl App {
         }
     }
 
+    /// [`Self::open_palette_editor`] with the palette's colour `color`
+    /// selected (#2580).
+    pub fn open_palette_editor_at(&mut self, i: usize, color: usize) {
+        let len = if i == DOCUMENT {
+            self.has_document().then(|| self.doc().palette.len())
+        } else {
+            self.palettes.get(i).map(|p| p.colors.len())
+        };
+        match len {
+            Some(n) if color < n => {
+                self.dialog = crate::ui::dialogs::Dialog::PaletteEditor(
+                    PaletteEditorState::on_color(i, color),
+                );
+            }
+            _ => self.open_palette_editor(i),
+        }
+    }
+
     /// Give the user's palette `i` these colours (OK or Apply in the
     /// editor, Delete Color on a bar): its file is saved again, the
     /// palettes made in TraceDraw are kept, its bar shows them. False for
@@ -332,18 +366,80 @@ impl App {
         changed
     }
 
-    /// OK or Apply on the document palette: its colours go to the drawing
-    /// as one undo step (Edit > Undo takes them back), its name to the
-    /// settings as Rename gives it. The colours carry no names of their
-    /// own; a spot colour goes by its ink's (#2321).
+    /// OK or Apply on the document palette: its colours, the names given
+    /// to them and the inks of its spot colours go to the drawing as one
+    /// undo step (Edit > Undo takes them back), its name to the settings
+    /// as Rename gives it. A spot colour goes by its ink's name, so a new
+    /// name renames the ink and a colour made a spot colour adds its ink
+    /// (#2187, #2321); a process colour's name is kept with the drawing.
     fn apply_document_palette_draft(&mut self, d: &Draft) -> bool {
+        use tracedraw_core::document::{Ink, PaletteName};
+        use tracedraw_core::Command;
         if !self.has_document() {
             return false;
         }
         let mut changed = false;
         let colors: Vec<Color> = d.colors.iter().map(|(_, c)| *c).collect();
+        let mut inks = self.doc().inks.clone();
+        let mut names: Vec<PaletteName> = Vec::new();
+        for (name, c) in &d.colors {
+            let name = name.trim();
+            match *c {
+                Color::Spot {
+                    ink,
+                    c: cc,
+                    m,
+                    y,
+                    k,
+                    ..
+                } => {
+                    let taken = |inks: &[Ink]| inks.iter().any(|i| i.id != ink && i.name == name);
+                    match inks.iter().position(|i| i.id == ink) {
+                        Some(at) => {
+                            if !name.is_empty() && inks[at].name != name && !taken(&inks) {
+                                inks[at].name = name.to_string();
+                            }
+                        }
+                        None => inks.push(Ink {
+                            id: ink,
+                            name: if name.is_empty() || taken(&inks) {
+                                format!("Spot {ink:08x}")
+                            } else {
+                                name.to_string()
+                            },
+                            cmyk: [cc, m, y, k],
+                        }),
+                    }
+                }
+                other => {
+                    // Only a name of its own: one a palette gives the
+                    // colour anyway is not kept twice.
+                    if !name.is_empty()
+                        && name != crate::ui::palette::palette_name_of(self, other)
+                        && !names.iter().any(|n| n.color == other)
+                    {
+                        names.push(PaletteName {
+                            color: other,
+                            name: name.to_string(),
+                        });
+                    }
+                }
+            }
+        }
+        let mut cmds = Vec::new();
         if colors != self.doc().palette {
-            self.run(tracedraw_core::Command::SetDocumentPalette { colors });
+            cmds.push(Command::SetDocumentPalette { colors });
+        }
+        if inks != self.doc().inks {
+            cmds.push(Command::SetInks { inks });
+        }
+        if names != self.doc().palette_names {
+            cmds.push(Command::SetDocumentPaletteNames { names });
+        }
+        if !cmds.is_empty() {
+            if let Err(e) = self.engine.run_batch("Document Palette", &cmds) {
+                self.status = e.to_string();
+            }
             self.doc_palette_current = None;
             changed = true;
         }
@@ -413,9 +509,17 @@ pub fn dialog(app: &mut App, ctx: &Context, st: &mut PaletteEditorState, close: 
         return;
     }
     if st.draft.as_ref().is_none_or(|d| d.of != st.palette) {
+        // Opened on a colour (a double click on a swatch, #2580), the
+        // editor keeps it selected; another palette chosen starts with
+        // none.
+        let opening = st.draft.is_none();
         st.draft = app.palette_draft(st.palette);
-        st.selected.clear();
-        st.anchor = None;
+        let n = st.draft.as_ref().map_or(0, |d| d.colors.len());
+        if !opening || st.selected.iter().any(|&i| i >= n) {
+            st.selected.clear();
+            st.anchor = None;
+            st.reveal = false;
+        }
         st.undo.clear();
         st.last_edit = None;
         st.dragging = None;
@@ -686,6 +790,9 @@ fn swatch_grid(ui: &mut egui::Ui, st: &mut PaletteEditorState, read_only: bool) 
                     crate::ui::palette::spot_mark(ui.painter(), rect, *c);
                 }
                 if st.selected.contains(&i) {
+                    if st.reveal {
+                        ui.scroll_to_rect(rect, Some(egui::Align::Center));
+                    }
                     ui.painter().rect_stroke(
                         rect,
                         2.0,
@@ -712,6 +819,7 @@ fn swatch_grid(ui: &mut egui::Ui, st: &mut PaletteEditorState, read_only: bool) 
                 }
             }
         });
+    st.reveal = false;
     if let Some(i) = clicked {
         click(
             &mut st.selected,
@@ -762,12 +870,11 @@ fn selected_row(ui: &mut egui::Ui, st: &mut PaletteEditorState, read_only: bool,
             };
             ui.horizontal(|ui| {
                 let mut new_name = name.clone();
-                // The document palette keeps no names of its own and its
-                // spot colours are the drawing's inks: there a name is
-                // shown only, and a spot colour is changed with its ink
-                // (#2321).
+                // In the document palette too a colour is named and made a
+                // spot colour (#2187): a spot colour's name is its ink's,
+                // which OK renames; its value changes with the ink (#2321).
                 let was_spot = matches!(c, Color::Spot { .. });
-                let names = !read_only && !document;
+                let names = !read_only;
                 let renamed = ui
                     .add_enabled(names, egui::TextEdit::singleline(&mut new_name))
                     .rich_tip(crate::ui::tips::pair(
@@ -811,7 +918,13 @@ fn selected_row(ui: &mut egui::Ui, st: &mut PaletteEditorState, read_only: bool,
                     };
                     st.remember(if toggled { None } else { Some(edit) });
                     let base = if changed { edited } else { c };
-                    let value = crate::ui::dialogs::palette_entry_color(&new_name, base, spot);
+                    // A document spot colour renamed keeps its ink: the
+                    // objects that use the ink go by its number.
+                    let value = if document && was_spot && spot {
+                        base
+                    } else {
+                        crate::ui::dialogs::palette_entry_color(&new_name, base, spot)
+                    };
                     if let Some(e) = st.draft.as_mut().and_then(|d| d.colors.get_mut(i)) {
                         *e = (new_name, value);
                     }
@@ -1039,6 +1152,63 @@ mod tests {
         app.open_palette_editor(DOCUMENT);
         assert!(matches!(app.dialog, Dialog::None));
         assert!(app.palette_draft(DOCUMENT).is_none());
+    }
+
+    /// In the document palette a colour is renamed and made a spot colour
+    /// (#2187, the name and Spot colour were greyed there): a process
+    /// colour's name stays with the drawing, a colour made a spot colour
+    /// brings its ink, a spot colour renamed renames its ink (the objects
+    /// using it keep it), all in one undo step.
+    #[test]
+    fn document_colours_are_renamed_and_made_spot_colours() {
+        let mut app = App::headless();
+        app.show_welcome = false;
+        let blue = Color::rgb8(0, 0, 255);
+        let green = Color::rgb8(0, 160, 0);
+        app.add_to_document_palette(red());
+        app.add_to_document_palette(blue);
+        app.add_to_document_palette(green);
+        let ink =
+            crate::ui::color_docker::add_ink(&mut app, "Gold".into(), Color::rgb8(200, 160, 0));
+        let gold = app.doc().ink(ink).expect("the ink").color(1.0);
+        app.add_to_document_palette(gold);
+        let mut d = app.palette_draft(DOCUMENT).expect("draft");
+        assert_eq!(d.colors[3].0, "Gold");
+        let steps = app.engine.history_labels().0.len();
+        // Blue named, green made a spot colour, Gold renamed.
+        d.colors[1].0 = "Sky".into();
+        let spot = crate::ui::dialogs::palette_entry_color("Leaf", green, true);
+        d.colors[2] = ("Leaf".into(), spot);
+        d.colors[3].0 = "Old gold".into();
+        assert!(app.apply_palette_draft(&d));
+        assert_eq!(app.engine.history_labels().0.len(), steps + 1);
+        assert_eq!(app.doc().palette_name_of(blue), Some("Sky"));
+        assert_eq!(crate::ui::palette::name_of(&app, blue), "Sky");
+        let Color::Spot { ink: leaf, .. } = spot else {
+            panic!("{spot:?}");
+        };
+        assert_eq!(app.doc().ink(leaf).map(|i| i.name.as_str()), Some("Leaf"));
+        assert_eq!(app.doc().palette[2], spot);
+        assert_eq!(
+            app.doc().ink(ink).map(|i| i.name.as_str()),
+            Some("Old gold")
+        );
+        assert_eq!(app.doc().palette[3], gold, "the ink keeps its number");
+        // The editor shows them so, and applied again nothing changes.
+        let again = app.palette_draft(DOCUMENT).expect("draft");
+        let names: Vec<_> = again.colors.iter().map(|(n, _)| n.as_str()).collect();
+        assert_eq!(names[1..], ["Sky", "Leaf", "Old gold"]);
+        assert!(!app.apply_palette_draft(&again));
+        // Kept with the drawing.
+        let json = app.doc().to_json().expect("json");
+        let back = tracedraw_core::Document::from_json(&json).expect("reads");
+        assert_eq!(back.palette_name_of(blue), Some("Sky"));
+        // One undo takes it all back.
+        app.undo();
+        assert_eq!(app.doc().palette_name_of(blue), None);
+        assert!(app.doc().ink(leaf).is_none());
+        assert_eq!(app.doc().ink(ink).map(|i| i.name.as_str()), Some("Gold"));
+        assert_eq!(app.doc().palette[2], green);
     }
 
     /// The editor's own buttons: Move Up and Down, a drag, a rename, and

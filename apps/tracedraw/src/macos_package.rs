@@ -249,8 +249,19 @@ mod tests {
                 "a document type by extension only: {t:?}"
             );
             for ty in types {
+                // The pictures' content types the system declares
+                // itself (#2600).
+                let system_picture = [
+                    "public.png",
+                    "public.jpeg",
+                    "public.tiff",
+                    "com.microsoft.bmp",
+                    "com.compuserve.gif",
+                    "org.webmproject.webp",
+                ]
+                .contains(&ty);
                 assert!(
-                    declared.contains(&ty) || ty.starts_with("com.apple."),
+                    declared.contains(&ty) || ty.starts_with("com.apple.") || system_picture,
                     "{ty} is not declared"
                 );
             }

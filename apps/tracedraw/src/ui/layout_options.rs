@@ -525,18 +525,7 @@ fn drawing_scale_fields(app: &mut App, ui: &mut Ui, meta: &mut Metadata) {
                     "options.typical_scales_tip",
                 ));
             if let Some(p) = pick {
-                // A ratio keeps the units in use; inch and foot scales
-                // bring theirs.
-                let (pu, wu) = if p.page_unit == Units::Inches {
-                    (p.page_unit, p.world_unit)
-                } else {
-                    (page_unit, world_unit)
-                };
-                let world = p.ratio() * pu.to_mm(p.page) / wu.mm();
-                ds::set(r, p.page, pu, world, wu);
-                if wu != world_unit || p.page_unit == Units::Inches {
-                    new_units = Some(wu);
-                }
+                new_units = ds::apply_preset(r, &p);
             }
             ui.end_row();
             row_label(ui, "options.page_distance");
@@ -1074,7 +1063,7 @@ pub fn apply_presets(app: &mut App, form: &PresetForm) {
 
 /// Text for a guideline in the lists: its position from the ruler origin
 /// (and angle).
-fn guide_text(app: &App, g: &Guide) -> String {
+pub(crate) fn guide_text(app: &App, g: &Guide) -> String {
     let u = app.units;
     let (o, _) = g.line.point_and_direction();
     let r = app.to_ruler(o);

@@ -263,6 +263,19 @@ and PostScript a Separation colour space with the ink's name and its
 process stand-in, and SVG, which has no spot colours, writes the colour
 and `data-spot-stroke="CutContour"` (`data-spot-fill` for a fill).
 
+**Bleed** (0 mm at first, up to 20 mm) adds, behind each object, a copy
+of its outer shape grown by that much, filled with the object's own
+colour (its fill, a fountain's first colour, a group member's fill, else
+its outline colour) and with no outline, named Bleed, so a print that
+shifts a little against the cut still runs past the line (#2098).
+**Merge overlaps** cuts each object, or each group, along the
+outer edge of all its parts welded: the objects keep their own outline,
+and a new path named Cut line, above them, carries the CutContour
+outline. A group always gets one such line round all its members, so
+the knife does not cut between overlapping parts. Both come in the same
+undo step and show in the preview (#2098,
+`tracecut_cut::tests::bleed_and_merged_cut_line_go_round_the_outer_shape`).
+
 ### Registration Marks
 
 Filled black marks a cutter's optical sensor finds, added on OK as one
@@ -433,6 +446,9 @@ first), added as a group named Eyelets. The geometry is
   from the edge to an eyelet's centre); an eyelet in each of its four
   corners and more along its sides. An inset deeper than half the box
   puts the eyelets on its middle line.
+  The **placement** buttons (as in Banner Hems and Eyelets) choose the
+  corners and each side: bottom, top, left, right; a side takes its two
+  ends too. All are on at first (#2759).
 - **Along each closed curve**: every closed outline of the selection is
   offset inward by the distance from the edge (the offset Contour
   uses); an eyelet goes on every corner of the result (a turn sharper
@@ -446,7 +462,11 @@ first), added as a group named Eyelets. The geometry is
   corners, `count` in all). They are spread evenly by length, and
   eyelets closer than 0.001 mm are one.
 
-The preview shows the circles; the status line counts them.
+The preview is live, as for the Measure tools: it changes as soon as a
+setting or the selection changes, without Apply. Each eyelet is drawn
+as a grommet at its size (a metal ring round the hole) on a dashed blue
+line, the box or curve the centres follow (#2759); the status line
+counts them. OK adds the hairline circles of the holes.
 
 ### Box Maker
 
@@ -548,3 +568,16 @@ pass. CNC Toolpath cuts the open grooves on the line and the closed
 outlines outside or inside; Cut Order and Plotter Output take them as
 they take any outline. The status line gives the flat size and counts
 the grooves and cut lines.
+
+### Cutting Grid
+
+A grid of cut lines to cut a sheet into equal pieces (#2098): a frame
+with **columns** and **rows** of cells (4 by 4 at first, up to 500
+each), the outer frame first, then the inner lines down and across, as
+a group named Cutting grid. With **Size of the selection** (on at first) the
+grid takes the size of the selected objects' box and lies on it, so
+stickers or labels set out in rows are cut apart; without a selection,
+or with it off, it is **width** by **height** (100 mm at first, 1 mm to
+5 m), centred on the selection or on the page. The preview shows it
+live; the status line gives the cells and the size
+(`tracecut_make::tests::the_cutting_grid_goes_round_the_selection_in_one_step`).

@@ -13,6 +13,7 @@ panel [[docker.bevel]]; buka dengan [[menu.effects > menu.effects.bevel]].
    - [[docker.soft_edge]]: tepi melandai ke dalam objek, terang di satu sisi
      dan berbayang di sisi lain;
    - [[docker.emboss]]: objek tampak menonjol keluar dari halaman.
+   - [[docker.bevel_center]]: Pita bevel setengah di dalam dan setengah di luar garis tepi.
 3. Atur tampilan bevel:
    - [[docker.depth]]: seberapa jauh bevel menjangkau dari tepi, ke dalam
      objek pada tepi lembut dan ke luar pada timbul;
@@ -21,6 +22,7 @@ panel [[docker.bevel]]; buka dengan [[menu.effects > menu.effects.bevel]].
      dengan halus dari tepi ke dalam;
    - [[docker.light_angle]]: arah datangnya cahaya;
    - [[docker.intensity]]: kekuatan cahaya dan bayangan;
+   - [[docker.bevel_smooth_light]]: Cahaya jatuh mengelilingi tepi menurut arah, setiap bagian seterang hadapannya ke cahaya, bukan dua bagian.
    - [[docker.light_color]] dan [[docker.shadow_color]]: warna sisi yang
      terang dan sisi yang berbayang;
    - [[docker.emboss_color]]: warna dasar tempat bevel diberi nada. Centang

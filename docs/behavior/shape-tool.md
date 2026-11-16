@@ -217,7 +217,9 @@ round their corners with their own handles either way.
   (`r = d / (1 / sin(theta / 2) - 1)` for a corner of angle `theta`), at
   most the largest radius every rounded corner still fits (a side two
   rounded corners share is split between them). Dragging back takes the
-  rounding back off. The status bar shows the radius. With a curved
+  rounding back off. The status bar shows the radius, and so does a
+  small dark tag beside the pointer while it drags ("Radius: 3.00 mm",
+  "Distance" for a scallop or chamfer), where the eye is (#1147). With a curved
   side the arc is the circle of that radius tangent to both sides (see
   `corners-and-joins.md`), so its middle lies nearer the corner or
   further than the pointer, and the largest radius is the largest

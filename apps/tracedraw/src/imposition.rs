@@ -257,6 +257,8 @@ pub fn booklet_sides(pages: usize, b: &Booklet) -> Vec<BookletSide> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Marks {
     pub crop: bool,
+    /// Short lines on the bleed's edges, beyond the corners (#2197).
+    pub bleed: bool,
     pub registration: bool,
     pub color_bars: bool,
     pub densitometer: bool,
@@ -268,11 +270,55 @@ pub struct Marks {
 impl Marks {
     pub fn any(self) -> bool {
         self.crop
+            || self.bleed
             || self.registration
             || self.color_bars
             || self.densitometer
             || self.page_info
             || self.page_numbers
+    }
+}
+
+/// How the crop marks are drawn (mm): each line's length, the gap
+/// between it and the page's edge (beyond the bleed), its width, and
+/// whether marks also go in the gaps between the pages.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CropStyle {
+    pub length: f64,
+    pub offset: f64,
+    pub width: f64,
+    pub between: bool,
+}
+
+impl Default for CropStyle {
+    fn default() -> Self {
+        CropStyle {
+            length: 5.0,
+            offset: 1.5,
+            width: 0.1,
+            between: false,
+        }
+    }
+}
+
+impl CropStyle {
+    /// Each value kept where the marks fit in the room kept for them.
+    pub fn clamped(self) -> Self {
+        let num = |v: f64, lo: f64, hi: f64, d: f64| {
+            if v.is_finite() {
+                v.clamp(lo, hi)
+            } else {
+                d
+            }
+        };
+        let d = CropStyle::default();
+        let offset = num(self.offset, 0.0, 6.0, d.offset);
+        CropStyle {
+            offset,
+            length: num(self.length, 1.0, MARK_MARGIN - offset, d.length),
+            width: num(self.width, 0.02, 1.0, d.width),
+            between: self.between,
+        }
     }
 }
 
@@ -315,12 +361,24 @@ pub struct Options {
     /// Every page turned about its middle on the sheet, degrees
     /// counter-clockwise (0 for none): Print Preview's Rotation.
     pub page_rotation: f64,
+    /// A further turn of the page in each place of the sheet, degrees
+    /// counter-clockwise, by the place's number (0 the first, across the
+    /// rows; missing ones 0): Print Preview's Rotation for the page
+    /// chosen on the sheet, the same place on every sheet (#2587).
+    pub cell_rotation: Vec<f64>,
+    /// The pages moved between the places of the sheet, the same on
+    /// every sheet: place `n` takes the page the layout puts in place
+    /// `cell_order[n]` (see [`place_order`]; empty for none): Print
+    /// Preview's Arrange pages.
+    pub cell_order: Vec<usize>,
     /// On a fixed sheet the pages stretch to fill the room inside the
     /// margins, width and height each on its own (#591).
     pub stretch_fit: bool,
     /// The binding, creep and gap of the Booklet layout.
     pub booklet: Booklet,
     pub marks: Marks,
+    /// How the crop marks are drawn.
+    pub crop: CropStyle,
     /// The drawing's name and the moment, for the page information.
     pub title: String,
     pub when: String,
@@ -343,13 +401,25 @@ impl Default for Options {
             page_offset: (0.0, 0.0),
             page_stretch: (1.0, 1.0),
             page_rotation: 0.0,
+            cell_rotation: Vec::new(),
+            cell_order: Vec::new(),
             stretch_fit: false,
             booklet: Booklet::default(),
             marks: Marks::default(),
+            crop: CropStyle::default(),
             title: String::new(),
             when: String::new(),
         }
     }
+}
+
+/// The start of the name of a page's clip frame on a sheet, before its
+/// place number (see [`cell_of`]).
+pub const CELL_NAME: &str = "cell ";
+
+/// The place on the sheet of a page's clip frame [`impose`] made.
+pub fn cell_of(s: &Shape) -> Option<usize> {
+    s.name.as_deref()?.strip_prefix(CELL_NAME)?.parse().ok()
 }
 
 /// Room around the pages for the marks, in mm (and the bleed beyond it).
@@ -381,6 +451,36 @@ pub fn booklet_order(pages: usize) -> Vec<(Option<usize>, Option<usize>)> {
         .into_iter()
         .map(|s| (s.left, s.right))
         .collect()
+}
+
+/// Where each of `n` places takes its page from: `order` for the places
+/// it names when it is an arrangement of them (each place once), the
+/// rest (or all, for any other list) their own.
+pub fn place_order(order: &[usize], n: usize) -> Vec<usize> {
+    let mut out: Vec<usize> = (0..n).collect();
+    let k = order.len();
+    let mut seen = vec![false; k];
+    let whole = k <= n
+        && order
+            .iter()
+            .all(|&i| i < k && !std::mem::replace(&mut seen[i], true));
+    if whole {
+        out[..k].copy_from_slice(order);
+    }
+    out
+}
+
+/// Swap the pages in places `a` and `b` of `order` (see
+/// [`Options::cell_order`]); an order back to the layout's own is
+/// emptied.
+pub fn swap_places(order: &mut Vec<usize>, a: usize, b: usize) {
+    let n = order.len().max(a + 1).max(b + 1);
+    let mut o = place_order(order, n);
+    o.swap(a, b);
+    while o.last().is_some_and(|&i| i + 1 == o.len()) {
+        o.pop();
+    }
+    *order = o;
 }
 
 /// Plan the sheets for pages of `sizes`.
@@ -426,6 +526,20 @@ pub fn plan(sizes: &[Size], o: &Options) -> Vec<SheetPlan> {
             .map(|i| vec![Some(i); (cols * rows) as usize])
             .collect(),
     };
+    // The pages moved between places (Arrange pages).
+    let sheets: Vec<Vec<Option<usize>>> = if o.cell_order.is_empty() {
+        sheets
+    } else {
+        sheets
+            .into_iter()
+            .map(|cells| {
+                place_order(&o.cell_order, cells.len())
+                    .into_iter()
+                    .map(|i| cells[i])
+                    .collect()
+            })
+            .collect()
+    };
     let margin = if o.marks.any() { MARK_MARGIN } else { 0.0 } + o.bleed.max(0.0);
     let pm = o
         .paper_margins
@@ -442,23 +556,40 @@ pub fn plan(sizes: &[Size], o: &Options) -> Vec<SheetPlan> {
             o.bleed.max(0.0),
         ),
     };
+    // The turn of the page in each place of the sheet (radians,
+    // counter-clockwise), and the box round a page so turned.
+    let finite = |v: f64| if v.is_finite() { v } else { 0.0 };
+    let turn_at = |n: usize| {
+        let own = o.cell_rotation.get(n).map_or(0.0, |&t| finite(t));
+        (finite(o.page_rotation) + own).to_radians()
+    };
+    let turned = |s: Size, turn: f64| {
+        let (sin, cos) = turn.sin_cos();
+        let (sin, cos) = (snap(sin.abs()), snap(cos.abs()));
+        Size::new(
+            s.width * cos + s.height * sin,
+            s.width * sin + s.height * cos,
+        )
+    };
     sheets
         .iter()
         .enumerate()
         .map(|(side, cells)| {
             let creep = creep.get(side).copied().unwrap_or(0.0);
-            // The cell size: the largest page on this sheet.
+            // The cell size: the largest page on this sheet, as turned in
+            // its place, so a turned page keeps the gaps and its room
+            // (#2660).
             let cell = cells
                 .iter()
-                .flatten()
-                .filter_map(|&i| sizes.get(i))
+                .enumerate()
+                .filter_map(|(n, p)| p.and_then(|i| sizes.get(i)).map(|s| turned(*s, turn_at(n))))
                 .fold(Size::new(0.0, 0.0), |a, s| {
                     Size::new(a.width.max(s.width), a.height.max(s.height))
                 });
             let cell = if cell.width > 0.0 && cell.height > 0.0 {
                 cell
             } else {
-                sizes[0]
+                turned(sizes[0], turn_at(0))
             };
             // Pages with their bleed, and the gaps between them.
             let step_x = cell.width + 2.0 * inner_bleed + gutter;
@@ -507,12 +638,11 @@ pub fn plan(sizes: &[Size], o: &Options) -> Vec<SheetPlan> {
             let ok = |v: f64, d: f64| if v.is_finite() { v } else { d };
             let (ox, oy) = (ok(ox, 0.0), ok(oy, 0.0));
             let (kx, ky) = (ok(kx, 1.0).max(0.01), ok(ky, 1.0).max(0.01));
-            let turn = ok(o.page_rotation, 0.0).to_radians();
-            let (sin, cos) = turn.sin_cos();
             let cells = cells
                 .iter()
                 .enumerate()
                 .map(|(n, page)| {
+                    let turn = turn_at(n);
                     let col = n as u32 % cols;
                     let col = if o.back_side { cols - 1 - col } else { col } as f64;
                     let row = (n as u32 / cols) as f64;
@@ -527,8 +657,12 @@ pub fn plan(sizes: &[Size], o: &Options) -> Vec<SheetPlan> {
                     let (w, h) = (ps.width * sx * kx, ps.height * sy * ky);
                     // The page turned about its middle; its trim is the
                     // box round the turned page.
-                    let (bw, bh) = (w * cos.abs() + h * sin.abs(), w * sin.abs() + h * cos.abs());
-                    let trim = Rect::new(cx - bw / 2.0, cy - bh / 2.0, cx + bw / 2.0, cy + bh / 2.0);
+                    let Size {
+                        width: bw,
+                        height: bh,
+                    } = turned(Size::new(w, h), turn);
+                    let trim =
+                        Rect::new(cx - bw / 2.0, cy - bh / 2.0, cx + bw / 2.0, cy + bh / 2.0);
                     let transform = if turn == 0.0 {
                         Affine::translate((cx - w / 2.0, cy - h / 2.0))
                             * Affine::scale_non_uniform(sx * kx, sy * ky)
@@ -548,6 +682,18 @@ pub fn plan(sizes: &[Size], o: &Options) -> Vec<SheetPlan> {
             SheetPlan { size, cells }
         })
         .collect()
+}
+
+/// A sine or cosine a hair off 0 or 1 taken as it, so a quarter turn
+/// swaps a page's width and height exactly.
+fn snap(v: f64) -> f64 {
+    if v < 1e-12 {
+        0.0
+    } else if 1.0 - v < 1e-12 {
+        1.0
+    } else {
+        v
+    }
 }
 
 /// Whether a page of the plan runs off its sheet (pages kept at their
@@ -587,6 +733,14 @@ fn rect_shape(r: Rect, color: Color) -> Shape {
 /// Crop marks: at every cut line, short lines in the margin outside the
 /// pages (so they never fall on a neighbouring page).
 pub fn crop_marks(cells: &[Cell], bleed: f64) -> BezPath {
+    crop_marks_styled(cells, bleed, CropStyle::default())
+}
+
+/// Crop marks drawn as `style` says: outside the pages, and with
+/// `between` also at each page's corners in the gaps between the pages,
+/// wherever a mark stays clear of every other page and its bleed.
+pub fn crop_marks_styled(cells: &[Cell], bleed: f64, style: CropStyle) -> BezPath {
+    let style = style.clamped();
     let mut p = BezPath::new();
     let trims: Vec<Rect> = cells
         .iter()
@@ -596,8 +750,8 @@ pub fn crop_marks(cells: &[Cell], bleed: f64) -> BezPath {
     let Some(all) = trims.iter().copied().reduce(|a, b| a.union(b)) else {
         return p;
     };
-    let gap = bleed.max(0.0) + 1.5;
-    let len = 5.0;
+    let gap = bleed.max(0.0) + style.offset;
+    let len = style.length;
     let mut xs: Vec<f64> = trims.iter().flat_map(|r| [r.x0, r.x1]).collect();
     let mut ys: Vec<f64> = trims.iter().flat_map(|r| [r.y0, r.y1]).collect();
     for v in [&mut xs, &mut ys] {
@@ -615,6 +769,62 @@ pub fn crop_marks(cells: &[Cell], bleed: f64) -> BezPath {
         p.line_to((all.x0 - gap - len, y));
         p.move_to((all.x1 + gap, y));
         p.line_to((all.x1 + gap + len, y));
+    }
+    if style.between {
+        let clear = |a: Point, b: Point, own: usize| {
+            let seg = Rect::from_points(a, b).inflate(1e-6, 1e-6);
+            trims.iter().enumerate().all(|(i, t)| {
+                let t = t.inflate(bleed.max(0.0), bleed.max(0.0));
+                i == own || seg.intersect(t).area() <= 0.0 && !t.contains(a) && !t.contains(b)
+            })
+        };
+        let mut seg = |a: Point, b: Point, own: usize| {
+            // Not on the sheet's outer marks, nor inside the pages.
+            let outside = |q: Point| {
+                q.x < all.x0 - 1e-6
+                    || q.x > all.x1 + 1e-6
+                    || q.y < all.y0 - 1e-6
+                    || q.y > all.y1 + 1e-6
+            };
+            if !outside(a) && !outside(b) && clear(a, b, own) {
+                p.move_to(a);
+                p.line_to(b);
+            }
+        };
+        for (i, r) in trims.iter().enumerate() {
+            for (x, sx) in [(r.x0, -1.0), (r.x1, 1.0)] {
+                for (y, sy) in [(r.y0, -1.0), (r.y1, 1.0)] {
+                    // The vertical line beyond the corner, then the
+                    // horizontal one.
+                    let y0 = y + sy * gap;
+                    seg(Point::new(x, y0), Point::new(x, y0 + sy * len), i);
+                    let x0 = x + sx * gap;
+                    seg(Point::new(x0, y), Point::new(x0 + sx * len, y), i);
+                }
+            }
+        }
+    }
+    p
+}
+
+/// Bleed marks (#2197): where the bleed around `content` ends, short
+/// lines in the margin beyond it, from the bleed's edge out, starting
+/// as far out as the crop marks so the two never touch the bleed.
+pub fn bleed_marks(content: Rect, bleed: f64) -> BezPath {
+    let mut p = BezPath::new();
+    let b = content.inflate(bleed, bleed);
+    let (gap, len) = (1.5, 3.5);
+    for x in [b.x0, b.x1] {
+        p.move_to((x, b.y1 + gap));
+        p.line_to((x, b.y1 + gap + len));
+        p.move_to((x, b.y0 - gap));
+        p.line_to((x, b.y0 - gap - len));
+    }
+    for y in [b.y0, b.y1] {
+        p.move_to((b.x0 - gap, y));
+        p.line_to((b.x0 - gap - len, y));
+        p.move_to((b.x1 + gap, y));
+        p.line_to((b.x1 + gap + len, y));
     }
     p
 }
@@ -659,11 +869,11 @@ pub fn marks(
     if m.crop {
         out.push(mark_shape(
             ShapeKind::Path {
-                path: crop_marks(&sheet.cells, bleed),
+                path: crop_marks_styled(&sheet.cells, bleed, o.crop),
                 closed: false,
             },
             Fill::None,
-            hair(0.1),
+            hair(o.crop.clamped().width),
         ));
         // A fold mark at a booklet's spine.
         if o.layout == Layout::Booklet {
@@ -693,6 +903,16 @@ pub fn marks(
                 out.push(fold);
             }
         }
+    }
+    if m.bleed && bleed > 0.0 {
+        out.push(mark_shape(
+            ShapeKind::Path {
+                path: bleed_marks(content, bleed),
+                closed: false,
+            },
+            Fill::None,
+            hair(0.1),
+        ));
     }
     if m.registration {
         let mut p = BezPath::new();
@@ -823,6 +1043,7 @@ pub fn page_marks(sizes: &[Size], names: &[String], o: &Options) -> Vec<Vec<Shap
         page_offset: (0.0, 0.0),
         page_stretch: (1.0, 1.0),
         page_rotation: 0.0,
+        cell_rotation: Vec::new(),
         paper_margins: [0.0; 4],
         ..o.clone()
     };
@@ -872,7 +1093,7 @@ pub fn impose(doc: &Document, o: &Options) -> Document {
     let total = plans.len();
     for (n, sheet) in plans.iter().enumerate() {
         let mut layer = Layer::new(out.ids_mut().layer(), "Sheet");
-        for cell in &sheet.cells {
+        for (ci, cell) in sheet.cells.iter().enumerate() {
             let Some(pi) = cell.page else {
                 continue;
             };
@@ -925,6 +1146,8 @@ pub fn impose(doc: &Document, o: &Options) -> Document {
                 None,
             );
             clip.transform = cell.transform;
+            // Its place on the sheet, for Print Preview to choose it.
+            clip.name = Some(format!("{CELL_NAME}{ci}"));
             layer.shapes.push(clip);
         }
         layer.shapes.extend(marks(sheet, o, n, total, &names));
@@ -948,6 +1171,210 @@ pub fn impose(doc: &Document, o: &Options) -> Document {
         }
     }
     out.set_ids(ids);
+    out
+}
+
+/// How a sheet larger than the paper is printed in tiles (a poster): the
+/// paper, its margins (left, right, top, bottom, mm) the printer cannot
+/// print on, how much each tile overlaps its neighbours, and whether
+/// trim marks and each tile's name ("A1": row letter, column number) go
+/// in the margins.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Tiling {
+    pub paper: Size,
+    pub margins: [f64; 4],
+    pub overlap: f64,
+    pub marks: bool,
+}
+
+impl Tiling {
+    /// The part of the paper printed on (mm, y up).
+    pub fn area(&self) -> Rect {
+        let [l, r, t, b] = self.margins.map(|v| v.max(0.0));
+        let w = (self.paper.width - l - r).max(1.0);
+        let h = (self.paper.height - t - b).max(1.0);
+        Rect::new(l, b, l + w, b + h)
+    }
+
+    /// The overlap, kept below half the printed part so that every tile
+    /// moves the poster on.
+    fn overlap_for(&self, area: Rect) -> f64 {
+        self.overlap
+            .max(0.0)
+            .min(area.width().min(area.height()) / 2.0)
+    }
+
+    /// How many tiles across and down a sheet of `size` takes.
+    pub fn count(&self, size: Size) -> (usize, usize) {
+        let a = self.area();
+        let o = self.overlap_for(a);
+        let n = |len: f64, step: f64| {
+            if len <= step + o + 1e-6 {
+                1
+            } else {
+                ((len - o) / step - 1e-9).ceil().max(1.0) as usize
+            }
+        };
+        (n(size.width, a.width() - o), n(size.height, a.height() - o))
+    }
+}
+
+/// The name of a tile: its row as letters (A, B, ... Z, AA) and its
+/// column as a number from 1.
+pub fn tile_name(row: usize, col: usize) -> String {
+    let mut letters = String::new();
+    let mut n = row + 1;
+    while n > 0 {
+        let d = (n - 1) % 26;
+        letters.insert(0, char::from(b'A' + d as u8));
+        n = (n - 1) / 26;
+    }
+    format!("{letters}{}", col + 1)
+}
+
+/// Every sheet of `doc` split into tiles of the paper, left to right
+/// and top to bottom: each tile shows its part of the sheet inside the
+/// paper's margins, overlapping its neighbours, the tiles' grid centred
+/// on the sheet. With marks, short lines in the margins show where to
+/// trim the overlap (its middle) and each tile carries its name. A
+/// sheet that fits the paper's printed part is one tile.
+pub fn tile_sheets(doc: &Document, t: &Tiling) -> Document {
+    let area = t.area();
+    let o = t.overlap_for(area);
+    let (step_x, step_y) = (area.width() - o, area.height() - o);
+    let mut out = doc.clone();
+    out.pages.clear();
+    let mut ids = out.ids().clone();
+    for (n, sheet) in doc.pages.iter().enumerate() {
+        let (nx, ny) = t.count(sheet.size);
+        // The grid's extent over the sheet, centred on it.
+        let gw = nx as f64 * step_x + o;
+        let gh = ny as f64 * step_y + o;
+        let left = (sheet.size.width - gw) / 2.0;
+        let top = sheet.size.height + (gh - sheet.size.height) / 2.0;
+        let contents: Vec<Shape> = sheet
+            .layers
+            .iter()
+            .filter(|l| l.visible)
+            .flat_map(|l| l.shapes.iter().cloned())
+            .collect();
+        for row in 0..ny {
+            for col in 0..nx {
+                let x0 = left + col as f64 * step_x;
+                let y1 = top - row as f64 * step_y;
+                let part = Rect::new(x0, y1 - area.height(), x0 + area.width(), y1);
+                let mut layer = Layer::new(ids.layer(), "Tile");
+                let frame = mark_shape(
+                    ShapeKind::Rect {
+                        rect: part,
+                        radius: 0.0,
+                        corners: None,
+                    },
+                    Fill::None,
+                    None,
+                );
+                let mut clip = mark_shape(
+                    ShapeKind::ClipFrame {
+                        frame: Box::new(frame),
+                        contents: contents.clone(),
+                    },
+                    Fill::None,
+                    None,
+                );
+                clip.transform = Affine::translate((area.x0 - part.x0, area.y0 - part.y0));
+                clip.name = Some(TILE_NAME.to_string());
+                layer.shapes.push(clip);
+                if t.marks {
+                    let near = [col > 0, col + 1 < nx, row + 1 < ny, row > 0];
+                    layer
+                        .shapes
+                        .extend(tile_marks(t, area, o, near, &tile_name(row, col)));
+                }
+                for s in layer.shapes.iter_mut() {
+                    renumber(s, &mut ids);
+                }
+                out.pages.push(Page {
+                    id: ids.page(),
+                    name: format!("{} {}", n + 1, tile_name(row, col)),
+                    size: t.paper,
+                    layers: vec![layer],
+                    guides: Vec::new(),
+                    background: None,
+                });
+            }
+        }
+    }
+    out.set_ids(ids);
+    out
+}
+
+/// The name of a tile's clip frame on its paper.
+pub const TILE_NAME: &str = "tile";
+
+/// A tile's marks: where to trim each overlap shared with a neighbour
+/// (`near`: left, right, below, above), as short lines in the margin
+/// (inside the printed edge when there is no margin), and its name.
+fn tile_marks(t: &Tiling, a: Rect, o: f64, near: [bool; 4], name: &str) -> Vec<Shape> {
+    let [ml, mr, mt, mb] = t.margins.map(|v| v.max(0.0));
+    let tick = |room: f64| {
+        if room >= 2.0 {
+            (room - 1.0).min(5.0)
+        } else {
+            -3.0
+        }
+    };
+    let mut p = BezPath::new();
+    let mut vline = |x: f64| {
+        let (up, down) = (tick(mt), tick(mb));
+        p.move_to((x, a.y1 + up.min(0.0)));
+        p.line_to((x, a.y1 + up.max(0.0)));
+        p.move_to((x, a.y0 - down.min(0.0)));
+        p.line_to((x, a.y0 - down.max(0.0)));
+    };
+    if near[0] {
+        vline(a.x0 + o / 2.0);
+    }
+    if near[1] {
+        vline(a.x1 - o / 2.0);
+    }
+    let mut hline = |y: f64, p: &mut BezPath| {
+        let (l, r) = (tick(ml), tick(mr));
+        p.move_to((a.x0 - l.min(0.0), y));
+        p.line_to((a.x0 - l.max(0.0), y));
+        p.move_to((a.x1 + r.min(0.0), y));
+        p.line_to((a.x1 + r.max(0.0), y));
+    };
+    if near[2] {
+        hline(a.y0 + o / 2.0, &mut p);
+    }
+    if near[3] {
+        hline(a.y1 - o / 2.0, &mut p);
+    }
+    let mut out = Vec::new();
+    if !p.elements().is_empty() {
+        out.push(mark_shape(
+            ShapeKind::Path {
+                path: p,
+                closed: false,
+            },
+            Fill::None,
+            Some(Stroke::new(Color::Registration, 0.2)),
+        ));
+    }
+    // The name in the bottom margin, else just inside the corner.
+    let y = if mb >= 3.0 { a.y0 - 2.5 } else { a.y0 + 1.0 };
+    out.push(mark_shape(
+        ShapeKind::Text {
+            spans: vec![TextSpan::new(name.to_string(), "DejaVu Sans", 6.0)],
+            origin: Point::new(a.x0 + 1.0, y),
+            frame: None,
+            align: tracedraw_core::document::TextAlign::Left,
+            para: Default::default(),
+            on_path: None,
+        },
+        Fill::Solid(Color::Registration),
+        None,
+    ));
     out
 }
 
@@ -1004,6 +1431,91 @@ mod tests {
             },
         );
         assert_eq!(fitted[0].size, Size::new(110.0, 110.0));
+    }
+
+    /// A page chosen on the sheet turns on its own (#2587): on a 2 x 2
+    /// sheet the top two pages upside down, the bottom two upright; the
+    /// same places turn on the next sheet, and each page's clip frame on
+    /// the imposed sheet names its place.
+    #[test]
+    fn a_place_on_the_sheet_turns_on_its_own() {
+        let page = Size::new(100.0, 140.0);
+        let o = Options {
+            layout: Layout::NUp { cols: 2, rows: 2 },
+            sheet: Some(Size::new(297.0, 420.0)),
+            cell_rotation: vec![180.0, 180.0],
+            ..Default::default()
+        };
+        let sheets = plan(&[page; 6], &o);
+        assert_eq!(sheets.len(), 2);
+        for sheet in &sheets {
+            for (n, c) in sheet
+                .cells
+                .iter()
+                .enumerate()
+                .filter(|(_, c)| c.page.is_some())
+            {
+                // The page's origin: its top right corner when turned.
+                let at = c.transform * Point::new(0.0, 0.0);
+                let near = |a: f64, b: f64| (a - b).abs() < 1e-6;
+                if n < 2 {
+                    assert!(
+                        near(at.x, c.trim.x1) && near(at.y, c.trim.y1),
+                        "{n}: {at:?}"
+                    );
+                } else {
+                    assert!(
+                        near(at.x, c.trim.x0) && near(at.y, c.trim.y0),
+                        "{n}: {at:?}"
+                    );
+                }
+            }
+        }
+        let mut doc = Document::new("D", page);
+        for _ in 0..3 {
+            let mut p = doc.pages[0].clone();
+            p.id = doc.ids_mut().page();
+            doc.pages.push(p);
+        }
+        let sheet = impose(&doc, &o);
+        let places: Vec<Option<usize>> = sheet.pages[0].layers[0]
+            .shapes
+            .iter()
+            .filter(|s| matches!(s.kind, ShapeKind::ClipFrame { .. }))
+            .map(cell_of)
+            .collect();
+        assert_eq!(places, vec![Some(0), Some(1), Some(2), Some(3)]);
+    }
+
+    /// #2660: cards repeated 2 x 2 with 5 mm between them and turned a
+    /// quarter keep 5 mm between them each way, side by side and one
+    /// above the other, and none overlaps the next. The grid was laid out
+    /// for the cards upright, so the turned ones stood far apart across
+    /// and ran into each other down the sheet, printing cut.
+    #[test]
+    fn turned_pages_keep_the_gaps_between_them() {
+        let card = Size::new(90.0, 50.0);
+        for turn in [90.0, 270.0, -90.0] {
+            for keep_size in [true, false] {
+                let o = Options {
+                    layout: Layout::Repeat { cols: 2, rows: 2 },
+                    sheet: Some(Size::new(210.0, 297.0)),
+                    gutter: 5.0,
+                    gutter_y: Some(5.0),
+                    keep_size,
+                    page_rotation: turn,
+                    ..Default::default()
+                };
+                let sheet = &plan(&[card], &o)[0];
+                let t: Vec<Rect> = sheet.cells.iter().map(|c| c.trim).collect();
+                let near = |a: f64, b: f64| (a - b).abs() < 1e-9;
+                let k = t[0].height() / card.width;
+                assert!(near(t[0].width(), card.height * k), "{turn} {:?}", t[0]);
+                assert!(near(t[1].x0 - t[0].x1, 5.0 * k), "{turn} across {t:?}");
+                assert!(near(t[0].y0 - t[2].y1, 5.0 * k), "{turn} down {t:?}");
+                assert!(!overflows(&[sheet.clone()]), "{turn}");
+            }
+        }
     }
 
     /// A turn of 90 degrees swaps the trim's width and height about the
@@ -1309,6 +1821,142 @@ mod tests {
     }
 
     #[test]
+    fn arranged_places_take_their_pages_on_every_sheet() {
+        assert_eq!(place_order(&[], 3), vec![0, 1, 2]);
+        assert_eq!(place_order(&[1, 0], 4), vec![1, 0, 2, 3]);
+        // Not an arrangement, or longer than the places: as laid out.
+        assert_eq!(place_order(&[1, 1], 3), vec![0, 1, 2]);
+        assert_eq!(place_order(&[0, 2], 3), vec![0, 1, 2]);
+        assert_eq!(place_order(&[1, 0, 2], 2), vec![0, 1]);
+        let mut order = Vec::new();
+        swap_places(&mut order, 0, 3);
+        assert_eq!(order, vec![3, 1, 2, 0]);
+        swap_places(&mut order, 1, 2);
+        assert_eq!(order, vec![3, 2, 1, 0]);
+        swap_places(&mut order, 1, 2);
+        swap_places(&mut order, 3, 0);
+        assert!(order.is_empty(), "back to the layout's own");
+        // Two up on a sheet of five pages of different sizes: the pages
+        // trade places, each with its own size, on every sheet.
+        let a4 = Size::new(210.0, 297.0);
+        let sizes = [A5, a4, A5, a4, A5];
+        let o = Options {
+            layout: Layout::NUp { cols: 2, rows: 1 },
+            ..Default::default()
+        };
+        let pages = |o: &Options| -> Vec<Vec<Option<usize>>> {
+            plan(&sizes, o)
+                .iter()
+                .map(|s| s.cells.iter().map(|c| c.page).collect())
+                .collect()
+        };
+        assert_eq!(
+            pages(&o),
+            vec![
+                vec![Some(0), Some(1)],
+                vec![Some(2), Some(3)],
+                vec![Some(4), None]
+            ]
+        );
+        let swapped = Options {
+            cell_order: vec![1, 0],
+            ..o.clone()
+        };
+        assert_eq!(
+            pages(&swapped),
+            vec![
+                vec![Some(1), Some(0)],
+                vec![Some(3), Some(2)],
+                vec![None, Some(4)]
+            ]
+        );
+        let plan = plan(&sizes, &swapped);
+        let first = &plan[0].cells;
+        assert!(first[0].trim.x1 <= first[1].trim.x0 + 1e-9);
+        assert!((first[0].trim.width() - a4.width).abs() < 1e-9);
+        assert!((first[1].trim.width() - A5.width).abs() < 1e-9);
+    }
+
+    #[test]
+    fn crop_marks_take_their_style_and_go_between_pages() {
+        let seg = |p: &BezPath| {
+            p.elements()
+                .iter()
+                .filter(|e| matches!(e, tracedraw_core::geometry::PathEl::MoveTo(_)))
+                .count()
+        };
+        let o = |gutter: f64| Options {
+            layout: Layout::Repeat { cols: 3, rows: 2 },
+            gutter,
+            marks: Marks {
+                crop: true,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let card = Size::new(85.0, 55.0);
+        let wide = plan(&[card], &o(20.0));
+        let style = CropStyle {
+            length: 8.0,
+            offset: 3.0,
+            width: 0.3,
+            between: true,
+        };
+        let marks = crop_marks_styled(&wide[0].cells, 0.0, style);
+        // The outer marks (6 + 4 cut lines, two each) and, in the gaps,
+        // two lines at each corner facing another page: 12 up or down,
+        // 16 left or right.
+        assert_eq!(seg(&marks), 20 + 28);
+        let all = wide[0]
+            .cells
+            .iter()
+            .map(|c| c.trim)
+            .reduce(|a, b| a.union(b))
+            .unwrap();
+        let first = marks.elements()[..2].to_vec();
+        let (
+            tracedraw_core::geometry::PathEl::MoveTo(a),
+            tracedraw_core::geometry::PathEl::LineTo(b),
+        ) = (first[0], first[1])
+        else {
+            panic!("{first:?}");
+        };
+        assert!((a.y - (all.y1 + 3.0)).abs() < 1e-6 && (b.y - a.y - 8.0).abs() < 1e-6);
+        // None of them on a page.
+        for t in wide[0].cells.iter().map(|c| c.trim.inflate(-1e-3, -1e-3)) {
+            for e in marks.elements() {
+                if let tracedraw_core::geometry::PathEl::LineTo(q)
+                | tracedraw_core::geometry::PathEl::MoveTo(q) = e
+                {
+                    assert!(!t.contains(*q), "{q:?} on {t:?}");
+                }
+            }
+        }
+        // A gap too narrow for them keeps the outer marks alone.
+        let narrow = plan(&[card], &o(2.0));
+        assert_eq!(seg(&crop_marks_styled(&narrow[0].cells, 0.0, style)), 20);
+        // The sheet's marks take the width; a style out of range is
+        // brought back where the marks fit.
+        let opts = Options {
+            crop: style,
+            ..o(20.0)
+        };
+        let shapes = super::marks(&wide[0], &opts, 0, 1, &["1".into()]);
+        assert!(shapes.iter().any(|s| s
+            .stroke
+            .as_ref()
+            .is_some_and(|k| (k.width - 0.3).abs() < 1e-9)));
+        let c = CropStyle {
+            length: 50.0,
+            offset: -1.0,
+            width: f64::NAN,
+            between: false,
+        }
+        .clamped();
+        assert_eq!((c.length, c.offset, c.width), (MARK_MARGIN, 0.0, 0.1));
+    }
+
+    #[test]
     fn imposing_places_and_clips_every_page() {
         let mut doc = Document::new("t", A5);
         let id = doc.ids_mut().shape();
@@ -1325,6 +1973,7 @@ mod tests {
             layout: Layout::NUp { cols: 2, rows: 1 },
             marks: Marks {
                 crop: true,
+                bleed: false,
                 registration: true,
                 color_bars: true,
                 densitometer: true,
@@ -1413,6 +2062,40 @@ mod tests {
         assert!(spans[0].text.contains("Card") && spans[0].text.contains("Back"));
         let at = all[1][13].transform * *origin;
         assert!(at.y < -3.0 && at.y > -3.0 - MARK_MARGIN, "{at:?}");
+        // Bleed marks: on the bleed's edges, outside it and inside the
+        // marks margin (#2197).
+        let o = Options {
+            marks: Marks {
+                bleed: true,
+                ..Default::default()
+            },
+            ..o.clone()
+        };
+        let marks = page_marks(&sizes, &names, &o);
+        assert_eq!(marks[0].len(), 1);
+        let ShapeKind::Path { path, .. } = &marks[0][0].kind else {
+            panic!("bleed marks are a path");
+        };
+        let b = marks[0][0]
+            .transform
+            .transform_rect_bbox(kurbo::Shape::bounding_box(path));
+        let bleed = Rect::new(-3.0, -3.0, 103.0, 53.0);
+        assert!(b.x0 < bleed.x0 && b.x1 > bleed.x1, "{b:?}");
+        assert!(b.x0 >= bleed.x0 - MARK_MARGIN && b.x1 <= bleed.x1 + MARK_MARGIN);
+        let xs: Vec<f64> = path
+            .elements()
+            .iter()
+            .filter_map(|e| match e {
+                kurbo::PathEl::MoveTo(p) => Some(marks[0][0].transform * *p),
+                _ => None,
+            })
+            .filter(|p| p.y > 53.0)
+            .map(|p| p.x)
+            .collect();
+        assert_eq!(xs, vec![-3.0, 103.0]);
+        // Without a bleed there is no edge to mark.
+        let o = Options { bleed: 0.0, ..o };
+        assert!(page_marks(&sizes, &names, &o).iter().all(|m| m.is_empty()));
         // No marks asked for: none.
         let none = page_marks(&sizes, &names, &Options::default());
         assert!(none.iter().all(|m| m.is_empty()));
@@ -1713,5 +2396,72 @@ mod tests {
             (p1.y0 - p4.y0).abs() < 1e-9 && p4.x0 >= p1.x1 - 1e-9,
             "4 beside 1"
         );
+    }
+
+    /// A sheet larger than the paper prints in tiles: 400 x 300 mm on A4
+    /// with 5 mm margins and 10 mm overlap takes 3 x 2 tiles, each the
+    /// paper's size, overlapping by 10 mm, the grid centred on the sheet,
+    /// named A1 to B3, with trim marks where a neighbour is.
+    #[test]
+    fn a_large_sheet_prints_in_overlapping_tiles() {
+        let mut doc = Document::new("poster", Size::new(400.0, 300.0));
+        let mut ids = doc.ids().clone();
+        let mut r = Shape::new(
+            ids.shape(),
+            ShapeKind::Rect {
+                rect: Rect::new(0.0, 0.0, 400.0, 300.0),
+                radius: 0.0,
+                corners: None,
+            },
+        );
+        r.fill = Fill::Solid(Color::BLACK);
+        doc.set_ids(ids);
+        doc.pages[0].layers[0].shapes.push(r);
+        let t = Tiling {
+            paper: Size::new(210.0, 297.0),
+            margins: [5.0; 4],
+            overlap: 10.0,
+            marks: true,
+        };
+        assert_eq!(t.count(Size::new(400.0, 300.0)), (3, 2));
+        assert_eq!(t.count(Size::new(200.0, 287.0)), (1, 1), "fits: one tile");
+        let tiles = tile_sheets(&doc, &t);
+        assert_eq!(tiles.pages.len(), 6);
+        let names: Vec<&str> = tiles.pages.iter().map(|p| p.name.as_str()).collect();
+        assert_eq!(names, ["1 A1", "1 A2", "1 A3", "1 B1", "1 B2", "1 B3"]);
+        // Each tile's part of the sheet, through its clip frame.
+        let part = |i: usize| {
+            let s = &tiles.pages[i].layers[0].shapes[0];
+            assert_eq!(s.name.as_deref(), Some(TILE_NAME));
+            let ShapeKind::ClipFrame { frame, contents } = &s.kind else {
+                panic!("a clip frame");
+            };
+            assert_eq!(contents.len(), 1);
+            let ShapeKind::Rect { rect, .. } = frame.kind else {
+                panic!("a frame");
+            };
+            // Shown inside the margins.
+            let on_paper = s.transform.transform_rect_bbox(rect);
+            assert!((on_paper.x0 - 5.0).abs() < 1e-9 && (on_paper.y0 - 5.0).abs() < 1e-9);
+            rect
+        };
+        let (a1, a2, a3, b1) = (part(0), part(1), part(2), part(3));
+        assert!((a1.width() - 200.0).abs() < 1e-9 && (a1.height() - 287.0).abs() < 1e-9);
+        assert!((a1.x1 - a2.x0 - 10.0).abs() < 1e-9, "overlap across");
+        assert!((b1.y1 - a1.y0 - 10.0).abs() < 1e-9, "overlap down");
+        // Centred: as much of the grid past the left edge as the right.
+        assert!(((0.0 - a1.x0) - (a3.x1 - 400.0)).abs() < 1e-9);
+        assert!(tiles.pages.iter().all(|p| p.size == t.paper));
+        // A1 has neighbours right and below: its trim marks and its name.
+        let marks = &tiles.pages[0].layers[0].shapes;
+        assert!(marks
+            .iter()
+            .any(|s| matches!(s.kind, ShapeKind::Path { .. })));
+        assert!(marks.iter().any(|s| matches!(
+            &s.kind,
+            ShapeKind::Text { spans, .. } if spans[0].text == "A1"
+        )));
+        assert_eq!(tile_name(25, 0), "Z1");
+        assert_eq!(tile_name(26, 9), "AA10");
     }
 }

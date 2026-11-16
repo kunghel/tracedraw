@@ -803,8 +803,9 @@ mod tests {
         let steps = |app: &App| app.engine.history_labels().0.len();
         frame(&mut app, Vec::new(), true);
         let field = rect_of("gap_field_rect");
-        // A notch steps the box by its step, a tenth of the unit.
-        let step = 0.1 * unit;
+        // A notch steps the box by a whole unit (its arrows step a
+        // tenth; Ctrl+wheel the tenth, #2705).
+        let step = unit;
         let before = steps(&app);
         // Two notches over the box: the selection follows each at once.
         notch(&mut app, field.center());

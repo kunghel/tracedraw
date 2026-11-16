@@ -28,7 +28,7 @@ pub const MAX_ELEMENTS: usize = 5_000;
 /// Larger files are not read.
 const MAX_FILE: u64 = 16 * 1024 * 1024;
 /// Names are cut to this many characters.
-const MAX_NAME: usize = 120;
+pub const MAX_NAME: usize = 120;
 /// The browser build's key in local storage.
 #[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
 const WEB_KEY: &str = "tracedraw-my-shapes";
@@ -397,6 +397,9 @@ impl App {
             Some(uid) => {
                 self.my_shapes.save();
                 self.my_shape = Some(uid);
+                // Asked for a name at once; the one shown is kept when
+                // the user does not type another (#2360).
+                self.my_shape_naming = Some((uid, name.clone()));
                 self.status = trf("shapes.mine_added", &[("name", &name)]);
                 true
             }
@@ -405,6 +408,27 @@ impl App {
                 false
             }
         }
+    }
+
+    /// Give a shape of My shapes the name `name` (cut to one line of
+    /// `MAX_NAME` characters) and keep the set at once; a blank name
+    /// leaves the old one (#2360). False when there is no such shape or
+    /// nothing changed.
+    pub fn rename_common_shape(&mut self, uid: u64, name: &str) -> bool {
+        let name = clean_name(name);
+        if name.is_empty() {
+            return false;
+        }
+        let Some(s) = self.my_shapes.shapes.iter_mut().find(|s| s.uid == uid) else {
+            return false;
+        };
+        if s.name == name {
+            return false;
+        }
+        s.name = name.clone();
+        self.my_shapes.save();
+        self.status = trf("shapes.mine_renamed", &[("name", &name)]);
+        true
     }
 
     /// Remove a shape from My shapes (kept at once); the built-in shape
@@ -416,6 +440,13 @@ impl App {
         self.my_shapes.save();
         if self.my_shape == Some(uid) {
             self.my_shape = None;
+        }
+        if self
+            .my_shape_naming
+            .as_ref()
+            .is_some_and(|(u, _)| *u == uid)
+        {
+            self.my_shape_naming = None;
         }
         self.status = trf("shapes.mine_removed", &[("name", &gone.name)]);
         true
@@ -486,6 +517,40 @@ mod tests {
         assert!(app.my_shape.is_none());
         assert!(!app.remove_common_shape(uid));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A shape just added asks for a name, the default one shown; a name
+    /// typed there or by Rename replaces it (one line, kept), a blank one
+    /// keeps the old name (#2360).
+    #[test]
+    fn a_shape_of_my_own_can_be_named() {
+        let mut app = App::headless();
+        let id = triangle(&mut app);
+        app.select(vec![id]);
+        assert!(app.add_selection_as_common_shape());
+        let s = app.picked_my_shape().expect("picked").clone();
+        assert_eq!(app.my_shape_naming, Some((s.uid, s.name.clone())));
+        assert!(app.rename_common_shape(s.uid, "  Star\nbadge  "));
+        assert_eq!(app.picked_my_shape().expect("picked").name, "Star badge");
+        assert!(
+            !app.rename_common_shape(s.uid, "   "),
+            "blank keeps the name"
+        );
+        assert!(!app.rename_common_shape(s.uid, "Star badge"), "unchanged");
+        assert!(
+            !app.rename_common_shape(s.uid + 99, "Other"),
+            "no such shape"
+        );
+        assert_eq!(app.picked_my_shape().expect("picked").name, "Star badge");
+        let long = "x".repeat(MAX_NAME + 30);
+        assert!(app.rename_common_shape(s.uid, &long));
+        assert_eq!(
+            app.picked_my_shape().expect("picked").name.chars().count(),
+            MAX_NAME
+        );
+        // Removing the shape being named drops the question.
+        assert!(app.remove_common_shape(s.uid));
+        assert!(app.my_shape_naming.is_none());
     }
 
     #[test]

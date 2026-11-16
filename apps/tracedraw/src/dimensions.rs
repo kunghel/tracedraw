@@ -188,6 +188,77 @@ pub struct DimensionStyle {
     /// (#641).
     pub joined: bool,
     pub corner_radius: f64,
+    /// A linear label in fractions (halves, quarters... down to 64ths as
+    /// the precision rises) instead of decimals (#1436).
+    pub fractional: bool,
+}
+
+/// What new angular dimensions take instead of the linear style's
+/// decimals, units sign, prefix and suffix (Options > Tools > Angular
+/// Dimension, #1436).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AngularDefaults {
+    pub precision: u8,
+    pub show_units: bool,
+    pub prefix: String,
+    pub suffix: String,
+}
+
+impl Default for AngularDefaults {
+    fn default() -> Self {
+        AngularDefaults {
+            precision: 2,
+            show_units: true,
+            prefix: String::new(),
+            suffix: String::new(),
+        }
+    }
+}
+
+impl AngularDefaults {
+    /// `style` with these in place of its own.
+    pub fn apply(&self, style: &DimensionStyle) -> DimensionStyle {
+        DimensionStyle {
+            precision: self.precision.min(6),
+            show_units: self.show_units,
+            prefix: self.prefix.clone(),
+            suffix: self.suffix.clone(),
+            ..style.clone()
+        }
+    }
+
+    /// These read back from `style`.
+    pub fn from_style(style: &DimensionStyle) -> AngularDefaults {
+        AngularDefaults {
+            precision: style.precision.min(6),
+            show_units: style.show_units,
+            prefix: style.prefix.clone(),
+            suffix: style.suffix.clone(),
+        }
+    }
+}
+
+/// `v` in fractions with a denominator of up to `2^precision`, reduced:
+/// "2", "3/4", "1 1/2", "-1 1/8".
+pub fn fraction_text(v: f64, precision: u8) -> String {
+    let den = 1i64 << precision.min(6);
+    let total = (v.abs() * den as f64).round() as i64;
+    let sign = if v < 0.0 && total != 0 { "-" } else { "" };
+    let (whole, mut num) = (total / den, total % den);
+    if num == 0 {
+        return format!("{sign}{whole}");
+    }
+    let mut d = den;
+    while num % 2 == 0 {
+        num /= 2;
+        d /= 2;
+    }
+    if whole == 0 {
+        format!("{sign}{num}/{d}")
+    } else {
+        format!("{sign}{whole} {num}/{d}")
+    }
 }
 
 impl Default for DimensionStyle {
@@ -212,6 +283,7 @@ impl Default for DimensionStyle {
             horizontal_text: false,
             joined: false,
             corner_radius: 0.0,
+            fractional: false,
         }
     }
 }
@@ -533,7 +605,11 @@ impl Dimension {
                 } else {
                     String::new()
                 };
-                format!("{v:.decimals$}{unit}")
+                if s.fractional {
+                    format!("{}{unit}", fraction_text(v, s.precision))
+                } else {
+                    format!("{v:.decimals$}{unit}")
+                }
             }
             Measure::Angular { .. } => {
                 let unit = if s.show_units { "\u{b0}" } else { "" };
@@ -963,6 +1039,28 @@ fn sweep(center: Point, a: Point, b: Point) -> f64 {
     }
 }
 
+/// The group that draws the dimension `d`: its lines, arrowheads and
+/// label (ids `ids`) in a group `group` that keeps the dimension, so it
+/// stays live. Scripts make theirs with it too (#2348).
+pub fn group_of(
+    d: Dimension,
+    ids: [ShapeId; 3],
+    group: ShapeId,
+    font: &str,
+    drawing_units: Units,
+) -> Shape {
+    let d = d.noting_drawn(font, drawing_units);
+    let children = d.shapes(ids, font, drawing_units);
+    let mut g = Shape::new(
+        group,
+        ShapeKind::Group {
+            children: children.to_vec(),
+        },
+    );
+    g.data = with_data(Vec::new(), &d);
+    g
+}
+
 fn with_data(mut data: Vec<(String, String)>, d: &Dimension) -> Vec<(String, String)> {
     data.retain(|(k, _)| k != DATA_KEY);
     if let Ok(v) = serde_json::to_string(d) {
@@ -1066,24 +1164,15 @@ impl App {
     /// A dimension group for `measure` in the bar's style, its points held
     /// to the objects they sit on.
     fn dimension_group(&mut self, measure: Measure) -> Shape {
-        let mut d = Dimension::new(measure, self.dimension_style.clone());
+        let mut d = Dimension::new(measure, self.style_for(&measure));
         d.anchors = self.anchors_for(&d);
-        let d = d.noting_drawn(&self.text_font, self.units);
         let ids = [
             self.engine.new_shape_id(),
             self.engine.new_shape_id(),
             self.engine.new_shape_id(),
         ];
-        let children = d.shapes(ids, &self.text_font, self.units);
         let group = self.engine.new_shape_id();
-        let mut g = Shape::new(
-            group,
-            ShapeKind::Group {
-                children: children.to_vec(),
-            },
-        );
-        g.data = with_data(Vec::new(), &d);
-        g
+        group_of(d, ids, group, &self.text_font, self.units)
     }
 
     /// The anchors of `d`'s points (page space) that sit on a node of an
@@ -1285,10 +1374,45 @@ impl App {
             .collect()
     }
 
+    /// The style a new dimension measuring `measure` takes: the bar's,
+    /// with the angular decimals, sign, prefix and suffix for an angle.
+    pub fn style_for(&self, measure: &Measure) -> DimensionStyle {
+        match measure {
+            Measure::Linear { .. } => self.dimension_style.clone(),
+            Measure::Angular { .. } => self.settings.angular_dimension.apply(&self.dimension_style),
+        }
+    }
+
+    /// The style the bar shows with nothing selected: the angular tool's
+    /// for it, else the linear one.
+    pub fn new_dimension_style(&self) -> DimensionStyle {
+        if self.tool == crate::tools::Tool::AngularDimension {
+            self.settings.angular_dimension.apply(&self.dimension_style)
+        } else {
+            self.dimension_style.clone()
+        }
+    }
+
     /// Change the style new dimensions take and the selected ones have,
     /// one undo step for the selected ones.
     pub fn set_dimension_style(&mut self, f: impl Fn(&mut DimensionStyle)) {
-        f(&mut self.dimension_style);
+        if self.tool == crate::tools::Tool::AngularDimension {
+            // The angular tool's bar: its decimals, sign, prefix and
+            // suffix are the angular ones, the rest is shared.
+            let linear = self.dimension_style.clone();
+            let mut angular = self.settings.angular_dimension.apply(&linear);
+            f(&mut angular);
+            self.settings.angular_dimension = AngularDefaults::from_style(&angular);
+            self.dimension_style = DimensionStyle {
+                precision: linear.precision,
+                show_units: linear.show_units,
+                prefix: linear.prefix,
+                suffix: linear.suffix,
+                ..angular
+            };
+        } else {
+            f(&mut self.dimension_style);
+        }
         let mut cmds = Vec::new();
         for (id, mut d) in self.selected_dimensions() {
             let before = d.style.clone();
@@ -1572,6 +1696,43 @@ impl App {
         crate::interaction::constrain_from(from, p, self.settings.constrain_angle)
     }
 
+    /// The measure of the dimension being placed, as its label will show
+    /// it (the property bar's units and decimals), with the pointer at
+    /// `at`: the length while the second point or the dimension line is
+    /// wanted, the angle while the angular tool's second side or its arc
+    /// is (#2624). None before the first point.
+    pub fn dimension_live_text(&self, at: Point) -> Option<String> {
+        use crate::tools::Tool;
+        let linear = matches!(
+            self.tool,
+            Tool::ParallelDimension | Tool::HorizontalVerticalDimension | Tool::SegmentDimension
+        );
+        let measure = match (self.tool, &self.dimension_points[..]) {
+            (Tool::AngularDimension, [center, a]) => Measure::Angular {
+                center: *center,
+                a: *a,
+                b: at,
+                at,
+            },
+            (Tool::AngularDimension, [center, a, b]) => Measure::Angular {
+                center: *center,
+                a: *a,
+                b: *b,
+                at,
+            },
+            (_, [a]) if linear => {
+                let (a, b) = self.measured_pair(*a, at);
+                Measure::Linear { a, b, at }
+            }
+            (_, [a, b]) if linear => {
+                let (a, b) = self.measured_pair(*a, *b);
+                Measure::Linear { a, b, at }
+            }
+            _ => return None,
+        };
+        Some(Dimension::new(measure, self.style_for(&measure)).value_text(self.units))
+    }
+
     /// The dimension the tool would make with the pointer at `at`, while
     /// its points are being given (for the preview).
     pub fn dimension_preview(&self, at: Point) -> Option<Dimension> {
@@ -1592,7 +1753,7 @@ impl App {
             },
             _ => return None,
         };
-        Some(Dimension::new(measure, self.dimension_style.clone()))
+        Some(Dimension::new(measure, self.style_for(&measure)))
     }
 
     /// The dimension tools' clicks and drags. Linear tools: a drag from
@@ -2415,6 +2576,8 @@ mod tests {
         assert_eq!(label_of(&app, id), "40 mm long");
         // An angular dimension and a centred label.
         app.dimension_style.text_position = TextPosition::Centered;
+        // Its decimals, prefix and suffix are the angular ones (#1436).
+        app.settings.angular_dimension = AngularDefaults::from_style(&app.dimension_style);
         app.create_angular_dimension(
             Point::new(100.0, 0.0),
             Point::new(110.0, 0.0),
@@ -3199,5 +3362,92 @@ mod tests {
         assert_eq!(read.style.corner_radius, 1.5);
         app.undo();
         assert_eq!(app.doc().find_shape(id), Some(&before));
+    }
+
+    /// Fractions: halves to 64ths as the precision rises, reduced.
+    #[test]
+    fn fractions_read_as_whole_and_parts() {
+        assert_eq!(fraction_text(1.5, 2), "1 1/2");
+        assert_eq!(fraction_text(0.75, 2), "3/4");
+        assert_eq!(fraction_text(2.0, 3), "2");
+        assert_eq!(fraction_text(2.03, 3), "2");
+        assert_eq!(fraction_text(-1.125, 3), "-1 1/8");
+        assert_eq!(fraction_text(0.3, 0), "0");
+        assert_eq!(fraction_text(1.0 / 64.0, 6), "1/64");
+    }
+
+    /// Options > Tools > Dimension, Style Fractional: a linear label reads
+    /// in fractions of the units; an angle stays in decimals (#1436).
+    #[test]
+    fn a_fractional_style_labels_lengths_in_fractions() {
+        let style = DimensionStyle {
+            fractional: true,
+            precision: 3,
+            units: "in".into(),
+            ..Default::default()
+        };
+        let d = Dimension::new(
+            Measure::Linear {
+                a: Point::ZERO,
+                b: Point::new(25.4 * 2.375, 0.0),
+                at: Point::new(0.0, 5.0),
+            },
+            style.clone(),
+        );
+        assert_eq!(d.value_text(Units::Millimeters), "2 3/8 \"");
+        let ang = Dimension::new(
+            Measure::Angular {
+                center: Point::ZERO,
+                a: Point::new(10.0, 0.0),
+                b: Point::new(0.0, 10.0),
+                at: Point::new(5.0, 5.0),
+            },
+            DimensionStyle {
+                precision: 1,
+                ..style
+            },
+        );
+        assert_eq!(ang.value_text(Units::Millimeters), "90.0\u{b0}");
+    }
+
+    /// Options > Tools > Angular Dimension: new angular dimensions take
+    /// their own decimals, sign, prefix and suffix; the linear ones keep
+    /// theirs, and the angular tool's bar changes only the angular ones
+    /// (#1436).
+    #[test]
+    fn angular_dimensions_take_their_own_defaults() {
+        let mut app = App::headless();
+        app.dimension_style.precision = 3;
+        app.settings.angular_dimension = AngularDefaults {
+            precision: 0,
+            show_units: true,
+            prefix: "A=".into(),
+            suffix: String::new(),
+        };
+        app.create_angular_dimension(
+            Point::new(0.0, 0.0),
+            Point::new(40.0, 0.0),
+            Point::new(0.0, 30.0),
+            Point::new(10.0, 10.0),
+        );
+        let ang = app.selection[0];
+        assert_eq!(label_of(&app, ang), "A=90\u{b0}");
+        app.create_dimension(
+            Point::new(0.0, 50.0),
+            Point::new(40.0, 50.0),
+            Point::new(20.0, 55.0),
+        );
+        let lin = app.selection[0];
+        assert!(
+            label_of(&app, lin).starts_with("40.000"),
+            "{}",
+            label_of(&app, lin)
+        );
+        app.select(Vec::new());
+        app.set_tool(crate::tools::Tool::AngularDimension);
+        app.set_dimension_style(|s| s.precision = 2);
+        assert_eq!(app.settings.angular_dimension.precision, 2);
+        assert_eq!(app.dimension_style.precision, 3, "the linear one stays");
+        assert_eq!(app.new_dimension_style().prefix, "A=");
     }
 }

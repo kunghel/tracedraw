@@ -94,7 +94,27 @@ tool is drawn from, by group:
 | Transparency | the see-through checkerboard: a square of four by four cells, its ink cells fading in steps from solid at the top left to faint at the bottom right, the node on that corner; no smooth fade and no handle bar, so it is not taken for the fill tools (#1682) |
 | Eyedropper | the diagonal pipette with the drop drawn into its tip, over a swatch or with a property card |
 | Fill | a tilted pail holding blue paint, a drop at its lip; two rings with the lens filled; a curved mesh with four handles and the live node |
-| Outline | a ring with a thick blue outline segment ending in a node (Outline Pen); the ring with a colour swatch (Outline Colour) |
+| Outline | a ring with a thick blue outline segment ending in a node (Outline Pen); the ring with a colour swatch (Outline Colour); a straight stroke swelling in the middle with its width handle pulled out square from the edge (Variable Outline; it was an arch, read as a compass, #1682) |
+
+## File icons (#1677)
+
+New, Open and New from Template have one picture each, the same on the
+Welcome screen's big buttons, the standard toolbar and the File menu
+(`icons::Action::New`, `Open`, `Template`):
+
+- New: a page with a folded corner and a white plus in a green circle at
+  its bottom right.
+- Open: an open folder, the back with its tab and the front flap tipped
+  forward, lightly shaded.
+- New from Template: a folder with a sheet standing in it and the same
+  green circled plus.
+
+The circle has a ring in the bar's colour that parts it from the page;
+a dimmed button draws it in the dimmed colour.
+
+The Layout menu's Page Background picture is a page in the same line as
+the other page pictures with the background in the blue accent behind it
+(#1682); it was a tinted square framed in the accent.
 
 ## Checks
 
@@ -106,6 +126,8 @@ tool is drawn from, by group:
   at every icon size (15 to 40 px, 1x and 2x) the Transparency icon is
   a checkerboard of cells two pixels or more, fading in steps, with no
   gradient, and differs from the Interactive Fill icon.
+- `ui::icons::tests::new_and_template_icons_have_the_green_circled_plus`.
+- `ui::icons::tests::the_variable_outline_icon_is_not_an_arch`.
 - `ui::icon_paint::tests`: the path syntax (numbers, relative and
   implicit commands, arcs), the triangulation of concave shapes, the
   ribbons.

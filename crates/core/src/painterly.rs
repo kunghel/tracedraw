@@ -255,6 +255,34 @@ fn taper(t: f64, ends: f64) -> f64 {
 /// The marks of a painterly outline of `size` mm along `path` (page
 /// space), at most about 40000 of them.
 pub fn marks(path: &BezPath, size: f64, brush: &Painterly) -> Vec<Mark> {
+    marks_along(path, size, brush, &[], 1.0)
+}
+
+/// [`marks`] of an outline whose width varies along the path: `widths`
+/// are its width nodes for an outline `width` mm wide (a pen's pressure,
+/// #883), and the marks follow them, `size` standing for `width`. Empty
+/// `widths`: an even width.
+pub fn marks_along(
+    path: &BezPath,
+    size: f64,
+    brush: &Painterly,
+    widths: &[crate::style::WidthNode],
+    width: f64,
+) -> Vec<Mark> {
+    let profile = |t: f64| -> f64 {
+        if widths.is_empty() || !(width.is_finite() && width > 1e-9) {
+            return 1.0;
+        }
+        let (l, r) = crate::style::width_at(width, widths, t);
+        let k = (l + r) / width;
+        if k.is_finite() {
+            k.clamp(0.0, 20.0)
+        } else {
+            1.0
+        }
+    };
+    // The taper of each brush, scaled by the width along the path.
+    let taper = |t: f64, ends: f64| taper(t, ends) * profile(t);
     let size = size.max(0.05);
     let opacity = (1.0 - brush.transparency).clamp(0.0, 1.0);
     let mut rng = Rng::new(brush.seed, brush.brush as u64 + 1);
@@ -469,9 +497,22 @@ pub fn marks_by_opacity(
     brush: &Painterly,
     levels: usize,
 ) -> Vec<(f64, BezPath)> {
+    marks_by_opacity_along(path, size, brush, levels, &[], 1.0)
+}
+
+/// [`marks_by_opacity`] of an outline whose width varies along the path
+/// (see [`marks_along`]).
+pub fn marks_by_opacity_along(
+    path: &BezPath,
+    size: f64,
+    brush: &Painterly,
+    levels: usize,
+    widths: &[crate::style::WidthNode],
+    width: f64,
+) -> Vec<(f64, BezPath)> {
     let levels = levels.max(1);
     let mut groups: Vec<BezPath> = vec![BezPath::new(); levels];
-    for m in marks(path, size, brush) {
+    for m in marks_along(path, size, brush, widths, width) {
         let k = ((m.alpha * levels as f64).round() as usize).clamp(1, levels) - 1;
         if let Some(g) = groups.get_mut(k) {
             g.extend(m.path.elements().iter().copied());
@@ -513,6 +554,44 @@ mod tests {
             assert!(r.x0 < 8.0 && r.x1 > 92.0, "{b:?} {r:?}");
             assert!(r.y0 > -10.0 && r.y1 < 10.0, "{b:?} {r:?}");
         }
+    }
+
+    /// The marks follow the width nodes of the outline (a pen's
+    /// pressure, #883): wide where the nodes are wide, narrow where they
+    /// are narrow.
+    #[test]
+    fn marks_follow_the_width_along_the_stroke() {
+        use crate::style::WidthNode;
+        let widths = [
+            WidthNode::symmetric(0.0, 6.0),
+            WidthNode::symmetric(1.0, 0.6),
+        ];
+        for b in [
+            PainterlyBrush::Chalk,
+            PainterlyBrush::Spray,
+            PainterlyBrush::Watercolor,
+        ] {
+            let m = marks_along(&line(), 6.0, &Painterly::new(b), &widths, 6.0);
+            let reach = |lo: f64, hi: f64| {
+                m.iter()
+                    .map(|k| k.path.bounding_box())
+                    .filter(|r| r.center().x > lo && r.center().x < hi)
+                    .map(|r| r.y0.abs().max(r.y1.abs()))
+                    .fold(0.0, f64::max)
+            };
+            let (wide, narrow) = (reach(15.0, 35.0), reach(80.0, 95.0));
+            assert!(wide > narrow * 1.8, "{b:?}: {wide} vs {narrow}");
+        }
+        // No nodes: as before.
+        let even = marks(&line(), 6.0, &Painterly::new(PainterlyBrush::Chalk));
+        let same = marks_along(
+            &line(),
+            6.0,
+            &Painterly::new(PainterlyBrush::Chalk),
+            &[],
+            6.0,
+        );
+        assert_eq!(even.len(), same.len());
     }
 
     #[test]

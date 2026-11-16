@@ -389,7 +389,12 @@ impl App {
     /// Replace the spans of the text being edited as an undo step named
     /// `label`; with `merge` it takes the place of a step of that name
     /// just before it.
-    fn set_edit_spans_as(&mut self, spans: Vec<TextSpan>, label: &'static str, merge: bool) {
+    pub(crate) fn set_edit_spans_as(
+        &mut self,
+        spans: Vec<TextSpan>,
+        label: &'static str,
+        merge: bool,
+    ) {
         let Some(te) = self.text_edit.clone() else {
             return;
         };
@@ -1486,6 +1491,80 @@ pub fn alt_code_char(code: &str) -> Option<char> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Two texts blended, grouped and given a perspective on the group:
+    /// the Text tool reaches each text where it is drawn, through the
+    /// perspective, and edits it (#2169). Plain grouped texts too.
+    #[test]
+    fn the_text_tool_reaches_texts_in_a_warped_grouped_blend() {
+        use tracedraw_core::Command;
+        let mut app = App::headless();
+        let text = |app: &mut App, x: f64, t: &str| {
+            app.new_shape(ShapeKind::Text {
+                spans: vec![TextSpan::new(t, "Sans", 36.0)],
+                origin: Point::new(x, 100.0),
+                frame: None,
+                align: Default::default(),
+                para: Default::default(),
+                on_path: None,
+            })
+            .expect("text")
+        };
+        let a = text(&mut app, 0.0, "AB");
+        let b = text(&mut app, 150.0, "CD");
+        app.select(vec![a, b]);
+        app.blend_selection(3, 0.0, 0.0, 0.0);
+        app.refresh_blends();
+        app.select(vec![a, b]);
+        app.group_selection();
+        app.refresh_blends();
+        let g = app.selection[0];
+        // A point on the outline of `id` as the group draws it.
+        let on = |app: &App, id| {
+            let gs = app.doc().find_shape(g).expect("group").clone();
+            let drawn = tracedraw_core::live::evaluate(&gs).main;
+            let ShapeKind::Group { children } = &drawn.kind else {
+                panic!("a group");
+            };
+            let mut c = children.iter().find(|c| c.id == id).expect("part").clone();
+            c.transform_by(drawn.transform);
+            let path = c.page_path();
+            let Some(kurbo::PathEl::MoveTo(p)) = path.elements().first().copied() else {
+                panic!("a path");
+            };
+            p
+        };
+        // Grouped, no warp: each text, and the caret by the point.
+        let p = on(&app, b);
+        assert_eq!(app.hit_test(p), Some(g));
+        assert_eq!(app.text_inside_at(g, p), Some((b, false)));
+        let bb = app.doc().find_shape(g).expect("group").bounds();
+        let corners = [
+            Point::new(bb.x0, bb.y1 + 30.0),
+            Point::new(bb.x0 + 20.0, bb.y0),
+            Point::new(bb.x1 - 20.0, bb.y0),
+            Point::new(bb.x1, bb.y1 + 30.0),
+        ];
+        app.run(Command::SetEffects {
+            shape: g,
+            effects: vec![tracedraw_core::live::Effect::Perspective { corners }],
+        });
+        app.refresh_blends();
+        for id in [a, b] {
+            let p = on(&app, id);
+            assert_eq!(app.hit_test(p), Some(g));
+            assert_eq!(app.text_inside_at(g, p), Some((id, true)), "{id:?}");
+        }
+        // Away from the drawing: no text.
+        assert_eq!(app.text_inside_at(g, Point::new(-500.0, -500.0)), None);
+        app.begin_text_edit(b);
+        assert_eq!(app.text_edit.as_ref().map(|t| t.shape), Some(b));
+        app.text_insert("E");
+        let ShapeKind::Text { spans, .. } = &app.doc().find_shape(b).expect("b").kind else {
+            panic!("text");
+        };
+        assert_eq!(spans_text(spans), "CDE");
+    }
 
     fn texts(app: &App) -> Vec<String> {
         app.page_layers()

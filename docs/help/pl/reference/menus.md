@@ -472,6 +472,7 @@ ekran powitalny. Menu mogą pokazywać Twoje własne skróty; zobacz
 | [[menu.help.whats_new]] | [Co nowego](../welcome/whats-new.md) |
 | [[menu.help.highlight_whats_new]] | [Co nowego](../welcome/whats-new.md) |
 | [[menu.help.updates]] | [O programie TraceDraw i aktualizacje](../welcome/about-and-updates.md) |
+| [[menu.help.benchmark]] | [Opcje TraceDraw](../customize/options-app.md#benchmark) |
 | [[menu.help.message_settings]] | [O programie TraceDraw i aktualizacje](../welcome/about-and-updates.md) |
 | [[menu.help.community]] | [O programie TraceDraw i aktualizacje](../welcome/about-and-updates.md) |
 | [[menu.help.support]] | [O programie TraceDraw i aktualizacje](../welcome/about-and-updates.md) |

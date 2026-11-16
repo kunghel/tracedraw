@@ -60,6 +60,15 @@ One window, 760 px wide, the same on every system:
   choice once there is more than one; while there is only one the row
   is left empty (`docs/tdraw-format.md`, #613); for `.cdr` 27 down to 14, each with its
   release name ("v14 (X4)", "v27 (2026)").
+- **Selected only**: on, only the selected objects go into the file,
+  each on its page and layer, where it is; an object selected inside a
+  group comes out of it alone, pages left with nothing are dropped, and
+  styles, symbols, palette and properties go along. The drawing open is
+  not changed: it keeps all its objects, its own file and its unsaved
+  state, and the status line says "Saved the selection to ...". Greyed
+  when nothing is selected; Package is greyed while it is on (#2195,
+  `ui::save_as::selection_save_document`,
+  `ui::save_as::tests::save_as_selected_only_writes_just_the_selection`).
 - **Embed colour profile (size)** with "Colour profile: name" (`.cdr`
   only): on, the drawing's CMYK profile is stored in the file; off, it
   is left out. Only version 16 and later store one, so the box is off

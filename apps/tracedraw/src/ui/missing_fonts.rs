@@ -218,7 +218,10 @@ pub fn dialog(app: &mut App, ctx: &Context, st: &mut MissingFontsState, close: &
             .clicked()
         {
             crate::files::Dialog::new()
-                .add_filter(tr("font_manager.font_files"), &["ttf", "otf", "ttc", "otc"])
+                .add_filter(
+                    tr("font_manager.font_files"),
+                    &["ttf", "otf", "ttc", "otc", "pfb", "pfm"],
+                )
                 .pick_files(app, |app, paths| {
                     crate::ui::font_manager::add_picked_fonts(app, &paths)
                 });
@@ -251,6 +254,7 @@ pub fn dialog(app: &mut App, ctx: &Context, st: &mut MissingFontsState, close: &
             unread: st.unread,
             fonts: Vec::new(),
             shrunk: st.shrunk.clone(),
+            limits: None,
             dont_show: false,
         });
     }

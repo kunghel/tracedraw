@@ -149,6 +149,10 @@ public class TraceDrawActivity extends NativeActivity {
     @Override
     protected void onDestroy() {
         final boolean relaunch = isChangingConfigurations();
+        Log.i(TAG, "destroying activity: finishing=" + isFinishing()
+                + ", changingConfigurations=" + relaunch
+                + ", configurationChanges=0x" + Integer.toHexString(getChangingConfigurations())
+                + ", task=" + getTaskId());
         Thread end = new Thread(new Runnable() {
             @Override
             public void run() {

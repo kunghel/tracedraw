@@ -252,8 +252,22 @@ large as its box allows.
   merge too. A record whose data the symbology cannot hold (letters in
   an EAN-13, an empty result) loses the barcode on its page, like an
   empty QR field.
+- Serial numbers (#2158): the wizard's Serial number list (Same on every
+  record, Continue from record to record) adds a number field for the
+  serial and its `<Serial>` at the end of the data, with Start, Step,
+  Digits and the records to make (see `barcode.md`, Print Merge). Same
+  is a counter with step 0, so every record shows the start; Continue
+  counts on by the step.
+- Place Inside Frame with the Barcode kind (#1084) opens the wizard for
+  the selected shapes; Finish puts a barcode inside each, scaled to fit,
+  and merging makes it again inside the frame (barcodes in clip frames
+  merge like those in groups). With On every page the frames, barcode
+  inside, are copied to the other pages.
 - Checks: `print_merge::tests::barcodes_take_their_data_from_merge_fields`,
-  `print_merge::tests::the_panel_inserts_a_barcode_field_through_the_wizard`.
+  `print_merge::tests::the_panel_inserts_a_barcode_field_through_the_wizard`,
+  `print_merge::tests::barcode_serial_numbers_stay_the_same_or_count_on`,
+  `print_merge::tests::choosing_a_serial_number_names_it_in_the_data`,
+  `print_merge::tests::a_barcode_field_goes_inside_the_selected_frame`.
 
 ## Checks
 

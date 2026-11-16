@@ -14,12 +14,17 @@ property bar of each tool.
 - [[options.marquee_touching]] (off): a marquee also selects the objects it
   only touches; <kbd>Alt</kbd> then selects only those wholly inside.
 
+- [[options.ctrl_shift_keys]] [[options.keys_traditional]]: [[options.keys_traditional_tip]]
+  [[options.keys_windows]]: [[options.keys_windows_tip]]
+
 ## Eraser {#eraser}
 
 ![The Eraser tool options](../../img/customize-tool-options-eraser.png)
 
 [[options.eraser_width]] (6.35 mm at first), and [[options.eraser_round]] or
 [[options.eraser_square]].
+
+[[options.eraser_reduce_nodes]]: [[options.eraser_reduce_nodes_tip]]
 
 ## Zoom and Pan {#zoom-pan}
 
@@ -35,6 +40,7 @@ property bar of each tool.
 - [[options.smooth_zoom]] (on): a wheel notch zooms in a short glide instead of a
   jump; the faster you turn the wheel, the shorter the glide. Off, each notch
   zooms at once.
+- [[options.light_zoom]]: [[options.light_zoom_tip]]
 - [[options.wheel_zoom_step]] how much one notch zooms in or out, from 1 to 100
   percent (15 % at first).
 - [[options.pan_right_button]] [[options.zoom_out]] or the [[options.context_menu]] (at first).
@@ -56,6 +62,9 @@ property bar of each tool.
   the [[tool.pen]] tool; see [Pen](../lines-shapes/lines.md#pen).
 - [[options.pen_tablet]]: [[options.pen_pressure]] (on); see
   [Drawing with a graphics tablet](../lines-shapes/pen-pressure.md).
+
+- [[options.corner_threshold]]: [[options.corner_threshold_tip]]
+- [[options.straight_threshold]]: [[options.straight_threshold_tip]]
 
 ## Shape Recognition {#shape-recognition}
 
@@ -80,6 +89,9 @@ and [[toolbar.corners_together]]. [[options.scale_corners]]:
 [[options.ellipse]], [[options.pie]] or [[options.arc]], with the
 [[options.starting_angle]] and [[options.ending_angle]].
 
+[[options.arc_direction]]: [[options.counterclockwise]] / [[options.clockwise]].
+[[options.arc_direction_desc]]
+
 ## Polygon {#polygon}
 
 ![The Polygon tool options](../../img/customize-tool-options-polygon.png)
@@ -99,6 +111,9 @@ and [[toolbar.corners_together]]. [[options.scale_corners]]:
 [[options.revolutions]], and [[options.symmetrical_spiral]] or
 [[options.logarithmic_spiral]].
 
+[[options.spiral_expansion]]: [[options.spiral_expansion_tip]]
+[[options.spiral_preview_tip]]
+
 ## Table {#table}
 
 ![The Table tool options](../../img/customize-tool-options-table.png)
@@ -114,11 +129,24 @@ How the label of new dimensions reads: [[dimension.precision]],
 [[dimension.suffix]]. Dimensions already drawn keep their label; select one
 and use the property bar to change it.
 
+[[options.dimension_style]]: [[options.decimal]] / [[options.fractional]].
+[[options.dimension_style_tip]]
+
+## Angular Dimension {#angular-dimension}
+
+[[dimension.precision]], [[dimension.show_units]], [[dimension.prefix]] and
+[[dimension.suffix]] of new angular dimensions.
+[[options.angular_units_tip]]
+
 ## Connector {#connector}
 
 ![The Connector tool options](../../img/customize-tool-options-connector.png)
 
 [[connector.radius]] of new rounded connectors (3 mm at first).
+
+[[options.connector_gap]]: [[options.connector_gap_tip]]
+
+[[options.connector_geometric_anchors]]: [[options.connector_geometric_anchors_tip]]
 
 ## Mesh Fill {#mesh-fill}
 

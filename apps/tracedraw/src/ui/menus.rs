@@ -599,6 +599,7 @@ fn menu_icon(key: &str) -> Option<crate::ui::icons::Action> {
     Some(match key {
         "menu.file.new" => Action::New,
         "menu.file.open" => Action::Open,
+        "menu.file.new_from_template" => Action::Template,
         "menu.file.save" => Action::Save,
         "menu.file.print" => Action::Print,
         "menu.file.import" => Action::Import,
@@ -620,9 +621,73 @@ pub(crate) fn menu_titles() -> Vec<&'static str> {
     all_menus().iter().map(|(k, _)| *k).collect()
 }
 
-/// Draw the picture the menu row of `key` shows into `r`; false when the
-/// row has none.
+thread_local! {
+    /// The pictures the user chose for commands (`Settings::command_icons`).
+    static COMMAND_ICONS: std::cell::RefCell<Vec<(String, String)>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Keep the pictures the user chose for commands (#2100), for the menus
+/// and the toolbar buttons drawn after.
+pub(crate) fn set_command_icons(icons: &[(String, String)]) {
+    COMMAND_ICONS.with(|c| {
+        let mut c = c.borrow_mut();
+        if c.as_slice() != icons {
+            *c = icons.to_vec();
+        }
+    });
+}
+
+/// The picture the user chose for the command `key`: another command's
+/// key, or a tool ("tool:" and its id).
+pub(crate) fn chosen_icon(key: &str) -> Option<String> {
+    COMMAND_ICONS.with(|c| {
+        c.borrow()
+            .iter()
+            .find(|(k, _)| k == key)
+            .map(|(_, src)| src.clone())
+    })
+}
+
+/// Draw the picture of `source` (a command's key with a picture of its
+/// own, or "tool:" and a tool's id); false when it has none.
+pub(crate) fn draw_icon_source(
+    painter: &egui::Painter,
+    r: egui::Rect,
+    source: &str,
+    color: egui::Color32,
+) -> bool {
+    if let Some(t) = crate::ui::bar_items::tool_of(source) {
+        crate::ui::icons::draw(painter, r, t, color);
+        true
+    } else {
+        draw_own_picture(painter, r, source, color)
+    }
+}
+
+/// Whether `source` names a picture [`draw_icon_source`] draws.
+pub(crate) fn is_icon_source(source: &str) -> bool {
+    crate::ui::bar_items::tool_of(source).is_some() || has_own_picture(source)
+}
+
+/// Draw the picture the menu row of `key` shows into `r`: the one the
+/// user chose for it (#2100), else its own; false when the row has none.
 pub(crate) fn draw_menu_picture(
+    painter: &egui::Painter,
+    r: egui::Rect,
+    key: &str,
+    color: egui::Color32,
+) -> bool {
+    if let Some(src) = chosen_icon(key).filter(|s| s != key) {
+        if draw_icon_source(painter, r, &src, color) {
+            return true;
+        }
+    }
+    draw_own_picture(painter, r, key, color)
+}
+
+/// The picture the menu row of `key` has of its own.
+pub(crate) fn draw_own_picture(
     painter: &egui::Painter,
     r: egui::Rect,
     key: &str,
@@ -642,8 +707,14 @@ pub(crate) fn draw_menu_picture(
     }
 }
 
-/// Whether the menu item `key` has a picture to draw.
+/// Whether the menu item `key` has a picture to draw, its own or one the
+/// user chose (#2100).
 pub(crate) fn has_menu_picture(key: &str) -> bool {
+    chosen_icon(key).is_some_and(|s| is_icon_source(&s)) || has_own_picture(key)
+}
+
+/// Whether the menu item `key` has a picture of its own.
+pub(crate) fn has_own_picture(key: &str) -> bool {
     menu_icon(key).is_some()
         || menu_pic(key).is_some()
         || crate::ui::menu_glyphs::for_key(key).is_some()
@@ -662,6 +733,7 @@ fn menu_pic(key: &str) -> Option<crate::ui::propbar::Pic> {
         "menu.object.combine" => Pic::Combine,
         "menu.object.break_apart"
         | "menu.object.break_shadow_apart"
+        | "menu.object.break_shadows_apart"
         | "menu.object.break_contour_apart"
         | "menu.object.break_blend_apart"
         | "menu.object.break_extrude_apart" => Pic::BreakApart,
@@ -694,6 +766,8 @@ fn menu_pic(key: &str) -> Option<crate::ui::propbar::Pic> {
         "menu.object.tf_scale" => Pic::ScaleMirror,
         "menu.object.tf_size" => Pic::SizeBox,
         "menu.object.tf_skew" => Pic::SkewBox,
+        "menu.object.mirror_h" => Pic::MirrorH,
+        "menu.object.mirror_v" => Pic::MirrorV,
         "menu.object.align_distribute_docker" => Pic::AlignDistribute,
         "menu.object.convert_to_bitmap" => Pic::ConvertToBitmap,
         "menu.object.copy_envelope_from" => Pic::EnvelopeCopy,
@@ -810,6 +884,11 @@ pub(crate) fn check_pic(
 /// One of a set of exclusive items (a dot in the gutter when `on`).
 pub(crate) fn radio(ui: &mut Ui, key: &str, shortcut: &str, on: bool) -> bool {
     mark_item(ui, key, shortcut, Mark::Radio(on))
+}
+
+/// A checkable item that can be unavailable (greyed, not clickable).
+pub(crate) fn check_if(ui: &mut Ui, key: &str, on: bool, enabled: bool) -> bool {
+    mark_item_if(ui, key, "", Mark::Check(on), enabled)
 }
 
 /// An exclusive item that can be unavailable (greyed, not clickable).
@@ -1315,7 +1394,10 @@ pub(crate) mod replay {
 
     /// Items that would block on a native file chooser, start another
     /// program (an editor or the web browser) or close the window.
-    const SKIP: [&str; 16] = [
+    const SKIP: [&str; 19] = [
+        "menu.tools.plugin_install",
+        "menu.object.insert_object_add",
+        "menu.object.insert_object_file",
         "menu.file.send_to_mail",
         "menu.tools.macros_load",
         "menu.help.updates",
@@ -1782,6 +1864,62 @@ mod tests {
         assert_eq!(app.active_doc, 1);
         assert!(app.document_tab_title(0).ends_with(":1"));
         assert!(app.document_tab_title(1).ends_with(":2"));
+    }
+
+    /// Mirror Horizontally and Mirror Vertically are commands of Object >
+    /// Transformations, so a shortcut of the user's runs them (#2622).
+    #[test]
+    fn the_mirror_buttons_take_a_shortcut() {
+        use egui::{Key, Modifiers};
+        let ctx = crate::theme::ui_context();
+        let mut app = mixed_app();
+        app.show_welcome = false;
+        let first = app.doc().pages[0].layers[0].shapes[0].id;
+        let coeffs = |app: &App| {
+            app.doc().pages[0].layers[0]
+                .shapes
+                .iter()
+                .find(|s| s.id == first)
+                .map(|s| s.transform.as_coeffs())
+                .unwrap_or_default()
+        };
+        app.select(vec![first]);
+        let c0 = coeffs(&app);
+        app.settings
+            .shortcuts
+            .push(("menu.object.mirror_h".into(), "Alt+Shift+H".into()));
+        app.settings
+            .shortcuts
+            .push(("menu.object.mirror_v".into(), "Alt+Shift+V".into()));
+        root_frame(
+            &ctx,
+            &mut app,
+            vec![key(Key::H, Modifiers::ALT | Modifiers::SHIFT)],
+        );
+        root_frame(&ctx, &mut app, vec![]);
+        let c1 = coeffs(&app);
+        assert!((c1[0] + c0[0]).abs() < 1e-9, "{c0:?} {c1:?} {}", app.status);
+        assert!((c1[3] - c0[3]).abs() < 1e-9, "{c0:?} {c1:?}");
+        root_frame(
+            &ctx,
+            &mut app,
+            vec![key(Key::V, Modifiers::ALT | Modifiers::SHIFT)],
+        );
+        root_frame(&ctx, &mut app, vec![]);
+        let c2 = coeffs(&app);
+        assert!((c2[3] + c0[3]).abs() < 1e-9, "{c0:?} {c2:?} {}", app.status);
+        // The menu rows are there and show their keys.
+        assert_eq!(
+            invoke::shown_shortcut("menu.object.mirror_h", ""),
+            "Alt+Shift+H"
+        );
+        let mut ran = false;
+        app.select(vec![first]);
+        run_frame(&ctx, |ui| {
+            ran = run_command(&mut app, ui.ctx(), "menu.object.mirror_h")
+        });
+        assert!(ran);
+        assert!((coeffs(&app)[0] - c0[0]).abs() < 1e-9);
     }
 
     /// A shortcut of the user's runs its menu command, takes over a
@@ -3031,6 +3169,19 @@ pub(crate) fn layout_menu(app: &mut App, ui: &mut Ui) {
     if item(ui, "menu.layout.delete_page", "", app.doc().pages.len() > 1) {
         app.ask_delete_page();
     }
+    // Every page's objects side by side on the first page (#2098).
+    if item(
+        ui,
+        "menu.layout.gather_pages",
+        "",
+        app.doc().pages.len() > 1,
+    ) {
+        app.dialog = Dialog::GatherPages {
+            gap: app.units.from_mm(5.0),
+            resize: true,
+            delete: false,
+        };
+    }
     if item(ui, "menu.layout.go_to_page", "", true) {
         app.dialog = Dialog::GoToPage {
             page: app.page_index() + 1,
@@ -3078,12 +3229,7 @@ pub(crate) fn layout_menu(app: &mut App, ui: &mut Ui) {
         app.options_page = crate::ui::dialogs::OptionsPage::DocumentGeneral;
     }
     if item(ui, "menu.layout.page_size", "", true) {
-        let s = app.page_size();
-        app.dialog = Dialog::PageSize {
-            width: s.width,
-            height: s.height,
-            all_pages: true,
-        };
+        app.dialog = crate::ui::dialogs::page_size_dialog(app);
     }
     if item(ui, "menu.layout.page_layout", "", true) {
         app.dialog = Dialog::Options;
@@ -3252,6 +3398,10 @@ fn object_menu(app: &mut App, ui: &mut Ui) {
         if item(ui, "menu.object.insert_barcode", "", true) {
             app.dialog = Dialog::Barcode(Default::default());
         }
+        // A formula; with one selected, the same item edits it (#2183).
+        if item(ui, "menu.object.insert_formula", "", true) {
+            app.open_formula_dialog();
+        }
         if item(ui, "menu.object.insert_qr", "", true) {
             app.insert_qr_code();
             // Its settings are edited in Properties.
@@ -3261,6 +3411,49 @@ fn object_menu(app: &mut App, ui: &mut Ui) {
         if item(ui, "menu.object.insert_page_number", "", true) {
             app.insert_page_number(crate::ops2::PageNumberWhere::Active);
         }
+        // Programs added once, each opened with one click; what they
+        // make comes in through the clipboard or a file (#1025).
+        sub(ui, "menu.object.insert_object", |ui| {
+            if crate::insert_object::OFFERED {
+                let apps = app.settings.object_apps.clone();
+                for (i, a) in apps.iter().enumerate() {
+                    if item_label(ui, &a.name, "", true) {
+                        app.open_object_app(i);
+                    }
+                }
+                if !apps.is_empty() {
+                    sep(ui);
+                }
+            }
+            if item(ui, "menu.object.insert_object_paste", "", true) {
+                app.paste_any();
+            }
+            if item(ui, "menu.object.insert_object_paste_special", "", true) {
+                app.dialog = Dialog::PasteSpecial(Default::default());
+            }
+            if item(ui, "menu.object.insert_object_file", "", true) {
+                app.import();
+            }
+            if crate::insert_object::OFFERED {
+                sep(ui);
+                if item(ui, "menu.object.insert_object_add", "", true) {
+                    app.add_object_app();
+                }
+                let apps = app.settings.object_apps.clone();
+                sub_if(
+                    ui,
+                    "menu.object.insert_object_remove",
+                    !apps.is_empty(),
+                    |ui| {
+                        for (i, a) in apps.iter().enumerate() {
+                            if item_label(ui, &a.name, "", true) {
+                                app.remove_object_app(i);
+                            }
+                        }
+                    },
+                );
+            }
+        });
         let has = !app.selection.is_empty();
         if item(ui, "menu.object.add_dimensions", "", has) {
             app.add_dimensions(false);
@@ -3425,6 +3618,15 @@ fn object_menu(app: &mut App, ui: &mut Ui) {
             if item(ui, key, shortcut, true) {
                 crate::ui::transform_docker::open(app, tab, false);
             }
+        }
+        // The property bar's two mirror buttons as commands, so a
+        // shortcut can be given to them (#2622).
+        sep(ui);
+        if item(ui, "menu.object.mirror_h", "", has) {
+            app.mirror(true);
+        }
+        if item(ui, "menu.object.mirror_v", "", has) {
+            app.mirror(false);
         }
     });
     if item(ui, "menu.object.clear_transformations", "", has) {
@@ -3647,6 +3849,14 @@ fn object_menu(app: &mut App, ui: &mut Ui) {
     ) {
         app.convert_outline_to_object();
     }
+    // A new outline at a typed distance outside or inside the selected
+    // objects (#2622).
+    if item(ui, "menu.object.outline_offset", "", has) {
+        app.dialog = Dialog::OutlineOffset {
+            distance: app.units.from_mm(app.outline_offset_mm),
+            outside: true,
+        };
+    }
     if item(ui, "menu.object.join_curves", "", true) {
         app.show_dockers = true;
         app.docker_tab = crate::app::DockerTab::JoinCurves;
@@ -3766,6 +3976,7 @@ fn effects_menu(app: &mut App, ui: &mut Ui) {
     // The effect panels: each opens its docker, checked while its tab is
     // in the docker column.
     for (key, shortcut, tab) in [
+        ("menu.effects.layer_effects", "", DockerTab::Effects),
         ("menu.effects.brush_strokes", "", DockerTab::BrushStrokes),
         ("menu.effects.bevel", "", DockerTab::Bevel),
         ("menu.effects.blend", "", DockerTab::Blend),
@@ -3816,6 +4027,19 @@ fn bitmaps_menu(app: &mut App, ui: &mut Ui) {
     ) {
         app.edit_bitmap_externally();
     }
+    // Another picture in its place (#2598).
+    if item(
+        ui,
+        "menu.bitmaps.replace_bitmap",
+        "",
+        app.selected_bitmap().is_some(),
+    ) {
+        app.replace_image();
+    }
+    // Each picture's name beside it (#2180).
+    if item(ui, "menu.bitmaps.captions", "", app.can_caption_pictures()) {
+        app.dialog = Dialog::PictureCaptions(app.settings.picture_captions.clone());
+    }
     if item(ui, "menu.bitmaps.crop_bitmap", "", has_bitmap) {
         app.set_tool(crate::tools::Tool::Crop);
     }
@@ -3842,6 +4066,17 @@ fn bitmaps_menu(app: &mut App, ui: &mut Ui) {
         tip.as_deref(),
     ) {
         app.ai_remove_background();
+    }
+    // The bitmap to curves by the vectorization service (#2713).
+    let vtip = app.ai_vectorize_tip();
+    if item_tip(
+        ui,
+        "menu.bitmaps.ai_vectorize",
+        "",
+        app.ai_vectorize_enabled(),
+        vtip.as_deref(),
+    ) {
+        app.ai_vectorize();
     }
     let styled = app.ai_image_ready() && !app.selection.is_empty() && !app.ai_image.busy();
     sub(ui, "menu.bitmaps.ai_art_styles", |ui| {
@@ -3874,6 +4109,8 @@ fn bitmaps_menu(app: &mut App, ui: &mut Ui) {
         let all_gray = all(crate::bitmap_fx::ColorMode::Grayscale);
         let all_rgb = all(crate::bitmap_fx::ColorMode::Rgb);
         let all_cmyk = all(crate::bitmap_fx::ColorMode::Cmyk);
+        let all_paletted = all(crate::bitmap_fx::ColorMode::Paletted);
+        let all_lab = all(crate::bitmap_fx::ColorMode::Lab);
         if mark_item_if(
             ui,
             "menu.bitmaps.mode_grayscale",
@@ -3886,7 +4123,13 @@ fn bitmaps_menu(app: &mut App, ui: &mut Ui) {
         if item(ui, "menu.bitmaps.mode_duotone", "", has_bitmap) {
             app.dialog = Dialog::BitmapDuotone(Default::default());
         }
-        if item(ui, "menu.bitmaps.mode_paletted", "", has_bitmap) {
+        if mark_item_if(
+            ui,
+            "menu.bitmaps.mode_paletted",
+            "",
+            Mark::Check(all_paletted),
+            has_bitmap,
+        ) {
             app.dialog = Dialog::BitmapPaletted(Default::default());
         }
         if mark_item_if(
@@ -3898,8 +4141,14 @@ fn bitmaps_menu(app: &mut App, ui: &mut Ui) {
         ) {
             app.set_bitmap_mode(crate::bitmap_fx::ColorMode::Rgb);
         }
-        if item(ui, "menu.bitmaps.mode_lab", "", has_bitmap) {
-            app.apply_to_bitmaps("Lab Color", |img, _| crate::bitmap_modes::lab_mode(img));
+        if mark_item_if(
+            ui,
+            "menu.bitmaps.mode_lab",
+            "",
+            Mark::Check(all_lab),
+            has_bitmap,
+        ) {
+            app.set_bitmap_mode(crate::bitmap_fx::ColorMode::Lab);
         }
         if mark_item_if(
             ui,
@@ -4156,6 +4405,37 @@ fn text_menu(app: &mut App, ui: &mut Ui) {
     if item(ui, "menu.text.make_web_compatible", "", is_text) {
         app.make_text_web_compatible();
     }
+    sub(ui, "menu.text.chinese", |ui| {
+        if item(ui, "menu.text.chinese_traditional", "", is_text) {
+            app.convert_chinese(crate::chinese::Script::Traditional);
+        }
+        if item(ui, "menu.text.chinese_simplified", "", is_text) {
+            app.convert_chinese(crate::chinese::Script::Simplified);
+        }
+        if item(ui, "menu.text.chinese_pinyin", "", is_text) {
+            app.add_pinyin();
+        }
+    });
+    // Headings and a table of contents listing them (#1660).
+    sub(ui, "menu.text.toc", |ui| {
+        if item(ui, "menu.text.toc_insert", "", true) {
+            app.insert_toc();
+        }
+        sep(ui);
+        let level = app.selected_toc_level();
+        for (n, key) in [
+            (1, "menu.text.toc_heading_1"),
+            (2, "menu.text.toc_heading_2"),
+            (3, "menu.text.toc_heading_3"),
+        ] {
+            if check(ui, key, "", level == Some(Some(n))) {
+                app.set_toc_level(Some(n));
+            }
+        }
+        if item(ui, "menu.text.toc_not_heading", "", is_text) {
+            app.set_toc_level(None);
+        }
+    });
     sep(ui);
     if item(ui, "menu.text.encode", "", is_text) {
         app.dialog = Dialog::Encode(Default::default());
@@ -4364,8 +4644,15 @@ fn tools_menu(app: &mut App, ui: &mut Ui) {
         }
     });
     sub(ui, "menu.tools.macros", |ui| macros_items(app, ui));
+    // Commands added by plugins, and their manager (#1802).
+    sub(ui, "menu.tools.plugins", |ui| {
+        crate::plugins::menu_items(app, ui)
+    });
     if item(ui, "menu.tools.ai_generate", "", true) {
         app.open_ai_generate();
+    }
+    if item(ui, "menu.tools.sizes_areas", "", true) {
+        app.dialog = Dialog::SizesAreas(Default::default());
     }
     if item(ui, "menu.tools.font_manager", "", true) {
         app.dialog = Dialog::FontManager(Default::default());
@@ -4692,6 +4979,9 @@ fn help_menu(app: &mut App, ui: &mut Ui) {
     sep(ui);
     if item(ui, "menu.help.updates", "", true) {
         app.check_for_updates(Some(ui.ctx().clone()));
+    }
+    if item(ui, "menu.help.benchmark", "", true) {
+        app.dialog = Dialog::Benchmark;
     }
     if item(ui, "menu.help.message_settings", "", true) {
         app.dialog = Dialog::Options;

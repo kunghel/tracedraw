@@ -34,6 +34,8 @@ pub struct PrintPrefs {
     /// Space between the rows of pages, mm (#1795); preferences saved
     /// before have none and take `gutter`.
     pub gutter_y: Option<f64>,
+    /// The gaps across and down linked (#2162).
+    pub gaps_linked: bool,
     /// Layout presets saved in Print and Print Preview, by name (#1796).
     pub layout_presets: Vec<LayoutPreset>,
     /// Printing keeps the dialog's choices here for the next time.
@@ -87,6 +89,7 @@ impl Default for PrintPrefs {
             landscape: st.landscape,
             gutter: st.gutter,
             gutter_y: None,
+            gaps_linked: false,
             layout_presets: Vec::new(),
             remember_last: false,
             preflight: true,
@@ -155,6 +158,7 @@ impl PrintPrefs {
                 self.gutter_y.unwrap_or(self.gutter),
                 PrintState::default().gutter_y,
             ),
+            gaps_linked: self.gaps_linked,
             ..PrintState::default()
         }
     }
@@ -174,6 +178,7 @@ impl PrintPrefs {
         self.landscape = st.landscape;
         self.gutter = st.gutter;
         self.gutter_y = Some(st.gutter_y);
+        self.gaps_linked = st.gaps_linked;
         self.destination = st.destination;
         self.printer = st.printer.clone();
         self.orientation = st.orientation;
@@ -353,6 +358,182 @@ pub struct LayoutPreset {
     pub densitometer: bool,
     pub page_info: bool,
     pub page_numbers: bool,
+    /// The rest of the print settings, so that a preset is a whole print
+    /// style; presets and files saved before have none and leave those
+    /// settings as they are.
+    #[serde(default)]
+    pub style: Option<PrintStyle>,
+}
+
+/// The print settings a preset keeps besides the layout: the artwork's
+/// size and place on the sheet, the copies, the colour output and the
+/// file's PostScript level.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PrintStyle {
+    pub fit_to_page: bool,
+    /// Percent.
+    pub scale: f64,
+    pub art_offset: (f64, f64),
+    pub art_stretch: (f64, f64),
+    pub art_rotation: f64,
+    pub cell_rotation: Vec<f64>,
+    pub cell_order: Vec<usize>,
+    /// The sheets' orientation: 0 as the pages are, 1 portrait, 2
+    /// landscape (#2795).
+    pub orientation: usize,
+    pub info_offset: (f64, f64),
+    pub copies: u32,
+    pub collate: bool,
+    pub reverse_order: bool,
+    pub separations: bool,
+    pub skip_empty_plates: bool,
+    pub plate_files: bool,
+    pub manual_duplex: bool,
+    pub duplex_reverse: bool,
+    pub screens: bool,
+    pub screen_lpi: f64,
+    pub screen_angles: Vec<(String, f64)>,
+    pub grayscale: bool,
+    pub mirror: bool,
+    pub invert: bool,
+    pub spot_to_cmyk: bool,
+    pub text_black: bool,
+    pub overprint_black: bool,
+    pub page_background: bool,
+    pub as_bitmap: bool,
+    pub bitmap_dpi: f64,
+    pub ps_level: u8,
+    pub tile: bool,
+    pub tile_overlap: f64,
+    pub tile_marks: bool,
+    pub crop_length: f64,
+    pub crop_offset: f64,
+    pub crop_width: f64,
+    pub crop_between: bool,
+}
+
+impl Default for PrintStyle {
+    fn default() -> Self {
+        PrintStyle::from_state(&PrintState::default())
+    }
+}
+
+impl PrintStyle {
+    /// These settings of `st`.
+    pub fn from_state(st: &PrintState) -> Self {
+        PrintStyle {
+            fit_to_page: st.fit_to_page,
+            scale: st.scale,
+            art_offset: st.art_offset,
+            art_stretch: st.art_stretch,
+            art_rotation: st.art_rotation,
+            cell_rotation: st.cell_rotation.clone(),
+            cell_order: st.cell_order.clone(),
+            orientation: st.orientation,
+            info_offset: st.info_offset,
+            copies: st.copies,
+            collate: st.collate,
+            reverse_order: st.reverse_order,
+            separations: st.separations,
+            skip_empty_plates: st.skip_empty_plates,
+            plate_files: st.plate_files,
+            manual_duplex: st.manual_duplex,
+            duplex_reverse: st.duplex_reverse,
+            screens: st.screens,
+            screen_lpi: st.screen_lpi,
+            screen_angles: st.screen_angles.clone(),
+            grayscale: st.grayscale,
+            mirror: st.mirror,
+            invert: st.invert,
+            spot_to_cmyk: st.spot_to_cmyk,
+            text_black: st.text_black,
+            overprint_black: st.overprint_black,
+            page_background: st.page_background,
+            as_bitmap: st.as_bitmap,
+            bitmap_dpi: st.bitmap_dpi,
+            ps_level: st.ps_level,
+            tile: st.tile,
+            tile_overlap: st.tile_overlap,
+            tile_marks: st.tile_marks,
+            crop_length: st.crop_length,
+            crop_offset: st.crop_offset,
+            crop_width: st.crop_width,
+            crop_between: st.crop_between,
+        }
+    }
+
+    /// Put these settings into `st`, each number kept in its field's
+    /// range.
+    pub fn apply(&self, st: &mut PrintState) {
+        let d = PrintState::default();
+        let num = |v: f64, lo: f64, hi: f64, d: f64| {
+            if v.is_finite() {
+                v.clamp(lo, hi)
+            } else {
+                d
+            }
+        };
+        let pair =
+            |v: (f64, f64), lo: f64, hi: f64, d: f64| (num(v.0, lo, hi, d), num(v.1, lo, hi, d));
+        st.fit_to_page = self.fit_to_page;
+        st.scale = num(self.scale, 1.0, 1000.0, d.scale);
+        st.art_offset = pair(self.art_offset, -5000.0, 5000.0, 0.0);
+        st.art_stretch = pair(self.art_stretch, 0.01, 10.0, 1.0);
+        st.art_rotation = num(self.art_rotation, -360.0, 360.0, 0.0);
+        st.cell_rotation = self
+            .cell_rotation
+            .iter()
+            .take(9999)
+            .map(|v| num(*v, -360.0, 360.0, 0.0))
+            .collect();
+        // An arrangement of the places, or none.
+        st.cell_order = if self.cell_order.len() <= 9999
+            && crate::imposition::place_order(&self.cell_order, self.cell_order.len())
+                == self.cell_order
+        {
+            self.cell_order.clone()
+        } else {
+            Vec::new()
+        };
+        st.orientation = self.orientation.min(2);
+        st.info_offset = pair(self.info_offset, -5000.0, 5000.0, 0.0);
+        st.copies = self.copies.clamp(1, 999);
+        st.collate = self.collate;
+        st.reverse_order = self.reverse_order;
+        st.separations = self.separations;
+        st.skip_empty_plates = self.skip_empty_plates;
+        st.plate_files = self.plate_files;
+        st.manual_duplex = self.manual_duplex;
+        st.duplex_reverse = self.duplex_reverse;
+        st.screens = self.screens;
+        st.screen_lpi = self.screen_lpi;
+        st.screen_angles = self.screen_angles.clone();
+        st.grayscale = self.grayscale;
+        st.mirror = self.mirror;
+        st.invert = self.invert;
+        st.spot_to_cmyk = self.spot_to_cmyk;
+        st.text_black = self.text_black;
+        st.overprint_black = self.overprint_black;
+        st.page_background = self.page_background;
+        st.as_bitmap = self.as_bitmap;
+        st.bitmap_dpi = num(self.bitmap_dpi, 36.0, 1200.0, d.bitmap_dpi);
+        st.ps_level = self.ps_level.clamp(2, 3);
+        st.tile = self.tile;
+        st.tile_overlap = num(self.tile_overlap, 0.0, 100.0, d.tile_overlap);
+        st.tile_marks = self.tile_marks;
+        let crop = crate::imposition::CropStyle {
+            length: self.crop_length,
+            offset: self.crop_offset,
+            width: self.crop_width,
+            between: self.crop_between,
+        }
+        .clamped();
+        st.crop_length = crop.length;
+        st.crop_offset = crop.offset;
+        st.crop_width = crop.width;
+        st.crop_between = crop.between;
+    }
 }
 
 impl Default for LayoutPreset {
@@ -410,6 +591,7 @@ impl LayoutPreset {
             densitometer: st.densitometer,
             page_info: st.page_info,
             page_numbers: st.page_numbers,
+            style: Some(PrintStyle::from_state(st)),
         }
     }
 
@@ -472,6 +654,9 @@ impl LayoutPreset {
         st.densitometer = self.densitometer;
         st.page_info = self.page_info;
         st.page_numbers = self.page_numbers;
+        if let Some(style) = &self.style {
+            style.apply(st);
+        }
         st.layout_preset = self.name.clone();
     }
 
@@ -492,13 +677,23 @@ impl LayoutPreset {
         (file.format == LAYOUT_FILE_FORMAT).then_some(file.layout)
     }
 
-    /// The same layout as `other`, the names aside.
+    /// The same layout as `other`, the names aside; a preset saved
+    /// before presets kept the whole style matches on its layout alone.
     pub fn same_layout(&self, other: &LayoutPreset) -> bool {
+        let style = |p: &LayoutPreset| {
+            if self.style.is_some() {
+                p.style.clone()
+            } else {
+                None
+            }
+        };
         LayoutPreset {
             name: String::new(),
+            style: style(self),
             ..self.clone()
         } == LayoutPreset {
             name: String::new(),
+            style: style(other),
             ..other.clone()
         }
     }
@@ -527,6 +722,16 @@ pub struct ExportPreset {
     /// JPEG and TIFF colour mode (0 RGB, 1 CMYK, 2 Grayscale; #1763);
     /// presets saved before have none and stay RGB.
     pub color_mode: usize,
+    /// PLT's choices (#2652): scale, origin at the page's middle,
+    /// units per inch, HPGL/2, one pen, curve resolution (mm).
+    pub plt_scale: f64,
+    pub plt_centre: bool,
+    pub plt_units: f64,
+    pub plt_hpgl2: bool,
+    pub plt_one_pen: bool,
+    pub plt_resolution: f64,
+    /// SVG's text: as curves, as text, as text with its fonts (#2289).
+    pub svg_text: usize,
 }
 
 impl Default for ExportPreset {
@@ -567,6 +772,13 @@ impl ExportPreset {
             size_unit: st.size_unit,
             scale: st.scale,
             color_mode: st.color_mode,
+            plt_scale: st.plt_scale,
+            plt_centre: st.plt_centre,
+            plt_units: st.plt_units,
+            plt_hpgl2: st.plt_hpgl2,
+            plt_one_pen: st.plt_one_pen,
+            plt_resolution: st.plt_resolution,
+            svg_text: st.svg_text,
         }
     }
 
@@ -597,11 +809,32 @@ impl ExportPreset {
             st.output_condition = self.output_condition.chars().take(64).collect();
         }
         st.webp_lossless = self.webp_lossless;
+        if self.svg_text < crate::ui::dialogs::SVG_TEXT_KEYS.len() {
+            st.svg_text = self.svg_text;
+        }
         if self.color_mode < EXPORT_COLOR_MODES.len() {
             st.color_mode = self.color_mode;
         }
+        self.apply_plt(st);
         self.apply_size(st);
         st.preset = self.name.clone();
+    }
+
+    /// PLT's choices into the dialog, each brought into its range.
+    fn apply_plt(&self, st: &mut ExportState) {
+        let o = tracedraw_io::plt::PltOptions {
+            scale: self.plt_scale,
+            units_per_inch: self.plt_units,
+            curve_resolution: self.plt_resolution,
+            ..Default::default()
+        }
+        .sane();
+        st.plt_scale = o.scale;
+        st.plt_units = o.units_per_inch;
+        st.plt_resolution = o.curve_resolution;
+        st.plt_centre = self.plt_centre;
+        st.plt_hpgl2 = self.plt_hpgl2;
+        st.plt_one_pen = self.plt_one_pen;
     }
 
     /// The bitmap size's unit and scale into the dialog, when usable.
@@ -804,6 +1037,9 @@ pub struct TracePrefs {
     /// Every trace starts with these.
     pub remove_background: bool,
     pub delete_original: bool,
+    /// The Trace dialog's "Enlarge small pictures first": a small
+    /// picture is traced enlarged (see `upscale.rs`).
+    pub enlarge: bool,
 }
 
 impl Default for TracePrefs {
@@ -815,6 +1051,7 @@ impl Default for TracePrefs {
             quick_preset: crate::trace::Preset::Optimized,
             remove_background: s.removes_background(),
             delete_original: s.delete_original,
+            enlarge: false,
         }
     }
 }
@@ -899,6 +1136,17 @@ pub struct CurvePrefs {
     /// hand's touches are ignored (palm rejection, #1832, `palm.rs`).
     #[serde(default = "yes")]
     pub pen_ignores_hand: bool,
+    /// Freehand corner threshold, 0 (off) to 10 (#1436): a node where
+    /// the stroke turns by more than `180 - 12 x` degrees becomes a cusp,
+    /// so higher values make more corners.
+    #[serde(default)]
+    pub corner_threshold: u32,
+    /// Freehand straight line threshold, screen pixels, 0 (off) to 10
+    /// (#1436): a stretch between two nodes at least 20 pixels long whose
+    /// stroke stays this near the line between them becomes a straight
+    /// segment, so higher values make more lines.
+    #[serde(default)]
+    pub straight_threshold: u32,
 }
 
 /// The modifier key that constrains the angle while drawing curves.
@@ -942,6 +1190,8 @@ impl Default for CurvePrefs {
             constrain_key: ConstrainKey::Ctrl,
             pen_pressure: true,
             pen_ignores_hand: true,
+            corner_threshold: 0,
+            straight_threshold: 0,
         }
     }
 }
@@ -960,6 +1210,15 @@ impl CurvePrefs {
     /// pixels: 0.2 at no smoothing, 1.3 at the default 50, 2.4 at 100.
     pub fn freehand_tolerance_px(&self) -> f64 {
         0.2 + f64::from(self.smoothing.min(100)) / 100.0 * 2.2
+    }
+
+    /// The turn, degrees, past which a freehand node is a cusp; `None`
+    /// with the corner threshold off.
+    pub fn corner_turn_deg(&self) -> Option<f64> {
+        match self.corner_threshold.min(10) {
+            0 => None,
+            t => Some(180.0 - 12.0 * f64::from(t)),
+        }
     }
 }
 
@@ -1452,6 +1711,7 @@ mod tests {
             quick_preset: crate::trace::Preset::Logo,
             remove_background: false,
             delete_original: true,
+            enlarge: false,
         };
         let s = t.settings(crate::trace::Preset::HighQualityImage);
         let p = crate::trace::Preset::HighQualityImage.settings();
@@ -1483,6 +1743,73 @@ mod tests {
         );
         p.custom_sheet = Size::new(0.0, 450.0);
         assert_eq!(p.state().custom_sheet, PrintState::default().custom_sheet);
+    }
+
+    /// A preset keeps every print setting: the artwork's size and place,
+    /// the copies and the colour output come back with the layout.
+    #[test]
+    fn a_preset_keeps_the_whole_print_style() {
+        let st = PrintState {
+            separations: true,
+            mirror: true,
+            invert: true,
+            grayscale: true,
+            copies: 4,
+            collate: false,
+            fit_to_page: false,
+            scale: 150.0,
+            art_offset: (12.0, -3.0),
+            art_stretch: (1.5, 0.5),
+            art_rotation: 90.0,
+            cell_rotation: vec![0.0, 180.0],
+            cell_order: vec![2, 0, 1],
+            orientation: 2,
+            as_bitmap: true,
+            bitmap_dpi: 600.0,
+            ps_level: 3,
+            ..PrintState::default()
+        };
+        let p = LayoutPreset::from_state("Film", &st);
+        let back = LayoutPreset::from_file(&p.to_file()).expect("read back");
+        assert_eq!(back, p);
+        let mut fresh = PrintState::default();
+        back.apply(&mut fresh);
+        assert_eq!(PrintStyle::from_state(&fresh), PrintStyle::from_state(&st));
+        assert!(back.same_layout(&LayoutPreset::from_state("", &fresh)));
+        // A setting changed afterwards: the preset is no longer the one.
+        fresh.copies = 5;
+        assert!(!back.same_layout(&LayoutPreset::from_state("", &fresh)));
+        // Out of range values come back into range.
+        let wild = r#"{"format":"tracedraw-print-layout","version":1,"layout":{
+            "name":"w","style":{"scale":0.0,"copies":0,"bitmap_dpi":1e9,
+            "ps_level":9,"art_stretch":[0.0,99.0],"art_rotation":1000.0,
+            "cell_order":[1,1,5]}}}"#;
+        let p = LayoutPreset::from_file(wild).expect("a layout");
+        let mut st = PrintState::default();
+        p.apply(&mut st);
+        assert_eq!(st.scale, 1.0);
+        assert_eq!(st.copies, 1);
+        assert!(st.cell_order.is_empty(), "not an arrangement");
+        assert_eq!(st.bitmap_dpi, 1200.0);
+        assert_eq!(st.ps_level, 3);
+        assert_eq!(st.art_stretch, (0.01, 10.0));
+        assert_eq!(st.art_rotation, 360.0);
+        // A preset from before keeps its layout only: the colour settings
+        // stay, and it still shows chosen.
+        let old = r#"{"format":"tracedraw-print-layout","version":1,"layout":{
+            "name":"old","cols":2}}"#;
+        let p = LayoutPreset::from_file(old).expect("a layout");
+        assert!(p.style.is_none());
+        let mut st = PrintState {
+            separations: true,
+            copies: 3,
+            ..PrintState::default()
+        };
+        p.apply(&mut st);
+        assert!(st.separations);
+        assert_eq!(st.copies, 3);
+        assert_eq!(st.cols, 2);
+        assert!(p.same_layout(&LayoutPreset::from_state("", &st)));
     }
 
     /// #1796: a layout saved as a preset or a file and loaded again puts
@@ -1525,7 +1852,8 @@ mod tests {
             LayoutPreset::from_file("{\"format\":\"other\",\"version\":1,\"layout\":{}}").is_none()
         );
         assert!(LayoutPreset::from_file("not json").is_none());
-        // Out of range, and a Custom size.
+        // Out of range, and a Custom size; a file from before presets
+        // kept the whole style leaves the other settings alone.
         let wild = r#"{"format":"tracedraw-print-layout","version":1,"layout":{
             "name":"x","layout_kind":9,"cols":0,"rows":500,"page_order":7,
             "sheet":"custom","sheet_size":{"width":300.0,"height":400.0},

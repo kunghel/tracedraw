@@ -42,6 +42,7 @@ pub fn steps(tool: Tool) -> &'static [Option<Pic>] {
             p!(shape_add_node),
             p!(shape_corners),
         ],
+        Tool::Join => &[p!(join_stroke), p!(join_click), None],
         Tool::Smooth => &[p!(smooth_drag), None],
         Tool::Smear => &[p!(smear_out), p!(smear_in), None],
         Tool::Twirl => &[p!(twirl_hold), None],
@@ -53,6 +54,7 @@ pub fn steps(tool: Tool) -> &'static [Option<Pic>] {
         Tool::Knife => &[p!(knife_cut), p!(knife_apart), None],
         Tool::SegmentDelete => &[p!(segdel_click), p!(segdel_marquee)],
         Tool::Eraser => &[p!(eraser_drag), None, None],
+        Tool::ShapeBuilder => &[p!(builder_drag), p!(builder_merged), None],
         Tool::Zoom => &[p!(zoom_click), p!(zoom_marquee), None],
         Tool::Pan => &[p!(pan_drag), None],
         Tool::Freehand => &[
@@ -80,6 +82,7 @@ pub fn steps(tool: Tool) -> &'static [Option<Pic>] {
         Tool::Spiral => &[p!(spiral_drag), p!(spiral_kinds), None],
         Tool::CommonShapes => &[p!(common_set), p!(common_drag)],
         Tool::ActionLines => &[p!(action_kinds), p!(action_drag)],
+        Tool::Balloon => &[p!(balloon_drag), p!(balloon_tail), None],
         Tool::GraphPaper => &[p!(graph_rows), p!(graph_drag), p!(graph_cells)],
         Tool::Text => &[p!(text_artistic), p!(text_paragraph), None],
         Tool::Table => &[p!(table_drag), p!(table_type), None],
@@ -1174,6 +1177,41 @@ fn crop_done(k: &K) {
     k.cursor((110.0, 50.0));
 }
 
+/// Three overlapping rectangles, the Shape Builder's start (#1149).
+fn builder_rects(k: &K) {
+    k.outline(&rect_pts(30.0, 30.0, 170.0, 60.0), true, 1.5, INK);
+    k.outline(&rect_pts(60.0, 10.0, 90.0, 90.0), true, 1.5, INK);
+    k.outline(&rect_pts(110.0, 10.0, 140.0, 90.0), true, 1.5, INK);
+}
+
+fn builder_drag(k: &K) {
+    for r in [
+        rect_pts(60.0, 30.0, 90.0, 60.0),
+        rect_pts(90.0, 30.0, 110.0, 60.0),
+        rect_pts(110.0, 30.0, 140.0, 60.0),
+        rect_pts(110.0, 60.0, 140.0, 90.0),
+    ] {
+        k.fill(&r, Paint::Solid(GHOST.gamma_multiply(0.5)));
+    }
+    builder_rects(k);
+    k.drag_path(&[(70.0, 45.0), (100.0, 47.0), (125.0, 44.0), (126.0, 80.0)]);
+    k.tool_cursor((126.0, 80.0), Tool::ShapeBuilder);
+}
+
+fn builder_merged(k: &K) {
+    let merged = vec![
+        (60.0, 30.0),
+        (140.0, 30.0),
+        (140.0, 90.0),
+        (110.0, 90.0),
+        (110.0, 60.0),
+        (60.0, 60.0),
+    ];
+    k.shape(&merged, Paint::Solid(GREEN));
+    builder_rects(k);
+    k.handles((60.0, 30.0), (140.0, 90.0));
+}
+
 fn knife_cut(k: &K) {
     k.shape(&ellipse_pts(100.0, 50.0, 50.0, 32.0), Paint::Solid(RED));
     k.line(&[(70.0, 8.0), (130.0, 92.0)], 1.0, PAGE);
@@ -1221,6 +1259,30 @@ fn crossing_lines(k: &K, cut: bool) {
     } else {
         k.line(&a, 1.5, INK);
     }
+}
+
+fn join_stroke(k: &K) {
+    // Two open curves whose near ends a stroke passes over.
+    k.line(&[(25.0, 75.0), (60.0, 40.0), (95.0, 45.0)], 1.5, INK);
+    k.line(&[(105.0, 45.0), (140.0, 30.0), (175.0, 70.0)], 1.5, INK);
+    k.node((95.0, 45.0), false);
+    k.node((105.0, 45.0), false);
+    k.dashed(&[(85.0, 25.0), (100.0, 45.0), (115.0, 65.0)], ACCENT);
+    k.tool_cursor((115.0, 65.0), Tool::Join);
+}
+
+fn join_click(k: &K) {
+    // One end held (filled), a click on the other closes the curve.
+    k.line(
+        &[(40.0, 75.0), (70.0, 25.0), (130.0, 25.0), (160.0, 75.0)],
+        1.5,
+        INK,
+    );
+    k.dashed(&[(40.0, 75.0), (160.0, 75.0)], ACCENT);
+    k.node((40.0, 75.0), true);
+    k.node((160.0, 75.0), false);
+    k.click((160.0, 75.0));
+    k.tool_cursor((160.0, 75.0), Tool::Join);
 }
 
 fn segdel_click(k: &K) {
@@ -1942,6 +2004,36 @@ fn action_drag(k: &K) {
     k.dashed_closed(&rect_pts(40.0, 8.0, 160.0, 92.0), GHOST);
     k.drag((40.0, 8.0), (158.0, 90.0));
     k.tool_cursor((160.0, 92.0), Tool::ActionLines);
+}
+
+/// A speech balloon around (cx, cy), its tail to `tip`.
+fn balloon(k: &K, cx: f32, cy: f32, rx: f32, ry: f32, tip: P) {
+    let mut v = ellipse_pts(cx, cy, rx, ry);
+    // The tail leaves the body where it is nearest the tip.
+    let d = |q: &P| (q.0 - tip.0).powi(2) + (q.1 - tip.1).powi(2);
+    let near = (0..v.len())
+        .min_by(|&i, &j| d(&v[i]).total_cmp(&d(&v[j])))
+        .unwrap_or(0);
+    // A base a few points wide: the points around the nearest give way.
+    let n = v.len();
+    v.rotate_left((near + n - 4) % n);
+    v.drain(2..7);
+    v.insert(2, tip);
+    k.shape(&v, Paint::Solid(PAGE));
+}
+
+fn balloon_drag(k: &K) {
+    balloon(k, 100.0, 40.0, 55.0, 28.0, (62.0, 92.0));
+    k.dashed_closed(&rect_pts(45.0, 12.0, 155.0, 68.0), GHOST);
+    k.drag((45.0, 12.0), (153.0, 66.0));
+    k.tool_cursor((155.0, 68.0), Tool::Balloon);
+}
+
+fn balloon_tail(k: &K) {
+    balloon(k, 100.0, 40.0, 55.0, 28.0, (150.0, 92.0));
+    k.node((150.0, 92.0), true);
+    k.drag((62.0, 92.0), (148.0, 92.0));
+    k.tool_cursor((152.0, 94.0), Tool::Balloon);
 }
 
 fn grid(k: &K, x0: f32, y0: f32, x1: f32, y1: f32, cols: usize, rows: usize) {

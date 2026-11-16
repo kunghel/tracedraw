@@ -764,6 +764,43 @@ impl App {
         any
     }
 
+    /// A palette colour goes to the chosen cells of a table rather than
+    /// to the whole table: with the Table tool, and with the Pick or the
+    /// Shape tool when the table whose cells they chose is the selection
+    /// (#2707).
+    pub fn palette_goes_to_cells(&self) -> bool {
+        let Some(e) = self.table_edit.as_ref().filter(|e| !e.cells.is_empty()) else {
+            return false;
+        };
+        self.tool == Tool::Table || self.selection == [e.shape]
+    }
+
+    /// A palette's outline colour (right click) for the chosen cells:
+    /// every border of each takes `color`, keeping the width and style
+    /// the bar shows; `None` (No Color) takes the borders away. False when
+    /// no cell is chosen (#2707).
+    pub fn table_set_cell_outline_color(&mut self, color: Option<tracedraw_core::Color>) -> bool {
+        let Some(e) = self.table_edit.clone().filter(|e| !e.cells.is_empty()) else {
+            return false;
+        };
+        let Some(mut t) = self.table_of(e.shape) else {
+            return false;
+        };
+        let edge = match color {
+            Some(c) => {
+                let mut s = self
+                    .table_shown_border()
+                    .unwrap_or_else(|| Stroke::hairline(c));
+                s.color = c;
+                EdgeBorder::Stroke(Box::new(s))
+            }
+            None => EdgeBorder::None,
+        };
+        t.apply_borders(&e.cells, BorderSet::All, edge);
+        self.set_table_as(e.shape, t, "Cell Borders");
+        true
+    }
+
     /// The fill of the active cell (its own, else the table's).
     pub fn table_active_fill(&self) -> Option<Fill> {
         let e = self.table_edit.as_ref()?;
@@ -1121,6 +1158,74 @@ mod tests {
         assert_eq!(cells(&app), vec![(2, 3)]);
         // Off the table: nothing.
         assert!(!app.pick_table_cell(Point::new(500.0, 500.0), CellPick::One));
+    }
+
+    /// A palette click goes to the cells chosen with the Pick tool
+    /// (Ctrl+click) or the Shape tool, not to the whole table nor to its
+    /// first cell: left fills them, right colours their borders (#2707).
+    #[test]
+    fn a_palette_colour_goes_to_cells_chosen_with_the_pick_or_shape_tool() {
+        use tracedraw_core::Color;
+        let (mut app, id) = app_with_table();
+        let filled = |app: &App| -> Vec<(u32, u32, Option<Fill>)> {
+            let t = table(app);
+            let mut v: Vec<_> = t
+                .cells
+                .iter()
+                .filter(|c| c.fill.is_some())
+                .map(|c| (c.row, c.col, c.fill.clone()))
+                .collect();
+            v.sort_by_key(|c| (c.0, c.1));
+            v
+        };
+        let blue = Fill::Solid(Color::rgb8(0, 0, 200));
+        app.tool = Tool::Pick;
+        app.select(Vec::new());
+        assert!(app.pick_table_cell(at(1, 2), CellPick::One));
+        app.apply_fill(blue.clone());
+        assert_eq!(filled(&app), vec![(1, 2, Some(blue.clone()))]);
+        assert_eq!(table(&app).cell_fill, Fill::None, "not the whole table");
+        // The Shape tool, two cells.
+        let green = Fill::Solid(Color::rgb8(0, 160, 0));
+        app.tool = Tool::Shape;
+        assert!(app.pick_table_cell(at(0, 0), CellPick::One));
+        assert!(app.pick_table_cell(at(2, 3), CellPick::Toggle));
+        app.apply_fill(green.clone());
+        assert_eq!(
+            filled(&app),
+            vec![
+                (0, 0, Some(green.clone())),
+                (1, 2, Some(blue)),
+                (2, 3, Some(green))
+            ]
+        );
+        // Right click: the chosen cells' borders take the colour.
+        let red = Color::rgb8(200, 0, 0);
+        app.apply_outline_color(Some(red));
+        let t = table(&app);
+        let c = &t.cells[t.cell_index(2, 3).unwrap()];
+        for b in [
+            &c.borders.top,
+            &c.borders.left,
+            &c.borders.bottom,
+            &c.borders.right,
+        ] {
+            assert!(
+                matches!(b, EdgeBorder::Stroke(s) if s.color == red),
+                "{b:?}"
+            );
+        }
+        assert_eq!(
+            t.cells[t.cell_index(1, 1).unwrap()].borders.top,
+            EdgeBorder::Table
+        );
+        assert_eq!(t.border, Some(Stroke::hairline(Color::BLACK)));
+        // The cells let go: the colour goes to the table as before, no
+        // cell takes it.
+        let before = filled(&app);
+        app.table_edit = None;
+        app.apply_fill(Fill::Solid(Color::WHITE));
+        assert_eq!(filled(&app), before);
     }
 
     /// Centre of cell (r, c).

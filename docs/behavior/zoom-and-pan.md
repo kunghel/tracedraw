@@ -2,12 +2,24 @@
 
 ## Zoom tool (Z, F2)
 
-- Click zooms in by 2 at the point; Shift+click or right-click zooms
-  out by 2 (with this tool the right button never opens the context
-  menu). Dragging a marquee zooms to fit that rectangle.
+- Click zooms in by 2 and brings the point clicked to the middle of
+  the window; Shift+click or right-click zooms out by 2 the same way
+  (with this tool the right button never opens the context menu). So a
+  click near the page's edge shows that edge with room round it, even
+  where the edge sat at the window's edge (#2898,
+  `pick_drag_tests::the_zoom_tool_brings_the_point_clicked_to_the_middle`).
+  Dragging a marquee zooms to fit that rectangle.
 - Zooming to a rectangle (marquee, selection, all objects, page) centres
   that rectangle in the window, wherever it lies on the page, with a
-  40 px margin: `zoom = min((W - 80) / w, (H - 80) / h)`.
+  40 px margin: `zoom = min((W - 80) / w, (H - 80) / h)`. Zoom to fit
+  (F4) takes what the page draws, objects with their shadows, contours
+  and other live effects (`App::drawn_bounds`), 5 % wider on each side,
+  so a shadow keeps a margin too (#2898).
+- The zoom box (Standard toolbar, Zoom tool bar) shows the zoom as it
+  is, also while it has the focus and the wheel zooms on; what it shows
+  is applied when it lets go only if something was typed into it.
+  Before, a level shown when it was clicked stayed and was put back when
+  the box lost the focus (#2898). Below 10 % it shows a decimal.
 - Double-clicking the tool button zooms to fit all objects (F4).
 - F2 picks the tool for one zoom: after a click, a right click or a
   marquee the tool before it comes back (#1039,
@@ -51,6 +63,16 @@
 - Smooth zoom (Options > Tools > Zoom/Pan, on at first): off, every notch
   zooms its whole step at once
   (`pick_drag_tests::smooth_zoom_off_zooms_the_fixed_step_at_once`).
+- Light zoom (Options > Tools > Zoom/Pan, off at first; Help >
+  Benchmark turns it on when the score is under 4.0, see `benchmark.md`):
+  for slow computers. A notch zooms its whole step at once, without the
+  glide, and the canvas keeps the last picture scaled while the zoom
+  goes on, drawing the drawing anew once the view has rested 0.3 s
+  (`raster::LIGHT_SETTLE_SECONDS`) instead of starting a render at every
+  step. A three-notch wheel turn with the glide starts 6 renders (each
+  frame of the glide gives up the last one); with Light zoom, 1
+  (`raster::tests::light_zoom_renders_once_when_the_zoom_stops`,
+  `pick_drag_tests::light_zoom_draws_once_per_wheel_turn`).
 - With the Scroll setting: the wheel scrolls vertically; Shift+wheel
   scrolls horizontally; Ctrl+wheel zooms.
 - A trackpad pinch zooms by the gesture's factor with either setting.
@@ -96,8 +118,15 @@
   what comes in (#2051, `interaction::edge_scroll_step`,
   `pick_drag_tests::a_drag_at_the_window_edge_scrolls_the_view`). A drag
   that has left the window keeps following the pointer.
+- The dimension tools scroll the same way: while a dimension is dragged
+  from its first point to its second, and between its clicks, with the
+  pointer resting in the band inside the window (no button held), so
+  the next point can be put on a part of the drawing out of view; the
+  point lands where the pointer is in the scrolled view
+  (`pick_drag_tests::a_dimension_scrolls_the_view_at_the_window_edge`).
 - The cost a frame is a few comparisons; nothing scrolls without a drag
-  or in a drawing window smaller than four bands.
+  or a dimension being placed, or in a drawing window smaller than four
+  bands.
 
 ## Navigator and scrollbars
 

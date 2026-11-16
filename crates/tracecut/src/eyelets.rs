@@ -42,6 +42,14 @@ pub struct EyeletSpec {
     pub spacing: f64,
     /// Per side, both corners included.
     pub count: u32,
+    /// Along the box: an eyelet in each corner, and along each side
+    /// (bottom, right, top, left; a side includes its two ends), as the
+    /// placement buttons of Banner Hems and Eyelets (#2759).
+    pub corners: bool,
+    pub bottom: bool,
+    pub right: bool,
+    pub top: bool,
+    pub left: bool,
 }
 
 impl Default for EyeletSpec {
@@ -53,6 +61,11 @@ impl Default for EyeletSpec {
             by_count: false,
             spacing: 300.0,
             count: 3,
+            corners: true,
+            bottom: true,
+            right: true,
+            top: true,
+            left: true,
         }
     }
 }
@@ -133,15 +146,23 @@ pub fn along_box(r: Rect, spec: &EyeletSpec) -> Vec<Point> {
         Point::new(x0, y1),
     ];
     let mut out = Vec::new();
-    for c in corners {
-        push(&mut out, c);
+    if spec.corners {
+        for c in corners {
+            push(&mut out, c);
+        }
     }
+    let sides = [spec.bottom, spec.right, spec.top, spec.left];
     for k in 0..4 {
+        if !sides[k] {
+            continue;
+        }
         let (a, b) = (corners[k], corners[(k + 1) % 4]);
+        push(&mut out, a);
         let n = spec.between((b - a).hypot());
         for j in 1..=n {
             push(&mut out, a.lerp(b, j as f64 / (n + 1) as f64));
         }
+        push(&mut out, b);
     }
     out
 }
@@ -258,6 +279,72 @@ pub fn eyelets(objects: &[Vec<BezPath>], spec: &EyeletSpec) -> Vec<Point> {
     }
 }
 
+/// The lines the eyelets' centres follow, for a preview: the box shrunk
+/// by the inset, or each closed outline offset inward by it (#2759).
+pub fn guides(objects: &[Vec<BezPath>], spec: &EyeletSpec) -> Vec<BezPath> {
+    let spec = spec.clamped();
+    let all: Vec<BezPath> = objects.iter().flatten().cloned().collect();
+    match spec.along {
+        Along::Box => {
+            let Some(r) = crate::cut::bounds(&all).filter(|r| finite_rect(*r)) else {
+                return Vec::new();
+            };
+            let r = r.abs();
+            let i = spec.inset;
+            let (cx, cy) = ((r.x0 + r.x1) / 2.0, (r.y0 + r.y1) / 2.0);
+            let (x0, x1) = if r.width() > 2.0 * i {
+                (r.x0 + i, r.x1 - i)
+            } else {
+                (cx, cx)
+            };
+            let (y0, y1) = if r.height() > 2.0 * i {
+                (r.y0 + i, r.y1 - i)
+            } else {
+                (cy, cy)
+            };
+            let c = [
+                Point::new(x0, y0),
+                Point::new(x1, y0),
+                Point::new(x1, y1),
+                Point::new(x0, y1),
+            ];
+            let sides = [spec.bottom, spec.right, spec.top, spec.left];
+            if sides.iter().all(|s| *s) {
+                return vec![polygon_path(&c)];
+            }
+            // Only the chosen sides.
+            (0..4)
+                .filter(|&k| sides[k])
+                .map(|k| {
+                    let mut p = BezPath::new();
+                    p.move_to(c[k]);
+                    p.line_to(c[(k + 1) % 4]);
+                    p
+                })
+                .collect()
+        }
+        Along::Curve => {
+            let mut out = Vec::new();
+            for p in &all {
+                for poly in polys(p, FLATTEN_TOLERANCE) {
+                    if !poly.closed || poly.pts.len() < 3 {
+                        continue;
+                    }
+                    if spec.inset <= 0.0 {
+                        out.push(polygon_path(&poly.pts));
+                    } else {
+                        out.push(tracedraw_core::shaping::offset_polygon(
+                            &polygon_path(&poly.pts),
+                            -spec.inset,
+                        ));
+                    }
+                }
+            }
+            out
+        }
+    }
+}
+
 /// A circle of `diameter` round each centre.
 pub fn marks(centres: &[Point], diameter: f64) -> Vec<BezPath> {
     let r = fin(diameter, EyeletSpec::default().diameter).clamp(DIAMETER_RANGE.0, DIAMETER_RANGE.1)
@@ -274,6 +361,87 @@ pub fn marks(centres: &[Point], diameter: f64) -> Vec<BezPath> {
 mod tests {
     use super::*;
     use tracedraw_core::geometry::Shape as _;
+
+    #[test]
+    fn chosen_sides_and_corners_only() {
+        let r = Rect::new(0.0, 0.0, 330.0, 130.0);
+        let spec = EyeletSpec {
+            spacing: 100.0,
+            ..EyeletSpec::default()
+        };
+        // All: 4 corners, 2 between on the 300 mm sides, none on 100 mm.
+        assert_eq!(along_box(r, &spec).len(), 8);
+        let top = along_box(
+            r,
+            &EyeletSpec {
+                corners: false,
+                bottom: false,
+                right: false,
+                left: false,
+                ..spec
+            },
+        );
+        assert_eq!(
+            sorted(top),
+            vec![
+                (15000, 115000),
+                (115000, 115000),
+                (215000, 115000),
+                (315000, 115000)
+            ]
+        );
+        let corners = along_box(
+            r,
+            &EyeletSpec {
+                bottom: false,
+                right: false,
+                top: false,
+                left: false,
+                ..spec
+            },
+        );
+        assert_eq!(corners.len(), 4);
+        let none = EyeletSpec {
+            corners: false,
+            bottom: false,
+            right: false,
+            top: false,
+            left: false,
+            ..spec
+        };
+        assert!(along_box(r, &none).is_empty());
+    }
+
+    #[test]
+    fn the_guide_is_the_box_shrunk_by_the_inset() {
+        let r = tracedraw_core::geometry::Rect::new(0.0, 0.0, 100.0, 60.0);
+        let obj = vec![vec![polygon_path(&[
+            Point::new(r.x0, r.y0),
+            Point::new(r.x1, r.y0),
+            Point::new(r.x1, r.y1),
+            Point::new(r.x0, r.y1),
+        ])]];
+        let g = guides(&obj, &EyeletSpec::default());
+        assert_eq!(g.len(), 1);
+        let b = g[0].bounding_box();
+        assert!(
+            (b.x0 - 15.0).abs() < 1e-9 && (b.y1 - 45.0).abs() < 1e-9,
+            "{b:?}"
+        );
+        let c = guides(
+            &obj,
+            &EyeletSpec {
+                along: Along::Curve,
+                ..EyeletSpec::default()
+            },
+        );
+        let b = c[0].bounding_box();
+        assert!(
+            (b.x0 - 15.0).abs() < 0.5 && (b.x1 - 85.0).abs() < 0.5,
+            "{b:?}"
+        );
+        assert!(guides(&[], &EyeletSpec::default()).is_empty());
+    }
 
     fn sorted(mut v: Vec<Point>) -> Vec<(i64, i64)> {
         let mut out: Vec<(i64, i64)> = v

@@ -115,6 +115,8 @@ pub fn draw_canvas(app: &App, painter: &Painter, rect: ERect) {
     draw_table_cells(app, painter);
     crate::table_tool::draw_table_drag(app, painter);
     crate::variable_outline::draw_width_nodes(app, painter);
+    crate::join_tool::draw_join_ends(app, painter);
+    crate::shape_builder::draw(app, painter);
     crate::comments::draw_comments(app, painter);
     crate::perspective_draw::draw_grid(app, painter, rect);
     draw_frame_links(app, painter);
@@ -132,6 +134,7 @@ pub fn draw_canvas(app: &App, painter: &Painter, rect: ERect) {
     draw_shadow_handles(app, painter);
     draw_shadow_edge_hint(app, painter);
     draw_contour_handles(app, painter);
+    draw_offset_shadow_handle(app, painter);
     draw_blend_controls(app, painter);
 
     // Fit Text to Path waiting for its path: the text on the one near.
@@ -474,6 +477,61 @@ pub fn printable_rect(
     )
 }
 
+/// A rectangle drawn in dashes of 4 points, one pixel wide.
+fn dashed_rect(painter: &Painter, r: ERect, color: Color32) {
+    let dash = 4.0;
+    for (a, b) in [
+        (r.left_top(), r.right_top()),
+        (r.right_top(), r.right_bottom()),
+        (r.right_bottom(), r.left_bottom()),
+        (r.left_bottom(), r.left_top()),
+    ] {
+        let len = (b - a).length();
+        let n = (len / (dash * 2.0)).floor() as usize;
+        for k in 0..n {
+            let t0 = (k as f32 * dash * 2.0) / len;
+            let t1 = ((k as f32 * dash * 2.0) + dash) / len;
+            painter.line_segment(
+                [a + (b - a) * t0, a + (b - a) * t1],
+                EStroke::new(1.0, color),
+            );
+        }
+    }
+}
+
+/// The colour of the page margins' frame (#1660).
+pub const PAGE_MARGIN_COLOR: Color32 = Color32::from_rgb(0xC0, 0x3C, 0xC8);
+
+/// The boxes inside the page margins of the pages on the desktop, in the
+/// current page's coordinates (#1660): with facing pages the inside
+/// margin at the spine of each page of the spread.
+pub fn page_margin_boxes(app: &App) -> Vec<tracedraw_core::geometry::Rect> {
+    let doc = app.doc();
+    if doc.metadata.margins.is_none() {
+        return Vec::new();
+    }
+    app.shown_pages()
+        .into_iter()
+        .filter_map(|(id, r)| {
+            let index = doc.pages.iter().position(|p| p.id == id)?;
+            doc.margin_box(index, r)
+        })
+        .collect()
+}
+
+/// The page margins (Document Setup > Layout, #1660): a dashed frame on
+/// each page shown, over the drawing like the guides.
+fn draw_page_margins(app: &App, painter: &Painter) {
+    for b in page_margin_boxes(app) {
+        let r = app.view.rect_to_screen(b);
+        dashed_rect(
+            painter,
+            ERect::from_min_max(r.min.round(), r.max.round()),
+            PAGE_MARGIN_COLOR,
+        );
+    }
+}
+
 /// The window's background, the page with its shadow and border, bleed
 /// and printable area, the grids, and the objects rendered (`preview`
 /// moves the selection while it is dragged).
@@ -530,6 +588,7 @@ fn draw_page(app: &App, painter: &Painter, rect: ERect, preview: Option<Affine>)
     // pixels as on the CPU, so nothing drawn needs drawing again).
     #[cfg(not(target_arch = "wasm32"))]
     crate::gpu_fx::set_enabled(app.settings.gpu_effects);
+    app.raster.borrow_mut().light_zoom = app.settings.light_zoom;
     let main = app.raster.borrow_mut().texture(
         painter.ctx(),
         doc,
@@ -645,24 +704,7 @@ fn draw_page(app: &App, painter: &Painter, rect: ERect, preview: Option<Affine>)
         // Printable area: the page minus the printer's hard margins, as
         // the system reports them, else a typical 5 mm (#1924).
         let r = view.rect_to_screen(printable_rect(app, shown));
-        let dash = 4.0;
-        for (a, b) in [
-            (r.left_top(), r.right_top()),
-            (r.right_top(), r.right_bottom()),
-            (r.right_bottom(), r.left_bottom()),
-            (r.left_bottom(), r.left_top()),
-        ] {
-            let len = (b - a).length();
-            let n = (len / (dash * 2.0)).floor() as usize;
-            for k in 0..n {
-                let t0 = (k as f32 * dash * 2.0) / len;
-                let t1 = ((k as f32 * dash * 2.0) + dash) / len;
-                painter.line_segment(
-                    [a + (b - a) * t0, a + (b - a) * t1],
-                    EStroke::new(1.0, Tokens::text_dim()),
-                );
-            }
-        }
+        dashed_rect(painter, r, Tokens::text_dim());
     }
 
     if app.show_grid {
@@ -696,8 +738,20 @@ fn draw_page(app: &App, painter: &Painter, rect: ERect, preview: Option<Affine>)
             ERect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
             Color32::WHITE,
         );
+        // The bands of the new picture done so far, sharp over the last
+        // one while it is shown scaled after a zoom (#2389).
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some((bands, bands_at)) = app.raster.borrow().incoming(view) {
+            painter.image(
+                bands,
+                bands_at,
+                ERect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
+                Color32::WHITE,
+            );
+        }
     }
 
+    draw_page_margins(app, painter);
     if app.mask_outside_page {
         mask_outside_pages(app, painter, rect, paper);
     }
@@ -777,8 +831,24 @@ pub(crate) fn backdrop_parts(rect: ERect, at: ERect, back_at: ERect) -> Vec<ERec
     if !(area.width() > 0.0 && area.height() > 0.0) {
         return Vec::new();
     }
-    // (A picture a hair short of the canvas's edge covers it.)
-    outside(area, &[at.expand(0.5)])
+    // The backdrop meets the picture edge to edge: a hole a half pixel
+    // wider than the picture left a thin line of bare paper around it
+    // while the view zoomed out (#2899). A picture a hair short of the
+    // canvas's edge still covers it.
+    let mut hole = at;
+    if hole.left() - area.left() < 0.5 {
+        hole.min.x = hole.min.x.min(area.left());
+    }
+    if hole.top() - area.top() < 0.5 {
+        hole.min.y = hole.min.y.min(area.top());
+    }
+    if area.right() - hole.right() < 0.5 {
+        hole.max.x = hole.max.x.max(area.right());
+    }
+    if area.bottom() - hole.bottom() < 0.5 {
+        hole.max.y = hole.max.y.max(area.bottom());
+    }
+    outside(area, &[hole])
 }
 
 /// The parts of `area` no rectangle of `holes` covers, as rectangles:
@@ -1044,12 +1114,7 @@ fn draw_drop_frame(app: &App, painter: &Painter) {
         return;
     };
     let at = app.view.to_screen(p) + egui::vec2(18.0, 24.0);
-    let (w, k) = app.drop_keys;
-    let lines = [
-        ("hint.drop_frame_place", !w && !k),
-        ("hint.drop_frame_add", w && !k),
-        ("hint.drop_frame_replace", k),
-    ];
+    let lines = drop_frame_hints(app.drop_keys, app.clip_frame_is_empty(frame));
     let font = egui::FontId::proportional(12.0);
     let galleys: Vec<_> = lines
         .iter()
@@ -1082,6 +1147,22 @@ fn draw_drop_frame(app: &App, painter: &Painter) {
         painter.galley(egui::pos2(bg.left() + 6.0, y), g, Tokens::text());
         y += h + 2.0;
     }
+}
+
+/// The lines under the pointer while the selection is over a clip frame,
+/// each with whether it is what a release does now (W, K held). An empty
+/// frame takes the objects as they are, and has no contents for K to
+/// replace, so it offers just that (#2703).
+pub(crate) fn drop_frame_hints(keys: (bool, bool), empty: bool) -> Vec<(&'static str, bool)> {
+    if empty {
+        return vec![("hint.drop_frame_into", true)];
+    }
+    let (w, k) = keys;
+    vec![
+        ("hint.drop_frame_place", !w && !k),
+        ("hint.drop_frame_add", w && !k),
+        ("hint.drop_frame_replace", k),
+    ]
 }
 
 /// Beside the pointer while File > Import's file waits for its place:
@@ -1499,6 +1580,9 @@ fn draw_contour_handles(app: &App, painter: &Painter) {
     haloed_polyline(painter, &[a, z], false, Tokens::SELECTION);
     let held =
         |k: crate::contour_tool::ContourHandle| app.contour_handle_drag.map(|(d, _)| d) == Some(k);
+    // Large enough to take by touch, larger with a larger node size
+    // (#2731).
+    let side = crate::contour_tool::HANDLE_SIDE_PX.max(app.settings.nodes.size.px() + 2.0);
     if let Some(q) = h.steps {
         let q = view.to_screen(q);
         let fill = if held(crate::contour_tool::ContourHandle::Steps) {
@@ -1506,7 +1590,7 @@ fn draw_contour_handles(app: &App, painter: &Painter) {
         } else {
             Color32::WHITE
         };
-        let rect = ERect::from_center_size(q, egui::vec2(5.0, 13.0));
+        let rect = ERect::from_center_size(q, egui::vec2(side * 0.6, side + 4.0));
         painter.rect_filled(rect, 1.0, fill);
         painter.rect_stroke(
             rect,
@@ -1520,7 +1604,33 @@ fn draw_contour_handles(app: &App, painter: &Painter) {
     } else {
         Color32::WHITE
     };
-    let rect = ERect::from_center_size(z, egui::vec2(9.0, 9.0));
+    let rect = ERect::from_center_size(z, egui::vec2(side, side));
+    painter.rect_filled(rect, 0.0, fill);
+    painter.rect_stroke(
+        rect,
+        0.0,
+        EStroke::new(1.0, Tokens::SELECTION),
+        egui::StrokeKind::Outside,
+    );
+}
+
+/// Block Shadow and Inner Shadow tools: the selected shadow's line from
+/// the object's middle and the square at its end (#1280), filled while it
+/// is dragged.
+fn draw_offset_shadow_handle(app: &App, painter: &Painter) {
+    let Some(h) = app.offset_shadow_handle() else {
+        return;
+    };
+    let view = &app.view;
+    let (a, z) = (view.to_screen(h.mid), view.to_screen(h.end));
+    haloed_polyline(painter, &[a, z], false, Tokens::SELECTION);
+    let fill = if matches!(app.drag, Drag::OffsetShadow { .. }) {
+        Tokens::SELECTION
+    } else {
+        Color32::WHITE
+    };
+    let side = crate::shadow_tool::HANDLE_SIDE_PX - 2.0;
+    let rect = ERect::from_center_size(z, egui::vec2(side, side));
     painter.rect_filled(rect, 0.0, fill);
     painter.rect_stroke(
         rect,
@@ -1941,6 +2051,10 @@ fn draw_selection(app: &App, painter: &Painter, preview: Option<Affine>) {
         draw_nodes(app, painter);
         return;
     }
+    // The Mesh Fill tool's box or freehand loop over mesh nodes.
+    if app.tool == Tool::MeshFill {
+        draw_node_marquees(app, painter);
+    }
     // While text is typed or edited only the text and its cursor show;
     // the handles come back when editing ends.
     if app.text_edit.is_some() {
@@ -1978,7 +2092,8 @@ fn draw_selection(app: &App, painter: &Painter, preview: Option<Affine>) {
         Tool::Pick | Tool::FreeformPick | Tool::InteractiveFill | Tool::Text
     );
     // A drop shadow chosen on its own: its box, to its feathered edge,
-    // with hollow handles, and not the object's (#2545).
+    // and not the object's (#2545). The box has no handles: they did
+    // nothing, and a drag on the shadow moves it (#2711).
     if let Some(shadow) = app.picked_shadow_bounds().filter(|_| pick) {
         let r = view.rect_to_screen(shadow);
         painter.rect_stroke(
@@ -1987,16 +2102,6 @@ fn draw_selection(app: &App, painter: &Painter, preview: Option<Affine>) {
             EStroke::new(1.0, Color32::from_rgb(0, 120, 215)),
             epaint::StrokeKind::Middle,
         );
-        let size = app.handle_size();
-        for (_, p) in app.handle_positions(shadow) {
-            painter.rect(
-                ERect::from_center_size(p, egui::vec2(size, size)),
-                0.0,
-                Color32::WHITE,
-                EStroke::new(1.0, Color32::BLACK),
-                epaint::StrokeKind::Outside,
-            );
-        }
         return;
     }
     if app.rotate_mode && pick {
@@ -2375,12 +2480,99 @@ fn draw_empty_clip_frames(app: &App, painter: &Painter) {
     {
         if let ShapeKind::ClipFrame { contents, .. } = &s.kind {
             if contents.is_empty() && s.visible {
-                let r = app.view.rect_to_screen(s.bounds());
-                painter.line_segment([r.left_top(), r.right_bottom()], stroke);
-                painter.line_segment([r.right_top(), r.left_bottom()], stroke);
+                for (a, b) in
+                    empty_frame_marks(&s.page_path(), 0.25 / app.view.zoom.max(0.05) as f64)
+                {
+                    painter.line_segment([app.view.to_screen(a), app.view.to_screen(b)], stroke);
+                }
             }
         }
     }
+}
+
+/// The two diagonals of an empty clip frame's box, kept to the parts that
+/// lie inside its outline (page space, `tol` the flattening tolerance in
+/// mm): drawn corner to corner, they ran out of an ellipse, a star or a
+/// curve and made the frame look bigger than it is (#2702).
+pub(crate) fn empty_frame_marks(path: &BezPath, tol: f64) -> Vec<(Point, Point)> {
+    use kurbo::Shape as _;
+    let r = path.bounding_box();
+    if !(r.width() > 0.0 && r.height() > 0.0) {
+        return Vec::new();
+    }
+    // The outline's straight pieces, closed per subpath.
+    let mut segs: Vec<(Point, Point)> = Vec::new();
+    let (mut first, mut last) = (None::<Point>, None::<Point>);
+    let close = |first: &mut Option<Point>, last: &mut Option<Point>, segs: &mut Vec<_>| {
+        if let (Some(f), Some(l)) = (*first, *last) {
+            if f != l {
+                segs.push((l, f));
+            }
+        }
+        *first = None;
+        *last = None;
+    };
+    kurbo::flatten(
+        path.elements().iter().copied(),
+        tol.max(1e-4),
+        &mut |el| match el {
+            PathEl::MoveTo(p) => {
+                close(&mut first, &mut last, &mut segs);
+                first = Some(p);
+                last = Some(p);
+            }
+            PathEl::LineTo(p) => {
+                if let Some(l) = last {
+                    segs.push((l, p));
+                }
+                last = Some(p);
+            }
+            PathEl::ClosePath => close(&mut first, &mut last, &mut segs),
+            _ => {}
+        },
+    );
+    close(&mut first, &mut last, &mut segs);
+    let mut out: Vec<(Point, Point)> = Vec::new();
+    for (a, b) in [
+        (Point::new(r.x0, r.y0), Point::new(r.x1, r.y1)),
+        (Point::new(r.x1, r.y0), Point::new(r.x0, r.y1)),
+    ] {
+        let d = b - a;
+        // Where the diagonal crosses the outline, as fractions of it.
+        let mut ts = vec![0.0, 1.0];
+        for &(p, q) in &segs {
+            let e = q - p;
+            let den = d.x * e.y - d.y * e.x;
+            if den.abs() < 1e-12 {
+                continue;
+            }
+            let w = p - a;
+            let t = (w.x * e.y - w.y * e.x) / den;
+            let u = (w.x * d.y - w.y * d.x) / den;
+            if (0.0..=1.0).contains(&t) && (0.0..=1.0).contains(&u) {
+                ts.push(t);
+            }
+        }
+        ts.sort_by(f64::total_cmp);
+        ts.dedup_by(|x, y| (*x - *y).abs() < 1e-9);
+        for w in ts.windows(2) {
+            let (t0, t1) = (w[0], w[1]);
+            if t1 - t0 < 1e-9 {
+                continue;
+            }
+            let mid = a + d * ((t0 + t1) / 2.0);
+            // Even-odd, so the hole of a ring or a letter O is left out.
+            if path.winding(mid) % 2 != 0 {
+                let (p, q) = (a + d * t0, a + d * t1);
+                // Pieces that join go on as one line.
+                match out.last_mut() {
+                    Some((_, end)) if (*end - p).hypot() < 1e-9 => *end = q,
+                    _ => out.push((p, q)),
+                }
+            }
+        }
+    }
+    out
 }
 
 /// Document grid line colour (lines) and dot colour (dots).
@@ -2421,47 +2613,98 @@ pub fn grid_positions(a: f64, b: f64, origin: f64, step: f64) -> Vec<f64> {
 
 /// The document grid over the whole drawing window, as lines or dots,
 /// passing through the ruler origin. Lines are thinned out when the zoom
-/// would crowd them.
+/// would crowd them, and fade in as they spread apart, so a dense grid
+/// is faint rather than a shimmering pattern (#2313). Each line or dot
+/// lands on one whole device pixel, also when the interface is scaled
+/// by a fraction (a line one point wide there covers one or two device
+/// pixels by turns, which drew the grid as moire).
 fn draw_grid(app: &App, painter: &Painter, rect: ERect) {
     let view = &app.view;
     let meta = &app.doc().metadata;
     let (grid, rulers) = (meta.grid, meta.rulers.clone());
     let zoom = view.zoom as f64;
+    let ppp = painter.ctx().pixels_per_point();
     let dots = grid.display == tracedraw_core::document::GridDisplay::Dots;
-    let min_px = if dots { 8.0 } else { 6.0 };
-    let sx = grid.spacing_x.max(1e-6) * grid_thinning(grid.spacing_x * zoom, min_px);
-    let sy = grid.spacing_y.max(1e-6) * grid_thinning(grid.spacing_y * zoom, min_px);
+    let min_px = if dots { GRID_MIN_DOTS } else { GRID_MIN_LINES };
+    let (fx, fy) = (
+        grid_thinning(grid.spacing_x * zoom, min_px),
+        grid_thinning(grid.spacing_y * zoom, min_px),
+    );
+    let sx = grid.spacing_x.max(1e-6) * fx;
+    let sy = grid.spacing_y.max(1e-6) * fy;
     let tl = view.to_page(rect.left_top());
     let br = view.to_page(rect.right_bottom());
     let xs: Vec<f32> = grid_positions(tl.x, br.x, rulers.origin_x, sx)
         .into_iter()
-        .map(|x| view.to_screen(Point::new(x, 0.0)).x.round() + 0.5)
-        .filter(|x| *x >= rect.left() && *x <= rect.right())
+        .map(|x| device_pixel(view.to_screen(Point::new(x, 0.0)).x, ppp))
+        .filter(|x| *x >= rect.left() && *x < rect.right())
         .collect();
     let ys: Vec<f32> = grid_positions(br.y, tl.y, rulers.origin_y, sy)
         .into_iter()
-        .map(|y| view.to_screen(Point::new(0.0, y)).y.round() + 0.5)
-        .filter(|y| *y >= rect.top() && *y <= rect.bottom())
+        .map(|y| device_pixel(view.to_screen(Point::new(0.0, y)).y, ppp))
+        .filter(|y| *y >= rect.top() && *y < rect.bottom())
         .collect();
+    let one = 1.0 / ppp;
     let mut px = crate::ui::rulers::Pixels::default();
     if dots {
         if xs.len() * ys.len() > 200_000 {
             return;
         }
+        let fade = grid_fade((sx * zoom).min(sy * zoom), min_px);
+        let c = GRID_DOT.gamma_multiply(fade);
         for x in &xs {
             for y in &ys {
-                px.dot(x.floor(), y.floor(), GRID_DOT);
+                px.rect(
+                    ERect::from_min_size(Pos2::new(*x, *y), egui::vec2(one, one)),
+                    c,
+                );
             }
         }
     } else {
+        let cx = GRID_LINE.gamma_multiply(grid_fade(sx * zoom, min_px));
+        let cy = GRID_LINE.gamma_multiply(grid_fade(sy * zoom, min_px));
         for x in &xs {
-            px.rect(vline_rect(*x, rect), GRID_LINE);
+            px.rect(
+                ERect::from_min_max(Pos2::new(*x, rect.top()), Pos2::new(x + one, rect.bottom())),
+                cx,
+            );
         }
         for y in &ys {
-            px.rect(hline_rect(*y, rect), GRID_LINE);
+            px.rect(
+                ERect::from_min_max(Pos2::new(rect.left(), *y), Pos2::new(rect.right(), y + one)),
+                cy,
+            );
         }
     }
     px.paint(painter);
+}
+
+/// Fewest screen points between drawn grid lines, and between dots.
+const GRID_MIN_LINES: f64 = 8.0;
+const GRID_MIN_DOTS: f64 = 10.0;
+
+/// How strongly grid lines `spacing_px` points apart are drawn: faint
+/// just past the thinning limit `min_px`, full once they are two and a
+/// half times as far apart, so the grid fades in and out with the zoom
+/// instead of crowding into a pattern.
+pub fn grid_fade(spacing_px: f64, min_px: f64) -> f32 {
+    if !(spacing_px.is_finite() && min_px > 0.0) {
+        return 1.0;
+    }
+    let t = ((spacing_px / min_px - 1.0) / 1.5).clamp(0.0, 1.0);
+    (0.55 + 0.45 * t) as f32
+}
+
+/// The left (top) edge, in points, of the device pixel a one-pixel line
+/// at the screen coordinate `v` is drawn in, at `ppp` device pixels per
+/// point: `v` rounded to a whole device pixel, as the rulers' ticks are.
+pub fn device_pixel(v: f32, ppp: f32) -> f32 {
+    let ppp = if ppp.is_finite() && ppp > 0.0 {
+        ppp
+    } else {
+        1.0
+    };
+    (v * ppp).round() / ppp
 }
 
 /// A one-pixel vertical line through the pixel containing `x`, across `r`.
@@ -2673,6 +2916,31 @@ pub(crate) fn kind_outline(s: &tracedraw_core::Shape, view: &View) -> Vec<Vec<Po
         .collect()
 }
 
+/// The node marquees, rectangular or freehand, of the Shape tool and of
+/// the Mesh Fill tool (discussion #2730). They look like the Pick
+/// tool's: blue dashes on a white line, so they show on blue artwork too
+/// (#1849).
+fn draw_node_marquees(app: &App, painter: &Painter) {
+    let view = &app.view;
+    if let Drag::NodeLasso { points } = &app.drag {
+        let pts: Vec<Pos2> = points.iter().map(|p| view.to_screen(*p)).collect();
+        if pts.len() > 1 {
+            dashed_selection_line(painter, &pts);
+        }
+    }
+    if let Drag::NodeMarquee { start, current } = &app.drag {
+        let r = view.rect_to_screen(Rect::from_points(*start, *current));
+        let pts = [
+            r.left_top(),
+            r.right_top(),
+            r.right_bottom(),
+            r.left_bottom(),
+            r.left_top(),
+        ];
+        dashed_selection_line(painter, &pts);
+    }
+}
+
 /// Shape tool overlay, as Options > Nodes and Handles sets it: nodes
 /// shaped by type (cusp, smooth, symmetrical), the selected ones filled
 /// with the main colour, the others white or hollow, the first node of a
@@ -2711,6 +2979,12 @@ fn draw_nodes(app: &App, painter: &Painter) {
                 }
             }
         }
+    }
+    // The control handle chosen by a click: a ring round its head, the
+    // one the arrow keys move (#2819).
+    if let Some(c) = app.chosen_handle_point() {
+        let r = prefs.size.handle_head() * 0.5 + 3.0;
+        painter.circle_stroke(view.to_screen(c), r, EStroke::new(1.5, main));
     }
     // The spot clicked on a segment: a small round mark where Add Node
     // puts the node.
@@ -2767,6 +3041,12 @@ fn draw_nodes(app: &App, painter: &Painter) {
                 draw_spacing_arrow(painter, v, false, main);
                 continue;
             }
+            // Text fitted to a path: the horizontal arrow only, which
+            // opens up or closes the letters along the path (#193).
+            if crate::text_nodes::on_path(&s) {
+                let (h, _) = app.spacing_arrow_spots(&s);
+                draw_spacing_arrow(painter, h, true, main);
+            }
         }
         // A B-spline: its outline, the control polygon dashed and the
         // control points as nodes; the curve's own nodes do not show.
@@ -2774,7 +3054,7 @@ fn draw_nodes(app: &App, painter: &Painter) {
             for (pts, _) in flatten(&s.page_path(), view) {
                 painter.add(egui::Shape::line(pts, EStroke::new(1.0, outline_of(s.id))));
             }
-            let own = crate::kind_nodes::nodes(&s);
+            let own = crate::kind_nodes::handles(&s);
             let poly: Vec<Pos2> = own.iter().map(|(_, p)| view.to_screen(*p)).collect();
             let closed = matches!(s.kind, ShapeKind::Path { closed: true, .. });
             let lines = if closed {
@@ -2842,6 +3122,23 @@ fn draw_nodes(app: &App, painter: &Painter) {
                 } else {
                     None
                 };
+                // An edge's bow handle (#2188) is a small diamond, told
+                // apart from the corner nodes.
+                if let crate::kind_nodes::KindNode::Edge { .. } = node {
+                    let c = view.to_screen(p);
+                    let h = size / 2.0 + 1.0;
+                    painter.add(egui::Shape::convex_polygon(
+                        vec![
+                            c + egui::vec2(0.0, -h),
+                            c + egui::vec2(h, 0.0),
+                            c + egui::vec2(0.0, h),
+                            c + egui::vec2(-h, 0.0),
+                        ],
+                        Color32::WHITE,
+                        EStroke::new(1.0, main),
+                    ));
+                    continue;
+                }
                 node_marker(painter, view.to_screen(p), size, prefs.cusp, fill, main);
             }
             continue;
@@ -2859,28 +3156,30 @@ fn draw_nodes(app: &App, painter: &Painter) {
         }
         let all = nodes::nodes(path);
         if prefs.show_direction {
-            // A small arrow head just after the first node, along the
-            // first segment.
-            if let Some(n0) = all.iter().find(|n| n.is_start) {
-                let toward = n0
-                    .ctrl_out
-                    .or_else(|| all.iter().find(|n| !n.is_start).map(|n| n.pos));
-                if let Some(t) = toward {
-                    let a = view.to_screen(s.transform * n0.pos);
-                    let bpt = view.to_screen(s.transform * t);
-                    let d = bpt - a;
-                    if d.length() > 1.0 {
-                        let d = d.normalized();
-                        let n = egui::vec2(-d.y, d.x);
-                        let tip = a + d * (size + 9.0);
-                        let base = a + d * (size + 3.0);
-                        painter.add(epaint::PathShape::convex_polygon(
-                            vec![tip, base + n * 3.5, base - n * 3.5],
-                            secondary,
-                            EStroke::NONE,
-                        ));
-                    }
+            // A small arrow head just after the first node of every
+            // subpath, along the way the curve leaves it, and one just
+            // past the last node of an open subpath, along the way it
+            // arrives: after Break Curve each part shows its direction at
+            // both ends, as the reference program does (#2578).
+            for (at, dir, start) in nodes::direction_marks(path) {
+                let a = view.to_screen(s.transform * at);
+                let ahead = view.to_screen(s.transform * (at + dir));
+                let d = ahead - a;
+                if d.length() <= 1e-6 {
+                    continue;
                 }
+                let d = d.normalized();
+                let n = egui::vec2(-d.y, d.x);
+                let (tip, base) = if start {
+                    (a + d * (size + 9.0), a + d * (size + 3.0))
+                } else {
+                    (a + d * (size + 7.0), a + d * (size + 1.0))
+                };
+                painter.add(epaint::PathShape::convex_polygon(
+                    vec![tip, base + n * 3.5, base - n * 3.5],
+                    secondary,
+                    EStroke::NONE,
+                ));
             }
         }
         for n in all {
@@ -2963,25 +3262,7 @@ fn draw_nodes(app: &App, painter: &Painter) {
             painter.circle_filled(c, 1.2, Tokens::HANDLE);
         }
     }
-    // The node marquees look like the Pick tool's: blue dashes on a
-    // white line, so they show on blue artwork too (#1849).
-    if let Drag::NodeLasso { points } = &app.drag {
-        let pts: Vec<Pos2> = points.iter().map(|p| view.to_screen(*p)).collect();
-        if pts.len() > 1 {
-            dashed_selection_line(painter, &pts);
-        }
-    }
-    if let Drag::NodeMarquee { start, current } = &app.drag {
-        let r = view.rect_to_screen(Rect::from_points(*start, *current));
-        let pts = [
-            r.left_top(),
-            r.right_top(),
-            r.right_bottom(),
-            r.left_bottom(),
-            r.left_top(),
-        ];
-        dashed_selection_line(painter, &pts);
-    }
+    draw_node_marquees(app, painter);
     crate::corner_widgets::draw(app, painter, main);
 }
 
@@ -3109,8 +3390,8 @@ pub fn draw_guides(app: &App, painter: &Painter, rect: ERect) {
     } else {
         Vec::new()
     };
-    for g in others {
-        let color = to_color32(app.guide_color(&g));
+    for g in others.iter().filter(|g| !g.hidden) {
+        let color = to_color32(app.guide_color(g));
         draw_guide_line(app, painter, rect, g.line, color, g.style.pattern());
     }
     let moving = app.guide_drag_moves();
@@ -3121,6 +3402,10 @@ pub fn draw_guides(app: &App, painter: &Painter, rect: ERect) {
         Vec::new()
     };
     for (i, g) in edited.iter().enumerate() {
+        // Hidden by its own eye in the Objects docker (#1775).
+        if g.hidden {
+            continue;
+        }
         let moved = moving.iter().find(|(k, _)| *k == i).map(|(_, g)| g);
         let g = match &app.drag {
             Drag::RotateGuide { index, guide, .. } if *index == i => guide,
@@ -3663,6 +3948,50 @@ pub fn draw_effect_nodes(app: &App, painter: &Painter) {
 mod tests {
     use super::*;
 
+    /// An empty clip frame's crossing lines stay inside its outline: an
+    /// ellipse's run corner to corner of its box no more (#2702); a
+    /// rectangle's still go corner to corner.
+    #[test]
+    fn the_empty_frame_lines_stay_inside_the_frame() {
+        let ellipse = tracedraw_core::geometry::ellipse_path(Rect::new(0.0, 0.0, 100.0, 50.0));
+        let marks = empty_frame_marks(&ellipse, 0.01);
+        assert_eq!(marks.len(), 2);
+        for (a, b) in &marks {
+            for p in [a, b] {
+                // On the ellipse (x-50)^2/50^2 + (y-25)^2/25^2 = 1.
+                let e = ((p.x - 50.0) / 50.0).powi(2) + ((p.y - 25.0) / 25.0).powi(2);
+                assert!((e - 1.0).abs() < 0.01, "{p:?} on the outline");
+            }
+        }
+        let rect = tracedraw_core::geometry::rect_path(Rect::new(0.0, 0.0, 100.0, 50.0), 0.0);
+        let marks = empty_frame_marks(&rect, 0.01);
+        assert_eq!(marks.len(), 2);
+        let (a, b) = marks[0];
+        assert!(
+            (a - Point::new(0.0, 0.0)).hypot() < 1e-6
+                && (b - Point::new(100.0, 50.0)).hypot() < 1e-6
+        );
+        // A ring: the hole is left out.
+        let mut ring = rect.clone();
+        ring.extend(tracedraw_core::geometry::rect_path(
+            Rect::new(40.0, 20.0, 60.0, 30.0),
+            0.0,
+        ));
+        let marks = empty_frame_marks(&ring, 0.01);
+        assert_eq!(marks.len(), 4, "each diagonal in two pieces");
+    }
+
+    /// The hint over an empty clip frame offers only putting the objects
+    /// in, which a release does as it is; K is not offered (#2703).
+    #[test]
+    fn an_empty_frame_offers_only_placing_inside() {
+        assert_eq!(
+            drop_frame_hints((false, false), true),
+            vec![("hint.drop_frame_into", true)]
+        );
+        assert_eq!(drop_frame_hints((false, false), false).len(), 3);
+    }
+
     /// #1145: with the Pick tool a selected object marks the first node
     /// of each of its subpaths (the outer and inner ring of a letter O
     /// each), as the reference program does; an ellipse its start, a
@@ -3810,6 +4139,34 @@ mod tests {
     }
 
     #[test]
+    fn grid_fades_in_and_lands_on_whole_device_pixels() {
+        // #2313: lines just past the thinning limit are faint, lines far
+        // apart are drawn in full, and the strength grows with the gap.
+        assert!((grid_fade(8.0, 8.0) - 0.55).abs() < 1e-6);
+        assert_eq!(grid_fade(20.0, 8.0), 1.0);
+        assert_eq!(grid_fade(80.0, 8.0), 1.0);
+        let mut last = 0.0;
+        for i in 0..40 {
+            let f = grid_fade(8.0 + i as f64 * 0.5, 8.0);
+            assert!(f >= last);
+            last = f;
+        }
+        // At 125 % every line starts on a device pixel boundary, so a
+        // line 1/ppp points wide fills exactly one device pixel: lines
+        // 7.3 points apart are 9 or 10 device pixels apart, never a
+        // pixel and a quarter that the rasteriser would split.
+        let ppp = 1.25;
+        for i in 0..200 {
+            let x = device_pixel(3.1 + i as f32 * 7.3, ppp);
+            let d = x * ppp;
+            assert!((d - d.round()).abs() < 1e-3, "{x} is not on a device pixel");
+        }
+        assert_eq!(device_pixel(10.4, 1.0), 10.0);
+        assert_eq!(device_pixel(10.6, 1.0), 11.0);
+        assert_eq!(device_pixel(10.6, 0.0), 11.0);
+    }
+
+    #[test]
     fn grid_lines_thin_out_and_follow_the_origin() {
         // 10 mm at 2 px per mm is 20 px: every line.
         assert_eq!(grid_thinning(20.0, 6.0), 1.0);
@@ -3837,6 +4194,26 @@ mod tests {
         m.grid.baseline_start = 0.0;
         app.run(tracedraw_core::Command::SetMetadata { metadata: m });
         assert!((app.baseline_ys()[0] - page.y1).abs() < 1e-9);
+    }
+
+    /// While the view zooms out the old picture shows smaller and the
+    /// backdrop fills round it, edge to edge: no strip of bare paper
+    /// between the two, not even half a pixel wide (#2899). At rest a
+    /// picture a hair short of the canvas needs no backdrop.
+    #[test]
+    fn the_backdrop_meets_the_shrunk_picture_without_a_gap() {
+        let canvas = ERect::from_min_max(Pos2::new(0.0, 0.0), Pos2::new(800.0, 600.0));
+        let back = canvas.expand(200.0);
+        let at = ERect::from_min_max(Pos2::new(200.3, 150.7), Pos2::new(600.2, 450.4));
+        let parts = backdrop_parts(canvas, at, back);
+        let covered: f32 = parts.iter().map(|r| r.area()).sum::<f32>() + at.area();
+        let whole = canvas.area();
+        assert!((covered - whole).abs() < 0.01, "{covered} of {whole}");
+        for r in &parts {
+            assert!(r.intersect(at).area() < 1e-3, "{r:?} over the picture");
+        }
+        let rest = ERect::from_min_max(Pos2::new(0.3, 0.2), Pos2::new(799.8, 599.6));
+        assert!(backdrop_parts(canvas, rest, back).is_empty());
     }
 }
 

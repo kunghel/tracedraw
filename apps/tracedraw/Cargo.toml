@@ -26,6 +26,8 @@ tracedraw-core.workspace = true
 tracedraw-cdr.workspace = true
 tracedraw-io.workspace = true
 tracedraw-text.workspace = true
+# Letters of the fonts the trace compares small print with (trace_text.rs).
+ttf-parser.workspace = true
 tracedraw-render.workspace = true
 tracedraw-vba.workspace = true
 tracedraw-vba-project.workspace = true
@@ -43,7 +45,7 @@ rqrr = "0.11"
 csv = "1"
 eframe.workspace = true
 egui.workspace = true
-image = { version = "0.25", default-features = false, features = ["png", "jpeg", "bmp", "gif", "webp", "tiff"] }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "bmp", "gif", "ico", "webp", "tiff"] }
 # Reading CMYK TIFF files with their inks (Edit Bitmap, #1834); the same
 # version the image crate reads TIFF with.
 tiff = "0.11"
@@ -58,6 +60,9 @@ flate2 = "1"
 # File > Package as one zip file where the system's picker says (Android, #1401).
 zip.workspace = true
 web-time = "1"
+# The Unicode names of characters, for the Glyphs docker's search by
+# name (#1328).
+unicode_names2 = "2"
 # Local dates and times (Time Tracker), with the system time zone.
 jiff = "0.2"
 
@@ -77,6 +82,9 @@ ureq = { version = "3", features = ["platform-verifier"] }
 # Lossy WebP export (libwebp, BSD licence): the pure-Rust encoder writes
 # lossless files only (#592).
 webp = { version = "0.3", default-features = false }
+# Enlarge before tracing: the matrix products of the AI enlargement
+# (MIT OR Apache-2.0, pure Rust).
+matrixmultiply = "0.3"
 
 # The system clipboard (text, images, copied files): the desktop builds;
 # a browser hands over clipboard contents in paste events only and

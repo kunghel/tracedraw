@@ -55,6 +55,18 @@ change marked `TraceDraw:` in a comment.
   screen (#787). TraceDraw's tests include and run it
   (`splash::eframe_window_start::tests`). Check whether egui 0.37 still
   needs it before dropping the copy.
+- `native/wgpu_integration.rs` and `native/glow_integration.rs`
+  wait for the first Resumed when a window event arrives before app
+  creation. Android can send focus or configuration events at that point,
+  especially during consecutive resource-overlay relaunches. The existing
+  `app_creator` is present until initialization consumes it, so it
+  distinguishes startup from the state after `save_and_destroy` removes
+  the running app. Window events after that cleanup still return Exit.
+  TraceDraw's source contract test checks both renderer branches and the
+  creator's lifecycle
+  (`android_package::tests::window_events_wait_for_initial_resume_and_exit_after_shutdown`).
+  Device regression checks compare the original and patched APKs during
+  consecutive overlay changes on a single-core Android 30 emulator.
 - Change: in the browser, `dragover` and `drop` (`web/events.rs`,
   `install_drag_and_drop`) push a pointer move at the event's place
   before the hovered or dropped files (#1142): the browser sends no mouse
@@ -357,6 +369,19 @@ change marked `TraceDraw:` in a comment.
   crate; TraceDraw's tests include and run it
   (`winit_size_bounds::tests`). Not run on Windows here: the copy is
   checked to build for `x86_64-pc-windows-gnu`.
+- Change: on Windows 11 a window whose scaling changed takes the
+  rectangle Windows suggests (#2487, as winit 0.31 does). Dragged from
+  one monitor to another of a different scaling, `WM_DPICHANGED` placed
+  the window with winit's own rectangle, made for Windows 10: it kept
+  the pointer's place across the title bar only and then moved the
+  window step by step onto the monitor of the new scaling, so the
+  window stopped following the pointer, jumped, and went back and forth
+  between the monitors (two monitors one above the other the worst).
+  `platform_impl/windows/event_loop.rs` now takes the suggested
+  rectangle as it is on Windows 11 and later (build 22000 on, read with
+  `RtlGetVersion` by `dark_mode.rs`); Windows 10 keeps winit's
+  rectangle. The decision is `size_bounds::takes_suggested_rect`,
+  tested with the file. Not run on Windows here.
 - Change: Android reports a mouse as a mouse (#2152, #2161). winit's
   Android backend turned every pointer of a `MotionEvent` into a `Touch`
   and dropped hover, scroll and button actions ("TODO mouse events"), so a
@@ -378,8 +403,46 @@ change marked `TraceDraw:` in a comment.
   (`android_activity::input::MetaState`) gives the held modifiers
   (`modifiers_of`); when they differ from the last ones told, a
   `ModifiersChanged` is sent before the key's `KeyboardInput`.
+- Change: a bitmap cursor on Linux (#2557). TraceDraw hands its drawn
+  tool pointers to the system as bitmaps on Linux too
+  (`apps/tracedraw/src/ui/cursors.rs`), and egui-winit sets the bitmap
+  cursor again every frame. On X11 (`platform_impl/linux/x11/window.rs`,
+  `set_cursor`) the cursor already shown is not sent again. On Wayland
+  (`platform_impl/linux/wayland/window/state.rs`, `set_custom_cursor`,
+  `set_cursor_visible`) the same image (the same `Arc`) makes no new
+  buffer and no new commit of the cursor surface, and showing a cursor
+  already shown does nothing. The Wayland cursor buffer
+  (`platform_impl/linux/wayland/types/cursor.rs`) has sides padded to
+  whole multiples of 12 pixels, transparent beyond the image: without a
+  viewport the cursor surface takes the output's integer buffer scale,
+  and a buffer whose size it does not divide is a protocol error.
 - The published crate's `examples/` and `tests/` stay as downloaded (the
   manifest lists them); they build in no gate.
+- Change: a picture dragged in from another program (#2349). winit 0.30
+  takes a drag of files only (`CF_HDROP` on Windows, `text/uri-list` on
+  X11 and Wayland), so a picture dragged out of a paint program's canvas
+  or a browser's page was refused. `src/picture_drop.rs` (no crate
+  dependencies) picks the picture type, turns a device-independent
+  bitmap into a BMP file (`bmp_from_dib`) and writes the picture to a
+  file of its own in the temporary folder (`tracedraw-dropped-pictures`);
+  that file then goes out as `HoveredFile` and `DroppedFile`, like a file
+  from a file manager:
+  - Windows (`platform_impl/windows/drop_handler.rs`): without files,
+    `DragEnter` asks for the registered `PNG` or `image/png` formats,
+    then `CF_DIBV5` and `CF_DIB` (`picture_file`, `global_bytes`); a
+    drag that leaves removes the file. The `windows-sys` features
+    `Win32_System_DataExchange` and `Win32_System_Memory` are added.
+  - X11 (`x11/dnd.rs`, `atoms.rs`, `event_processor.rs`): a drag
+    offering no list of files but `image/png`, `image/bmp` or
+    `image/jpeg` is accepted and that type is asked for (`Dnd::wanted`,
+    `parse_wanted`).
+  - Wayland (`wayland/data_device.rs`): the same types are accepted
+    (`drag_type`); the picture read is written to a file and handed to
+    the file drag as a one-line `text/uri-list` (`uri_list`).
+  TraceDraw includes the module (`winit_picture_drop`): its Windows
+  clipboard reads bitmaps with `bmp_from_dib`, its import leaves out the
+  link to a dropped picture's file (`is_dropped_picture`), and its tests
+  run there.
 - Drop the copy and the `[patch.crates-io]` entry when a winit release
   carries pen pressure on X11 and macOS (rust-windowing/winit#99) and
   pen input on Wayland, and

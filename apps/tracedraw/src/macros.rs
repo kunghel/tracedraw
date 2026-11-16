@@ -1636,6 +1636,41 @@ mod tests {
         assert!(!line.dash.is_empty(), "style 1 is dashed");
     }
 
+    /// Copy and Paste in a macro (#2165): the tiling macro of the same
+    /// collection copies the crop marks of one side, pastes them and
+    /// moves what was pasted (the selection) to the other side. It
+    /// stopped with error 438, "Object doesn't support this property or
+    /// method: Copy". The macro's clipboard is its own.
+    #[test]
+    fn a_macro_copies_and_pastes_shapes() {
+        let code = "Sub Go()\r\n\
+            ActiveDocument.Unit = cdrMillimeter\r\n\
+            Dim a As Shape, b As Shape, g As Shape, r As ShapeRange\r\n\
+            Set a = ActiveLayer.CreateLineSegment(0#, 0#, 5#, 0#)\r\n\
+            Set b = ActiveLayer.CreateLineSegment(0#, 10#, 5#, 10#)\r\n\
+            Set g = ActiveDocument.CreateShapeRangeFromArray(a, b).Group\r\n\
+            g.Copy\r\n\
+            ActiveLayer.Paste\r\n\
+            Set r = ActiveSelectionRange\r\n\
+            Debug.Print \"pasted \" & r.Count & \" \" & (r.Item(1).StaticID <> g.StaticID) & \" \" & r.LeftX\r\n\
+            r.Move -20#, 0#\r\n\
+            Debug.Print \"moved \" & r.LeftX & \" kept \" & g.LeftX\r\n\
+            g.Cut\r\n\
+            Set r = ActiveLayer.Paste\r\n\
+            Debug.Print \"cut \" & ActiveLayer.Shapes.Count & \" \" & r.Count\r\n\
+            End Sub\r\n";
+        let mut app = app_with(project("Clip", code, Vec::new()));
+        app.run_macro(0, "Main", "Go");
+        drive(&mut app, |_| {});
+        assert!(app.macros.error.is_none(), "{:?}", app.macros.error);
+        let out = &app.scripts_output;
+        for want in ["pasted 1 True 0", "moved -20 kept 0", "cut 2 1"] {
+            assert!(out.iter().any(|l| l == want), "{want}: {out:?}");
+        }
+        // The app's clipboard is not touched.
+        assert!(app.clipboard.is_none());
+    }
+
     /// What the macros of a published collection use that stopped them
     /// (#2165): `FontList` (For Each over the installed families),
     /// `ActiveVirtualLayer`, `InsertPagesEx` (its argument named `Page`
@@ -2006,5 +2041,63 @@ mod tests {
                 app.scripts_output.clear();
             }
         }
+    }
+
+    /// The crop-marks form of the same collection (#2165): it reads the
+    /// object's box through the variables it hands `GetBoundingBox` (with
+    /// the outline), draws each mark with `CreateLineSegment`, gathers
+    /// the marks from `ActiveSelectionRange` (CorelDRAW selects what it
+    /// makes) and groups them. The marks were drawn around the page's
+    /// corner and the object itself was grouped with them.
+    #[test]
+    fn a_crop_marks_macro_marks_the_corners_of_the_object() {
+        let code = "Sub Go()\r\n\
+            Dim xPos As Double, yPos As Double, xWidth As Double, yHeight As Double\r\n\
+            Dim s As Shape, sr As ShapeRange, crop As Shape, cropRange As New ShapeRange\r\n\
+            ActiveDocument.Unit = cdrMillimeter\r\n\
+            Set s = ActiveLayer.CreateRectangle(50#, 80#, 90#, 60#)\r\n\
+            s.Outline.SetProperties 1#\r\n\
+            Set sr = ActiveSelectionRange\r\n\
+            Debug.Print \"selected \" & sr.Count\r\n\
+            For Each s In sr\r\n\
+            s.GetBoundingBox xPos, yPos, xWidth, yHeight, True\r\n\
+            Debug.Print \"box \" & xPos & \" \" & yPos & \" \" & xWidth & \" \" & yHeight\r\n\
+            Set crop = ActiveLayer.CreateLineSegment(xPos - 8, yPos, xPos - 3, yPos)\r\n\
+            crop.Outline.SetProperties 0.2\r\n\
+            cropRange.AddRange ActiveSelectionRange\r\n\
+            Set crop = ActiveLayer.CreateLineSegment(xPos + xWidth, yPos + yHeight + 3, xPos + xWidth, yPos + yHeight + 8)\r\n\
+            crop.Outline.SetProperties 0.2\r\n\
+            cropRange.AddRange ActiveSelectionRange\r\n\
+            Next s\r\n\
+            Debug.Print \"marks \" & cropRange.Count\r\n\
+            cropRange.Group\r\n\
+            End Sub\r\n";
+        let mut app = app_with(project("Crop", code, Vec::new()));
+        app.run_macro(0, "Main", "Go");
+        drive(&mut app, |_| {});
+        assert!(app.macros.error.is_none(), "{:?}", app.macros.error);
+        let out = &app.scripts_output;
+        for want in ["selected 1", "box 49.5 59.5 41 21", "marks 2"] {
+            assert!(out.iter().any(|l| l == want), "{want}: {out:?}");
+        }
+        let top: Vec<&tracedraw_core::document::Shape> = app
+            .doc()
+            .all_layers()
+            .flat_map(|l| l.shapes.iter())
+            .collect();
+        assert_eq!(top.len(), 2, "the rectangle and the group of marks");
+        let group = top
+            .iter()
+            .find(|s| matches!(s.kind, tracedraw_core::document::ShapeKind::Group { .. }))
+            .expect("the marks are grouped");
+        let b = group.bounds();
+        assert!(
+            (b.x0 - 41.5).abs() < 1e-6 && (b.x1 - 90.5).abs() < 1e-6,
+            "{b:?}"
+        );
+        assert!(
+            (b.y0 - 59.5).abs() < 1e-6 && (b.y1 - 88.5).abs() < 1e-6,
+            "{b:?}"
+        );
     }
 }

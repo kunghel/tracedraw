@@ -512,6 +512,57 @@ mod tests {
         );
     }
 
+    /// #2714: round a circle the letters that go on past the path's
+    /// start (the right half of a text centred on the top) could not be
+    /// clicked or selected: a click there was taken a whole round back.
+    /// A click on each letter now puts the caret beside that letter.
+    #[test]
+    fn every_letter_round_a_circle_can_be_clicked() {
+        tracedraw_text::install();
+        if tracedraw_text::fonts().families().is_empty() {
+            return;
+        }
+        let mut app = App::headless();
+        app.settings.autocorrect.enabled = false;
+        let e = app
+            .new_shape(ShapeKind::Ellipse {
+                rect: Rect::new(40.0, 100.0, 140.0, 200.0),
+                arc: None,
+            })
+            .expect("circle");
+        app.start_text(Point::new(10.0, 20.0), None);
+        let text = "ABCDEFGHIJKLMNOPQRSTUV";
+        app.text_insert(text);
+        app.finish_text();
+        let t = app.selection[0];
+        app.selection = vec![t, e];
+        app.fit_text_to_path();
+        app.selection = vec![t];
+        app.begin_text_edit(t);
+        let (layout, to_page) = app.text_layout_of(t).expect("layout");
+        let line = layout.lines.first().expect("line").clone();
+        assert_eq!(line.starts.len(), text.chars().count());
+        let mut xs = Vec::new();
+        for i in 0..line.starts.len() {
+            let x = (line.starts[i] + line.ends[i]) / 2.0;
+            let local = Point::new(x, line.baseline + line.ascent * 0.3);
+            let page = to_page * layout.placed(local);
+            xs.push(page.x);
+            let hit = app.text_hit_char(page);
+            assert!(
+                hit == Some(i) || hit == Some(i + 1),
+                "letter {i} at {page:?}: {hit:?}"
+            );
+        }
+        // The letters run across both sides of the circle.
+        let (lo, hi) = xs
+            .iter()
+            .fold((f64::INFINITY, f64::NEG_INFINITY), |(a, b), x| {
+                (a.min(*x), b.max(*x))
+            });
+        assert!(lo < 80.0 && hi > 100.0, "{lo} to {hi}");
+    }
+
     /// #2423: on a path going up the page the letters lie on their side,
     /// and so does the caret: across the path, not upright.
     #[test]

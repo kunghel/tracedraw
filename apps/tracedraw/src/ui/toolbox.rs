@@ -15,9 +15,10 @@ use crate::ui::tips::RichTip;
 use egui::{Pos2, Rect, Sense, Stroke, Ui, Vec2};
 
 /// Tools after which a flyout draws a separator.
-const SEPARATE_AFTER: [Tool; 6] = [
+const SEPARATE_AFTER: [Tool; 7] = [
     Tool::FreeformPick,
     Tool::SegmentDelete,
+    Tool::Eraser,
     Tool::CommonShapes,
     Tool::SegmentDimension,
     Tool::RoundedConnector,
@@ -593,6 +594,12 @@ fn tool_button(
     let on_arrow = resp
         .interact_pointer_pos()
         .is_some_and(|p| arrow_zone.contains(p));
+    let flyout_press_id = resp.id.with("flyout_press");
+    let (primary_pressed, primary_released) =
+        ui.input(|i| (i.pointer.primary_pressed(), i.pointer.primary_released()));
+    if primary_pressed {
+        ui.ctx().data_mut(|d| d.remove::<bool>(flyout_press_id));
+    }
 
     // Opening the flyout: the arrow, a drag, or a press
     // held for 0.4 s; with a flyout already open, hovering opens this
@@ -611,6 +618,9 @@ fn tool_button(
         let switch = resp.hovered() && app.flyout_open.is_some_and(|o| o != gi);
         let pressed = (resp.drag_started() || resp.long_touched() || held)
             && !crate::ui::overflow::finger_sliding(ui.ctx());
+        if pressed {
+            ui.ctx().data_mut(|d| d.insert_temp(flyout_press_id, true));
+        }
         if (resp.clicked() && on_arrow) || pressed || switch {
             app.flyout_open = Some(gi);
         }
@@ -618,8 +628,15 @@ fn tool_button(
     // A right click on a tool button opens the toolbox's menu
     // (customize, button size, the bars), as on the other bars.
     crate::ui::bars::bar_menu(app, &resp, crate::ui::bars::Bar::Toolbox);
-    // A plain click picks the shown tool (not when it opened the flyout).
-    if resp.clicked() && !(has_flyout && on_arrow) && app.flyout_open != Some(gi) {
+    // A hover-opened list still allows a plain click to choose its tool.
+    // A hold can also produce a click on release, so keep its list open.
+    let opened_by_press = resp.clicked()
+        && primary_released
+        && ui
+            .ctx()
+            .data(|d| d.get_temp::<bool>(flyout_press_id).unwrap_or(false));
+    if resp.clicked() && !(has_flyout && on_arrow) && !opened_by_press {
+        app.flyout_open = None;
         app.choose_tool(shown);
     }
     // Double-clicking a tool button: Pick selects every object, Shape
@@ -638,6 +655,9 @@ fn tool_button(
     }
     if app.flyout_open == Some(gi) {
         flyout(app, ui, gi, rect, dock);
+    }
+    if primary_released {
+        ui.ctx().data_mut(|d| d.remove::<bool>(flyout_press_id));
     }
 }
 
@@ -868,6 +888,145 @@ pub fn reset_toolbox(app: &mut App) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn flyout_pointer_frame(
+        ctx: &egui::Context,
+        app: &mut App,
+        events: Vec<egui::Event>,
+        elapsed: f64,
+    ) -> [Rect; 3] {
+        let mut buttons = [Rect::NOTHING; 3];
+        let input = egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(Pos2::ZERO, Vec2::new(600.0, 400.0))),
+            time: Some(ctx.input(|i| i.time) + elapsed),
+            events,
+            ..Default::default()
+        };
+        let mut out = ctx.run_ui(input, |ui| {
+            ui.spacing_mut().item_spacing = Vec2::new(0.0, 1.0);
+            for (index, tool) in [Tool::Shape, Tool::Zoom, Tool::Rectangle]
+                .into_iter()
+                .enumerate()
+            {
+                let side = Tokens::tool_button();
+                buttons[index] =
+                    Rect::from_min_size(ui.cursor().min, Vec2::new(button_width(app), side));
+                tool_button(
+                    app,
+                    ui,
+                    group_of(tool),
+                    side,
+                    crate::settings::Captions::ImageOnly,
+                    crate::ui::bars::Dock::Left,
+                );
+            }
+        });
+        out.textures_delta.clear();
+        buttons
+    }
+
+    fn flyout_press(pos: Pos2, pressed: bool) -> egui::Event {
+        egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        }
+    }
+
+    fn click_flyout_button(ctx: &egui::Context, app: &mut App, pos: Pos2) {
+        flyout_pointer_frame(ctx, app, vec![egui::Event::PointerMoved(pos)], 0.5);
+        flyout_pointer_frame(ctx, app, vec![flyout_press(pos, true)], 0.02);
+        flyout_pointer_frame(ctx, app, vec![flyout_press(pos, false)], 0.02);
+    }
+
+    /// Hovering switches the list; a click on its button chooses the
+    /// displayed tool immediately, including a group's remembered tool.
+    #[test]
+    fn a_click_on_an_open_flyout_button_picks_its_shown_tool() {
+        for (source, target, shown) in [
+            (0, 1, Tool::Zoom),
+            (0, 1, Tool::Pan),
+            (2, 0, Tool::Shape),
+            (1, 1, Tool::Pan),
+        ] {
+            let ctx = crate::theme::ui_context();
+            let mut app = App::headless();
+            let tools = [Tool::Shape, Tool::Zoom, Tool::Rectangle];
+            let target_group = group_of(tools[target]);
+            app.toolbox_last[target_group] = shown;
+            if source == target {
+                app.choose_tool(shown);
+            }
+            flyout_pointer_frame(&ctx, &mut app, Vec::new(), 0.02);
+            let buttons = flyout_pointer_frame(&ctx, &mut app, Vec::new(), 0.02);
+            let before = app.tool;
+            let arrow = buttons[source].right_bottom() - Vec2::splat(3.0);
+            click_flyout_button(&ctx, &mut app, arrow);
+            assert_eq!(app.flyout_open, Some(group_of(tools[source])));
+            assert_eq!(app.tool, before, "the arrow only opens the list");
+
+            let center = buttons[target].center();
+            flyout_pointer_frame(
+                &ctx,
+                &mut app,
+                vec![egui::Event::PointerMoved(center)],
+                0.02,
+            );
+            assert_eq!(
+                app.flyout_open,
+                Some(target_group),
+                "hover switches the list"
+            );
+            let chosen = app.tool_chosen;
+            click_flyout_button(&ctx, &mut app, center);
+            assert_eq!(app.tool, shown, "source {source}, target {target}");
+            assert_eq!(app.flyout_open, None, "the click closes the list");
+            assert_eq!(
+                app.tool_chosen,
+                chosen + 1,
+                "the click chooses the tool once"
+            );
+        }
+    }
+
+    /// Letting go after a hold or a sideways drag keeps the list open.
+    #[test]
+    fn a_flyout_opened_by_holding_or_dragging_stays_open_on_release() {
+        let ctx = crate::theme::ui_context();
+        let mut app = App::headless();
+        flyout_pointer_frame(&ctx, &mut app, Vec::new(), 0.02);
+        let buttons = flyout_pointer_frame(&ctx, &mut app, Vec::new(), 0.02);
+        let original = app.tool;
+        let center = buttons[1].center();
+        flyout_pointer_frame(
+            &ctx,
+            &mut app,
+            vec![egui::Event::PointerMoved(center)],
+            0.02,
+        );
+        flyout_pointer_frame(&ctx, &mut app, vec![flyout_press(center, true)], 0.02);
+        flyout_pointer_frame(&ctx, &mut app, Vec::new(), 0.5);
+        assert_eq!(app.flyout_open, Some(group_of(Tool::Zoom)));
+        flyout_pointer_frame(&ctx, &mut app, vec![flyout_press(center, false)], 0.02);
+        assert_eq!(app.flyout_open, Some(group_of(Tool::Zoom)));
+        assert_eq!(app.tool, original);
+
+        click_flyout_button(&ctx, &mut app, center);
+        assert_eq!(app.tool, Tool::Zoom, "the next click chooses the tool");
+        assert_eq!(app.flyout_open, None, "the press marker was cleared");
+
+        app.choose_tool(original);
+        let from = buttons[0].center();
+        let to = from + Vec2::new(20.0, 0.0);
+        flyout_pointer_frame(&ctx, &mut app, vec![egui::Event::PointerMoved(from)], 0.5);
+        flyout_pointer_frame(&ctx, &mut app, vec![flyout_press(from, true)], 0.02);
+        flyout_pointer_frame(&ctx, &mut app, vec![egui::Event::PointerMoved(to)], 0.02);
+        assert_eq!(app.flyout_open, Some(group_of(Tool::Shape)));
+        flyout_pointer_frame(&ctx, &mut app, vec![flyout_press(to, false)], 0.02);
+        assert_eq!(app.flyout_open, Some(group_of(Tool::Shape)));
+        assert_eq!(app.tool, original);
+    }
 
     /// The buttons follow the default button size, or the toolbox's
     /// own; captions widen them by the widest tool name.

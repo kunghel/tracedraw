@@ -140,6 +140,32 @@ to that page (#1346, `page_drop`):
 - The whole drag is one undo step, the move after the page changed
   included.
 
+- A colour or a fill dragged the same way (a palette swatch, the fill
+  swatch of the status bar or of the property bar, or an object dragged
+  with the right mouse button) and rested 0.6 seconds on another page's
+  tab opens that page, so it can be let go on an object there (#2704).
+  A right-button drag carried over keeps the object it started from: let
+  go on an object of the new page, that object takes its fill (with
+  Shift its outline, with Ctrl both and the transparency), with no menu;
+  the dragged objects stay on their page.
+
 Checks: `pick_drag_tests::a_selection_dropped_on_a_page_tab_moves_to_that_page`,
 `pick_drag_tests::ctrl_on_a_page_tab_sends_a_copy`,
-`pick_drag_tests::resting_on_a_page_tab_opens_the_page_and_the_move_goes_on`.
+`pick_drag_tests::resting_on_a_page_tab_opens_the_page_and_the_move_goes_on`,
+`pick_drag_tests::a_palette_colour_rested_on_a_page_tab_opens_the_page_and_fills_there`,
+`pick_drag_tests::a_right_drag_rested_on_a_page_tab_copies_the_fill_onto_that_page`.
+
+## Gather Pages on Page 1
+
+Layout > Gather Pages on Page 1 (when there is more than one page) puts
+the objects of every page side by side on the first page, to print or
+cut a run of pages on one sheet (#2098). Each page's objects keep their
+place on their page and go to the right of the page before, a **gap**
+apart (5 mm at first, up to 1 m), the pages' tops in line; each layer's
+objects go into the first page's layer at the same place in the list,
+else into its first layer. With **Fit page 1 to them** (on at
+first) the first page grows to the pages' widths and gaps side by side
+and the tallest page's height; with **Delete the emptied pages** (off at
+first) the other pages go. It is one undo step ("Gather Pages"); a
+drawing of one page has nothing to gather and says so on the status
+line (`gather_pages::tests::every_pages_objects_come_side_by_side_on_the_first`).

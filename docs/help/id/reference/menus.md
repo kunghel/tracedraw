@@ -472,6 +472,7 @@ Anda sendiri; lihat [Opsi kustomisasi](../customize/customization.md#commands).
 | [[menu.help.whats_new]] | [Yang baru](../welcome/whats-new.md) |
 | [[menu.help.highlight_whats_new]] | [Yang baru](../welcome/whats-new.md) |
 | [[menu.help.updates]] | [Tentang TraceDraw dan pembaruan](../welcome/about-and-updates.md) |
+| [[menu.help.benchmark]] | [Opsi TraceDraw](../customize/options-app.md#benchmark) |
 | [[menu.help.message_settings]] | [Tentang TraceDraw dan pembaruan](../welcome/about-and-updates.md) |
 | [[menu.help.community]] | [Tentang TraceDraw dan pembaruan](../welcome/about-and-updates.md) |
 | [[menu.help.support]] | [Tentang TraceDraw dan pembaruan](../welcome/about-and-updates.md) |

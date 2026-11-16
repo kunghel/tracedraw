@@ -17,12 +17,17 @@ maioria desses valores também está na barra de propriedades de cada ferramenta
   seleciona os objetos que ela só toca; <kbd>Alt</kbd> então seleciona só os
   que estão inteiramente dentro.
 
+- [[options.ctrl_shift_keys]] [[options.keys_traditional]]: [[options.keys_traditional_tip]]
+  [[options.keys_windows]]: [[options.keys_windows_tip]]
+
 ## Borracha {#eraser}
 
 ![As opções da ferramenta Borracha](../../img/customize-tool-options-eraser.png)
 
 [[options.eraser_width]] (6,35 mm de início), e [[options.eraser_round]] ou
 [[options.eraser_square]].
+
+[[options.eraser_reduce_nodes]]: [[options.eraser_reduce_nodes_tip]]
 
 ## Zoom e deslocamento {#zoom-pan}
 
@@ -38,6 +43,7 @@ maioria desses valores também está na barra de propriedades de cada ferramenta
 - [[options.smooth_zoom]] (ligado): cada clique da roda aplica o zoom num breve
   deslizamento em vez de um salto; quanto mais rápido a roda gira, mais curto.
   Desligado, cada clique aplica o zoom na hora.
+- [[options.light_zoom]]: [[options.light_zoom_tip]]
 - [[options.wheel_zoom_step]] quanto um clique aproxima ou afasta, de 1 a 100 por
   cento (15 % no início).
 - [[options.pan_right_button]] [[options.zoom_out]] ou o [[options.context_menu]] (de início).
@@ -59,6 +65,9 @@ maioria desses valores também está na barra de propriedades de cada ferramenta
   para a ferramenta [[tool.pen]]; veja [Caneta](../lines-shapes/lines.md#pen).
 - [[options.pen_tablet]]: [[options.pen_pressure]] (ligado); veja
   [Desenhar com uma mesa digitalizadora](../lines-shapes/pen-pressure.md).
+
+- [[options.corner_threshold]]: [[options.corner_threshold_tip]]
+- [[options.straight_threshold]]: [[options.straight_threshold_tip]]
 
 ## Reconhecimento de formas {#shape-recognition}
 
@@ -83,6 +92,9 @@ canto e [[toolbar.corners_together]]. [[options.scale_corners]]:
 [[options.ellipse]], [[options.pie]] ou [[options.arc]], com o
 [[options.starting_angle]] e o [[options.ending_angle]].
 
+[[options.arc_direction]]: [[options.counterclockwise]] / [[options.clockwise]].
+[[options.arc_direction_desc]]
+
 ## Polígono {#polygon}
 
 ![As opções da ferramenta Polígono](../../img/customize-tool-options-polygon.png)
@@ -102,6 +114,9 @@ canto e [[toolbar.corners_together]]. [[options.scale_corners]]:
 [[options.revolutions]], e [[options.symmetrical_spiral]] ou
 [[options.logarithmic_spiral]].
 
+[[options.spiral_expansion]]: [[options.spiral_expansion_tip]]
+[[options.spiral_preview_tip]]
+
 ## Tabela {#table}
 
 ![As opções da ferramenta Tabela](../../img/customize-tool-options-table.png)
@@ -117,11 +132,24 @@ Como o rótulo das cotas novas aparece: [[dimension.precision]],
 [[dimension.suffix]]. As cotas já desenhadas mantêm o rótulo; selecione uma
 e use a barra de propriedades para mudá-lo.
 
+[[options.dimension_style]]: [[options.decimal]] / [[options.fractional]].
+[[options.dimension_style_tip]]
+
+## Dimensão angular {#angular-dimension}
+
+[[dimension.precision]], [[dimension.show_units]], [[dimension.prefix]] and
+[[dimension.suffix]] of new angular dimensions.
+[[options.angular_units_tip]]
+
 ## Conector {#connector}
 
 ![As opções da ferramenta Conector](../../img/customize-tool-options-connector.png)
 
 [[connector.radius]] dos conectores arredondados novos (3 mm de início).
+
+[[options.connector_gap]]: [[options.connector_gap_tip]]
+
+[[options.connector_geometric_anchors]]: [[options.connector_geometric_anchors_tip]]
 
 ## Preenchimento de malha {#mesh-fill}
 

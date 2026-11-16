@@ -15,6 +15,10 @@ muestran y cómo se comporta la paleta de colores.
 - [[options.ui_shadows]] (menos sombras ayudan con gráficos más lentos).
 - [[options.colored_icons]]: cada grupo de herramientas recibe un color
   propio.
+- [[options.docker_tabs_icons_only]]: las pestañas de los paneles a los
+  lados de la ventana muestran solo su imagen, con el nombre en la
+  sugerencia. Desactivado, muestran imagen y nombre, y una columna con más
+  pestañas de las que caben se desplaza.
 - [[options.ui_size]]: el tamaño de menús, barras, iconos y paneles, en
   relación con la escala que su sistema da al monitor (100% de forma
   predeterminada). [[options.reset_to_default]] vuelve al 100%. El tamaño de

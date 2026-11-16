@@ -227,7 +227,7 @@ or the moon button at the right of the status bar).
       <h4>Formats</h4>
       Open: <code>.tdraw</code>, <code>.cdr</code> (versions 1 to 27) and its templates, CMX, SVG and SVGZ, PDF and AI, EPS, DXF, PSD, EMF, WMF, HPGL (PLT), TXT, RTF and DOCX, and bitmaps.
       <br><br>
-      Save and export: <code>.tdraw</code> (JSON), <code>.cdr</code> (versions 7 to 27), SVG, PDF, AI, EPS, DXF, EMF, WMF, PLT, PSD, HTML, PNG, JPEG, WebP, GIF, BMP and TIFF.
+      Save and export: <code>.tdraw</code> (compressed JSON; a file saved by TraceDraw 0.47 or newer opens only in 0.47 or newer), <code>.cdr</code> (versions 7 to 27), SVG, PDF, AI, EPS, DXF, EMF, WMF, PLT, PSD, HTML, PNG, JPEG, WebP, GIF, BMP and TIFF.
     </td>
     <td width="33%" valign="top">
       <h4>The everyday essentials</h4>
@@ -446,10 +446,10 @@ For the newest fixes, take the installer below.
 
 | Platform | Files |
 |---|---|
-| Windows (x64) | [Microsoft Store](https://apps.microsoft.com/detail/9P50L12VHF33) (signed, may lag behind the latest release), `tracedraw-<version>-windows-x86_64-setup.exe` (installer), `tracedraw-<version>-windows-x86_64-portable.zip` (keeps its settings in the `tracedraw-settings` folder beside the program; not signed yet: if SmartScreen warns, More info > Run anyway) |
+| Windows (x64) | [Microsoft Store](https://apps.microsoft.com/detail/9P50L12VHF33) (signed, may lag behind the latest release), `tracedraw-<version>-windows-x86_64-setup.exe` (installer), `tracedraw-<version>-windows-x86_64-portable.zip` (keeps its settings in the `tracedraw-settings` folder beside the program; not signed yet: if SmartScreen warns, More info > Run anyway); with Chocolatey, `choco install tracedraw` once the package is accepted in its community repository (the release carries `tracedraw.<version>.nupkg`) |
 | Windows 10 (32-bit) | `tracedraw-<version>-windows-x86-setup.exe` (for 32-bit Windows; on 64-bit Windows it asks first and the x64 files are better), `tracedraw-<version>-windows-x86-portable.zip`. Not in the Microsoft Store. A 32-bit program can use at most 2 GB of memory, so very large drawings are better opened on 64-bit Windows |
 | macOS (Apple silicon, Intel) | `tracedraw-<version>-macos-arm64.dmg`, `tracedraw-<version>-macos-x86_64.dmg` (unsigned for now: right-click, Open) |
-| Linux (x86_64, arm64) | `.deb` (`_amd64` or `_arm64`), `tracedraw-<version>-linux-amd64.AppImage` or `-linux-arm64.AppImage`, `tracedraw-<version>-linux-x86_64.tar.gz` or `-linux-arm64.tar.gz` |
+| Linux (x86_64, arm64) | `.deb` (`_amd64` or `_arm64`), `tracedraw-<version>-linux-amd64.AppImage` or `-linux-arm64.AppImage`, `tracedraw-<version>-linux-x86_64.tar.gz` or `-linux-arm64.tar.gz`, `tracedraw-<version>-linux-x86_64.flatpak` (`flatpak install --user <file>`; the release also carries the Flathub manifest). The AppImage carries its update information, so AppImageUpdate and Gear Lever update it from the release's `.AppImage.zsync` file, downloading only what changed |
 | Web | no download: [open it in the browser](https://tracedraw.github.io/tracedraw/), nothing to install |
 | Android (64-bit ARM; x86_64 Chromebooks) | `tracedraw-<version>-android-arm64-v8a-debug.apk` (`-x86_64-` for Chromebooks) in the releases and the nightly, signed with a debug key (remove the installed one before installing a build of another run); `scripts/android/build.sh` builds debug-signed APKs and an App Bundle for Google Play, and CI keeps them with each run as the `android-apk` and `android-aab` artifacts after starting the app on Android emulators (see [`docs/behavior/android.md`](docs/behavior/android.md) and [`docs/android-play.md`](docs/android-play.md)) |
 | Web | no download: [open it in the browser](https://tracedraw.github.io/tracedraw/), nothing to install; on an Android tablet, an iPad or a desktop the browser can also install the page as an app that opens full screen and starts offline (see [`docs/behavior/web.md`](docs/behavior/web.md), Installing on a tablet) |

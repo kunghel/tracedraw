@@ -472,6 +472,7 @@ only the Welcome Screen is open. The menus can show your own shortcuts; see
 | [[menu.help.whats_new]] | [What is new](../welcome/whats-new.md) |
 | [[menu.help.highlight_whats_new]] | [What is new](../welcome/whats-new.md) |
 | [[menu.help.updates]] | [About and updates](../welcome/about-and-updates.md) |
+| [[menu.help.benchmark]] | [TraceDraw options](../customize/options-app.md#benchmark) |
 | [[menu.help.message_settings]] | [About and updates](../welcome/about-and-updates.md) |
 | [[menu.help.community]] | [About and updates](../welcome/about-and-updates.md) |
 | [[menu.help.support]] | [About and updates](../welcome/about-and-updates.md) |

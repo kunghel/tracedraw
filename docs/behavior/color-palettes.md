@@ -274,6 +274,29 @@ objects, a picture with others) does what it did before.
   own. **Cancel** or Esc adds nothing. The user's palettes are outside
   the drawing's undo, so the window is the place to back out.
 
+## Colour styles from objects (#2625)
+
+Objects moved with the Pick tool and let go over the Color Styles docker
+(vectors, pictures or both; a frame marks the docker while they are over
+it) are not moved: the same window opens as **Create Color Styles**.
+
+- The colours offered: the fill and outline colours of everything in the
+  selection (in groups and clip frames too, as Document palette >
+  From selection reads them) and the pixels of its pictures. Vectors
+  alone give their own colours exactly (a CMYK or spot colour stays as
+  it is) while there are no more of them than the number asked for;
+  past it, or with a picture, the colours are worked out as above.
+- **Group them into a color harmony** (ticked at first): the new styles
+  form one harmony, named Harmony 1 (Harmony 2 when that name is taken,
+  and so on). Unticked, they are plain styles.
+- **OK** makes a colour style ("Color n") of each colour the drawing has
+  no style of yet, in one undo step; the status bar says how many.
+  Cancel or Esc makes none. With nothing in the selection that has a
+  colour, no window opens and the status bar says so
+  (`ui::picture_colors::tests::objects_dropped_on_the_color_styles_docker_become_a_harmony`,
+  `ui::picture_colors::tests::a_picture_dropped_on_the_color_styles_docker_offers_its_colours`).
+- An empty Color Styles docker says that objects can be dragged onto it.
+
 ## Document palette
 
 - Every colour applied to an object (fill or outline, from a palette, the
@@ -351,9 +374,15 @@ The document palette is first in the editor's palette list while a
 drawing is open, and Edit Palette... in its bar's menu opens it there
 (#2321). It is the drawing's: OK or Apply gives the drawing the colours
 as one step of its undo history (Edit > Undo takes it back). Its colours
-keep no names of their own, so a name is shown and not edited there, and
-a spot colour, an ink of the drawing, keeps its value and its ink; Save
-as writes the colours to a palette file without changing the drawing.
+are named and made spot colours there as in any palette (#2187): a name
+given to a process colour is kept with the drawing (and shown wherever
+the colour's name is, its swatch's tooltip included); a spot colour goes
+by its ink's name, so a new name renames the ink, and the objects using
+it keep it, as the Colour panel's ink list renames it; a colour made a
+spot colour adds its ink to the drawing, named as typed. A spot colour,
+an ink of the drawing, keeps its value; Save as writes the colours to a
+palette file without changing the drawing. Until 2026-11-14 the name and
+Spot colour were greyed in the document palette.
 Spot colours have a small dot in the corner of their swatch, in the
 editor and on the palette bars, black on a light ink and white on a dark
 one. The fill and outline swatches of the status bar and the Colour panel carry

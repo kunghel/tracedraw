@@ -381,11 +381,56 @@ fn read_vector() -> Option<Vec<u8>> {
     None
 }
 
+/// Whether a registered format's name is one of CorelDRAW's: it names
+/// Corel, CMX or CDR.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(crate) fn is_corel_format_name(name: &str) -> bool {
+    let n = name.to_ascii_lowercase();
+    n.contains("corel") || n.contains("cmx") || n.contains("cdr")
+}
+
+/// A CMX or CDR file in a memory block, cut to the length its RIFF
+/// header gives (a block may be larger than what was put in it).
+#[cfg_attr(not(windows), allow(dead_code))]
+pub(crate) fn corel_file(mut bytes: Vec<u8>) -> Option<Vec<u8>> {
+    let riff = matches!(bytes.get(0..4), Some(b"RIFF") | Some(b"RIFX"));
+    if riff {
+        let form = bytes.get(8..11)?;
+        if form != b"CMX" && form != b"CDR" && form != b"cdr" {
+            return None;
+        }
+        let size = u32::from_le_bytes(bytes.get(4..8)?.try_into().ok()?) as usize;
+        let end = size.saturating_add(8);
+        if end <= bytes.len() {
+            bytes.truncate(end);
+        }
+        return Some(bytes);
+    }
+    // CorelDRAW X4 and later: a ZIP package.
+    bytes.starts_with(b"PK\x03\x04").then_some(bytes)
+}
+
+/// The objects of the CMX or CDR file CorelDRAW copied (#1539), as they
+/// lie on its first page; `None` when `bytes` is not such a file or holds
+/// no objects.
+fn corel_shapes(bytes: &[u8]) -> Option<Vec<tracedraw_core::Shape>> {
+    let riff = matches!(bytes.get(0..4), Some(b"RIFF") | Some(b"RIFX"))
+        && matches!(bytes.get(8..11), Some(b"CMX") | Some(b"CDR") | Some(b"cdr"));
+    if !riff && !bytes.starts_with(b"PK\x03\x04") {
+        return None;
+    }
+    let (doc, _) = tracedraw_cdr::open_bytes(bytes, "clipboard").ok()?;
+    let page = doc.pages.into_iter().next()?;
+    let shapes: Vec<_> = page.layers.into_iter().flat_map(|l| l.shapes).collect();
+    (!shapes.is_empty()).then_some(shapes)
+}
+
 /// The clipboard's picture, decoded. On an X11 desktop the clipboard's
 /// types are read and its best picture type is asked for, with time for
 /// a busy program that sends a large picture in parts (#1488, see
-/// `x11_clipboard.rs`); elsewhere (Windows, macOS, a Wayland desktop),
-/// and when that finds nothing, the clipboard library reads its PNG.
+/// `x11_clipboard.rs`); on Windows its PNG or bitmap is read
+/// (`win_clipboard::read_picture`, #2349); elsewhere (macOS, a Wayland
+/// desktop), and when that finds nothing, the clipboard library reads it.
 #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
 fn read_image() -> Option<image::RgbaImage> {
     #[cfg(all(unix, not(target_os = "macos")))]
@@ -395,6 +440,13 @@ fn read_image() -> Option<image::RgbaImage> {
         if let Some(img) = crate::x11_clipboard::read_image() {
             return Some(img);
         }
+    }
+    // Windows: PNG, then the bitmap of any depth and layout (#2349).
+    #[cfg(windows)]
+    if let Some(img) = crate::win_clipboard::read_picture()
+        .and_then(|bytes| crate::files::decode_picture(&bytes).ok())
+    {
+        return Some(img.into_rgba8());
     }
     let from_library = with_clipboard(|cb| cb.get_image().ok())
         .flatten()
@@ -598,7 +650,33 @@ impl App {
         }
     }
 
-    #[cfg(not(all(unix, not(any(target_os = "macos", target_os = "android")))))]
+    /// Windows (#1539): the copy as an enhanced metafile, a PDF and SVG
+    /// beside its SVG text, all at once: CorelDRAW and office programs
+    /// paste the metafile (or the PDF) as objects, with their colours,
+    /// outlines and text, where they took the SVG text as text before.
+    /// The metafile and the PDF are the size of the selection.
+    #[cfg(windows)]
+    fn offer_copy(&self, svg: &str) -> bool {
+        use crate::win_clipboard::Item;
+        let mut items = vec![Item::Named("image/svg+xml", svg.as_bytes().to_vec())];
+        if let Some(alone) = self
+            .selection_bounds()
+            .and_then(|b| self.selection_alone(b))
+        {
+            items.push(Item::Metafile(tracedraw_io::emf::page_to_emf(&alone, 0)));
+            items.push(Item::Named(
+                "Portable Document Format",
+                tracedraw_io::pdf::document_to_pdf(&alone),
+            ));
+        }
+        items.push(Item::Text(svg.to_string()));
+        crate::win_clipboard::write(items)
+    }
+
+    #[cfg(not(any(
+        windows,
+        all(unix, not(any(target_os = "macos", target_os = "android")))
+    )))]
     fn offer_copy(&self, _svg: &str) -> bool {
         false
     }
@@ -710,13 +788,15 @@ impl App {
         }
     }
 
-    /// Paste vector data another program copied (SVG, PDF or EMF, told
-    /// apart by their own signatures) as objects, one undo step, selected
-    /// (#2514). False when it holds nothing this reads, so the picture
+    /// Paste vector data another program copied (CorelDRAW's CMX or CDR
+    /// data, #1539; SVG, PDF or EMF, told apart by their own signatures)
+    /// as objects, one undo step, selected (#2514). False when it holds nothing this reads, so the picture
     /// copied with it is pasted instead.
     pub fn paste_vector(&mut self, bytes: &[u8]) -> bool {
         let mut ids = tracedraw_core::id::IdSource::default();
-        let shapes = if let Some(svg) = std::str::from_utf8(bytes)
+        let shapes = if let Some(shapes) = corel_shapes(bytes) {
+            Some(shapes)
+        } else if let Some(svg) = std::str::from_utf8(bytes)
             .ok()
             .map(|t| t.trim_start_matches('\u{feff}').trim_start())
             .filter(|t| t.starts_with('<') && t.contains("<svg"))
@@ -1188,6 +1268,82 @@ impl App {
         }
     }
 
+    /// Image > Replace Image (#2598): a picture file picked takes the place
+    /// of the selected bitmap (see [`App::replace_image_with`]).
+    pub fn replace_image(&mut self) {
+        let Some(id) = self.selected_bitmap() else {
+            return;
+        };
+        crate::files::Dialog::new()
+            .add_filter(tr("file.images"), crate::app::PICTURE_EXTENSIONS)
+            .pick_file(self, move |app, path| {
+                app.replace_image_with(id, &path);
+            });
+    }
+
+    /// Put the picture of the file `path` in the place of bitmap `id`: the
+    /// same place, turn and size on the page; a picture of other
+    /// proportions fits inside that box, centred, uncut and undistorted.
+    /// Its effects go (they were made for the old pixels) and its link
+    /// now names the new file. One undo step. False when `id` is not a
+    /// bitmap or the file cannot be read (the status bar says so).
+    pub fn replace_image_with(&mut self, id: ShapeId, path: &std::path::Path) -> bool {
+        let Some(s) = self.doc().find_shape(id).cloned() else {
+            return false;
+        };
+        let ShapeKind::Bitmap { rect: old, .. } = s.kind else {
+            return false;
+        };
+        let read = crate::files::read(path)
+            .map_err(|e| e.to_string())
+            .and_then(|b| crate::bitmap_file::read(&b));
+        let picture = match read {
+            Ok(p) => p,
+            Err(e) => {
+                self.status = trf(
+                    "status.could_not_read",
+                    &[("p", &path.display().to_string()), ("e", &e)],
+                );
+                return false;
+            }
+        };
+        let (w, h) = picture.rgba.dimensions();
+        if w == 0 || h == 0 {
+            return false;
+        }
+        let rect = replaced_rect(old, w, h);
+        let Some((png, inks)) = picture.into_png() else {
+            return false;
+        };
+        let mut data = s.data.clone();
+        data.retain(|(k, _)| k != crate::package::LINK_KEY);
+        data.push((crate::package::LINK_KEY.into(), path.display().to_string()));
+        let cmds = vec![
+            Command::SetShapeKind {
+                shape: id,
+                kind: ShapeKind::Bitmap {
+                    rect,
+                    width_px: w,
+                    height_px: h,
+                    png: png.into(),
+                    fx: None,
+                },
+            },
+            Command::SetPictureInks {
+                shape: id,
+                cmyk: inks.is_some(),
+                inks,
+            },
+            Command::SetObjectData { shape: id, data },
+        ];
+        if let Err(e) = self.engine.run_batch("Replace Image", &cmds) {
+            self.status = e.to_string();
+            return false;
+        }
+        self.status = tr("status.bitmap_replaced");
+        true
+    }
+
     /// Image > Update from Link: re-read the linked file into the object.
     pub fn update_bitmap_from_link(&mut self) {
         let Some(id) = self.selected_bitmap() else {
@@ -1328,6 +1484,30 @@ impl App {
         data.retain(|(k, _)| k != "bitmap.link");
         self.run(Command::SetObjectData { shape: id, data });
     }
+}
+
+/// The box a replacing picture of `w` x `h` pixels takes in the bitmap
+/// box `old` (#2598): `old` itself when the proportions match (within a
+/// pixel's worth), else the largest box of the picture's proportions
+/// inside it, centred.
+fn replaced_rect(old: tracedraw_core::Rect, w: u32, h: u32) -> tracedraw_core::Rect {
+    let (ow, oh) = (old.width(), old.height());
+    if !(ow > 0.0 && oh > 0.0) {
+        return old;
+    }
+    let aspect = w as f64 / h as f64;
+    let fit_w = ow.min(oh * aspect);
+    let fit_h = fit_w / aspect;
+    if (fit_w - ow).abs() <= ow / w as f64 && (fit_h - oh).abs() <= oh / h as f64 {
+        return old;
+    }
+    let c = old.center();
+    tracedraw_core::Rect::new(
+        c.x - fit_w / 2.0,
+        c.y - fit_h / 2.0,
+        c.x + fit_w / 2.0,
+        c.y + fit_h / 2.0,
+    )
 }
 
 /// The paste key test of the windowing layer's gate (vendor/README.md,
@@ -1931,6 +2111,186 @@ mod linked_watch_tests {
             .unwrap_or_default()
     }
 
+    /// Replace Image (#2598): the new picture takes the old one's box (a
+    /// picture of the same proportions) or fits inside it, centred (other
+    /// proportions); the link names the new file; one undo step; a file
+    /// that cannot be read changes nothing.
+    #[test]
+    fn replace_image_keeps_the_place_and_size() {
+        if crate::files::WEB {
+            return;
+        }
+        let dir = std::env::temp_dir().join(format!("tracedraw-replace-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let square = dir.join("square.png");
+        let wide = dir.join("wide.png");
+        std::fs::write(&square, png(4, 4)).expect("png");
+        std::fs::write(&wide, png(8, 4)).expect("png");
+        let mut app = App::headless();
+        let id = app
+            .new_shape(ShapeKind::Bitmap {
+                rect: Rect::new(10.0, 10.0, 30.0, 30.0),
+                width_px: 2,
+                height_px: 2,
+                png: png(2, 2).into(),
+                fx: None,
+            })
+            .expect("bitmap");
+        let kind = |app: &App| match &app.doc().find_shape(id).expect("bitmap").kind {
+            ShapeKind::Bitmap { rect, width_px, .. } => (*rect, *width_px),
+            _ => unreachable!(),
+        };
+        let link = |app: &App| app.bitmap_link(id);
+        assert!(app.replace_image_with(id, &square));
+        assert_eq!(kind(&app), (Rect::new(10.0, 10.0, 30.0, 30.0), 4));
+        assert_eq!(link(&app), Some(square.display().to_string()));
+        assert!(app.replace_image_with(id, &wide));
+        assert_eq!(kind(&app), (Rect::new(10.0, 15.0, 30.0, 25.0), 8));
+        app.undo();
+        assert_eq!(kind(&app).1, 4, "one undo step");
+        assert!(!app.replace_image_with(id, &dir.join("missing.png")));
+        assert_eq!(kind(&app).1, 4);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A bitmap of the Windows clipboard or of a drag (#2349), with an
+    /// info header, bit field masks and alpha, reads as the picture it
+    /// is once it is a BMP file.
+    #[test]
+    fn a_device_independent_bitmap_reads_as_a_picture() {
+        let mut dib = Vec::new();
+        dib.extend_from_slice(&40u32.to_le_bytes());
+        dib.extend_from_slice(&2i32.to_le_bytes());
+        dib.extend_from_slice(&1i32.to_le_bytes());
+        dib.extend_from_slice(&1u16.to_le_bytes());
+        dib.extend_from_slice(&32u16.to_le_bytes());
+        dib.extend_from_slice(&3u32.to_le_bytes());
+        dib.extend_from_slice(&8u32.to_le_bytes());
+        dib.extend_from_slice(&[0; 16]);
+        for m in [0x00ff_0000u32, 0x0000_ff00, 0x0000_00ff] {
+            dib.extend_from_slice(&m.to_le_bytes());
+        }
+        // Blue, green, red, unused: a red pixel then a blue one.
+        dib.extend_from_slice(&[0, 0, 255, 0, 255, 0, 0, 0]);
+        let bmp = crate::winit_picture_drop::bmp_from_dib(&dib).expect("bmp");
+        let img = crate::files::decode_picture(&bmp)
+            .expect("decoded")
+            .into_rgba8();
+        assert_eq!(img.dimensions(), (2, 1));
+        assert_eq!(&img.get_pixel(0, 0).0[..3], &[255, 0, 0]);
+        assert_eq!(&img.get_pixel(1, 0).0[..3], &[0, 0, 255]);
+    }
+
+    /// A picture dragged in from another program (#2349) is imported
+    /// like a picture file, but without a name or a link to the file the
+    /// drag wrote.
+    #[test]
+    fn a_picture_dragged_in_from_another_program_has_no_link() {
+        if crate::files::WEB {
+            return;
+        }
+        let path = crate::winit_picture_drop::save(&png(3, 2), "png").expect("saved");
+        let mut app = App::headless();
+        app.import_bitmap(&path);
+        let id = *app.selection.first().expect("imported");
+        let s = app.doc().find_shape(id).expect("bitmap");
+        assert!(matches!(s.kind, ShapeKind::Bitmap { width_px: 3, .. }));
+        assert!(s.name.is_none());
+        assert!(app.bitmap_link(id).is_none());
+        let _ = std::fs::remove_file(path);
+    }
+
+    /// A picture file opened (Open With from the file manager, #2600): a
+    /// new untitled drawing named after it, the page the picture's size,
+    /// the picture on it, nothing to undo or save; a file that cannot be
+    /// read opens nothing.
+    #[test]
+    fn an_opened_picture_becomes_a_new_drawing() {
+        if crate::files::WEB {
+            return;
+        }
+        let dir = std::env::temp_dir().join(format!("tracedraw-openpic-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("Holiday.png");
+        std::fs::write(&path, png(96, 48)).expect("png");
+        let mut app = App::headless();
+        let tabs = app.docs.len();
+        app.open_path(path.clone());
+        assert_eq!(app.docs.len(), tabs + 1);
+        assert_eq!(app.doc().title, "Holiday");
+        assert!(app.file.is_none(), "untitled: Save asks where");
+        let size = app.page_size();
+        // 96 x 48 pixels at 96 dpi: 25.4 x 12.7 mm.
+        assert!((size.width - 25.4).abs() < 0.01 && (size.height - 12.7).abs() < 0.01);
+        let shapes = &app.doc().pages[0].layers[0].shapes;
+        assert_eq!(shapes.len(), 1);
+        let b = shapes[0].bounds();
+        assert!(b.x0.abs() < 1e-6 && b.y0.abs() < 1e-6);
+        assert!(!app.engine.is_dirty());
+        assert!(app.engine.undo_label().is_none());
+        let tabs = app.docs.len();
+        std::fs::write(dir.join("broken.png"), b"not a picture").expect("file");
+        app.open_path(dir.join("broken.png"));
+        assert_eq!(app.docs.len(), tabs);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// File > Open offers pictures (#2924): among all the files it reads
+    /// and in a filter of their own. Chosen from the start screen, with no
+    /// drawing open, a JPG becomes a drawing holding it.
+    #[test]
+    fn file_open_offers_pictures_and_opens_one_from_the_start_screen() {
+        crate::i18n::set_language("en");
+        let dialog = App::open_file_dialog();
+        let filters = dialog.filters();
+        for ext in ["png", "jpg", "jpeg", "tif", "webp"] {
+            assert!(
+                filters[0].1.iter().any(|e| e == ext),
+                "{ext} in {:?}",
+                filters[0]
+            );
+        }
+        assert!(filters[0].1.iter().any(|e| e == "cdr"));
+        assert!(filters
+            .iter()
+            .any(|(name, exts)| name == &crate::i18n::tr("file.images")
+                && exts.iter().any(|e| e == "png")));
+        if crate::files::WEB {
+            return;
+        }
+        let dir = std::env::temp_dir().join(format!("tracedraw-open2924-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("Logo.JPG");
+        let mut jpg = Vec::new();
+        image::DynamicImage::new_rgb8(30, 20)
+            .write_to(
+                &mut std::io::Cursor::new(&mut jpg),
+                image::ImageFormat::Jpeg,
+            )
+            .expect("jpg");
+        std::fs::write(&path, jpg).expect("write");
+        let mut app = App::headless();
+        while app.has_document() {
+            app.close_active_document();
+        }
+        app.show_welcome = true;
+        app.open_path(path);
+        assert!(app.has_document(), "a drawing opened");
+        assert!(!app.show_welcome, "off the start screen");
+        assert_eq!(app.doc().title, "Logo");
+        let shapes = &app.doc().pages[0].layers[0].shapes;
+        assert_eq!(shapes.len(), 1);
+        assert!(matches!(
+            shapes[0].kind,
+            ShapeKind::Bitmap {
+                width_px: 30,
+                height_px: 20,
+                ..
+            }
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// A linked bitmap follows its file: a change on disk is read in on
     /// the next check (once a second), as Update from Link does; a file
     /// seen for the first time is only remembered (#284).
@@ -1982,5 +2342,71 @@ mod linked_watch_tests {
         app.watch_linked_bitmaps(None, t0 + std::time::Duration::from_millis(2200));
         assert_eq!(app.engine.history_labels().0.len(), depth);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+#[cfg(test)]
+mod corel_tests {
+    use super::*;
+    use tracedraw_core::geometry::Rect;
+    use tracedraw_core::{Color, Fill, Shape, ShapeKind};
+
+    /// A .cdr file of one red rectangle, 30 x 20 mm, as CorelDRAW's copy
+    /// data would hold it.
+    fn cdr_of_a_rectangle() -> Vec<u8> {
+        let mut doc =
+            tracedraw_core::Document::new("copy", tracedraw_core::Size::new(100.0, 100.0));
+        let layer = doc.pages[0].layers[0].id;
+        let id = doc.ids_mut().shape();
+        let mut s = Shape::new(
+            id,
+            ShapeKind::Rect {
+                rect: Rect::new(10.0, 10.0, 40.0, 30.0),
+                radius: 0.0,
+                corners: None,
+            },
+        );
+        s.fill = Fill::Solid(Color::rgb8(255, 0, 0));
+        doc.layer_mut(layer).expect("layer").shapes.push(s);
+        tracedraw_cdr::write::document_to_cdr(&doc)
+    }
+
+    #[test]
+    fn corel_format_names_and_files_are_told_apart() {
+        assert!(is_corel_format_name("CorelDRAW 2024"));
+        assert!(is_corel_format_name("Corel Presentation Exchange"));
+        assert!(is_corel_format_name("CMX data"));
+        assert!(!is_corel_format_name("image/svg+xml"));
+        assert!(!is_corel_format_name("Portable Document Format"));
+        // A RIFF file is cut to its header's length.
+        let mut riff = b"RIFF".to_vec();
+        riff.extend(8u32.to_le_bytes());
+        riff.extend(b"CMX1abcd");
+        riff.extend([0u8; 16]);
+        assert_eq!(corel_file(riff).map(|b| b.len()), Some(16));
+        assert!(corel_file(b"%PDF-1.7".to_vec()).is_none());
+        assert!(corel_file(b"PK\x03\x04rest".to_vec()).is_some());
+    }
+
+    #[test]
+    fn coreldraw_copy_data_pastes_as_objects() {
+        let bytes = cdr_of_a_rectangle();
+        let shapes = corel_shapes(&bytes).expect("objects");
+        assert_eq!(shapes.len(), 1);
+        assert!(corel_shapes(b"<svg/>").is_none());
+        let mut app = App::headless();
+        assert!(app.paste_vector(&bytes));
+        let sel = app.selected_shapes();
+        assert_eq!(sel.len(), 1);
+        assert!(
+            matches!(&sel[0].fill, Fill::Solid(c) if *c != Color::BLACK),
+            "{:?}",
+            sel[0].fill
+        );
+        let b = sel[0].bounds();
+        assert!(
+            (b.width() - 30.0).abs() < 0.1 && (b.height() - 20.0).abs() < 0.1,
+            "{b:?}"
+        );
     }
 }

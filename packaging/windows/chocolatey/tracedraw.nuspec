@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- TraceDraw's Chocolatey package. The release workflow puts the version
+     in place of @VERSION@ and the setups' SHA-256 in tools/ (pack.ps1). -->
+<package xmlns="http://schemas.microsoft.com/packaging/2015/06/nuspec.xsd">
+  <metadata>
+    <id>tracedraw</id>
+    <version>@VERSION@</version>
+    <title>TraceDraw</title>
+    <authors>TraceDraw members and contributors</authors>
+    <owners>TraceDraw</owners>
+    <projectUrl>https://github.com/tracedraw/tracedraw</projectUrl>
+    <projectSourceUrl>https://github.com/tracedraw/tracedraw</projectSourceUrl>
+    <bugTrackerUrl>https://github.com/tracedraw/tracedraw/issues</bugTrackerUrl>
+    <docsUrl>https://github.com/tracedraw/tracedraw/tree/main/docs</docsUrl>
+    <releaseNotes>https://github.com/tracedraw/tracedraw/releases/tag/v@VERSION@</releaseNotes>
+    <iconUrl>https://raw.githubusercontent.com/tracedraw/tracedraw/main/assets/icon/tracedraw-128.png</iconUrl>
+    <licenseUrl>https://github.com/tracedraw/tracedraw/blob/main/LICENSE-MIT</licenseUrl>
+    <requireLicenseAcceptance>false</requireLicenseAcceptance>
+    <tags>tracedraw vector illustration drawing graphics svg pdf cdr foss</tags>
+    <summary>Vector illustration, page layout and print</summary>
+    <description>TraceDraw is an open-source vector editor written from scratch in Rust, with a classic desktop workflow: pages and layers, curves and nodes, artistic and paragraph text, fills, outlines and live effects, symbols, print preview, PDF/X and .cdr files, in 19 interface languages.
+
+The package runs the release's setup silently, for all users.</description>
+  </metadata>
+  <files>
+    <file src="tools\**" target="tools" />
+  </files>
+</package>

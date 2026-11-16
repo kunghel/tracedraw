@@ -153,6 +153,9 @@ pub fn mesh_bar(app: &mut App, ui: &mut Ui) {
         app.set_mesh_grid(rows, cols);
     }
     crate::ui::propbar::sep(ui);
+    // Rectangular or freehand marquee over the nodes (discussion #2730).
+    crate::ui::toolbar::node_selection_mode(app, ui);
+    crate::ui::propbar::sep(ui);
     let mut smooth = mesh.as_ref().is_some_and(|(_, m)| m.smooth);
     if ui
         .add_enabled(

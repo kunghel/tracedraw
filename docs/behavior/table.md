@@ -152,7 +152,11 @@ With cells selected (the active cell counts), the property bar shows:
   ticking it gives the selected cells white, unticking makes them
   transparent, the colour button sets their colour. A click on a
   palette colour with the Table tool fills the selected cells, not the
-  table ("Cell Fill" undo step).
+  table ("Cell Fill" undo step); so does one with the Pick tool
+  (Ctrl+click) or the Shape tool for the cells they chose, while the
+  table is the selection. A right click on a palette colour gives every
+  border of those cells that colour, keeping the width and style the
+  bar shows (No Color takes them away; "Cell Borders" undo step) (#2707).
 - Border: which borders of the selected cells to set (All, Outside,
   Inside, Top, Bottom, Left, Right, Inner horizontal, Inner vertical),
   then the width (0 = no border), colour and style. Outside, Top,

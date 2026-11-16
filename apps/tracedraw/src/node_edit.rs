@@ -525,6 +525,16 @@ impl App {
     /// Select the nodes of the selected curves inside a freehand marquee.
     pub fn finish_node_lasso(&mut self, poly: &[Point]) {
         let keeps = std::mem::take(&mut self.node_lasso_keeps);
+        // The Mesh Fill tool's loop chooses mesh nodes (discussion
+        // #2730); the Shape tool's chooses those of a selected mesh too,
+        // as its box does (#2506).
+        if self.tool == crate::tools::Tool::MeshFill {
+            self.choose_mesh_nodes_where(|q| in_polygon(poly, q), keeps);
+            return;
+        }
+        if self.selected_mesh().is_some() {
+            self.choose_mesh_nodes_where(|q| in_polygon(poly, q), keeps);
+        }
         let before = (
             self.node_selection.clone(),
             self.rect_corners_selected.clone(),
@@ -662,6 +672,7 @@ impl App {
             return;
         };
         if let Some(np) = nodes::connect_ends(&path, idxs[0], idxs[1]) {
+            let spots = self.chosen_node_spots();
             let all_closed = np
                 .elements()
                 .iter()
@@ -679,7 +690,8 @@ impl App {
                     closed: closed || all_closed,
                 },
             });
-            self.node_selection.clear();
+            // The two ends stay chosen, now joined by the new segment (#2358).
+            self.choose_nodes_at(&spots);
         }
     }
 

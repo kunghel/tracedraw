@@ -114,10 +114,23 @@ impl TraceState {
     /// of `shape`: only the settings that change the traced curves
     /// count, so ticking Group by color or Delete original image, or
     /// editing a colour, traces nothing again.
-    fn request_key(&self, shape: tracedraw_core::ShapeId, copy_key: u64) -> u64 {
+    /// `enlarge` is [`enlarge_key`]'s.
+    fn request_key(&self, shape: tracedraw_core::ShapeId, copy_key: u64, enlarge: u64) -> u64 {
         settings_key(&self.settings.traced_part())
             ^ copy_key.rotate_left(13)
             ^ shape.raw().rotate_left(29)
+            ^ enlarge.rotate_left(41)
+    }
+}
+
+/// What of "Enlarge small pictures first" changes the trace: whether it
+/// is ticked, and whether the AI model does the enlarging (once it is
+/// downloaded, the preview traces again with it).
+fn enlarge_key(app: &App) -> u64 {
+    if app.settings.tracing.enlarge {
+        1 | (crate::upscale::model_ready() as u64) << 1
+    } else {
+        0
     }
 }
 
@@ -208,6 +221,7 @@ pub fn trace_dialog(app: &mut App, ctx: &Context, st: &mut TraceState, close: &m
     let mut help = false;
     let mut options = false;
     let mut best = false;
+    let mut with_ai = false;
     let dragging = ctx.input(|i| i.pointer.any_down());
     // Best optimization's settings, once found: the detail it chose, as
     // a step of its own the arrows undo. Only while the picture and the
@@ -257,6 +271,18 @@ pub fn trace_dialog(app: &mut App, ctx: &Context, st: &mut TraceState, close: &m
                 if optimizing {
                     ui.spinner();
                 }
+                // The vectorization service, from here too (set up in
+                // Options > AI > Service; until then the button opens
+                // that page).
+                let r = ui
+                    .add_enabled(
+                        selected_bitmap(app).is_some() && !app.ai_vectorize.busy(),
+                        egui::Button::new(tr("dialog.trace_with_ai"))
+                            .min_size(Vec2::new(120.0, 27.0)),
+                    )
+                    .rich_tip(crate::ui::tips::keyed("dialog.trace_with_ai"));
+                mark(ui, "trace_with_ai", r.rect);
+                with_ai = r.clicked();
                 ok = super::dialogs::ok_cancel_at_right(ui, close);
             });
         });
@@ -310,6 +336,20 @@ pub fn trace_dialog(app: &mut App, ctx: &Context, st: &mut TraceState, close: &m
     if help {
         app.open_dialog_help();
     }
+    if with_ai {
+        if app.ai_vectorize_ready() {
+            // The service's curves are placed as they come in.
+            *close = true;
+            app.ai_vectorize();
+        } else {
+            // Options > AI > Service, then back here.
+            app.options_page = crate::ui::options::OptionsPage::AiService;
+            app.dialog_return = Some(Box::new(super::dialogs::Dialog::Trace(st.clone())));
+            app.dialog = super::dialogs::Dialog::Options;
+            *close = true;
+        }
+        return;
+    }
     if options {
         // Options > Global > Bitmap Tracing, then back here.
         app.options_page = crate::ui::options::OptionsPage::BitmapTracing;
@@ -323,7 +363,7 @@ pub fn trace_dialog(app: &mut App, ctx: &Context, st: &mut TraceState, close: &m
         // The whole picture's trace from the preview, when it is in.
         let ready = selected_bitmap(app).and_then(|(shape, _, _)| {
             let copy = copy_of(app, ctx, &Source::Shown, PREVIEW_SIDE)?;
-            let key = st.request_key(shape, copy.key);
+            let key = st.request_key(shape, copy.key, enlarge_key(app));
             app.trace_live
                 .full(key, crate::trace_preview::look_key(&st.settings))
                 .filter(|s| s.shape == shape)
@@ -360,7 +400,7 @@ fn preview_column(app: &mut App, ui: &mut Ui, st: &mut TraceState, dragging: boo
     };
     // The trace of these settings, asked for once; results come in as
     // they are ready.
-    let key = st.request_key(shape, copy.key);
+    let key = st.request_key(shape, copy.key, enlarge_key(app));
     if let Some(image) = app.trace_live.image(shape, &png) {
         app.trace_live.want(
             &ctx,
@@ -371,6 +411,7 @@ fn preview_column(app: &mut App, ui: &mut Ui, st: &mut TraceState, dragging: boo
                 settings: st.settings.clone(),
                 image,
                 copy_scale: copy.scale,
+                enlarge: app.settings.tracing.enlarge,
             },
             dragging,
         );
@@ -421,6 +462,16 @@ fn preview_column(app: &mut App, ui: &mut Ui, st: &mut TraceState, dragging: boo
             // Where the quick look is all the preview shows (the browser,
             // a large picture), say so: the trace placed on OK is the
             // whole picture's, finer than the preview.
+            if let (false, Some(p)) = (s.done, crate::upscale::enlarging()) {
+                ui.label(
+                    egui::RichText::new(trf(
+                        "dialog.trace_enlarging",
+                        &[("pct", &format!("{:.0}", p * 100.0))],
+                    ))
+                    .color(Tokens::text_dim()),
+                );
+                ctx.request_repaint_after(std::time::Duration::from_millis(250));
+            }
             if s.done && s.stage == crate::trace_preview::Stage::Quick {
                 let red = ui.visuals().error_fg_color;
                 ui.label(egui::RichText::new(tr("dialog.trace_reduced_preview")).color(red))
@@ -490,6 +541,63 @@ fn preset_name(p: Preset) -> String {
         .to_string()
 }
 
+/// "Enlarge small pictures first", with the AI model's state: ready,
+/// a button to download it (with its progress, or why it failed), or,
+/// in a browser, the sharpened enlargement only.
+fn enlarge_section(app: &mut App, ui: &mut Ui) {
+    let r = ui
+        .checkbox(
+            &mut app.settings.tracing.enlarge,
+            tr("dialog.trace_enlarge"),
+        )
+        .rich_tip(crate::ui::tips::keyed("dialog.trace_enlarge"));
+    mark(ui, "enlarge", r.rect);
+    if !app.settings.tracing.enlarge || !crate::upscale::ai_offered() {
+        return;
+    }
+    let dim = |ui: &mut Ui, text: String| {
+        ui.label(
+            egui::RichText::new(text)
+                .color(Tokens::text_dim())
+                .size(11.0),
+        );
+    };
+    ui.indent("enlarge_model", |ui| {
+        if crate::upscale::model_ready() {
+            dim(ui, tr("dialog.trace_enlarge_ai_ready"));
+        } else if let Some(p) = crate::upscale::downloading() {
+            ui.horizontal(|ui| {
+                ui.spinner();
+                dim(
+                    ui,
+                    trf(
+                        "dialog.trace_enlarge_downloading",
+                        &[("pct", &format!("{:.0}", p * 100.0))],
+                    ),
+                );
+            });
+            ui.ctx()
+                .request_repaint_after(std::time::Duration::from_millis(250));
+        } else {
+            dim(ui, tr("dialog.trace_enlarge_sharpen"));
+            let r = ui
+                .button(tr("dialog.trace_enlarge_download"))
+                .rich_tip(crate::ui::tips::keyed("dialog.trace_enlarge_download"));
+            mark(ui, "enlarge_download", r.rect);
+            if r.clicked() {
+                crate::upscale::start_download();
+            }
+            if let Some(e) = crate::upscale::download_failed() {
+                ui.label(
+                    egui::RichText::new(trf("dialog.trace_enlarge_failed", &[("e", &e)]))
+                        .color(ui.visuals().error_fg_color)
+                        .size(11.0),
+                );
+            }
+        }
+    });
+}
+
 fn settings_tab(app: &mut App, ui: &mut Ui, st: &mut TraceState) {
     let prefs = app.settings.tracing.clone();
     let w = 180.0;
@@ -536,6 +644,7 @@ fn settings_tab(app: &mut App, ui: &mut Ui, st: &mut TraceState) {
             );
             ui.end_row();
         });
+    enlarge_section(app, ui);
     before_after::rule(ui);
     // The Optimized image type chooses the detail for each picture: the
     // slider is greyed (Best optimization puts the detail it finds in).
@@ -827,18 +936,18 @@ mod tests {
     fn only_settings_that_change_the_trace_change_its_key() {
         let st = TraceState::with_settings(Preset::Logo, Preset::Logo.settings());
         let id = tracedraw_core::ShapeId(3);
-        let key = st.request_key(id, 11);
+        let key = st.request_key(id, 11, 0);
         let mut same = st.clone();
         same.settings.delete_original = !same.settings.delete_original;
         same.settings.group_by_color = !same.settings.group_by_color;
         same.settings.recolored = vec![([0, 0, 0], [10, 20, 30])];
         same.settings.remove = Remove::None;
-        let key_none = same.request_key(id, 11);
+        let key_none = same.request_key(id, 11, 0);
         same.settings.background = Some([1, 2, 3]);
-        assert_eq!(same.request_key(id, 11), key_none);
+        assert_eq!(same.request_key(id, 11, 0), key_none);
         same.settings.remove = st.settings.remove;
         same.settings.background = st.settings.background;
-        assert_eq!(same.request_key(id, 11), key);
+        assert_eq!(same.request_key(id, 11, 0), key);
         for change in [
             |s: &mut Settings| s.detail += 5.0,
             |s: &mut Settings| s.colors += 1,
@@ -847,9 +956,13 @@ mod tests {
         ] {
             let mut other = st.clone();
             change(&mut other.settings);
-            assert_ne!(other.request_key(id, 11), key);
+            assert_ne!(other.request_key(id, 11, 0), key);
         }
-        assert_ne!(st.request_key(id, 12), key, "another copy");
-        assert_ne!(st.request_key(tracedraw_core::ShapeId(4), 11), key);
+        assert_ne!(st.request_key(id, 12, 0), key, "another copy");
+        assert_ne!(st.request_key(tracedraw_core::ShapeId(4), 11, 0), key);
+        // "Enlarge small pictures first" traces again (and again once the
+        // AI model is in).
+        assert_ne!(st.request_key(id, 11, 1), key);
+        assert_ne!(st.request_key(id, 11, 3), st.request_key(id, 11, 1));
     }
 }

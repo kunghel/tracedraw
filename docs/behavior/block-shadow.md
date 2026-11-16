@@ -52,6 +52,19 @@ the object: a solid extrusion of the outline along `offset`.
   whose outline as drawn goes round it, so a drag also starts in the
   hole of a ring (#2219, as the Drop Shadow tool,
   `pick_drag_tests::shadow_drags_start_anywhere_inside_an_object`).
+- With the tool active, the selected object's block shadow shows its
+  handle (#1280): a line from the object's middle (the middle of its
+  box on the page) to a square at the middle plus `offset`. A drag that
+  starts on the square (within 11 screen pixels, or the pick distance of
+  Options > Nodes and Handles when larger) moves the end by the
+  pointer's way from the press, so the shadow changes only as far as the
+  pointer goes; Ctrl keeps that move horizontal or vertical. The
+  shadow's own colour and gap stay. The square is filled while it is
+  dragged and each drag is one undo step. A drag anywhere else, on the
+  line over the object included, casts a new shadow as above. The Inner Shadow tool shows
+  and moves its inner shadow's offset the same way
+  (`offset_shadow_handle::tests::the_block_shadow_handle_moves_the_shadow_end`,
+  `offset_shadow_handle::tests::the_inner_shadow_handle_keeps_its_style`).
 - Text takes a block shadow as it is, with no need to convert it to
   curves, an envelope on it included, and so does a group.
 

@@ -1049,6 +1049,32 @@ pub fn mono_colors(img: &RgbaImage) -> Option<([u8; 3], [u8; 3])> {
     Some(if l(a) <= l(b) { (a, b) } else { (b, a) })
 }
 
+/// The one colour of a bitmap whose visible pixels are all that colour
+/// at different densities, such as a drop shadow broken apart; `None`
+/// otherwise. A faint pixel may be a little off the colour, as undoing
+/// premultiplied alpha leaves it (shadows broken apart before #2677): the
+/// fainter, the further it may be.
+pub fn single_color(img: &RgbaImage) -> Option<[u8; 3]> {
+    let densest = img.pixels().max_by_key(|p| p[3]).filter(|p| p[3] > 0)?;
+    let c = [densest[0], densest[1], densest[2]];
+    let fits = img.pixels().filter(|p| p[3] > 0).all(|p| {
+        let slack = 255 / u32::from(p[3]) + 1;
+        (0..3).all(|i| u32::from(p[i].abs_diff(c[i])) <= slack)
+    });
+    fits.then_some(c)
+}
+
+/// A bitmap of one colour (see [`single_color`]) in `to`, each pixel
+/// keeping its density; `None` when it has more colours.
+pub fn recolor_single(img: &RgbaImage, to: [u8; 3]) -> Option<RgbaImage> {
+    single_color(img)?;
+    let mut out = img.clone();
+    for p in out.pixels_mut().filter(|p| p[3] > 0) {
+        *p = Rgba([to[0], to[1], to[2], p[3]]);
+    }
+    Some(out)
+}
+
 /// A monochrome bitmap with its foreground (or background) pixels in
 /// `to`; `None` when it is not monochrome.
 pub fn recolor_mono(img: &RgbaImage, foreground: bool, to: [u8; 3]) -> Option<RgbaImage> {
@@ -1065,9 +1091,9 @@ pub fn recolor_mono(img: &RgbaImage, foreground: bool, to: [u8; 3]) -> Option<Rg
 
 impl crate::app::App {
     /// Colour the selected monochrome bitmaps from the palette: the background (white) pixels with a click, the
-    /// foreground (black) ones with a right-click. False (nothing done)
-    /// unless every selected object is a monochrome bitmap without
-    /// effects.
+    /// foreground (black) ones with a right-click; a bitmap of one colour
+    /// (a shadow broken apart) all of it with either. False (nothing done)
+    /// unless every selected object is such a bitmap without effects.
     pub fn recolor_mono_bitmaps(&mut self, foreground: bool, c: tracedraw_core::Color) -> bool {
         use tracedraw_core::document::ShapeKind;
         let shapes = self.selected_shapes();
@@ -1087,9 +1113,11 @@ impl crate::app::App {
             else {
                 return false;
             };
-            let Some(out) =
-                crate::bitmap_fx::decode(png).and_then(|img| recolor_mono(&img, foreground, to))
-            else {
+            // A bitmap of one colour (a drop shadow broken apart) takes
+            // the colour whichever button picks it (#2677).
+            let Some(out) = crate::bitmap_fx::decode(png).and_then(|img| {
+                recolor_single(&img, to).or_else(|| recolor_mono(&img, foreground, to))
+            }) else {
                 return false;
             };
             let Some(png) = crate::bitmap_fx::encode(&out) else {
@@ -1167,6 +1195,42 @@ impl crate::app::App {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A shadow broken apart before #2677 kept the colours left by undoing
+    /// premultiplied alpha, a little off in its faint pixels: it still
+    /// reads as one colour and takes the new one, each pixel keeping its
+    /// density. A picture of two colours does not.
+    #[test]
+    fn a_bitmap_of_one_colour_at_many_densities_is_recoloured() {
+        let mut img = RgbaImage::new(64, 1);
+        for (x, p) in img.pixels_mut().enumerate() {
+            let a = (x * 4) as u8;
+            // Premultiplied (30, 60, 90) at density a, undone.
+            let un = |v: u32| -> u8 {
+                if a == 0 {
+                    0
+                } else {
+                    let pre = (v * u32::from(a) + 127) / 255;
+                    ((pre * 255 + u32::from(a) / 2) / u32::from(a)).min(255) as u8
+                }
+            };
+            *p = Rgba([un(30), un(60), un(90), a]);
+        }
+        img.put_pixel(63, 0, Rgba([30, 60, 90, 255]));
+        assert_eq!(single_color(&img), Some([30, 60, 90]));
+        let out = recolor_single(&img, [200, 0, 0]).expect("one colour");
+        for (a, b) in img.pixels().zip(out.pixels()) {
+            assert_eq!(a[3], b[3]);
+            if b[3] > 0 {
+                assert_eq!([b[0], b[1], b[2]], [200, 0, 0]);
+            }
+        }
+        let mut two = RgbaImage::from_pixel(2, 1, Rgba([0, 0, 0, 255]));
+        two.put_pixel(1, 0, Rgba([255, 255, 255, 255]));
+        assert_eq!(single_color(&two), None);
+        assert!(recolor_single(&two, [1, 2, 3]).is_none());
+        assert_eq!(single_color(&RgbaImage::new(3, 3)), None, "all clear");
+    }
 
     #[test]
     fn monochrome_bitmaps_take_palette_colours() {

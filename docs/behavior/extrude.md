@@ -104,6 +104,15 @@ parallel, or Small back when they have a vanishing point.
   the object's middle); Ctrl keeps that move horizontal or vertical,
   and the pointer is the move cursor over the line. Each drag is one
   undo step (`effect_line_tests::the_extrusion_line_moves_its_vanishing_point`).
+- A body toward or away from a vanishing point (the four Small and Big
+  types) also has a depth slider: a bar across the line where its far
+  face's middle is, `middle + (vanishing point - middle) * depth` for
+  Small and `middle - (vanishing point - middle) * depth` for Big (the
+  line drawn on past the middle to it). A drag that starts on it sets
+  the depth from the pointer's place along the line, 1 to 99 %, the
+  vanishing point staying where it is; the bar is filled while dragged
+  and each drag is one undo step (#1280,
+  `extrude_tool::tests::the_depth_slider_sets_the_depth_along_the_line`).
 - A click selects the object under the pointer (or nothing). Groups and
   bitmaps are not extruded.
 
@@ -171,7 +180,12 @@ The panel shows these under the other controls; the bar has them in its
   `0.55 + 0.45 (k (n . l + 1) / 2 + 1 - k)`; each further light adds
   `0.3 k max(0, n . l)`; the result stays within 0.2 to 1. A face's
   normal is worked out as if the body ran straight back, so an untouched
-  body is lit as the flat one.
+  body is lit as the flat one. Along a smooth stretch of the outline
+  (no corner sharper than 20 degrees) each face is shaded from the
+  light where it meets the face before to the light where it meets the
+  next (the mean of the two faces' lights), a fountain across the
+  face, so a round side shades smoothly instead of in flat bands
+  (#2706, `extrude3d::tests::a_bevelled_round_side_shades_smoothly`).
 - Bevel: the front face shrinks by the width (each corner along its
   bisector, at most three widths) and a band slopes from it to the
   outline one width deep; at most 0.9 of the depth and of half the
@@ -192,12 +206,14 @@ The panel shows these under the other controls; the bar has them in its
 - `extrude_tool::tests::area_fill_takes_the_side_of_a_back_cylinder`
 - `extrude_tool::tests::a_drag_extrudes_toward_the_pointer`
 - `extrude_tool::tests::the_bar_edits_the_selected_extrusion`
+- `extrude_tool::tests::the_depth_slider_sets_the_depth_along_the_line`
 - `extrude_tool::tests::settings_read_older_effects_and_stay_in_range`
 - `ui::extrude_bar::tests::the_bar_and_the_panel_draw_for_every_kind` (with the turn, lights and bevel, which go to the effect and back)
 - `extrude3d::tests::untouched_with_a_raised_light_it_draws_as_the_flat_body`
 - `extrude3d::tests::turning_shows_the_side_turned_toward_the_viewer`
 - `extrude3d::tests::a_half_turn_hides_the_object_and_shows_the_far_cap`
 - `extrude3d::tests::a_bevel_shrinks_the_near_cap_and_adds_a_band`
+- `extrude3d::tests::a_bevelled_round_side_shades_smoothly`
 - `extrude3d::tests::further_lights_brighten_the_faces_they_reach`
 - `extrude3d::tests::broken_values_never_panic`
 - `extrude3d::tests::a_turned_body_stays_by_the_object_with_the_vanishing_point_near`

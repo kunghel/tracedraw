@@ -166,7 +166,18 @@ pub fn rulers(app: &mut App, ui: &mut Ui, full: Rect) {
             Sense::click_and_drag(),
         )
         .rich_tip(crate::i18n::tr("rulers.origin_tip"));
-    if top_resp.drag_started() {
+    // The tab ruler of a paragraph frame being edited is the horizontal
+    // ruler over the frame (#1912): a click there adds a stop, a drag
+    // moves a stop or an indent, a right click picks a stop's kind; no
+    // guideline comes out of it.
+    let tab_took = app.tool == crate::tools::Tool::Text && app.tab_ruler_docked() && {
+        let at = top_resp
+            .interact_pointer_pos()
+            .or(top_resp.hover_pos())
+            .or(ui.input(|i| i.pointer.latest_pos()));
+        at.is_some_and(|p| app.tab_ruler_input(&top_resp, p))
+    };
+    if top_resp.drag_started() && !tab_took {
         app.drag = Drag::NewGuide {
             horizontal: true,
             pos: Point::ZERO,
@@ -181,11 +192,17 @@ pub fn rulers(app: &mut App, ui: &mut Ui, full: Rect) {
     if corner_resp.drag_started() {
         app.drag = Drag::RulerOrigin { pos: Point::ZERO };
     }
-    if top_resp.double_clicked() || left_resp.double_clicked() || corner_resp.double_clicked() {
+    if (top_resp.double_clicked() && !tab_took)
+        || left_resp.double_clicked()
+        || corner_resp.double_clicked()
+    {
         app.open_ruler_options();
     }
-    for r in [&top_resp, &left_resp, &corner_resp] {
-        if r.secondary_clicked() {
+    for (i, r) in [&top_resp, &left_resp, &corner_resp]
+        .into_iter()
+        .enumerate()
+    {
+        if r.secondary_clicked() && !(i == 0 && tab_took) {
             app.ruler_menu = r.interact_pointer_pos();
         }
     }
@@ -424,6 +441,7 @@ fn draw_horizontal(app: &App, painter: &Painter, top: Rect) {
         }
     }
     pixels.paint(painter);
+    crate::tab_ruler::draw_in_ruler(app, painter);
     painter.rect_filled(
         unit_rect.expand2(egui::vec2(2.0, 0.0)),
         0.0,

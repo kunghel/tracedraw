@@ -1168,6 +1168,79 @@ pub fn offset_filled(path: &BezPath, d: f64, join: Join, fill: FillRule) -> BezP
     fit_polygon_curves(&offset_polygon_with(path, d, join, fill), fit_tolerance(d))
 }
 
+/// The area `path` fills read with `fill`, in square units of its
+/// coordinates: holes taken out, overlaps counted once. The curves are
+/// flattened finely for the size of the path, so a circle's area comes
+/// within a hundred-thousandth of pi r squared (#2599).
+pub fn filled_area(path: &BezPath, fill: FillRule) -> f64 {
+    use crate::geometry::Shape as _;
+    use i_overlay::float::simplify::SimplifyShape;
+    let b = path.bounding_box();
+    let size = b.width().hypot(b.height());
+    if !size.is_finite() || size <= 0.0 {
+        return 0.0;
+    }
+    let tol = (size * 1e-6).max(1e-9);
+    let mut rings: Vec<Vec<[f64; 2]>> = Vec::new();
+    let mut cur: Vec<[f64; 2]> = Vec::new();
+    kurbo::flatten(path.elements().iter().copied(), tol, &mut |el| match el {
+        PathEl::MoveTo(p) => {
+            if cur.len() >= 3 {
+                rings.push(std::mem::take(&mut cur));
+            } else {
+                cur.clear();
+            }
+            cur.push([p.x, p.y]);
+        }
+        PathEl::LineTo(p) => cur.push([p.x, p.y]),
+        _ => {}
+    });
+    if cur.len() >= 3 {
+        rings.push(cur);
+    }
+    let clean = rings.simplify_shape(match fill {
+        FillRule::EvenOdd => IFill::EvenOdd,
+        FillRule::NonZero => IFill::NonZero,
+    });
+    // Outer contours turn one way and holes the other once simplified.
+    clean
+        .iter()
+        .flatten()
+        .map(|r| ring_area(r))
+        .sum::<f64>()
+        .abs()
+}
+
+/// The closed band `d` mm (taken as positive) to each side of an open
+/// path's subpaths, with straight-cut ends, its corners `join`ed: the
+/// contour of an open curve, which runs round both sides of it and is
+/// closed across its ends, as the reference program draws it (#2577).
+/// Empty for a path with nothing to stroke.
+pub fn open_offset_band(path: &BezPath, d: f64, join: Join) -> BezPath {
+    use i_overlay::mesh::float::stroke::offset::StrokeOffset;
+    use i_overlay::mesh::float::style::{LineCap, LineJoin, StrokeStyle};
+    let d = d.abs();
+    if !d.is_finite() || d < 1e-9 {
+        return BezPath::new();
+    }
+    let lines: Vec<Vec<[f64; 2]>> = polylines(path, (d / 50.0).clamp(1e-4, 0.02))
+        .into_iter()
+        .map(|(pts, _)| pts.iter().map(|p| [p.x, p.y]).collect())
+        .collect();
+    if lines.is_empty() {
+        return BezPath::new();
+    }
+    let style = StrokeStyle::new(2.0 * d)
+        .line_join(match join {
+            Join::Miter => LineJoin::Miter(MITER_MIN),
+            Join::Round => LineJoin::Round(0.05),
+            Join::Bevel => LineJoin::Bevel,
+        })
+        .start_cap(LineCap::Butt)
+        .end_cap(LineCap::Butt);
+    fit_polygon_curves(&from_shapes(lines.stroke(style, false)), fit_tolerance(d))
+}
+
 /// How far the curves fitted to an offset by `d` mm may stray from it:
 /// [`FIT_TOL`], and no more than a tenth of the offset. A round corner
 /// of a small offset is an arc of that radius, and with the fixed
@@ -1535,6 +1608,114 @@ pub fn stroke_band(points: &[Point], width: f64, square: bool) -> BezPath {
             .end_cap(LineCap::Round(0.05))
     };
     from_shapes(pts.stroke(style, false))
+}
+
+/// The band an eraser nib of `width` sweeps along the pointer's `points`,
+/// smoothed so the edge it leaves is smooth and has few nodes (#2831).
+/// The points are taken as a hand drew them, shaky by up to `steady` mm
+/// (about two screen pixels): the line through them is fitted with few
+/// curves within that much, or within a twentieth of the width when it
+/// is more, before it is stroked. The round nib's band is the fitted
+/// line's stroke as curves (round caps and joins), its own overlaps
+/// merged, so what it cuts out of an object keeps the band's arcs instead
+/// of a polygon's many short sides; the square nib's band follows the
+/// fitted line's flattening. A dot (one point, or all at one place) is
+/// the nib itself.
+pub fn eraser_band(points: &[Point], width: f64, square: bool, steady: f64) -> BezPath {
+    if points.len() < 2 || width <= 0.0 || points.iter().all(|p| (*p - points[0]).hypot() < 1e-9) {
+        return stroke_band(points, width, square);
+    }
+    let tol = steady.max(width / 20.0).max(1e-3);
+    let line = smooth_line(points, tol);
+    if square {
+        let mut flat: Vec<Point> = Vec::new();
+        kurbo::flatten(line.elements().iter().copied(), tol / 4.0, &mut |el| {
+            if let PathEl::MoveTo(p) | PathEl::LineTo(p) = el {
+                flat.push(p);
+            }
+        });
+        return stroke_band(&flat, width, true);
+    }
+    let style = kurbo::Stroke::new(width)
+        .with_caps(kurbo::Cap::Round)
+        .with_join(kurbo::Join::Round);
+    let raw = kurbo::stroke(
+        line.iter(),
+        &style,
+        &kurbo::StrokeOpts::default(),
+        (width / 200.0).max(1e-3),
+    );
+    let band = overlay_with(&raw, &BezPath::new(), Op::Weld, FillRule::NonZero);
+    if band.elements().is_empty() {
+        stroke_band(points, width, false)
+    } else {
+        band
+    }
+}
+
+/// The pointer's `points` as one open line of few lines and curves, within
+/// `tol` of them: the points that lie within `tol` of the line through
+/// the ones kept around them are left out first (Ramer-Douglas-Peucker:
+/// a shake turns sharply between close points, which a fit would keep as
+/// corners), then the rest are fitted with curves where they bend.
+fn smooth_line(points: &[Point], tol: f64) -> BezPath {
+    let kept = simplify_points(points, tol);
+    let mut poly = BezPath::new();
+    poly.move_to(kept[0]);
+    for p in &kept[1..] {
+        poly.line_to(*p);
+    }
+    if kept.len() < 3 {
+        return poly;
+    }
+    let fitted = crate::fit::fit_path(&poly, tol);
+    if fitted.elements().is_empty() {
+        poly
+    } else {
+        fitted
+    }
+}
+
+/// `points` without those within `tol` of the line through the points
+/// kept on either side (Ramer-Douglas-Peucker); the ends always stay.
+fn simplify_points(points: &[Point], tol: f64) -> Vec<Point> {
+    let n = points.len();
+    if n < 3 {
+        return points.to_vec();
+    }
+    let mut keep = vec![false; n];
+    keep[0] = true;
+    keep[n - 1] = true;
+    let mut stack = vec![(0usize, n - 1)];
+    while let Some((a, b)) = stack.pop() {
+        if b <= a + 1 {
+            continue;
+        }
+        let line = kurbo::Line::new(points[a], points[b]);
+        let (mut far, mut at) = (0.0, a);
+        for (i, p) in points.iter().enumerate().take(b).skip(a + 1) {
+            let d = if line.length() < 1e-12 {
+                (*p - points[a]).hypot()
+            } else {
+                use kurbo::ParamCurveNearest as _;
+                line.nearest(*p, 1e-9).distance_sq.sqrt()
+            };
+            if d > far {
+                far = d;
+                at = i;
+            }
+        }
+        if far > tol {
+            keep[at] = true;
+            stack.push((a, at));
+            stack.push((at, b));
+        }
+    }
+    points
+        .iter()
+        .zip(keep)
+        .filter_map(|(p, k)| k.then_some(*p))
+        .collect()
 }
 
 /// Area swept by a calligraphic nib along a path: an ellipse of width
@@ -2838,6 +3019,94 @@ pub fn nonzero_as_even_odd(path: &BezPath) -> BezPath {
 
 #[cfg(test)]
 mod tests {
+
+    /// A shaky stroke of the round eraser across a circle (#2831): the
+    /// smoothed band leaves straight, smooth edges with few nodes, where
+    /// the band of the raw points left a polygon of many short sides that
+    /// followed every shake.
+    #[test]
+    fn the_eraser_band_is_smooth_and_leaves_few_nodes() {
+        use kurbo::Shape as _;
+        let circle = kurbo::Circle::new((0.0, 0.0), 20.0).to_path(0.01);
+        // A hand's line across the middle, shaking by up to 0.15 mm.
+        let pts: Vec<Point> = (0..=300)
+            .map(|i| {
+                let x = -30.0 + i as f64 * 0.2;
+                let y = 0.15 * ((i as f64) * 1.7).sin() * ((i as f64) * 0.31).cos();
+                Point::new(x, y)
+            })
+            .collect();
+        let old = overlay(&circle, &stroke_band(&pts, 6.0, false), Op::Trim);
+        let new = overlay(&circle, &eraser_band(&pts, 6.0, false, 0.2), Op::Trim);
+        let nodes = |p: &BezPath| p.elements().len();
+        assert!(
+            nodes(&new) * 4 < nodes(&old),
+            "few nodes: {} against {}",
+            nodes(&new),
+            nodes(&old)
+        );
+        assert!(nodes(&new) <= 20, "{} nodes", nodes(&new));
+        // Two halves; the cut edges lie near y = 3 and y = -3 without
+        // the shake.
+        assert_eq!(
+            new.elements()
+                .iter()
+                .filter(|e| matches!(e, PathEl::MoveTo(_)))
+                .count(),
+            2
+        );
+        let mut worst = 0.0f64;
+        kurbo::flatten(new.elements().iter().copied(), 0.01, &mut |el| {
+            if let PathEl::LineTo(p) | PathEl::MoveTo(p) = el {
+                if p.x.abs() < 15.0 && p.y.abs() < 5.0 {
+                    worst = worst.max((p.y.abs() - 3.0).abs());
+                }
+            }
+        });
+        assert!(worst < 0.2, "edge off by {worst}");
+        // The area is the circle less the band, as before.
+        let a = |p: &BezPath| p.area().abs();
+        assert!(
+            (a(&new) - a(&old)).abs() < 0.02 * a(&old),
+            "{} {}",
+            a(&new),
+            a(&old)
+        );
+        // A shaky wave across a rectangle: the edges follow the wave at
+        // half the nib's width, not the shake.
+        let rect = kurbo::Rect::new(-25.0, -20.0, 25.0, 20.0).to_path(0.01);
+        let wave = |x: f64| 4.0 * (x / 6.0).sin();
+        let pts: Vec<Point> = (0..=300)
+            .map(|i| {
+                let x = -30.0 + i as f64 * 0.2;
+                Point::new(x, wave(x) + 0.15 * ((i as f64) * 2.3).sin())
+            })
+            .collect();
+        let cut = overlay(&rect, &eraser_band(&pts, 6.0, false, 0.2), Op::Trim);
+        assert!(nodes(&cut) <= 40, "{} nodes", nodes(&cut));
+        let line: Vec<Point> = (0..=6000)
+            .map(|i| {
+                let x = -30.0 + i as f64 * 0.01;
+                Point::new(x, wave(x))
+            })
+            .collect();
+        let mut worst = 0.0f64;
+        kurbo::flatten(cut.elements().iter().copied(), 0.01, &mut |el| {
+            if let PathEl::LineTo(p) | PathEl::MoveTo(p) = el {
+                if p.x.abs() < 24.0 && p.y.abs() < 19.0 {
+                    let d = line
+                        .iter()
+                        .map(|q| (p - *q).hypot())
+                        .fold(f64::INFINITY, f64::min);
+                    worst = worst.max((d - 3.0).abs());
+                }
+            }
+        });
+        assert!(worst < 0.4, "wave edge off by {worst}");
+        // A dot is the nib.
+        let dot = eraser_band(&[Point::new(1.0, 1.0)], 4.0, false, 0.2);
+        assert!((dot.area().abs() - std::f64::consts::PI * 4.0).abs() < 0.05);
+    }
 
     /// A contour of a circle is a circle made of a few curves, not a
     /// row of short straight pieces (#821), and stays at its distance.
@@ -4400,6 +4669,27 @@ mod tests {
     /// Each contour is swept within itself: two squares far apart stay
     /// two solids, with nothing joining the end of one to the start of the
     /// other (the shards of #2156).
+    #[test]
+    fn filled_area_takes_holes_out_and_follows_curves() {
+        use crate::geometry::Shape as _;
+        let circle = kurbo::Circle::new((0.0, 0.0), 50.0).to_path(1e-9);
+        let a = filled_area(&circle, FillRule::NonZero);
+        let want = std::f64::consts::PI * 2500.0;
+        assert!((a - want).abs() < want * 1e-5, "{a} {want}");
+        // A 10 x 10 square with a 4 x 4 hole, both turning the same way:
+        // even-odd takes the hole out, non-zero fills it.
+        let mut p = BezPath::new();
+        for (x0, y0, x1, y1) in [(0.0, 0.0, 10.0, 10.0), (3.0, 3.0, 7.0, 7.0)] {
+            p.move_to((x0, y0));
+            p.line_to((x1, y0));
+            p.line_to((x1, y1));
+            p.line_to((x0, y1));
+            p.close_path();
+        }
+        assert!((filled_area(&p, FillRule::EvenOdd) - 84.0).abs() < 1e-6);
+        assert!((filled_area(&p, FillRule::NonZero) - 100.0).abs() < 1e-6);
+    }
+
     #[test]
     fn sweep_keeps_each_contour_to_itself() {
         let mut two = square(0.0);

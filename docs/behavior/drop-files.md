@@ -45,6 +45,21 @@ each. Imports go in the middle of the view, not under the pointer;
 File > Import's placement option (Options > Global > File Formats) is
 not used for drops.
 
+## Pictures dragged out of other programs (#2349)
+
+A picture dragged out of another program's canvas or page (a paint
+program, a browser) comes as the picture itself, not as a file. The
+windowing layer takes it as PNG, else as a bitmap (Windows: the
+registered `PNG` or `image/png` formats, then `CF_DIBV5` or `CF_DIB`;
+X11 and Wayland: `image/png`, `image/bmp`, `image/jpeg`), writes it to a
+file of its own in the system's temporary folder (`tracedraw-dropped-pictures`)
+as the drag enters, and hands that file on like a dropped picture file:
+over the drawing it goes into it, elsewhere it gets a new drawing. The
+picture comes in without a name and without a link to that file
+(`vendor/winit/src/picture_drop.rs`; checks
+`winit_picture_drop::tests`,
+`clipboard::linked_watch_tests::a_picture_dragged_in_from_another_program_has_no_link`).
+
 ## While files are dragged over
 
 A 3 px accent frame over a light accent tint goes round where the files
@@ -60,7 +75,16 @@ over the drawing window is imported like a `.cdr`
 the frame shows only while a mouse button is held: a drag taken away
 without a drop could leave the files listed as hovered, and the frame
 then stayed over the window until TraceDraw was closed
-(`drop_files::drag_held`, #2350).
+(`drop_files::drag_held`, #2350). The drop itself, or the drag leaving,
+can also fail to reach the program on Windows: the files stayed listed,
+nothing was imported, and the frame came back at every later click or
+drag, as if TraceDraw were still waiting for the drop (#2686). Once every
+button has been up for half a second with the same files still listed,
+the drag is over: the files count as let go where the cursor is (inside
+the window, as any drop there; outside it nothing happens), and the frame
+stays away until the next drag. Should the drop come in after all, it is
+not taken twice (`drop_files::FileDrag`,
+`a_file_drag_whose_drop_is_lost_ends_once_the_buttons_are_up`).
 
 ## Browser build
 

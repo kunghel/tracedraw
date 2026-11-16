@@ -127,12 +127,23 @@ pub fn ai_drawing(app: &mut App, ui: &mut Ui) {
             {
                 app.ai_cancel();
             }
-        } else if ui
-            .add_enabled(app.ai_features_on(), egui::Button::new(tr("ai.draw")))
-            .clicked()
-            || (ctrl_enter && app.ai_features_on())
-        {
-            app.ai_draw();
+        } else {
+            let draw = ui.add_enabled(app.ai_features_on(), egui::Button::new(tr("ai.draw")));
+            // Draw goes on the press, not only on a click (#2038): the
+            // press takes the focus from the request box, and whatever
+            // moves the panel's layout before the release (the box or the
+            // panel's scroll settling, a line under the buttons) left the
+            // release off the button, so the click never came and nothing
+            // happened, while the bar's Draw, which nothing moves, worked.
+            let pressed = draw.enabled()
+                && draw.contains_pointer()
+                && ui.input(|i| i.pointer.primary_pressed());
+            // A click of the pointer was its press; a click from the keys
+            // (the button focused) still draws.
+            let by_keys = draw.clicked() && !ui.input(|i| i.pointer.any_released());
+            if pressed || by_keys || (ctrl_enter && app.ai_features_on()) {
+                app.ai_draw();
+            }
         }
         if ui
             .add_enabled(
@@ -532,10 +543,11 @@ mod tests {
     }
 
     /// Draw with words has two Draw buttons, the panel's and the prompt
-    /// bar's (#2038, which could not be repeated): words typed in the
+    /// bar's (#2038): words typed in the
     /// panel's box and the panel's Draw pressed with the mouse send the
     /// request, with the prompt bar showing too; so do words typed in
-    /// the bar and its Draw.
+    /// the bar and its Draw. A press on the panel's Draw let go off it
+    /// draws too, once.
     #[test]
     fn the_panels_draw_button_sends_what_was_typed_in_the_panel() {
         use egui::accesskit::Role;
@@ -602,6 +614,29 @@ mod tests {
         click(&ctx, &mut app, buttons[1].center());
         assert_eq!(app.ai.sent.len(), 2, "the bar's Draw sent the request");
         assert!(app.ai.sent[1].body.contains("a blue square"));
+        // The panel's Draw pressed and let go off it, as when the panel
+        // moves under the pointer between the two on Windows: the press
+        // draws, once.
+        app.ai.request = "a green star".into();
+        let buttons = draw_buttons(&ctx, &mut app);
+        let at = buttons[0].center();
+        let off = at + egui::vec2(0.0, 300.0);
+        let button = |pos, pressed| egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        window(&ctx, &mut app, vec![egui::Event::PointerMoved(at)]);
+        window(&ctx, &mut app, vec![button(at, true)]);
+        window(
+            &ctx,
+            &mut app,
+            vec![egui::Event::PointerMoved(off), button(off, false)],
+        );
+        window(&ctx, &mut app, Vec::new());
+        assert_eq!(app.ai.sent.len(), 3, "the press drew, once");
+        assert!(app.ai.sent[2].body.contains("a green star"));
     }
 
     #[test]

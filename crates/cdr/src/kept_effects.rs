@@ -101,6 +101,7 @@ pub(crate) fn decode(bytes: &[u8]) -> Vec<KeptEffect> {
                     && k.main < k.objects.len()
                     && k.bounds.iter().all(|v| v.is_finite())
                     && (!k.source.effects.is_empty()
+                        || k.source.raster_fx.is_some()
                         || k.source.shadow.is_some()
                         || italic_text(&k.source))
             })

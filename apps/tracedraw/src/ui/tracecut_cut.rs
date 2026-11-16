@@ -236,6 +236,20 @@ pub fn settings(ui: &mut Ui, units: Units, st: &mut TraceCutState) -> Option<Act
             row(ui, "", |ui| {
                 check(ui, &mut s.remove_fill, "tracecut.contour_remove_fill")
             });
+            // A bleed in the object's colour, and one merged cut line
+            // round each object (#2098).
+            row(ui, &tr("tracecut.contour_bleed"), |ui| {
+                length(
+                    ui,
+                    units,
+                    &mut s.bleed,
+                    crate::tracecut_cut::BLEED_RANGE,
+                    "tracecut.contour_bleed",
+                )
+            });
+            row(ui, "", |ui| {
+                check(ui, &mut s.merge, "tracecut.contour_merge")
+            });
         }
         ToolId::RegistrationMarks => {
             let s = &mut st.settings.marks;

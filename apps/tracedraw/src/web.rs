@@ -217,7 +217,8 @@ fn mime_for(name: &str) -> &'static str {
         "webp" => "image/webp",
         "gif" => "image/gif",
         "html" => "text/html",
-        "tdraw" | "json" => "application/json",
+        // A .tdraw is gzip-compressed JSON (#2849).
+        "json" => "application/json",
         "txt" | "js" | "csv" => "text/plain",
         _ => "application/octet-stream",
     }

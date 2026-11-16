@@ -25,6 +25,8 @@ const __consts = {
   cdrMeshFillShape: 20, cdrCustomShape: 21, cdrCustomEffectGroupShape: 22,
   cdrSymbolShape: 23, cdrHTMLFormObjectShape: 24, cdrHTMLActiveObjectShape: 25,
   cdrPerfectShape: 26, cdrEPSShape: 27,
+  // cdrLinearDimensionType
+  cdrDimensionHorizontal: 0, cdrDimensionVertical: 1, cdrDimensionSlanted: 2,
   // cdrFillType
   cdrNoFill: 0, cdrUniformFill: 1, cdrFountainFill: 2, cdrPostscriptFill: 3,
   cdrTextureFill: 8, cdrPatternFill: 9, cdrHatchFill: 10,
@@ -170,6 +172,14 @@ const __mmPer = { 0: 0.0001, 1: 25.4, 2: 304.8, 3: 1, 4: 10, 5: 25.4 / 96, 6: 16
   14: 25.4 / 72, 15: 0.25, 16: 0.25 };
 function __f() { return __mmPer[__vg.unit] || 25.4; }
 function __mm(v) { return Number(v) * __f(); }
+// A point argument in page millimetres: [x, y], {x, y}, or anything
+// with PositionX/PositionY (a snap point, a node, a shape).
+function __pt(p) {
+  if (Array.isArray(p)) return [__mm(p[0]), __mm(p[1])];
+  if (p && p.PositionX !== undefined) return [__mm(p.PositionX), __mm(p.PositionY)];
+  if (p && p.x !== undefined) return [__mm(p.x), __mm(p.y)];
+  throw new Error('a dimension needs points');
+}
 function __un(mm) { return mm / __f(); }
 function __ids(x) {
   if (x === undefined || x === null) return [];
@@ -401,7 +411,7 @@ class __Geo {
   GetPosition() { return [this.PositionX, this.PositionY]; }
   GetSize() { return [this.SizeWidth, this.SizeHeight]; }
   GetBoundingBox(x, y, Width, Height, UseOutline) {
-    const b = this._b();
+    const b = UseOutline ? __call('vg_bounds', { ids: this._ids(), outline: true }) : this._b();
     return [__un(b.x0), __un(b.y0), __un(b.x1 - b.x0), __un(b.y1 - b.y0)];
   }
   SetPosition(PositionX, PositionY) {
@@ -534,6 +544,8 @@ class Shape extends __Geo {
   set RotationCenterX(v) { __vg.rot.set(this.id, [__mm(v), this._rotCenter()[1]]); }
   set RotationCenterY(v) { __vg.rot.set(this.id, [this._rotCenter()[0], __mm(v)]); }
   Duplicate(OffsetX, OffsetY) { return new Shape(__call('vg_duplicate', { ids: [this.id], dx: __mm(OffsetX || 0), dy: __mm(OffsetY || 0) }).ids[0]); }
+  Copy() { __call('vg_copy', { ids: [this.id] }); }
+  Cut() { __call('vg_cut', { ids: [this.id] }); }
   Clone(OffsetX, OffsetY) { return this.Duplicate(OffsetX, OffsetY); }
   BreakApart() { __call('vg_break_apart', { id: this.id }); }
   BreakApartEx() { return new ShapeRange(__call('vg_break_apart', { id: this.id }).ids); }
@@ -911,6 +923,8 @@ class ShapeRange extends __Geo {
   UngroupEx() { const out = []; this._ids().forEach(id => out.push(...__call('vg_ungroup', { id: id, all: false }).ids)); return new ShapeRange(out); }
   BreakApart() { this._ids().forEach(id => __call('vg_break_apart', { id: id })); }
   Duplicate(OffsetX, OffsetY) { return new ShapeRange(__call('vg_duplicate', { ids: this._ids(), dx: __mm(OffsetX || 0), dy: __mm(OffsetY || 0) }).ids); }
+  Copy() { __call('vg_copy', { ids: this._ids() }); }
+  Cut() { __call('vg_cut', { ids: this._ids() }); }
   Clone(OffsetX, OffsetY) { return this.Duplicate(OffsetX, OffsetY); }
   FindShapes(Name, Type, Recursive, Query) { return new ShapeRange(__find(this._ids(), Name, Type, Recursive === undefined ? true : Recursive, Query)); }
   FindShape(Name, Type, StaticID, Recursive, Query) {
@@ -1000,6 +1014,8 @@ class SelectionShape extends __Geo {
   get Shapes() { return new Shapes(() => __call('selection', {}).ids); }
   get Name() { return ''; }
   Duplicate(OffsetX, OffsetY) { return new ShapeRange(__call('vg_duplicate', { ids: this._ids(), dx: __mm(OffsetX || 0), dy: __mm(OffsetY || 0) }).ids); }
+  Copy() { __call('vg_copy', { ids: this._ids() }); }
+  Cut() { __call('vg_cut', { ids: this._ids() }); }
   Group() { return new Shape(__call('vg_group', { ids: this._ids() }).id); }
   Combine() { return new Shape(__call('vg_combine', { ids: this._ids() }).id); }
   UngroupAll() { this._ids().forEach(id => __call('vg_ungroup', { id: id, all: true })); }
@@ -1088,6 +1104,36 @@ class Layer {
   CreateLineSegment(StartX, StartY, EndX, EndY) {
     return new Shape(__call('create_curve', { layer: this.id, points: [[__mm(StartX), __mm(StartY)], [__mm(EndX), __mm(EndY)]], closed: false }).id);
   }
+  // Dimensions (#2348): live, in the Dimension tool's style. A point is
+  // a snap point or shape (PositionX/PositionY), {x, y} or [x, y], in
+  // document units. The dimension line passes through (TextX, TextY);
+  // without it, 10 mm off the measured points.
+  CreateLinearDimension(Type, Point1, Point2, TextCentered, TextX, TextY) {
+    const a = __pt(Point1), b = __pt(Point2);
+    const kind = Type === 0 ? 'horizontal' : Type === 1 ? 'vertical' : 'parallel';
+    let t;
+    if (TextX !== undefined && TextY !== undefined) t = [__mm(TextX), __mm(TextY)];
+    else if (kind === 'horizontal') t = [(a[0] + b[0]) / 2, Math.max(a[1], b[1]) + 10];
+    else if (kind === 'vertical') t = [Math.max(a[0], b[0]) + 10, (a[1] + b[1]) / 2];
+    else {
+      const dx = b[0] - a[0], dy = b[1] - a[1], l = Math.hypot(dx, dy) || 1;
+      t = [(a[0] + b[0]) / 2 - dy / l * 10, (a[1] + b[1]) / 2 + dx / l * 10];
+    }
+    return new Shape(__call('create_dimension', { layer: this.id, kind: kind, x1: a[0], y1: a[1], x2: b[0], y2: b[1], tx: t[0], ty: t[1] }).id);
+  }
+  // The angle at Center from Point1 to Point2, its arc through (TextX,
+  // TextY) (else at three quarters of the shorter arm).
+  CreateAngularDimension(Center, Point1, Point2, TextX, TextY) {
+    const c = __pt(Center), a = __pt(Point1), b = __pt(Point2);
+    let t;
+    if (TextX !== undefined && TextY !== undefined) t = [__mm(TextX), __mm(TextY)];
+    else {
+      const r = 0.75 * Math.min(Math.hypot(a[0] - c[0], a[1] - c[1]), Math.hypot(b[0] - c[0], b[1] - c[1]));
+      const ang = (Math.atan2(a[1] - c[1], a[0] - c[0]) + Math.atan2(b[1] - c[1], b[0] - c[0])) / 2;
+      t = [c[0] + r * Math.cos(ang), c[1] + r * Math.sin(ang)];
+    }
+    return new Shape(__call('create_dimension', { layer: this.id, kind: 'angular', cx: c[0], cy: c[1], x1: a[0], y1: a[1], x2: b[0], y2: b[1], tx: t[0], ty: t[1] }).id);
+  }
   CreateCurveSegment(StartX, StartY, EndX, EndY, StartingControlPointLength, StartingControlPointAngle, EndingControlPointLength, EndingControlPointAngle) {
     const sx = __mm(StartX), sy = __mm(StartY), ex = __mm(EndX), ey = __mm(EndY);
     const pol = (x, y, len, ang) => [x + __mm(len || 0) * Math.cos((ang || 0) * Math.PI / 180), y + __mm(len || 0) * Math.sin((ang || 0) * Math.PI / 180)];
@@ -1120,7 +1166,8 @@ class Layer {
   Import(FileName) { return new Shape(__call('import_bitmap', { layer: this.id, path: String(FileName) }).id); }
   ImportBitmap(FileName) { return this.Import(FileName); }
   CreateBitmap(FileName) { return this.Import(FileName); }
-  Paste() { throw new Error('Paste is not available to macros'); }
+  Paste() { return new ShapeRange(__call('vg_paste', { layer: this.id }).ids); }
+  PasteEx() { return this.Paste(); }
 }
 class Layers {
   constructor(page) { this.page = page; }
@@ -1471,7 +1518,6 @@ __def(Page, 'Guides', function () {
 __def(Layer, 'IsGuidesLayer', function () { return false; });
 __def(Layer, 'IsGridLayer', function () { return false; });
 __def(Layer, 'IsDesktopLayer', function () { return false; });
-Layer.prototype.Paste = function () { return __no('Layer.Paste', 'the clipboard is not open to macros'); };
 Layer.prototype.CreateGuide = function (x1, y1, x2, y2) {
   const ax = __mm(x1), ay = __mm(y1), bx = __mm(x2), by = __mm(y2);
   const angle = Math.atan2(by - ay, bx - ax) * 180 / Math.PI;

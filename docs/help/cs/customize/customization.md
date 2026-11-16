@@ -14,6 +14,9 @@ chování barevné palety.
   vypnutí se otevírají tam, kde jste je naposledy nechali.
 - [[options.ui_shadows]] (méně stínů pomůže pomalejší grafice).
 - [[options.colored_icons]]: každá skupina nástrojů dostane vlastní barvu.
+- [[options.docker_tabs_icons_only]]: karty panelů po stranách okna ukazují
+  jen obrázek, název je v tipu. Vypnuto ukazují obrázek i název a sloupec
+  s více kartami, než se vejde, se posouvá.
 - [[options.ui_size]]: jak velké jsou nabídky, lišty, ikony a panely vzhledem
   ke škálování, které systém monitoru dává (výchozí 100 %).
   [[options.reset_to_default]] se vrátí na 100 %. Velikost rozhraní nikdy

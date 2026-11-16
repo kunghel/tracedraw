@@ -1218,13 +1218,78 @@ impl Writer<'_> {
     }
 
     /// A layer's flags: locked, shown (a negative colour hides it) and
-    /// printed, with the solid line type.
+    /// printed, with the solid line type, the default lineweight and the
+    /// "Normal" plot style. AutoCAD refuses a layer without its plot style
+    /// ("Error in LAYER Table. Did not receive PlotStyleName", #2610).
     fn layer_flags(&mut self, locked: bool, visible: bool, printable: bool) {
         self.pair(70, if locked { "4" } else { "0" });
         self.pair(62, if visible { "7" } else { "-7" });
         self.pair(6, "Continuous");
         self.pair(290, if printable { "1" } else { "0" });
         self.pair(370, "-3");
+        self.pair(390, fixed::PLOT_STYLE_NORMAL);
+    }
+
+    /// A LAYOUT object: plot settings for no device, then the layout's
+    /// name, tab, limits and extents (the page) and its block record.
+    fn layout(&mut self, handle: &str, name: &str, tab: &str, block: &str, w: f64, h: f64) {
+        self.pair(0, "LAYOUT");
+        self.pair(5, handle);
+        self.pair(330, fixed::LAYOUT_DICT);
+        self.pair(100, "AcDbPlotSettings");
+        self.pair(1, "");
+        self.pair(2, "none_device");
+        self.pair(4, "");
+        self.pair(6, "");
+        for code in 40..=47 {
+            self.pair(code, "0");
+        }
+        self.pair(48, "0");
+        self.pair(49, "0");
+        self.pair(140, "0");
+        self.pair(141, "0");
+        self.pair(142, "1");
+        self.pair(143, "1");
+        // Plot flags: plot viewport borders, show plot styles, plot
+        // lineweights, print, use standard scale (688 as files hold it).
+        self.pair(70, "688");
+        self.pair(72, "1");
+        self.pair(73, "0");
+        self.pair(74, "5");
+        self.pair(7, "");
+        self.pair(75, "16");
+        self.pair(147, "1");
+        self.pair(148, "0");
+        self.pair(149, "0");
+        self.pair(100, "AcDbLayout");
+        self.pair(1, name);
+        self.pair(70, "1");
+        self.pair(71, tab);
+        self.pair(10, "0");
+        self.pair(20, "0");
+        self.pair(11, &fmt(w));
+        self.pair(21, &fmt(h));
+        self.pair(12, "0");
+        self.pair(22, "0");
+        self.pair(32, "0");
+        self.pair(14, "0");
+        self.pair(24, "0");
+        self.pair(34, "0");
+        self.pair(15, &fmt(w));
+        self.pair(25, &fmt(h));
+        self.pair(35, "0");
+        self.pair(146, "0");
+        self.pair(13, "0");
+        self.pair(23, "0");
+        self.pair(33, "0");
+        self.pair(16, "1");
+        self.pair(26, "0");
+        self.pair(36, "0");
+        self.pair(17, "0");
+        self.pair(27, "1");
+        self.pair(37, "0");
+        self.pair(76, "0");
+        self.pair(330, block);
     }
 
     fn entity_header(&mut self, kind: &str, color: Color, subclass: &str) {
@@ -1481,6 +1546,11 @@ mod fixed {
     pub const DIMSTYLE_TABLE: &str = "A";
     pub const ROOT_DICT: &str = "C";
     pub const GROUP_DICT: &str = "D";
+    pub const PLOT_STYLE_DICT: &str = "E";
+    pub const PLOT_STYLE_NORMAL: &str = "F";
+    pub const LAYOUT_DICT: &str = "1A";
+    pub const MODEL_LAYOUT: &str = "1E";
+    pub const PAPER_LAYOUT: &str = "23";
     pub const LAYER_0: &str = "10";
     pub const STYLE_STANDARD: &str = "11";
     pub const APPID_ACAD: &str = "12";
@@ -1775,9 +1845,9 @@ pub fn page_to_dxf(doc: &Document, page_index: usize) -> String {
     w.pair(70, "0");
     w.pair(0, "ENDTAB");
     w.table_start("BLOCK_RECORD", fixed::BLOCK_RECORD_TABLE, 2);
-    for (h, name) in [
-        (fixed::MODEL_SPACE, "*Model_Space"),
-        (fixed::PAPER_SPACE, "*Paper_Space"),
+    for (h, name, layout) in [
+        (fixed::MODEL_SPACE, "*Model_Space", fixed::MODEL_LAYOUT),
+        (fixed::PAPER_SPACE, "*Paper_Space", fixed::PAPER_LAYOUT),
     ] {
         w.record_start(
             "BLOCK_RECORD",
@@ -1786,6 +1856,7 @@ pub fn page_to_dxf(doc: &Document, page_index: usize) -> String {
             "AcDbBlockTableRecord",
         );
         w.pair(2, name);
+        w.pair(340, layout);
     }
     w.pair(0, "ENDTAB");
     w.pair(0, "ENDSEC");
@@ -1834,7 +1905,9 @@ pub fn page_to_dxf(doc: &Document, page_index: usize) -> String {
     w.out.push_str(&entities);
     w.pair(0, "ENDSEC");
 
-    // OBJECTS: the root dictionary and its group dictionary.
+    // OBJECTS: the root dictionary with its group, layout and plot style
+    // dictionaries, the two layouts and the "Normal" plot style the layers
+    // point to (#2610).
     w.pair(0, "SECTION");
     w.pair(2, "OBJECTS");
     w.pair(0, "DICTIONARY");
@@ -1844,11 +1917,43 @@ pub fn page_to_dxf(doc: &Document, page_index: usize) -> String {
     w.pair(281, "1");
     w.pair(3, "ACAD_GROUP");
     w.pair(350, fixed::GROUP_DICT);
+    w.pair(3, "ACAD_LAYOUT");
+    w.pair(350, fixed::LAYOUT_DICT);
+    w.pair(3, "ACAD_PLOTSTYLENAME");
+    w.pair(350, fixed::PLOT_STYLE_DICT);
     w.pair(0, "DICTIONARY");
     w.pair(5, fixed::GROUP_DICT);
     w.pair(330, fixed::ROOT_DICT);
     w.pair(100, "AcDbDictionary");
     w.pair(281, "1");
+    w.pair(0, "DICTIONARY");
+    w.pair(5, fixed::LAYOUT_DICT);
+    w.pair(330, fixed::ROOT_DICT);
+    w.pair(100, "AcDbDictionary");
+    w.pair(281, "1");
+    w.pair(3, "Layout1");
+    w.pair(350, fixed::PAPER_LAYOUT);
+    w.pair(3, "Model");
+    w.pair(350, fixed::MODEL_LAYOUT);
+    // The plot style dictionary has a default entry, "Normal".
+    w.pair(0, "ACDBDICTIONARYWDFLT");
+    w.pair(5, fixed::PLOT_STYLE_DICT);
+    w.pair(330, fixed::ROOT_DICT);
+    w.pair(100, "AcDbDictionary");
+    w.pair(281, "1");
+    w.pair(3, "Normal");
+    w.pair(350, fixed::PLOT_STYLE_NORMAL);
+    w.pair(100, "AcDbDictionaryWithDefault");
+    w.pair(340, fixed::PLOT_STYLE_NORMAL);
+    w.pair(0, "ACDBPLACEHOLDER");
+    w.pair(5, fixed::PLOT_STYLE_NORMAL);
+    w.pair(330, fixed::PLOT_STYLE_DICT);
+    for (h, name, tab, block) in [
+        (fixed::MODEL_LAYOUT, "Model", "0", fixed::MODEL_SPACE),
+        (fixed::PAPER_LAYOUT, "Layout1", "1", fixed::PAPER_SPACE),
+    ] {
+        w.layout(h, name, tab, block, page.size.width, page.size.height);
+    }
     w.pair(0, "ENDSEC");
     w.pair(0, "EOF");
     w.out
@@ -2077,6 +2182,52 @@ mod tests {
         doc.pages[0].layers.push(second);
         doc.set_ids(ids);
         doc
+    }
+
+    #[test]
+    fn every_layer_has_a_plot_style_that_exists() {
+        // AutoCAD LT 2025: "Error in LAYER Table. Did not receive
+        // PlotStyleName" (#2610).
+        let out = page_to_dxf(&sample_for_autocad(), 0);
+        let p = pairs(&out);
+        let layers: Vec<usize> = p
+            .iter()
+            .enumerate()
+            .filter(|(_, x)| x.code == 0 && x.value == "LAYER")
+            .map(|(i, _)| i)
+            .collect();
+        assert_eq!(layers.len(), 3, "layer 0, Walls and walls_2");
+        let placeholder = p
+            .windows(2)
+            .find(|w| w[0].code == 0 && w[0].value == "ACDBPLACEHOLDER")
+            .map(|w| w[1].value.clone())
+            .expect("the Normal plot style");
+        for &i in &layers {
+            let rec = &p[i + 1..];
+            let end = rec.iter().position(|x| x.code == 0).unwrap();
+            let rec = &rec[..end];
+            let lw = rec.iter().position(|x| x.code == 370).unwrap();
+            assert_eq!(rec[lw + 1].code, 390, "plot style right after lineweight");
+            assert_eq!(rec[lw + 1].value, placeholder);
+        }
+        let has = |code: i32, value: &str| p.iter().any(|x| x.code == code && x.value == value);
+        assert!(has(3, "ACAD_PLOTSTYLENAME") && has(0, "ACDBDICTIONARYWDFLT"));
+        assert!(has(3, "ACAD_LAYOUT") && has(0, "LAYOUT"));
+        // Each block record names its layout, and the layout its record.
+        for (record, layout) in [("1F", "1E"), ("1B", "23")] {
+            assert!(p.windows(2).any(|w| w[0].code == 2
+                && w[0].value.starts_with('*')
+                && w[1].code == 340
+                && w[1].value == layout));
+            let at = p
+                .windows(2)
+                .position(|w| w[0].code == 0 && w[0].value == "LAYOUT" && w[1].value == layout)
+                .unwrap();
+            let rec = &p[at + 1..];
+            let end = rec.iter().position(|x| x.code == 0).unwrap();
+            assert_eq!(rec[end - 1].code, 330);
+            assert_eq!(rec[end - 1].value, record);
+        }
     }
 
     #[test]

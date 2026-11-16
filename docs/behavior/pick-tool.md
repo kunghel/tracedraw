@@ -17,7 +17,7 @@
 | Rotate handle (rotate mode, corners) | rotate about the centre of rotation; Ctrl in steps of the constrain angle (15 degrees); without Ctrl the pointer snaps to other objects' points only, never to edges or lines (#933, see `snapping.md`) |
 | A node of the selection (rotate mode; also a segment's midpoint or an ellipse's quadrant, the points the pointer marks) | dragged, turns the selection about the centre of rotation, the node going round its circle towards the pointer (the turning arrows show over it); near another object's point the turn aims at it, near an edge the node lands where its circle crosses the edge, exactly on it; Ctrl in steps of the constrain angle; elsewhere on the selection a drag moves it as outside rotate mode (#933, `pick_drag_tests::a_node_dragged_in_rotate_mode_turns_the_selection_onto_a_line`) |
 | Skew handle (rotate mode, sides) | slant: the top and bottom handles sideways, the left and right ones up and down, the opposite side fixed; Shift about the centre line; Ctrl in steps of the constrain angle |
-| Centre of rotation (rotate mode, a ring with a dot) | drag it to turn about another point; it is kept with the object: rotate mode going off and on, clicking elsewhere and selecting the object again find it where it was put, and it travels with the object when that is moved, scaled or turned (kept in the object's own space; several objects selected together keep theirs as a place within their bounds; each drawing has its own; not saved in the file); double-click puts it back in the middle; a click on it keeps rotate mode. Dragged, it snaps (unless snapping is off) to the corners, the middles of the sides and the centre of the selection's box and to the points of every object near it, the selection's own and others' (nodes, midpoints, quadrants, centres), whether Snap to Objects is on or not, and the point taken is marked with its name (#2352, `snap::tests::the_centre_of_rotation_snaps_to_object_centres_and_edges`). A transform of the selection carries a moved centre with it, and a copy turned (or moved) by a drag ended with a right click gets the centre the original had, carried by the same transform. Edit > Repeat of a turn turns about the selection's moved centre when it has one, so turned copies repeated go round that point (#2353, `pick_drag_tests::repeat_turns_copies_about_the_moved_centre_of_rotation`); without a moved centre a turn repeats about the same place of the selection's box (#1289) |
+| Centre of rotation (rotate mode, a ring with a dot) | drag it to turn about another point; it is kept with the object: rotate mode going off and on, clicking elsewhere and selecting the object again find it where it was put, and it travels with the object when that is moved, scaled or turned (kept in the object's own space; several objects selected together keep theirs as a place within their bounds; each drawing has its own; not saved in the file); double-click puts it back in the middle; a click on it keeps rotate mode. Dragged, it snaps (unless snapping is off) to the corners, the middles of the sides and the centre of the selection's box and to the points of every object near it, the selection's own and others' (nodes, midpoints, quadrants, centres), whether Snap to Objects is on or not, and the point taken is marked with its name (#2352, `snap::tests::the_centre_of_rotation_snaps_to_object_centres_and_edges`). A transform of the selection carries a moved centre with it, and a copy turned (or moved) by a drag ended with a right click gets the centre the original had, carried by the same transform, and stays in rotate mode when the original was in it, so the centre stays in sight for the next turn. Edit > Repeat of a turn turns about the selection's moved centre when it has one, so turned copies repeated go round that point (#2353, `pick_drag_tests::repeat_turns_copies_about_the_moved_centre_of_rotation`); without a moved centre a turn repeats about the same place of the selection's box (#1289) |
 | Right click during a move, scale, rotation or skew | the original stays and a copy takes the change (the copy becomes the selection); a second right click takes it back; the status bar says which, and the pointer carries a plus in a square (beside the box of a move, at the lower right of the scale, turn and slant pointers). The transform runs until the left button goes up, whichever button is released first or both in one frame, and wherever it is dropped (bare canvas, another object): the release is never taken for a click there, a held second right press does not start it again, and a palette swatch under the pointer does not take the right click as an outline colour (#528, `pick_drag_tests::a_right_click_copy_survives_any_release_order`, `a_right_click_copy_dropped_on_another_object_copies_the_dragged_one`, `a_right_click_during_a_ctrl_mirror_leaves_a_mirrored_copy` (Ctrl and a side handle dragged across: a mirrored copy), `a_right_click_during_a_turn_or_a_slant_leaves_the_original`, `a_held_second_right_press_takes_the_copy_back_and_the_move_goes_on`); in the browser too, where the left button let go while the right one is held sends no pointer release (#1334, `a_left_release_while_the_right_button_is_held_ends_the_drag`) |
 | Right click during a marquee or a Freehand Pick lasso | no context menu or drop menu opens: the frame goes on while the left button is held and selects when it goes up, whichever button is released first or both in one frame (#1015, `pick_drag_tests::a_right_press_during_a_selection_box_does_not_leave_it_frozen`) |
 | Right button held during a marquee | the marquee moves with the pointer, keeping its size, instead of being sized; with the right button up again the pointer sizes it from where it was moved to, and the left release selects what it encloses there. The Shape tool's node marquee moves the same way; a Freehand Pick lasso goes on being drawn (#2050, `pick_drag_tests::the_right_button_moves_the_selection_box_while_it_is_held`) |
@@ -114,9 +114,13 @@ drawing; objects deleted since drop out. With text selected, Ctrl+8 and
 Ctrl+2 keep changing the text size, and Ctrl+Shift+> and Ctrl+Shift+<
 move its letters further apart or closer, 5 % of a space's width a
 press (the Text docker's Character spacing), for a text fitted to a
-path too and while a text is edited
+path too
 (`text_nodes::tests::the_spacing_keys_step_the_character_spacing_of_selected_texts`,
-#193).
+#193). While a text is edited they space single letters, as in
+CorelDRAW: with the caret, only the gap at the caret (the letter before
+it gets 2 % of the size more or less range kerning a press); with
+characters selected, or chosen with the Shape tool, only those (#2171,
+`text_nodes::tests::the_spacing_keys_space_one_letter_at_the_caret_or_the_chosen_ones`).
 
 ## Invert Selection and Select Similar
 
@@ -256,12 +260,19 @@ vertical, Esc cancels it. On release a menu opens there:
 | Item | Effect |
 |---|---|
 | Move Here | moves the selection by the drag |
-| Copy Here | copies of the selection, moved by the drag, become the selection |
+| Copy Here | copies of the selection, moved by the drag, become the selection; always by the drag, also when the dragged objects are the copies of a Duplicate still selected (#2640, `drop_menu::tests::copy_here_from_copies_still_selected_lands_where_the_drag_ended`) |
 | Copy Fill Here | the object under the pointer takes the fill of the first selected object |
 | Copy Outline Here | ... its outline |
 | Copy All Properties | ... its fill, outline and transparency |
 | Place Inside | the object under the pointer becomes the clip frame of the selection |
 | Cancel | nothing |
+
+The fill, outline and transparency are read from the object that shows
+them (a group's frontmost object), as Edit > Copy Properties From does,
+and a mesh fill is fitted to the target's own box, its grid over the
+target as a mesh fill given to it directly lies. It stayed where the
+source was, outside the target (#2896,
+`drop_menu::tests::copy_all_properties_fits_a_mesh_fill_to_the_target`).
 
 The four items that act on the object under the pointer are dimmed when
 there is none. A right click without a drag opens the context menu. A

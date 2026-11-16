@@ -349,6 +349,16 @@ pub struct ViewOut {
     /// A click (while picking) on a picture, as fractions of the
     /// picture's own size (turns undone).
     pub picked: Option<Vec2>,
+    /// While picking, the point under the pointer held down on a pane,
+    /// as fractions of the picture's own size (turns undone), even
+    /// outside the picture: a brush painting (#1723).
+    pub held: Option<Vec2>,
+    /// While picking, the pointer was let go after a press on the panes.
+    pub let_go: bool,
+    /// Where each pane draws the picture, on screen.
+    pub image_rects: Vec<Rect>,
+    /// The quarter turns the picture is shown with.
+    pub turns: u8,
     /// Points per pixel that fit the picture in a pane.
     pub fit: f32,
 }
@@ -456,7 +466,10 @@ pub fn view(
     pics: &Pictures,
     picking: bool,
 ) -> ViewOut {
-    let mut out = ViewOut::default();
+    let mut out = ViewOut {
+        turns: st.turns,
+        ..Default::default()
+    };
     let painter = ui.painter_at(area);
     painter.rect_filled(area, 0.0, Color32::from_gray(0xC8));
     let panes = pane_rects(area, st.view);
@@ -549,6 +562,7 @@ pub fn view(
             mark(ui, "view_pane", *pane);
             mark(ui, "view_image", r);
         }
+        out.image_rects.push(r);
     }
     // Dragging the split view's divider wins over panning.
     let divider_id = id.with("divider");
@@ -612,6 +626,15 @@ pub fn view(
             crate::ui::cursors::ToolCursor::Cross,
             resp.hover_pos(),
         );
+    }
+    if picking && resp.is_pointer_button_down_on() {
+        out.held = resp
+            .interact_pointer_pos()
+            .and_then(locate)
+            .map(|d| unturn(d, st.turns));
+    }
+    if picking && (resp.drag_stopped() || resp.clicked()) {
+        out.let_go = true;
     }
     if picking && resp.clicked() {
         if let Some(d) = resp.interact_pointer_pos().and_then(locate) {
@@ -735,6 +758,8 @@ pub struct Live {
     pub img: Arc<RgbaImage>,
     pub after: Arc<RgbaImage>,
     pub picked: Option<(u32, u32)>,
+    /// The panes' frame: pointer held, let go, where the picture is.
+    pub view: ViewOut,
 }
 
 /// The before and after preview of `src` through `f` (given the copy and
@@ -821,6 +846,7 @@ pub fn live(
         img: copy.img,
         after,
         picked,
+        view: out,
     })
 }
 

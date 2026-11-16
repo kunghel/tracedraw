@@ -471,6 +471,7 @@
 | [[menu.help.whats_new]] | [ما الجديد](../welcome/whats-new.md) |
 | [[menu.help.highlight_whats_new]] | [ما الجديد](../welcome/whats-new.md) |
 | [[menu.help.updates]] | [حول TraceDraw والتحديثات](../welcome/about-and-updates.md) |
+| [[menu.help.benchmark]] | [خيارات TraceDraw](../customize/options-app.md#benchmark) |
 | [[menu.help.message_settings]] | [حول TraceDraw والتحديثات](../welcome/about-and-updates.md) |
 | [[menu.help.community]] | [حول TraceDraw والتحديثات](../welcome/about-and-updates.md) |
 | [[menu.help.support]] | [حول TraceDraw والتحديثات](../welcome/about-and-updates.md) |

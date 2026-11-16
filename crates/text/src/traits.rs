@@ -334,6 +334,13 @@ pub struct FontFilter {
     pub features: Vec<[u8; 4]>,
     /// Folders a face of the family must be in, one of them.
     pub folders: Vec<std::path::PathBuf>,
+    /// The Font Manager's Favorites and collections checked, each by its
+    /// name with the keys of its faces: a face of the family must be in
+    /// one of them (#867).
+    pub collections: Vec<(String, Vec<String>)>,
+    /// Only the protected system fonts: families with a face in the
+    /// operating system's own font folders (#867).
+    pub system: bool,
 }
 
 impl FontFilter {
@@ -369,6 +376,19 @@ impl FontFilter {
         }
     }
 
+    /// Check or uncheck the collection `name` holding the faces `keys`.
+    pub fn set_collection(&mut self, name: &str, keys: &[String], on: bool) {
+        self.collections.retain(|(n, _)| n != name);
+        if on {
+            self.collections.push((name.to_string(), keys.to_vec()));
+        }
+    }
+
+    /// Whether the collection `name` is checked.
+    pub fn has_collection(&self, name: &str) -> bool {
+        self.collections.iter().any(|(n, _)| n == name)
+    }
+
     /// The number of choices checked.
     pub fn count(&self) -> u32 {
         self.styles.count_ones()
@@ -379,6 +399,8 @@ impl FontFilter {
             + self.scripts.count_ones()
             + self.features.len() as u32
             + self.folders.len() as u32
+            + self.collections.len() as u32
+            + u32::from(self.system)
     }
 
     /// A family with `info` shows (`None`: not installed nor offered,
@@ -411,6 +433,12 @@ impl FontFilter {
                 .iter()
                 .all(|f| has_feature(&info.feature_tags, f))
             && (self.folders.is_empty() || info.folders.iter().any(|d| self.folders.contains(d)))
+            && (self.collections.is_empty()
+                || self
+                    .collections
+                    .iter()
+                    .any(|(_, keys)| keys.iter().any(|k| info.face_keys.contains(k))))
+            && (!self.system || info.system)
     }
 }
 
@@ -575,6 +603,30 @@ mod tests {
         f.set_folder(std::path::Path::new("/fonts/a"), true);
         assert!(f.matches(Some(&fam)) && !f.matches(Some(&plain)));
         assert!(has_feature(&[*b"ss12"], b"ss01") && !has_feature(&[*b"salt"], b"ss01"));
+    }
+
+    /// #867: the Font Manager's Favorites and collections, and the
+    /// protected system fonts, narrow the list like the other choices.
+    #[test]
+    fn collections_and_protected_system_fonts() {
+        let mut fam = info(FontClass::SansSerif, FontKind::TrueType);
+        fam.face_keys = vec!["Sans-Bold".into(), "Sans-Regular".into()];
+        fam.system = true;
+        let mut other = info(FontClass::Serif, FontKind::TrueType);
+        other.face_keys = vec!["Serif-Regular".into()];
+        let mut f = FontFilter::default();
+        f.set_collection("Favorites", &["Sans-Bold".to_string()], true);
+        assert!(f.matches(Some(&fam)) && !f.matches(Some(&other)));
+        // Two collections: a face in either.
+        f.set_collection("Book", &["Serif-Regular".to_string()], true);
+        assert!(f.matches(Some(&fam)) && f.matches(Some(&other)));
+        assert!(f.has_collection("Book") && f.count() == 2);
+        f.set_collection("Favorites", &[], false);
+        f.set_collection("Book", &[], false);
+        assert!(f.is_empty());
+        f.system = true;
+        assert_eq!(f.count(), 1);
+        assert!(f.matches(Some(&fam)) && !f.matches(Some(&other)));
     }
 
     #[test]

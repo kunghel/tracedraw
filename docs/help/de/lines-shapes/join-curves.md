@@ -36,3 +36,21 @@ verbinden; siehe
 [Kurven mit dem Formwerkzeug bearbeiten](shape-tool.md#property-bar). Wenn Sie
 vom Ende einer ausgewählten Kurve aus zeichnen, wird sie ebenfalls fortgesetzt;
 siehe [Eine Kurve fortsetzen](lines.md#continue).
+
+## Werkzeug Verbinden {#join-tool}
+
+Das Werkzeug [[tool.join]], im Werkzeugkasten beim Werkzeug [[tool.shape]],
+verbindet die Endknoten offener Kurven von Hand.
+
+- Zeichnen Sie einen Strich über die Endknoten: Sie werden paarweise
+  verbunden, in der Reihenfolge, in der der Strich sie erreicht. Zwei Enden
+  innerhalb des Auswahlabstands werden ein Knoten in der Mitte zwischen ihnen;
+  weiter entfernte Enden verbindet ein gerades Segment.
+- Klicken Sie einen Endknoten an (er wird gefüllt) und dann einen anderen, um
+  diese beiden zu verbinden. Ein Klick daneben lässt den ersten los.
+- Die beiden Enden einer Kurve schließen sie. Enden zweier Kurven ergeben eine
+  Kurve mit Füllung und Umriss der Kurve des ersten Endes.
+
+Alle Verbindungen eines Strichs sind ein Rückgängig-Schritt. Das Werkzeug
+wirkt auf die sichtbaren, nicht gesperrten Kurven der Seite außerhalb von
+Gruppen.

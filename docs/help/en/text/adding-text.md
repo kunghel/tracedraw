@@ -97,7 +97,9 @@ color keep the font's kerning with their neighbours.
   under the section: character offsets and angle, strikethrough and OpenType
   features.
 - **Paragraph**: the alignment (none, left, center, right, full justify, and
-  forced justify, which spreads the last line too); line spacing in percent of
+  forced justify, which spreads the last line too); the direction, left to
+  right or right to left for Arabic, Hebrew and other right-to-left text
+  (lines start at the right and the indents change sides); line spacing in percent of
   the character height, points or percent of the font size; left, first-line
   and right indents; space before and after paragraphs; character and word
   spacing. The gear opens custom hyphens.

@@ -92,6 +92,28 @@ later, and removing the last one gives the original back.
   through the settings states made in the dialog (a slider's drag is
   one step on release, a list, a box, a colour, Reset), and the history
   starts afresh when the dialog opens.
+- Settings only (#2799): a box under Preview. Ticked, every effect
+  dialog opens as a small window (380 x 600 points at first, 320 x 380
+  at least, sized by the user) with the settings alone and no Before and
+  After panes; the effect is seen on the drawing itself (ticking the box
+  ticks Preview). The choice is kept between sessions
+  (`fx_settings_only` in the settings). While any effect dialog is open
+  the wheel over the drawing outside it zooms the drawing, so the result
+  can be looked at closely. Eyedroppers that pick from the panes have
+  nothing to pick from in this window.
+- Show Original (#1129): a button beside Settings only, enabled with
+  Preview. While it is held down the drawing shows the objects without
+  the effect; let go, the preview made before comes back at once, not
+  made again (the last preview's steps are kept until the dialog
+  closes).
+- Presets (#1129): a list above Preview with the presets saved for this
+  effect; choosing one puts its settings in the dialog (the list shows
+  the preset whose settings the dialog holds, "(none)" otherwise). A
+  name box and Save keep the dialog's settings as a preset of the effect
+  (a blank name gets "Preset n", the first n free; the same name
+  replaces that preset's settings), and the cross deletes the preset
+  shown. Presets are kept in the settings (`fx_presets`, at most 300),
+  for every drawing.
 - Editing an effect from the FX section previews from what the effects
   before it made, and the after view also runs the visible effects after
   it; OK changes that effect in place ("Edit Effect").
@@ -408,6 +430,9 @@ through the master curve, then its channel's curve.
 - Third-party plug-in filters are not supported.
 
 ## Checks
+
+- `fx::preview::tests::show_original_and_the_settings_only_window`
+- `ui::effect_dialog::tests::effect_presets_are_saved_by_effect_and_name`
 
 - Given any effect, when it runs with its defaults, its maximums or its
   minimums, then the image keeps its size and every name, setting and

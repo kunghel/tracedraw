@@ -117,8 +117,12 @@ impl BitmapPrefs {
 #[serde(default)]
 pub struct MarkPrefs {
     pub crop: bool,
+    /// Lines on the bleed's edges (#2197).
+    pub bleed: bool,
     pub registration: bool,
     pub color_bars: bool,
+    /// A strip of gray steps (#2197).
+    pub densitometer: bool,
     /// The drawing's name, the page and the date under the page.
     pub file_info: bool,
 }
@@ -128,11 +132,35 @@ impl MarkPrefs {
     pub fn marks(self) -> crate::imposition::Marks {
         crate::imposition::Marks {
             crop: self.crop,
+            bleed: self.bleed,
             registration: self.registration,
             color_bars: self.color_bars,
+            densitometer: self.densitometer,
             page_info: self.file_info,
             ..Default::default()
         }
+    }
+
+    /// Every mark is on: All printers' marks shows ticked.
+    pub fn all(self) -> bool {
+        self.crop
+            && self.bleed
+            && self.registration
+            && self.color_bars
+            && self.densitometer
+            && self.file_info
+    }
+
+    /// Every mark on, or every mark off (All printers' marks, #2197).
+    pub fn set_all(&mut self, on: bool) {
+        *self = MarkPrefs {
+            crop: on,
+            bleed: on,
+            registration: on,
+            color_bars: on,
+            densitometer: on,
+            file_info: on,
+        };
     }
 }
 
@@ -1189,17 +1217,30 @@ fn prepress(ui: &mut Ui, st: &mut PublishState) {
     ui.add_space(8.0);
     group(ui, &tr("publish.marks"), |ui| {
         let m = &mut st.prefs.marks;
+        let mut all = m.all();
+        if ui
+            .checkbox(&mut all, tr("publish.all_marks"))
+            .rich_tip(crate::ui::tips::keyed("publish.all_marks"))
+            .changed()
+        {
+            m.set_all(all);
+        }
         egui::Grid::new("publish_marks")
             .num_columns(2)
             .spacing([24.0, 4.0])
             .show(ui, |ui| {
                 ui.checkbox(&mut m.crop, tr("dialog.crop_marks"))
                     .rich_tip(tr("dialog.crop_marks_tip"));
+                ui.checkbox(&mut m.bleed, tr("publish.bleed_marks"))
+                    .rich_tip(crate::ui::tips::keyed("publish.bleed_marks"));
+                ui.end_row();
                 ui.checkbox(&mut m.registration, tr("dialog.registration_marks"))
                     .rich_tip(tr("dialog.registration_marks_tip"));
-                ui.end_row();
                 ui.checkbox(&mut m.color_bars, tr("print.color_bars"))
                     .rich_tip(tr("print.color_bars_tip"));
+                ui.end_row();
+                ui.checkbox(&mut m.densitometer, tr("print.densitometer"))
+                    .rich_tip(tr("print.densitometer_tip"));
                 ui.checkbox(&mut m.file_info, tr("publish.file_info"))
                     .rich_tip(tr("publish.file_info_tip"));
                 ui.end_row();
@@ -1362,6 +1403,23 @@ mod tests {
         doc.pages.push(second);
         app.open_document(doc, None);
         app
+    }
+
+    /// All printers' marks ticks every mark and unticks them all; bleed
+    /// marks and the densitometer scale reach the marks drawn (#2197).
+    #[test]
+    fn all_printers_marks_and_bleed_marks() {
+        let mut m = MarkPrefs::default();
+        assert!(!m.all());
+        m.set_all(true);
+        assert!(m.all());
+        let marks = m.marks();
+        assert!(marks.crop && marks.bleed && marks.registration);
+        assert!(marks.color_bars && marks.densitometer && marks.page_info);
+        m.bleed = false;
+        assert!(!m.all());
+        m.set_all(false);
+        assert!(!m.marks().any());
     }
 
     #[test]

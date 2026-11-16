@@ -27,6 +27,18 @@ pub(crate) const HISTORY_LEN: usize = 10;
 /// version being built.
 pub(crate) const RELEASES: &[Release] = &[
     Release {
+        version: "0.47.0",
+        date: "2026-11-16",
+        title: "welcome.news.v0_47_0_title",
+        body: "welcome.news.v0_47_0_body",
+    },
+    Release {
+        version: "0.46.0",
+        date: "2026-11-14",
+        title: "welcome.news.v0_46_0_title",
+        body: "welcome.news.v0_46_0_body",
+    },
+    Release {
         version: "0.45.2",
         date: "2026-11-13",
         title: "welcome.news.v0_45_2_title",
@@ -73,18 +85,6 @@ pub(crate) const RELEASES: &[Release] = &[
         date: "2026-11-08",
         title: "welcome.news.v0_42_1_title",
         body: "welcome.news.v0_42_1_body",
-    },
-    Release {
-        version: "0.42.0",
-        date: "2026-11-08",
-        title: "welcome.news.v0_42_title",
-        body: "welcome.news.v0_42_body",
-    },
-    Release {
-        version: "0.41.0",
-        date: "2026-11-06",
-        title: "welcome.news.v0_41_title",
-        body: "welcome.news.v0_41_body",
     },
 ];
 
@@ -253,7 +253,7 @@ fn start_buttons(app: &mut App, ui: &mut Ui) {
     ui.add_space(8.0);
     if big_button(
         ui,
-        icons::Action::Welcome,
+        icons::Action::Template,
         tr("welcome.new_from_template"),
         String::new(),
     ) {
@@ -272,8 +272,14 @@ fn start_buttons(app: &mut App, ui: &mut Ui) {
         }
     }
     ui.add_space(20.0);
+    // A touch screen without keys gets the gestures instead (#1691).
+    let hint = if crate::touch_modifiers::offered(ui.ctx()) {
+        "welcome.touch_hint"
+    } else {
+        "welcome.shortcuts_hint"
+    };
     ui.label(
-        egui::RichText::new(tr("welcome.shortcuts_hint"))
+        egui::RichText::new(tr(hint))
             .color(Tokens::text_dim())
             .size(11.0),
     );

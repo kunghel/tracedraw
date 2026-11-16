@@ -445,4 +445,162 @@ fn boundary_of_open_lines_is_one_solid_object() {
         .filter(|e| matches!(e, tracedraw_core::geometry::PathEl::MoveTo(_)))
         .count();
     assert_eq!(contours, 1, "one outer edge");
+    // No fill, an outline, as CorelDRAW draws a boundary (#2640).
+    assert!(matches!(s.fill, tracedraw_core::Fill::None), "{:?}", s.fill);
+    assert!(s.stroke.is_some(), "an outline");
+}
+
+/// Create Boundary around filled objects: an outline with no fill, so the
+/// objects stay in sight under it, as in CorelDRAW (#2640: it took the
+/// target's fill and covered them); the target's outline is kept.
+#[test]
+fn boundary_has_no_fill() {
+    let build = |app: &mut App| {
+        let mut ids = Vec::new();
+        for x in [0.0, 30.0] {
+            let id = app
+                .new_shape(ShapeKind::Rect {
+                    rect: tracedraw_core::geometry::Rect::new(x, 0.0, x + 40.0, 40.0),
+                    radius: 0.0,
+                    corners: None,
+                })
+                .expect("square");
+            app.engine
+                .run(&tracedraw_core::Command::SetFill {
+                    shapes: vec![id],
+                    fill: tracedraw_core::Fill::Solid(tracedraw_core::Color::rgb8(200, 0, 0)),
+                })
+                .expect("fill");
+            ids.push(id);
+        }
+        ids
+    };
+    let (_, made, _) = run(&build, Shaping::Boundary, &as_built).expect("a boundary");
+    assert_eq!(made.len(), 1);
+    assert!(
+        matches!(made[0].fill, tracedraw_core::Fill::None),
+        "{:?}",
+        made[0].fill
+    );
+    assert!(made[0].stroke.is_some(), "an outline");
+}
+
+/// The objects of `group` (one level), in their order.
+fn children_of(app: &App, group: ShapeId) -> Vec<Shape> {
+    match &app.doc().find_shape(group).expect("group").kind {
+        ShapeKind::Group { children } => children.clone(),
+        other => panic!("not a group: {other:?}"),
+    }
+}
+
+/// A group of two overlapping squares and a third one apart, the group
+/// moved off its place (its own transform), on a layer with an object
+/// above it.
+fn grouped_squares(app: &mut App) -> (ShapeId, [ShapeId; 3], ShapeId) {
+    let a = rect(app, 0.0, 0.0, 20.0, 20.0);
+    let b = rect(app, 10.0, 10.0, 30.0, 30.0);
+    let c = rect(app, 50.0, 0.0, 60.0, 10.0);
+    app.select(vec![a, b, c]);
+    app.group_selection();
+    let group = app.selection[0];
+    app.select(vec![group]);
+    app.transform_selection(tracedraw_core::geometry::Affine::translate((5.0, 7.0)));
+    let above = rect(app, 200.0, 200.0, 210.0, 210.0);
+    (group, [a, b, c], above)
+}
+
+/// Weld, Trim, Intersect, the Minus operations and Boundary on two
+/// objects of a group (selected inside it) leave the result in the group,
+/// where the objects were, the group's other object kept; the result is
+/// where the objects were on the page (#2640).
+#[test]
+fn shaping_objects_of_a_group_leaves_the_result_in_the_group() {
+    for (op, area) in [
+        (Shaping::Trim, 400.0 - 100.0),
+        (Shaping::Intersect, 100.0),
+        (Shaping::FrontMinusBack, 400.0 - 100.0),
+        (Shaping::BackMinusFront, 400.0 - 100.0),
+        (Shaping::Weld, 700.0),
+        (Shaping::Boundary, 700.0),
+    ] {
+        let mut app = App::headless();
+        let (group, [a, b, c], above) = grouped_squares(&mut app);
+        let layer_before = top_ids(&app);
+        app.select(vec![a, b]);
+        app.shaping(op);
+        assert_eq!(
+            top_ids(&app),
+            layer_before,
+            "{op:?}: nothing added to the layer"
+        );
+        let kids = children_of(&app, group);
+        assert!(
+            kids.iter().any(|k| k.id == c),
+            "{op:?}: the third object stays"
+        );
+        // What was made (Trim keeps its cutter, as on a layer).
+        let made: Vec<&Shape> = kids.iter().filter(|k| ![a, b, c].contains(&k.id)).collect();
+        assert!(!made.is_empty(), "{op:?}: {kids:?}");
+        let ids: Vec<ShapeId> = made.iter().map(|k| k.id).collect();
+        // The result as it shows on the page: the group's move counts.
+        let placed = app.doc().shape_on_page(made[0].id).expect("placed");
+        let got: f64 = made
+            .iter()
+            .map(|k| shape_area(&app.doc().shape_on_page(k.id).expect("placed")))
+            .sum();
+        assert!(near(got, area, 1.0), "{op:?}: area {got}");
+        let bb = placed.bounds();
+        assert!(
+            bb.x0 >= 4.0 && bb.y0 >= 6.0 && bb.x1 <= 36.0,
+            "{op:?}: {bb:?}"
+        );
+        // The selection is the result, and the object above stays above.
+        assert_eq!(app.selection, ids, "{op:?}");
+        assert_eq!(top_ids(&app).last(), Some(&above), "{op:?}");
+        // One undo step brings the two objects back.
+        app.undo();
+        let back: Vec<ShapeId> = children_of(&app, group).iter().map(|k| k.id).collect();
+        assert_eq!(back, vec![a, b, c], "{op:?}");
+    }
+}
+
+/// Combine on objects of a group (selected inside it) makes one curve of
+/// them inside the group, where they were; the group keeps its other
+/// object (#2640: Combine did nothing inside a group).
+#[test]
+fn combine_inside_a_group_keeps_the_result_in_the_group() {
+    let mut app = App::headless();
+    let (group, [a, b, c], above) = grouped_squares(&mut app);
+    let layer_before = top_ids(&app);
+    app.select(vec![a, b]);
+    app.combine();
+    assert_eq!(top_ids(&app), layer_before);
+    let kids = children_of(&app, group);
+    assert_eq!(kids.len(), 2, "{kids:?}");
+    assert_eq!(kids[1].id, c, "the third object stays above");
+    let combined = app.doc().shape_on_page(kids[0].id).expect("placed");
+    let ShapeKind::Path { path, .. } = &combined.kind else {
+        panic!("{:?}", combined.kind);
+    };
+    let subpaths = path
+        .elements()
+        .iter()
+        .filter(|e| matches!(e, tracedraw_core::geometry::PathEl::MoveTo(_)))
+        .count();
+    assert_eq!(subpaths, 2);
+    let bb = combined.bounds();
+    assert!(
+        (bb.x0 - 5.0).abs() < 1e-6 && (bb.y0 - 7.0).abs() < 1e-6,
+        "{bb:?}"
+    );
+    assert!(
+        (bb.x1 - 35.0).abs() < 1e-6 && (bb.y1 - 37.0).abs() < 1e-6,
+        "{bb:?}"
+    );
+    assert_eq!(app.selection, vec![kids[0].id]);
+    assert_eq!(top_ids(&app).last(), Some(&above));
+    let _ = (a, b);
+    app.undo();
+    let back: Vec<ShapeId> = children_of(&app, group).iter().map(|k| k.id).collect();
+    assert_eq!(back, vec![a, b, c]);
 }

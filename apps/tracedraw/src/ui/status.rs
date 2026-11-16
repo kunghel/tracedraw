@@ -124,19 +124,22 @@ pub fn object_info(app: &App) -> String {
             let mut kind = match &s.kind {
                 ShapeKind::Path { .. } => tr("kind.curve"),
                 // A bitmap with its colour mode (#1254); a grayscale PNG
-                // is a grayscale picture (#1777).
+                // is a grayscale picture (#1777), an indexed one indexed
+                // (#2607), one marked Lab a Lab picture (#2605).
                 k @ ShapeKind::Bitmap { png, .. } => trf(
                     "status.bitmap_mode",
                     &[
                         ("k", &kind_name(k)),
                         (
                             "mode",
-                            &tr(if s.cmyk_bitmap {
-                                "convert_colors.cmyk"
-                            } else if crate::bitmap_fx::png_is_gray(png) {
-                                "convert_colors.gray"
-                            } else {
-                                "convert_colors.rgb"
+                            &tr(match crate::bitmap_fx::mode_of(s.cmyk_bitmap, png) {
+                                crate::bitmap_fx::ColorMode::Cmyk => "convert_colors.cmyk",
+                                crate::bitmap_fx::ColorMode::Grayscale => "convert_colors.gray",
+                                crate::bitmap_fx::ColorMode::Paletted => {
+                                    "dialog.convert_mode_paletted"
+                                }
+                                crate::bitmap_fx::ColorMode::Lab => "convert_colors.lab",
+                                crate::bitmap_fx::ColorMode::Rgb => "convert_colors.rgb",
                             }),
                         ),
                     ],

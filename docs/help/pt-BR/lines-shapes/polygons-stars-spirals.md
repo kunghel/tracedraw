@@ -77,6 +77,14 @@ história em quadrinhos: um grupo de **linhas** (2 a 500, 12 de início)
 **paralelas** (de início) ou **radiais**. Os comprimentos variam, mas a mesma
 caixa sempre dá as mesmas linhas.
 
+## Balão de fala {#speech-balloons}
+
+[[tool.balloon]]: Desenha balões de fala para quadrinhos: corpo e rabicho numa só curva, o rabicho arrastado para apontar para qualquer um.
+
+1. Escolha o estilo na barra de propriedades: Fala, Pensamento, Sussurro, Grito ou Legenda.
+2. Arraste uma caixa: o balão a preenche, com o rabicho soldado numa só curva.
+3. Arraste o losango na ponta do rabicho para apontá-lo para alguém; ajuste a largura e a curva na barra.
+
 ## Papel milimetrado {#graph-paper}
 
 A ferramenta [[tool.graph_paper]] (<kbd>D</kbd>) desenha uma grade de células:

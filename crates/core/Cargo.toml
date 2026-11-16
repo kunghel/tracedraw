@@ -12,6 +12,10 @@ serde_json.workspace = true
 thiserror.workspace = true
 base64 = "0.22"
 i_overlay = "9"
+png = "0.18"
+flate2 = "1"
+zune-jpeg = "0.5"
+zune-core = { version = "0.5", default-features = false }
 
 [features]
 # Hand-assembled ICC profiles, for the tests of other crates.

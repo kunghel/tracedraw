@@ -154,14 +154,31 @@ impl SelectionSteps {
     }
 }
 
+/// Whether `s` is locked or holds a locked object (in a group or a
+/// clip frame, however deep).
+pub fn holds_locked(s: &Shape) -> bool {
+    s.locked
+        || match &s.kind {
+            ShapeKind::Group { children } => children.iter().any(holds_locked),
+            ShapeKind::ClipFrame { frame, contents } => {
+                holds_locked(frame) || contents.iter().any(holds_locked)
+            }
+            _ => false,
+        }
+}
+
 impl App {
-    /// The objects Select All takes: those of the current page's unlocked
-    /// layers (the contents only while a clip frame's are edited).
+    /// The objects Select All takes: those of the current page's
+    /// unlocked layers neither locked nor holding a locked object (the
+    /// contents only while a clip frame's are edited).
     pub fn selectable_ids(&self) -> Vec<ShapeId> {
         self.page_layers()
             .into_iter()
             .filter(|l| !l.locked)
             .flat_map(|l| &l.shapes)
+            // A locked object is never taken, nor a group holding one,
+            // which would carry it along (#2901).
+            .filter(|s| !holds_locked(s))
             .map(|s| s.id)
             .filter(|id| !self.outside_clip_edit(*id))
             .collect()
@@ -173,7 +190,7 @@ impl App {
             .into_iter()
             .filter(|l| !l.locked)
             .flat_map(|l| &l.shapes)
-            .filter(|s| !self.outside_clip_edit(s.id))
+            .filter(|s| !holds_locked(s) && !self.outside_clip_edit(s.id))
             .collect()
     }
 
@@ -817,5 +834,70 @@ mod tests {
         assert_eq!(app.repeat_on_similar(Similar::Fill), 2);
         assert_eq!(fill_of(app, s.red_b), fill_of(app, s.red_a));
         assert_ne!(fill_of(app, s.red_b), Some(red()));
+    }
+
+    /// Ctrl+A (Select All), Invert Selection, a click, Shift+click, a
+    /// marquee and the Objects docker take no locked object, and no group
+    /// or clip frame holding one, which a move would carry along (#2901).
+    #[test]
+    fn select_all_skips_locked_objects_and_groups_holding_one() {
+        use tracedraw_core::geometry::Point;
+        let mut app = App::headless();
+        let free = rect(&mut app, 0.0, red(), None);
+        let locked = rect(&mut app, 20.0, red(), None);
+        let a = rect(&mut app, 40.0, blue(), None);
+        let b = rect(&mut app, 60.0, blue(), None);
+        let frame = rect(&mut app, 80.0, red(), None);
+        let inside = ellipse(&mut app, 82.0, blue());
+        app.select(vec![locked]);
+        app.set_locked(true);
+        // A group whose child is then locked (Objects docker).
+        app.select(vec![a, b]);
+        app.group_selection();
+        let group = app.selection[0];
+        // A clip frame whose contents are then locked.
+        app.place_inside(vec![inside], frame);
+        let clip = frame;
+        for id in [a, inside] {
+            app.run(tracedraw_core::Command::SetLocked {
+                shapes: vec![id],
+                locked: true,
+            });
+        }
+        // Ctrl+A and Invert Selection.
+        app.select(Vec::new());
+        app.select_all();
+        assert_eq!(app.selection, vec![free]);
+        app.select(Vec::new());
+        app.invert_selection();
+        assert_eq!(app.selection, vec![free]);
+        // A click on the group, Shift+click on the clip frame, the docker
+        // picking them, a marquee round everything: still only `free`.
+        app.select(Vec::new());
+        app.click_select(Point::new(65.0, 15.0), Default::default());
+        assert!(app.selection.is_empty(), "click took {:?}", app.selection);
+        app.select(vec![free]);
+        app.select_add(clip);
+        app.select_add(group);
+        assert_eq!(app.selection, vec![free]);
+        app.select(vec![group, clip, locked, free]);
+        assert_eq!(app.selection, vec![free]);
+        app.select(Vec::new());
+        app.select_in_region(
+            crate::select_region::Region::Rect(Rect::new(-50.0, -50.0, 300.0, 300.0)),
+            false,
+            false,
+        );
+        assert_eq!(app.selection, vec![free]);
+        // Unlocked again, every one comes back.
+        app.run(tracedraw_core::Command::SetLocked {
+            shapes: vec![locked, a, inside],
+            locked: false,
+        });
+        app.select_all();
+        assert_eq!(
+            sorted(app.selection.clone()),
+            sorted(vec![free, locked, group, clip])
+        );
     }
 }

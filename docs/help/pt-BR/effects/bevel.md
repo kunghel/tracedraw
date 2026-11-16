@@ -13,6 +13,7 @@ painel [[docker.bevel]]; abra-o com [[menu.effects > menu.effects.bevel]].
    - [[docker.soft_edge]]: a borda desce para dentro do objeto, iluminada de um
      lado e sombreada do outro;
    - [[docker.emboss]]: o objeto parece saltar da página.
+   - [[docker.bevel_center]]: A faixa do bisel metade dentro e metade fora do contorno.
 3. Defina o visual do chanfro:
    - [[docker.depth]]: até onde o chanfro chega a partir da borda, para
      dentro do objeto na borda suave e para fora no relevo;
@@ -21,6 +22,7 @@ painel [[docker.bevel]]; abra-o com [[menu.effects > menu.effects.bevel]].
      suavemente da borda para dentro;
    - [[docker.light_angle]]: a direção de onde vem a luz;
    - [[docker.intensity]]: a força da luz e da sombra;
+   - [[docker.bevel_smooth_light]]: A luz cai ao redor da borda pela direção, cada parte tão iluminada quanto está voltada para a luz, em vez de duas metades.
    - [[docker.light_color]] e [[docker.shadow_color]]: as cores do lado
      iluminado e do lado sombreado;
    - [[docker.emboss_color]]: a cor a partir da qual o chanfro é

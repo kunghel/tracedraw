@@ -89,3 +89,23 @@ conteúdo dentro dela some ao longo da faixa. Bitmaps e grupos não são
 apagados. Os padrões da borracha
 ficam na página [[tool.eraser]] das opções de ferramentas; veja
 [Opções das ferramentas](../customize/tool-options.md#eraser).
+
+## Criador de formas {#shape-builder}
+
+A ferramenta [[tool.shape_builder]] monta uma forma nova com as partes em
+que objetos sobrepostos se cortam, arrastando sobre elas.
+
+1. Selecione os objetos sobrepostos (retângulos, elipses, polígonos e
+   curvas fechadas; com nada selecionado, um clique com a ferramenta
+   seleciona).
+2. Escolha a ferramenta [[tool.shape_builder]]. A parte sob o ponteiro fica
+   hachurada: um lugar dentro dos mesmos objetos e fora dos outros.
+3. Arraste sobre as partes que quer num só objeto. Cada parte se destaca ao
+   ser cruzada. Ao soltar, as partes viram um objeto novo com o
+   preenchimento e o contorno do objeto da frente sobre a primeira parte, e
+   são recortadas dos objetos de onde vieram. Um objeto que fica sem nada é
+   apagado.
+
+Segure <kbd>Alt</kbd> ao arrastar para remover as partes: elas são
+recortadas e nada novo é criado. Um clique numa parte a torna um objeto à
+parte. Os objetos continuam selecionados, com o novo, para seguir montando.

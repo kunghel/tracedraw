@@ -1284,6 +1284,39 @@ mod tests {
     }
 
     #[test]
+    fn imported_gaussian_blur_is_listed_editable_and_cached() {
+        let (doc, _) = tracedraw_cdr::open_bytes(
+            include_bytes!("../../../../crates/cdr/tests/fixtures/gaussian-blur.cdr"),
+            "Gaussian control",
+        )
+        .unwrap();
+        let id = doc
+            .all_layers()
+            .flat_map(|l| &l.shapes)
+            .find(|s| s.raster_fx.is_some())
+            .unwrap()
+            .id;
+        let mut app = crate::app::App::headless();
+        app.engine.replace(doc);
+        app.select(vec![id]);
+        assert_eq!(app.bitmap_effects(id)[0].params["radius"], 15.0);
+        app.sync_raster_fx();
+        let before = app.doc().find_shape(id).unwrap().raster_fx.clone().unwrap();
+        assert!(!before.png.is_empty());
+        app.sync_raster_fx();
+        assert_eq!(
+            app.doc().find_shape(id).unwrap().raster_fx.as_ref(),
+            Some(&before)
+        );
+        app.edit_bitmap_effects(id, "Edit Effect", |effects| {
+            effects[0].params.insert("radius".into(), 5.0);
+        });
+        assert_eq!(app.bitmap_effects(id)[0].params["radius"], 5.0);
+        app.undo();
+        assert_eq!(app.bitmap_effects(id)[0].params["radius"], 15.0);
+    }
+
+    #[test]
     fn bitmap_effects_on_a_vector_object_draw_its_picture() {
         let (mut app, id) = red_rect_app();
         assert_eq!(pixel_at(&app, 40.0, 30.0)[..3], [220, 20, 20]);

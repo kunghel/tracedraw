@@ -193,6 +193,22 @@ pub fn edit_model(c: Color) -> &'static str {
 /// (it prints on every separation), after the models.
 pub const REGISTRATION: &str = "Registration";
 
+/// The Model list's entry that keeps the colour in RGB and shows it by
+/// its hexadecimal code, typed or pasted, without sliders (#2606).
+pub const HEX: &str = "HEX";
+
+/// Where Model list `id` keeps that HEX was chosen.
+fn hex_choice_id(id: Id) -> Id {
+    id.with("hex_view")
+}
+
+/// Whether Model list `id` shows `c` as HEX: chosen there, over an RGB
+/// colour. The sliders give way to the code then (#2606).
+pub fn shows_hex(ctx: &egui::Context, id: Id, c: Color) -> bool {
+    matches!(c, Color::Rgb { .. })
+        && ctx.data(|d| d.get_temp::<bool>(hex_choice_id(id))) == Some(true)
+}
+
 /// The entry the Model list shows as chosen for `c`.
 pub fn list_model(c: Color) -> &'static str {
     match c {
@@ -211,11 +227,16 @@ pub fn choose_model(c: Color, choice: &str) -> Color {
     }
 }
 
-/// The Model list (the docker's models, then the registration colour).
-/// True when a choice changed the colour.
+/// The Model list (the docker's models, HEX, then the registration
+/// colour). True when a choice changed the colour.
 pub fn model_list(ui: &mut Ui, id: Id, c: &mut Color) -> bool {
-    let shown = list_model(*c);
+    let shown = if shows_hex(ui.ctx(), id, *c) {
+        HEX
+    } else {
+        list_model(*c)
+    };
     let mut changed = false;
+    let mut hex_choice = None;
     crate::ui::keynav::ComboBox::from_id_salt(id)
         .selected_text(if shown == REGISTRATION {
             tr("docker.registration")
@@ -227,8 +248,21 @@ pub fn model_list(ui: &mut Ui, id: Id, c: &mut Color) -> bool {
             for m in crate::ui::color_docker::MODELS {
                 if ui.selectable_label(shown == m, m).clicked() && shown != m {
                     *c = choose_model(*c, m);
+                    hex_choice = Some(false);
                     changed = true;
                 }
+            }
+            // HEX: the colour in RGB, read and typed as its code (#2606).
+            if ui
+                .selectable_label(shown == HEX, HEX)
+                .rich_tip(crate::ui::tips::keyed("docker.hex_color"))
+                .clicked()
+                && shown != HEX
+            {
+                let rgb = c.convert_to("RGB");
+                changed = rgb != *c;
+                *c = rgb;
+                hex_choice = Some(true);
             }
             ui.separator();
             let reg = shown == REGISTRATION;
@@ -239,9 +273,13 @@ pub fn model_list(ui: &mut Ui, id: Id, c: &mut Color) -> bool {
                 && !reg
             {
                 *c = choose_model(*c, REGISTRATION);
+                hex_choice = Some(false);
                 changed = true;
             }
         });
+    if let Some(on) = hex_choice {
+        ui.data_mut(|d| d.insert_temp(hex_choice_id(id), on));
+    }
     changed
 }
 
@@ -553,8 +591,16 @@ fn picker_popup(ui: &mut Ui, id: Id, swatch: Rect, c: &mut Color, clicked: bool)
                     });
                     let model = edit_model(*c);
                     let mut m = c.convert_to(model);
-                    if crate::ui::color_docker::sliders(ui, &mut m) {
+                    // HEX shows the code alone, in the field under (#2606).
+                    if !shows_hex(ui.ctx(), id.with("model"), *c)
+                        && crate::ui::color_docker::sliders(ui, &mut m)
+                    {
                         *c = m;
+                        changed = true;
+                    }
+                    // A code typed or pasted sets the colour (#2606).
+                    if hex_field(ui, id, c) {
+                        st.hue = viewer_point(*c).0;
                         changed = true;
                     }
                     ui.label(
@@ -598,12 +644,129 @@ fn picker_popup(ui: &mut Ui, id: Id, swatch: Rect, c: &mut Color, clicked: bool)
     changed
 }
 
+/// The colour's hexadecimal code, typed or pasted: "#364C9F", "364c9f"
+/// or "#36f" sets the colour when Enter is pressed or the field is left;
+/// anything else leaves it. While the field has the focus it keeps what
+/// is being typed; otherwise it shows the colour's code. A colour of
+/// another model than RGB takes the typed colour in its own model
+/// (#2606). True when the colour changed.
+pub fn hex_field(ui: &mut Ui, id: Id, c: &mut Color) -> bool {
+    let edit_id = id.with("hex");
+    let buffer_id = edit_id.with("text");
+    let focused = ui.memory(|m| m.has_focus(edit_id));
+    let mut text = if focused {
+        ui.data(|d| d.get_temp::<String>(buffer_id))
+            .unwrap_or_else(|| c.to_hex())
+    } else {
+        c.to_hex()
+    };
+    let r = ui
+        .horizontal(|ui| {
+            ui.label(
+                egui::RichText::new(tr("docker.hex"))
+                    .color(Tokens::text_dim())
+                    .size(11.0),
+            );
+            ui.add(
+                egui::TextEdit::singleline(&mut text)
+                    .id(edit_id)
+                    .desired_width(70.0)
+                    .char_limit(9)
+                    .font(egui::TextStyle::Monospace),
+            )
+            .rich_tip(crate::ui::tips::keyed("docker.hex_color"))
+        })
+        .inner;
+    let mut changed = false;
+    if r.lost_focus() {
+        ui.data_mut(|d| d.remove::<String>(buffer_id));
+        if let Some(typed) = Color::from_hex(&text) {
+            let model = edit_model(*c);
+            let nc = if model == typed.model_name() {
+                typed
+            } else {
+                typed.convert_to(model)
+            };
+            if nc.to_hex() != c.to_hex() || nc.model_name() != c.model_name() {
+                *c = nc;
+                changed = true;
+            }
+        }
+    } else if r.has_focus() {
+        ui.data_mut(|d| d.insert_temp(buffer_id, text));
+    }
+    changed
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn screen() -> Rect {
         Rect::from_min_size(Pos2::ZERO, Vec2::new(1400.0, 900.0))
+    }
+
+    /// The hexadecimal field takes a typed or pasted code: #364C9F sets an
+    /// RGB colour to 54, 76, 159 when Enter is pressed; a CMYK colour
+    /// takes it in CMYK; a code that does not read leaves the colour, and
+    /// the field shows the colour's code again (#2606).
+    #[test]
+    fn a_typed_hexadecimal_code_sets_the_colour() {
+        let ctx = crate::theme::ui_context();
+        let id = Id::new("hex_test");
+        let edit = id.with("hex");
+        let frame = |c: &mut Color, events: Vec<egui::Event>| -> bool {
+            let input = egui::RawInput {
+                screen_rect: Some(screen()),
+                events,
+                ..Default::default()
+            };
+            let mut changed = false;
+            let mut out = ctx.run_ui(input, |ui| {
+                changed |= hex_field(ui, id, c);
+            });
+            out.textures_delta.clear();
+            changed
+        };
+        let key = |k: egui::Key| egui::Event::Key {
+            key: k,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        };
+        let type_code = |c: &mut Color, code: &str| -> bool {
+            frame(c, Vec::new());
+            ctx.memory_mut(|m| m.request_focus(edit));
+            frame(c, Vec::new());
+            // Clear what the field holds, type the code, press Enter.
+            let mut clear = vec![key(egui::Key::End)];
+            clear.extend((0..10).map(|_| key(egui::Key::Backspace)));
+            let mut changed = frame(c, clear);
+            changed |= frame(c, vec![egui::Event::Text(code.into())]);
+            changed |= frame(c, vec![key(egui::Key::Enter)]);
+            changed |= frame(c, Vec::new());
+            changed
+        };
+        let mut c = Color::rgb8(255, 255, 255);
+        assert!(type_code(&mut c, "#364C9F"));
+        assert_eq!(c.to_rgb8(), [54, 76, 159]);
+        assert_eq!(c.model_name(), "RGB");
+        // Without the # and in small letters too.
+        assert!(type_code(&mut c, "ff8000"));
+        assert_eq!(c.to_rgb8(), [255, 128, 0]);
+        // A CMYK colour stays CMYK.
+        let mut k = Color::cmyk_pct(0.0, 0.0, 0.0, 100.0);
+        assert!(type_code(&mut k, "#364C9F"));
+        assert_eq!(k.model_name(), "CMYK");
+        assert_eq!(
+            k.to_hex(),
+            Color::rgb8(54, 76, 159).convert_to("CMYK").to_hex()
+        );
+        // A code that does not read changes nothing.
+        let before = c;
+        assert!(!type_code(&mut c, "#zz12"));
+        assert_eq!(c, before);
     }
 
     #[test]
@@ -716,6 +879,22 @@ mod tests {
         // Nonsense from a file does not panic.
         let odd = from_viewer(f32::NAN, f32::NAN, f32::INFINITY, "CMYK");
         assert!(matches!(odd, Color::Cmyk { .. }));
+    }
+
+    /// #2606: HEX in a picker's Model list keeps the colour in RGB and
+    /// shows it by its code; only over an RGB colour, and per list.
+    #[test]
+    fn the_model_list_offers_hex() {
+        let ctx = egui::Context::default();
+        let id = Id::new("hex_test_model");
+        let rgb = Color::rgb8(0x36, 0x4c, 0x9f);
+        assert!(!shows_hex(&ctx, id, rgb));
+        ctx.data_mut(|d| d.insert_temp(hex_choice_id(id), true));
+        assert!(shows_hex(&ctx, id, rgb));
+        assert!(!shows_hex(&ctx, Id::new("another"), rgb));
+        assert!(!shows_hex(&ctx, id, rgb.convert_to("CMYK")));
+        assert!(!crate::ui::color_docker::MODELS.contains(&HEX));
+        assert_eq!(rgb.convert_to("CMYK").convert_to("RGB").model_name(), "RGB");
     }
 
     /// The Model list offers the registration colour after the models, as

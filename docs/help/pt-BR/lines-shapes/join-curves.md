@@ -34,3 +34,21 @@ Você também pode unir dois nós de ponta de uma curva com a ferramenta
 [Moldar curvas com a ferramenta Forma](shape-tool.md#property-bar). Desenhar a
 partir da ponta de uma curva selecionada também a continua; veja
 [Continuar uma curva](lines.md#continue).
+
+## Ferramenta Unir {#join-tool}
+
+A ferramenta [[tool.join]], na caixa de ferramentas junto da ferramenta
+[[tool.shape]], une à mão os nós das pontas de curvas abertas.
+
+- Desenhe um traço sobre os nós das pontas: eles são unidos aos pares, na
+  ordem em que o traço os alcança. Duas pontas dentro da distância de seleção
+  uma da outra viram um nó no meio do caminho entre elas; pontas mais afastadas
+  são unidas por um segmento reto.
+- Clique em um nó da ponta (ele fica preenchido) e depois em outro para unir
+  os dois. Um clique fora solta o primeiro.
+- As duas pontas de uma mesma curva a fecham. Pontas de duas curvas formam uma
+  só curva, com o preenchimento e o contorno da curva da primeira ponta.
+
+Todas as uniões feitas por um traço são um único passo de desfazer. A
+ferramenta age sobre as curvas da página que estão visíveis e não bloqueadas,
+fora de grupos.

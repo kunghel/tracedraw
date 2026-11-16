@@ -57,6 +57,8 @@ pub struct Request {
     /// The preview copy's scale against the picture; the preview images
     /// come out at the copy's size.
     pub copy_scale: f32,
+    /// Trace a small picture enlarged first (see `upscale.rs`).
+    pub enlarge: bool,
 }
 
 /// The key of the Colors tab's colour edits of `s`.
@@ -567,8 +569,10 @@ fn run(req: Request, cancel: &AtomicBool, mut send: impl FnMut(Outcome), defer_f
     // What changes the trace; the colour edits are put on after.
     let settings = req.settings.traced_part();
     let stage = |img: &RgbaImage, stage: Stage, done: bool| -> Option<Outcome> {
-        let raw = trace::trace_unless(img, &settings, Some(cancel))?;
-        let stroke_px = trace::last_stroke_width_px();
+        // Enlarged first when asked: the curves come back at the
+        // picture's own pixels.
+        let (raw, stroke_px) =
+            crate::upscale::trace_unless(img, &settings, req.enlarge, Some(cancel))?;
         outcome(
             &req,
             stage,
@@ -606,6 +610,10 @@ fn run(req: Request, cancel: &AtomicBool, mut send: impl FnMut(Outcome), defer_f
         let stroke_px = trace::last_stroke_width_px();
         for t in &mut raw {
             t.path = map * t.path.clone();
+            if let Some(b) = t.blend.as_mut() {
+                b.from = map * b.from;
+                b.to = map * b.to;
+            }
         }
         let size = (
             ((w as f64 * scale).round() as u32).max(1),
@@ -658,6 +666,7 @@ mod tests {
             settings: trace::Preset::Logo.settings(),
             image: Arc::new(img),
             copy_scale,
+            enlarge: false,
         }
     }
 
@@ -784,6 +793,7 @@ mod tests {
             settings: trace::Preset::Logo.settings(),
             image: img.clone(),
             copy_scale: 0.5,
+            enlarge: false,
         };
         live.want(&ctx, req(), false);
         live.poll(&ctx);
@@ -832,6 +842,7 @@ mod tests {
             settings: trace::Preset::Logo.settings(),
             image: img.clone(),
             copy_scale: 1.0,
+            enlarge: false,
         };
         live.want(&ctx, req(4), false);
         live.poll(&ctx);
@@ -869,6 +880,7 @@ mod tests {
             settings: trace::Preset::Logo.settings(),
             image: img.clone(),
             copy_scale: 1.0,
+            enlarge: false,
         };
         live.want(&ctx, req(1), false);
         live.poll(&ctx);
@@ -927,6 +939,7 @@ mod tests {
             settings,
             image: img.clone(),
             copy_scale: 1.0,
+            enlarge: false,
         };
         let plain = trace::Preset::Logo.settings();
         live.want(&ctx, req(plain.clone()), false);
@@ -977,6 +990,7 @@ mod tests {
             settings,
             image: Arc::new(big),
             copy_scale: 0.3,
+            enlarge: false,
         };
         live.want(&ctx, req, false);
         live.poll(&ctx);

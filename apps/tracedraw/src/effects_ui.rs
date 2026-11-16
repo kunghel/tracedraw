@@ -15,6 +15,8 @@ pub struct BevelSettings {
     pub level: u8,
     /// The colour the band is toned from; `None` uses the object's fill.
     pub emboss_color: Option<Color>,
+    /// The light falls round the band by direction (#1144).
+    pub directional: bool,
 }
 
 impl Default for BevelSettings {
@@ -28,6 +30,7 @@ impl Default for BevelSettings {
             light_color: Color::WHITE,
             level: 1,
             emboss_color: None,
+            directional: true,
         }
     }
 }

@@ -8,6 +8,7 @@
 //! bottom-left corner of the page and the Y axis pointing up. Renderers flip to screen space as needed.
 
 #![allow(clippy::should_implement_trait)]
+pub mod bitmap_warp;
 pub mod bytes;
 pub mod color;
 pub mod color_convert;
@@ -26,6 +27,7 @@ pub mod fit;
 pub mod geometry;
 pub mod icc;
 pub mod id;
+pub mod jpeg_source;
 pub mod join;
 pub mod linked_text;
 pub mod live;
@@ -43,20 +45,21 @@ pub mod spreads;
 pub mod style;
 pub mod table;
 pub mod text_flow;
+pub mod toc;
 
 pub use bytes::SharedBytes;
 pub use color::Color;
 pub use command::Command;
 pub use document::{
-    default_tab_step, merge_equal_spans, normalized_tabs, set_default_tab_step, spans_apply,
-    spans_char_count, spans_delete, spans_insert, spans_text, split_spans_at, Baseline,
-    BitmapEffect, BitmapFxStack, ColorStyle, CornerKind, Corners, DefaultKind, DefaultProperties,
-    Document, DocumentFont, DocumentProfile, EllipseArc, FollowBlack, FontVariation, Layer,
-    LeadingUnit, LineStyle, MasterScope, Metadata, ObjectDefaults, ObjectStyle, Page,
-    ParagraphStyle, PathTextOrientation, PathTextVertical, QrCode, QrKind, Shadow, Shape,
-    ShapeKind, StyleParts, Symbol, TabKind, TabStop, Table, TableCell, TextAlign, TextOnPath,
-    TextPosition, TextSpan, TimeTracker, TrackedTask, VerticalAlign, VerticalColumns,
-    DEFAULT_TAB_STEP,
+    bullet_numbers, default_tab_step, merge_equal_spans, normalized_tabs, set_default_tab_step,
+    spans_apply, spans_char_count, spans_delete, spans_insert, spans_text, split_spans_at,
+    Baseline, BitmapEffect, BitmapFxStack, BulletStyle, ColorStyle, CornerKind, Corners,
+    DefaultKind, DefaultProperties, Document, DocumentFont, DocumentProfile, EllipseArc,
+    FollowBlack, FontVariation, Layer, LeadingUnit, LineStyle, MasterScope, Metadata, Numbering,
+    ObjectDefaults, ObjectStyle, Page, ParagraphStyle, PathTextOrientation, PathTextVertical,
+    QrCode, QrKind, Shadow, Shape, ShapeKind, StyleParts, Symbol, TabKind, TabStop, Table,
+    TableCell, TextAlign, TextDirection, TextOnPath, TextPosition, TextSpan, TimeTracker,
+    TrackedTask, VerticalAlign, VerticalColumns, DEFAULT_TAB_STEP,
 };
 pub use engine::Engine;
 pub use geometry::{Affine, BezPath, Point, Rect, Size, Vec2};

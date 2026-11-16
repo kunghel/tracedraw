@@ -49,11 +49,48 @@ impl App {
     /// Files dropped on the window this frame; where they were let go
     /// decides for all of them.
     pub fn take_dropped_files(&mut self, ctx: &egui::Context) {
-        if ctx.input(|i| i.raw.dropped_files.is_empty()) {
+        let now = ctx.input(|i| i.time);
+        let hovered: Vec<PathBuf> = ctx.input(|i| {
+            i.raw
+                .hovered_files
+                .iter()
+                .filter_map(|f| f.path.clone())
+                .collect()
+        });
+        let dropped: Vec<PathBuf> = ctx.input(|i| {
+            i.raw
+                .dropped_files
+                .iter()
+                .map(|f| f.path().to_path_buf())
+                .collect()
+        });
+        let lost = self
+            .file_drag
+            .step(&hovered, !dropped.is_empty(), drag_held(), now);
+        if self.file_drag.waiting() {
+            ctx.request_repaint_after(std::time::Duration::from_secs_f64(LOST_DROP_WAIT + 0.05));
+        }
+        if !lost.is_empty() {
+            self.drop_lost(ctx, &lost);
+        }
+        if dropped.is_empty() || self.file_drag.late_drop(&dropped, now) {
             return;
         }
         let on = self.drop_on(drop_pointer(ctx));
         crate::files::take_dropped(ctx, self, move |app, path| app.drop_file(&path, on));
+    }
+
+    /// Files let go over the window whose drop never reached the program
+    /// (#2686): what a drop at the cursor would do, done. Let go outside
+    /// the window, they were taken away and nothing happens.
+    fn drop_lost(&mut self, ctx: &egui::Context, files: &[PathBuf]) {
+        let Some(p) = drop_pointer(ctx).filter(|p| ctx.content_rect().contains(*p)) else {
+            return;
+        };
+        let on = self.drop_on(Some(p));
+        for path in files {
+            self.drop_file(path, on);
+        }
     }
 
     /// A drawing is open and shown (not the Welcome Screen); without one
@@ -202,7 +239,7 @@ impl App {
     pub fn draw_drop_hint(&self, ctx: &egui::Context) {
         let hovered: Vec<Option<PathBuf>> =
             ctx.input(|i| i.raw.hovered_files.iter().map(|f| f.path.clone()).collect());
-        if hovered.is_empty() || !drag_held() {
+        if hovered.is_empty() || !drag_held() || !self.file_drag.showing() {
             return;
         }
         let on = self.drop_on(drop_pointer(ctx));
@@ -240,6 +277,95 @@ impl App {
             egui::Color32::WHITE,
         );
         ctx.request_repaint();
+    }
+}
+
+/// How long, seconds, the buttons are up over files still listed as
+/// hovered before their drop counts as lost (#2686).
+pub const LOST_DROP_WAIT: f64 = 0.5;
+
+/// A file drag over the window (#2686). On Windows the drop, or the drag
+/// leaving, can fail to reach the program: the files then stayed listed
+/// as hovered, nothing was imported, and the drop frame came back over
+/// the window at every later click or drag, as if TraceDraw were still
+/// waiting for the drop. A file drag is made with a mouse button held, so
+/// once every button has been up for [`LOST_DROP_WAIT`] with the same
+/// files still hovered, the drag is over: the files count as let go
+/// where the cursor is (inside the window; outside it nothing happens),
+/// and the frame stays away until another drag. A drop that comes in
+/// after all is not taken twice. Elsewhere the buttons count as held
+/// while files hover (the windowing layer's leave and drop are trusted),
+/// so nothing changes there.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct FileDrag {
+    /// The files of the drag going on.
+    files: Vec<PathBuf>,
+    /// When every button was found up during it, seconds.
+    released: Option<f64>,
+    /// The drag is over: its drop came, or counts as lost.
+    over: bool,
+    /// The files last let go for a lost drop, and when.
+    lost: Option<(Vec<PathBuf>, f64)>,
+}
+
+impl FileDrag {
+    /// One frame: the files hovered (with their paths), whether files were
+    /// dropped, whether a mouse button is held, the time. Gives the files
+    /// whose drop is lost, once.
+    pub fn step(
+        &mut self,
+        hovered: &[PathBuf],
+        dropped: bool,
+        held: bool,
+        now: f64,
+    ) -> Vec<PathBuf> {
+        if dropped || hovered.is_empty() {
+            self.files.clear();
+            self.released = None;
+            self.over = false;
+            return Vec::new();
+        }
+        if hovered != self.files.as_slice() {
+            self.files = hovered.to_vec();
+            self.released = None;
+            self.over = false;
+        }
+        if self.over {
+            return Vec::new();
+        }
+        if held {
+            self.released = None;
+            return Vec::new();
+        }
+        let at = *self.released.get_or_insert(now);
+        if now - at < LOST_DROP_WAIT {
+            return Vec::new();
+        }
+        self.over = true;
+        self.lost = Some((self.files.clone(), now));
+        self.files.clone()
+    }
+
+    /// The drop frame shows: a drag goes on with a button held.
+    pub fn showing(&self) -> bool {
+        !self.over && self.released.is_none()
+    }
+
+    /// The buttons are up and the drop is awaited a moment longer.
+    pub fn waiting(&self) -> bool {
+        !self.over && self.released.is_some()
+    }
+
+    /// `dropped` are the files of a lost drop, coming in late: not taken
+    /// again.
+    pub fn late_drop(&mut self, dropped: &[PathBuf], now: f64) -> bool {
+        match &self.lost {
+            Some((files, at)) if files.as_slice() == dropped && now - at < 10.0 => {
+                self.lost = None;
+                true
+            }
+            _ => false,
+        }
     }
 }
 
@@ -629,5 +755,74 @@ mod tests {
         assert!(app.status.contains("notes.zip"), "{}", app.status);
         // Files held over the window keep it painting the hint.
         assert!(ctx.has_requested_repaint());
+    }
+
+    /// #2686: on Windows a drop (or the drag leaving) could fail to reach
+    /// the program; the files stayed listed as hovered and the drop frame
+    /// came back at every later click. Once the buttons have been up a
+    /// moment with the same files hovered, the drag is over: its files
+    /// count as let go, once, and the frame stays away; a drop coming in
+    /// late is not taken again.
+    #[test]
+    fn a_file_drag_whose_drop_is_lost_ends_once_the_buttons_are_up() {
+        let a = vec![PathBuf::from("a.svg")];
+        let mut d = FileDrag::default();
+        // Dragged over with the button held: the frame shows.
+        assert!(d.step(&a, false, true, 0.0).is_empty());
+        assert!(d.showing() && !d.waiting());
+        // Let go: the frame goes at once, the drop is awaited a moment.
+        assert!(d.step(&a, false, false, 1.0).is_empty());
+        assert!(!d.showing() && d.waiting());
+        assert!(d
+            .step(&a, false, false, 1.0 + LOST_DROP_WAIT / 2.0)
+            .is_empty());
+        // No drop came: the files count as let go, once.
+        assert_eq!(d.step(&a, false, false, 1.0 + LOST_DROP_WAIT), a);
+        assert!(d.step(&a, false, false, 3.0).is_empty());
+        // A later click or drag with the stale files listed shows no frame.
+        assert!(d.step(&a, false, true, 4.0).is_empty());
+        assert!(!d.showing() && !d.waiting());
+        // The real drop coming in late is not taken twice.
+        assert!(d.late_drop(&a, 4.5));
+        assert!(!d.late_drop(&a, 4.6));
+        // A drop that does come in time ends the drag as before.
+        let mut d = FileDrag::default();
+        d.step(&a, false, true, 0.0);
+        d.step(&a, false, false, 0.1);
+        assert!(d.step(&a, true, false, 0.2).is_empty());
+        assert!(d.step(&[], false, false, 5.0).is_empty());
+        // A button pressed again before the wait is out keeps it a drag.
+        let mut d = FileDrag::default();
+        d.step(&a, false, false, 0.0);
+        d.step(&a, false, true, 0.3);
+        assert!(d.step(&a, false, false, 0.6).is_empty());
+        assert!(d.waiting());
+        // Other files: a new drag.
+        let b = vec![PathBuf::from("b.png")];
+        assert!(d.step(&b, false, true, 0.7).is_empty());
+        assert!(d.showing());
+    }
+
+    /// #2686: the files of a lost drop let go over the drawing window are
+    /// imported there; let go outside the window nothing happens.
+    #[test]
+    fn a_lost_drop_over_the_drawing_imports_and_outside_does_nothing() {
+        let (ctx, mut app) = setup();
+        let dir = dir("lost");
+        let file = svg(&dir);
+        let inside = app.canvas_rect.center();
+        frame_at(&ctx, &mut app, Vec::new(), false, Some(inside));
+        let before = shape_count(&app);
+        app.drop_lost(&ctx, std::slice::from_ref(&file));
+        assert_eq!(shape_count(&app), before + 1, "imported into the drawing");
+        frame_at(
+            &ctx,
+            &mut app,
+            Vec::new(),
+            false,
+            Some(egui::pos2(-50.0, -50.0)),
+        );
+        app.drop_lost(&ctx, std::slice::from_ref(&file));
+        assert_eq!(shape_count(&app), before + 1, "nothing outside the window");
     }
 }

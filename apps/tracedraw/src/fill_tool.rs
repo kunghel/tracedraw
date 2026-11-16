@@ -653,6 +653,18 @@ impl App {
         });
     }
 
+    /// With the Transparency tool: gradient node `i` of the selected
+    /// object's mask takes a transparency of `pct` % (its grey), as the
+    /// node bar and the property bar set it (#2737). A run of changes
+    /// while the pointer stays down is one undo step (`begun`).
+    pub fn set_mask_node_transparency(&mut self, i: usize, pct: f64, begun: bool) {
+        if self.tool != crate::tools::Tool::Transparency {
+            return;
+        }
+        let grey = crate::ui::transparency_docker::transparency_gray(pct.clamp(0.0, 100.0));
+        self.set_fountain_node(i, Some(grey), None, None, begun);
+    }
+
     /// The node bar's transparency: uniform transparency of `amount` %
     /// on the selection, as the Properties docker's Transparency amount
     /// sets it (a run of changes is one undo step, #2507).
@@ -689,11 +701,22 @@ impl App {
     }
 
     /// A colour picked from a palette: with Interactive Fill and a colour
-    /// node picked, that node takes it; otherwise it fills the selection.
+    /// node picked, that node takes it; with the Transparency tool and a
+    /// node of the gradient transparency picked, that node takes the
+    /// colour's grey, its own transparency, and the object's fill stays
+    /// (#2827: the object took the colour as its fill); otherwise it
+    /// fills the selection.
     pub fn palette_fill(&mut self, c: tracedraw_core::Color) {
         if self.tool == crate::tools::Tool::InteractiveFill {
             if let Some((_, i)) = self.selected_fill_node() {
                 self.set_fountain_node(i, Some(c), None, None, false);
+                return;
+            }
+        }
+        if self.tool == crate::tools::Tool::Transparency {
+            if let Some((_, i)) = self.selected_fill_node() {
+                let pct = crate::ui::transparency_docker::gray_transparency(c);
+                self.set_mask_node_transparency(i, pct, false);
                 return;
             }
         }
@@ -702,11 +725,18 @@ impl App {
 
     /// A colour dropped at page point `p` with Interactive Fill: on a
     /// colour node it recolours it; on the fill's line it adds a node of
-    /// that colour there. False when it fell on neither.
+    /// that colour there. With the Transparency tool the node takes the
+    /// colour's grey, its transparency, and the object's fill stays
+    /// (#2827). False when it fell on neither.
     pub fn drop_on_fill_line(&mut self, c: tracedraw_core::Color, p: Point) -> bool {
-        if self.tool != crate::tools::Tool::InteractiveFill {
-            return false;
-        }
+        use crate::tools::Tool;
+        let c = match self.tool {
+            Tool::InteractiveFill => c,
+            Tool::Transparency => crate::ui::transparency_docker::transparency_gray(
+                crate::ui::transparency_docker::gray_transparency(c),
+            ),
+            _ => return false,
+        };
         if let Some(i) = self
             .fountain_handle_at(p)
             .and_then(|h| self.fountain_stop_of(h))
@@ -743,13 +773,16 @@ const NODE_BAR_RAIL: f32 = 70.0;
 /// the reference program shows it, the node's colour (a swatch that opens
 /// the colour picker) and the object's uniform transparency (0 % opaque,
 /// 100 % clear; the same value as the Properties docker's, #2507), in a
-/// compact bar. A node's own transparency is on the property bar.
-/// Hidden while a node is dragged. An edit made while the pointer stays
+/// compact bar. A node's own transparency is on the property bar. With
+/// the Transparency tool the bar holds the picked mask node's own
+/// transparency instead, and no colour (#2737). Hidden while a node is
+/// dragged. An edit made while the pointer stays
 /// down (a picker or slider drag) is one undo step. The dotted grip at its
 /// left drags it off the object; it keeps that offset from its node.
 pub fn node_bar(app: &mut App, ui: &mut egui::Ui) {
     use crate::tools::Tool;
-    if app.tool != Tool::InteractiveFill || !matches!(app.drag, crate::app::Drag::None) {
+    let mask = app.tool == Tool::Transparency;
+    if !(app.tool == Tool::InteractiveFill || mask) || !matches!(app.drag, crate::app::Drag::None) {
         return;
     }
     let Some((shape, f, b)) = app.selected_fountain() else {
@@ -769,13 +802,18 @@ pub fn node_bar(app: &mut App, ui: &mut egui::Ui) {
     let mut color = f.stops[i].color;
     // The object's uniform transparency, as the Properties docker shows
     // it (#2507); a mask transparency reads 0 here.
-    let mut transparency = app
-        .doc()
-        .find_shape(shape)
-        .map(crate::mixed::ShapeTransparency::of)
-        .filter(|t| t.kind <= 1)
-        .map(|t| t.amount.round())
-        .unwrap_or(0.0);
+    // With the Transparency tool the node's own transparency, its grey
+    // in the mask (#2737: the gradient's nodes had no such bar there).
+    let mut transparency = if mask {
+        crate::ui::transparency_docker::gray_transparency(color).round()
+    } else {
+        app.doc()
+            .find_shape(shape)
+            .map(crate::mixed::ShapeTransparency::of)
+            .filter(|t| t.kind <= 1)
+            .map(|t| t.amount.round())
+            .unwrap_or(0.0)
+    };
     let mut changed_color = false;
     let mut changed_opacity = false;
     let offset_id = id.with("offset");
@@ -789,7 +827,9 @@ pub fn node_bar(app: &mut App, ui: &mut egui::Ui) {
                 .show(ui, |ui| {
                     ui.horizontal(|ui| {
                         offset += crate::ui::color_picker::drag_strip(ui, egui::vec2(8.0, 18.0));
-                        changed_color = crate::ui::color_picker::color_button(ui, &mut color);
+                        if !mask {
+                            changed_color = crate::ui::color_picker::color_button(ui, &mut color);
+                        }
                         ui.label(
                             egui::RichText::new(crate::i18n::tr("toolbar.node_transparency"))
                                 .size(11.0),
@@ -811,6 +851,9 @@ pub fn node_bar(app: &mut App, ui: &mut egui::Ui) {
     ui.data_mut(|d| d.insert_temp(offset_id, offset));
     if changed_color {
         app.set_fountain_node(i, Some(color), None, None, begun);
+        ui.data_mut(|d| d.insert_temp(id, down));
+    } else if changed_opacity && mask {
+        app.set_mask_node_transparency(i, transparency, begun);
         ui.data_mut(|d| d.insert_temp(id, down));
     } else if changed_opacity {
         app.set_object_transparency(transparency);
@@ -839,6 +882,89 @@ mod tests {
 
     fn near(a: Point, b: Point) -> bool {
         (a - b).hypot() < 1e-6
+    }
+
+    /// #2827: with the Transparency tool and a node of the gradient
+    /// transparency picked, a palette colour gives that node the colour's
+    /// grey (white opaque, black clear); the other node and the object's
+    /// fill stay. The whole object took the colour as its fill.
+    #[test]
+    fn a_palette_colour_on_a_mask_node_sets_that_node_only() {
+        let mut app = App::headless();
+        let id = square(&mut app);
+        app.apply_fill(Fill::Solid(Color::cmyk_pct(0.0, 100.0, 100.0, 0.0)));
+        let settings = crate::effects_ui::TransparencySettings {
+            kind: 1,
+            mask: Fill::Fountain(tracedraw_core::Fountain::two(
+                tracedraw_core::FountainKind::Linear,
+                Color::WHITE,
+                Color::WHITE,
+                0.0,
+            )),
+            ..Default::default()
+        };
+        app.patch_transparency(&settings, &[crate::mixed::TransparencyField::Mask]);
+        app.set_tool(crate::tools::Tool::Transparency);
+        app.fill_node = Some(1);
+        let fill = app.doc().find_shape(id).expect("shape").fill.clone();
+        app.palette_fill(Color::BLACK);
+        let (_, f, _) = app.selected_fountain().expect("the mask");
+        let t = |i: usize| crate::ui::transparency_docker::gray_transparency(f.stops[i].color);
+        assert!(
+            (t(1) - 100.0).abs() < 0.5,
+            "the picked node is clear: {}",
+            t(1)
+        );
+        assert!(t(0).abs() < 0.5, "the other node stays opaque: {}", t(0));
+        assert_eq!(app.doc().find_shape(id).expect("shape").fill, fill);
+        // A colour dropped on the start node: that node takes its grey.
+        let (_, f, b) = app.selected_fountain().expect("the mask");
+        let start = fountain_handles(&f, b)[0].1;
+        assert!(app.drop_on_fill_line(Color::cmyk_pct(0.0, 0.0, 0.0, 50.0), start));
+        let (_, f, _) = app.selected_fountain().expect("the mask");
+        let t0 = crate::ui::transparency_docker::gray_transparency(f.stops[0].color);
+        assert!(t0 > 20.0 && t0 < 80.0, "{t0}");
+        assert_eq!(app.doc().find_shape(id).expect("shape").fill, fill);
+    }
+
+    /// With the Transparency tool a gradient mask's picked node takes a
+    /// transparency, its grey in the mask, in one undo step for a run of
+    /// changes; the fill stays as it was (#2737).
+    #[test]
+    fn a_mask_node_takes_a_transparency() {
+        let mut app = App::headless();
+        let id = square(&mut app);
+        app.apply_fill(Fill::Solid(Color::BLACK));
+        let settings = crate::effects_ui::TransparencySettings {
+            kind: 1,
+            mask: Fill::Fountain(tracedraw_core::Fountain::two(
+                tracedraw_core::FountainKind::Radial,
+                Color::WHITE,
+                Color::BLACK,
+                0.0,
+            )),
+            ..Default::default()
+        };
+        app.patch_transparency(&settings, &[crate::mixed::TransparencyField::Mask]);
+        app.set_tool(crate::tools::Tool::Transparency);
+        let depth = app.engine.history_labels().0.len();
+        app.set_mask_node_transparency(0, 40.0, false);
+        app.set_mask_node_transparency(0, 75.0, true);
+        assert_eq!(app.engine.history_labels().0.len(), depth + 1);
+        let (_, f, _) = app.selected_fountain().expect("the mask");
+        let t = crate::ui::transparency_docker::gray_transparency(f.stops[0].color);
+        assert!((t - 75.0).abs() < 0.5, "{t}");
+        let t = crate::ui::transparency_docker::gray_transparency(f.stops[1].color);
+        assert!((t - 100.0).abs() < 0.5, "the other node stays: {t}");
+        let s = app.doc().find_shape(id).expect("shape");
+        assert_eq!(s.fill, Fill::Solid(Color::BLACK));
+        // Other tools leave the mask alone.
+        app.set_tool(crate::tools::Tool::Pick);
+        app.set_mask_node_transparency(0, 10.0, false);
+        app.set_tool(crate::tools::Tool::Transparency);
+        let (_, f, _) = app.selected_fountain().expect("the mask");
+        let t = crate::ui::transparency_docker::gray_transparency(f.stops[0].color);
+        assert!((t - 75.0).abs() < 0.5, "{t}");
     }
 
     /// A linear fill shows its start, end and skew handle; the end turns

@@ -81,6 +81,24 @@ fields is checked and shown with the symbology's sample in its place
 (as typed when the symbology holds it, as Code 128 does), and changing
 the standard keeps it.
 
+Serial number (#2158): with records loaded, step 1 also has a Serial
+number list. None (the default) leaves the data as typed. Same on every
+record and Continue from record to record append a new field's
+`<Serial>` to the data (named "Serial", "Serial 2" and so on, whichever
+no field has), so the digits typed before it stay fixed; choosing None
+again takes it out. Start (1), Step (1, Continue only) and Digits (4,
+padded with zeros) set the number, and Records (0) makes that many
+records when the data has fewer. A line under them shows the data of
+the first two records, and the preview shows the first record's
+barcode. Finish adds the field to the merge data as a number field
+counting from Start by Step (by 0 for Same).
+
+Place Inside Frame (#1084): with the Print Merge panel's field kind set
+to Barcode, Place Inside Frame opens the wizard for the selected shapes
+(or the one clicked next); Finish puts a barcode inside each of them,
+scaled to fill nine tenths of the shape's box and centred, as the
+shape's contents. Print Merge makes it again there for every record.
+
 ## Checks
 
 - Known check characters: EAN-13 590123412345 gives 7, Code 39 CODE39

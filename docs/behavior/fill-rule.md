@@ -11,7 +11,10 @@ where the contours of its outline overlap.
   lettering made of overlapping pieces); a contour turning the other way
   is still a hole.
 
-Text always fills nonzero, whatever its object's rule.
+Text always fills nonzero, whatever its object's rule. So does the
+outline of a text bent by an effect (envelope, perspective, distortion) or
+fitted to a path once it becomes a curve: broken apart, or written to a
+`.cdr` file, where it goes out as a nonzero curve (#2733).
 
 ## Where it is set
 

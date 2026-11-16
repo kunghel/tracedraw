@@ -147,57 +147,96 @@ fn step_and_repeat_fields(
             .rich_tip(crate::ui::tips::keyed("docker.sr_copies"))
             .has_focus();
     });
-    ui.strong(tr("docker.horizontal_settings"));
-    ui.horizontal(|ui| {
-        ui.radio_value(&mut sr.mode_x, 0, tr("docker.offset"))
-            .rich_tip(crate::ui::tips::pair(
-                "docker.offset",
-                "docker.sr_offset_desc",
-            ));
-        ui.radio_value(&mut sr.mode_x, 1, tr("docker.spacing"))
-            .rich_tip(crate::ui::tips::pair(
-                "docker.spacing",
-                "docker.sr_spacing_desc",
-            ));
+    // Each axis can be turned off, so the copies go across only or up
+    // and down only, and each goes one way or the other (#2572).
+    ui.checkbox(
+        &mut sr.use_x,
+        egui::RichText::new(tr("docker.horizontal_settings")).strong(),
+    )
+    .rich_tip(crate::ui::tips::pair(
+        "docker.horizontal_settings",
+        "docker.sr_use_x_desc",
+    ));
+    let on = sr.use_x;
+    ui.add_enabled_ui(on, |ui| {
+        direction(ui, &mut sr.left, ("docker.sr_right", "docker.sr_left"));
     });
-    let mut dx = u.world_from_mm(sr.dx);
-    let r = ui
-        .add(
-            crate::ui::field::NumField::new(&mut dx)
-                .speed(0.5)
-                .suffix(format!(" {}", u.short())),
-        )
-        .rich_tip(crate::ui::tips::keyed("docker.sr_dx"));
-    focused |= r.has_focus();
-    if r.changed() {
-        sr.dx = u.world_to_mm(dx);
-    }
-    ui.strong(tr("docker.vertical_settings"));
-    ui.horizontal(|ui| {
-        ui.radio_value(&mut sr.mode_y, 0, tr("docker.offset"))
-            .rich_tip(crate::ui::tips::pair(
-                "docker.offset",
-                "docker.sr_offset_desc",
-            ));
-        ui.radio_value(&mut sr.mode_y, 1, tr("docker.spacing"))
-            .rich_tip(crate::ui::tips::pair(
-                "docker.spacing",
-                "docker.sr_spacing_desc",
-            ));
+    ui.add_enabled_ui(on, |ui| {
+        ui.horizontal(|ui| {
+            ui.radio_value(&mut sr.mode_x, 0, tr("docker.offset"))
+                .rich_tip(crate::ui::tips::pair(
+                    "docker.offset",
+                    "docker.sr_offset_desc",
+                ));
+            ui.radio_value(&mut sr.mode_x, 1, tr("docker.spacing"))
+                .rich_tip(crate::ui::tips::pair(
+                    "docker.spacing",
+                    "docker.sr_spacing_desc",
+                ));
+        });
+        let mut dx = u.world_from_mm(sr.dx);
+        let r = ui
+            .add(
+                crate::ui::field::NumField::new(&mut dx)
+                    .speed(0.5)
+                    .suffix(format!(" {}", u.short())),
+            )
+            .rich_tip(crate::ui::tips::keyed("docker.sr_dx"));
+        focused |= r.has_focus();
+        if r.changed() {
+            sr.dx = u.world_to_mm(dx);
+        }
     });
-    let mut dy = u.world_from_mm(sr.dy);
-    let r = ui
-        .add(
-            crate::ui::field::NumField::new(&mut dy)
-                .speed(0.5)
-                .suffix(format!(" {}", u.short())),
-        )
-        .rich_tip(crate::ui::tips::keyed("docker.sr_dy"));
-    focused |= r.has_focus();
-    if r.changed() {
-        sr.dy = u.world_to_mm(dy);
-    }
+    ui.checkbox(
+        &mut sr.use_y,
+        egui::RichText::new(tr("docker.vertical_settings")).strong(),
+    )
+    .rich_tip(crate::ui::tips::pair(
+        "docker.vertical_settings",
+        "docker.sr_use_y_desc",
+    ));
+    let on = sr.use_y;
+    ui.add_enabled_ui(on, |ui| {
+        direction(ui, &mut sr.up, ("docker.sr_down", "docker.sr_up"));
+    });
+    ui.add_enabled_ui(on, |ui| {
+        ui.horizontal(|ui| {
+            ui.radio_value(&mut sr.mode_y, 0, tr("docker.offset"))
+                .rich_tip(crate::ui::tips::pair(
+                    "docker.offset",
+                    "docker.sr_offset_desc",
+                ));
+            ui.radio_value(&mut sr.mode_y, 1, tr("docker.spacing"))
+                .rich_tip(crate::ui::tips::pair(
+                    "docker.spacing",
+                    "docker.sr_spacing_desc",
+                ));
+        });
+        let mut dy = u.world_from_mm(sr.dy);
+        let r = ui
+            .add(
+                crate::ui::field::NumField::new(&mut dy)
+                    .speed(0.5)
+                    .suffix(format!(" {}", u.short())),
+            )
+            .rich_tip(crate::ui::tips::keyed("docker.sr_dy"));
+        focused |= r.has_focus();
+        if r.changed() {
+            sr.dy = u.world_to_mm(dy);
+        }
+    });
     focused
+}
+
+/// The way the copies go along one axis: `keys` names the forward way
+/// (right, down) and the back one (left, up); `back` holds the choice.
+fn direction(ui: &mut Ui, back: &mut bool, keys: (&str, &str)) {
+    ui.horizontal(|ui| {
+        for (value, key) in [(false, keys.0), (true, keys.1)] {
+            ui.radio_value(back, value, tr(key))
+                .rich_tip(crate::ui::tips::pair(key, "docker.sr_direction_desc"));
+        }
+    });
 }
 
 /// A length field in the document's unit holding millimetres, at least
@@ -415,135 +454,7 @@ pub(crate) fn add_color_style(app: &mut App, c: Color) {
 }
 
 fn color_styles(app: &mut App, ui: &mut Ui) {
-    let styles = app.doc().color_styles.clone();
-    ui.horizontal(|ui| {
-        if ui
-            .button(tr("docker.new_from_selection"))
-            .rich_tip(crate::ui::tips::pair(
-                "docker.new_from_selection",
-                "docker.cs_new_from_selection_desc",
-            ))
-            .clicked()
-        {
-            let mut st = styles.clone();
-            for s in app.selected_shapes() {
-                if let Some(c) = s.fill.preview_color() {
-                    if !st.iter().any(|x| x.color == c) {
-                        st.push(tracedraw_core::ColorStyle {
-                            name: format!("Color {}", st.len() + 1),
-                            color: c,
-                            harmony: None,
-                        });
-                    }
-                }
-            }
-            app.run(Command::SetColorStyles { styles: st });
-        }
-        if ui
-            .button(tr("docker.new_color_style"))
-            .rich_tip(crate::ui::tips::keyed("docker.new_color_style"))
-            .clicked()
-        {
-            add_color_style(app, app.mixer_color);
-        }
-    });
-    let mut st = styles.clone();
-    let mut changed = false;
-    let mut remove = None;
-    for (i, cs) in st.iter_mut().enumerate() {
-        ui.horizontal(|ui| {
-            changed |= color_button(ui, &mut cs.color);
-            let field = egui::Id::new(("color_style_name", i));
-            let (_, typed) = kept_text(ui, field, i, &cs.name.clone(), |ui, text| {
-                ui.add(egui::TextEdit::singleline(text).desired_width(90.0))
-                    .rich_tip(crate::ui::tips::keyed("docker.cs_name"))
-            });
-            if let Some(name) = typed {
-                cs.name = name;
-                changed = true;
-            }
-            if ui
-                .small_button(tr("docker.fill"))
-                .rich_tip(crate::ui::tips::pair("docker.fill", "docker.cs_fill_desc"))
-                .clicked()
-            {
-                app.apply_fill(Fill::Solid(cs.color));
-            }
-            if ui
-                .small_button(tr("docker.outline"))
-                .rich_tip(crate::ui::tips::pair(
-                    "docker.outline",
-                    "docker.cs_outline_desc",
-                ))
-                .clicked()
-            {
-                app.apply_outline_color(Some(cs.color));
-            }
-            if ui
-                .small_button("x")
-                .rich_tip(crate::ui::tips::keyed("docker.cs_delete"))
-                .clicked()
-            {
-                remove = Some(i);
-            }
-        });
-    }
-    if let Some(i) = remove {
-        st.remove(i);
-        changed = true;
-    }
-    if changed {
-        // Objects using the old colour follow the style.
-        let mut cmds = vec![Command::SetColorStyles { styles: st.clone() }];
-        for (old, new) in styles.iter().zip(st.iter()) {
-            if old.color != new.color {
-                let ids: Vec<ShapeId> = app
-                    .doc()
-                    .all_layers()
-                    .flat_map(|l| &l.shapes)
-                    .filter(|s| s.fill == Fill::Solid(old.color))
-                    .map(|s| s.id)
-                    .collect();
-                if !ids.is_empty() {
-                    cmds.push(Command::SetFill {
-                        shapes: ids,
-                        fill: Fill::Solid(new.color),
-                    });
-                }
-            }
-        }
-        let _ = app.engine.run_batch("Color Styles", &cmds);
-    }
-    ui.separator();
-    ui.strong(tr("docker.harmony_editor"));
-    ui.horizontal_wrapped(|ui| {
-        for h in crate::palette::Harmony::ALL {
-            if ui
-                .button(tr(h.key()))
-                .rich_tip_with(|| format!("{}\n{}", tr(h.key()), tr(&format!("{}_desc", h.key()))))
-                .clicked()
-            {
-                let base = app.mixer_color;
-                let mut st = app.doc().color_styles.clone();
-                let name = tr(h.key());
-                for (k, c) in h.colors(base).into_iter().enumerate() {
-                    st.push(tracedraw_core::ColorStyle {
-                        name: format!("{name} {}", k + 1),
-                        color: c,
-                        harmony: Some(name.clone()),
-                    });
-                }
-                app.run(Command::SetColorStyles { styles: st });
-            }
-        }
-    });
-    ui.horizontal(|ui| {
-        ui.label(tr("docker.base_color"));
-        let mut c = app.mixer_color;
-        if color_button(ui, &mut c) {
-            app.mixer_color = c;
-        }
-    });
+    crate::ui::color_styles_docker::show(app, ui);
 }
 
 /// Object Styles: the default properties of new objects, then the styles
@@ -1070,6 +981,25 @@ fn find_properties(app: &mut App, ui: &mut Ui, st: &mut crate::ui::dialogs::Find
                 }
             });
             ui.end_row();
+            // Which characters take the new font (#2585).
+            ui.label("");
+            ui.add_enabled_ui(pf.set_font, |ui| {
+                ui.horizontal_wrapped(|ui| {
+                    use tracedraw_core::find::CharClass;
+                    for c in CharClass::ALL {
+                        let key = format!("find.chars_{}", c.key());
+                        ui.radio_value(&mut pf.font_chars, c, tr(&key))
+                            .rich_tip(crate::ui::tips::pair(&key, "find.chars_desc"));
+                    }
+                });
+            });
+            ui.end_row();
+            ui.checkbox(&mut pf.western_digits, tr("find.western_digits"))
+                .rich_tip(crate::ui::tips::pair(
+                    "find.western_digits",
+                    "find.western_digits_desc",
+                ));
+            ui.end_row();
         });
     let can_find = !pf.query().is_empty();
     let can_replace = can_find && !pf.replacement().is_empty();
@@ -1259,6 +1189,17 @@ fn scripts(app: &mut App, ui: &mut Ui) {
         {
             let src = app.script_source.clone();
             app.install_script_filter(&src);
+        }
+        // A script that defines TraceDrawPlugin: its commands go to
+        // Tools > Plugins (#1802).
+        if !vba
+            && ui
+                .button(tr("docker.install_plugin"))
+                .rich_tip(crate::ui::tips::keyed("docker.install_plugin"))
+                .clicked()
+        {
+            let src = app.script_source.clone();
+            app.install_plugin(&src);
         }
     });
     if !app.settings.script_filters.is_empty() {
@@ -1474,6 +1415,10 @@ fn lens(app: &mut App, ui: &mut Ui) {
             for (i, k) in keys.iter().enumerate() {
                 if ui.selectable_label(app.lens.kind == i, tr(k)).clicked() {
                     app.lens.kind = i;
+                    // Tinted grayscale starts black: plain grays (#2800).
+                    if i == 9 && app.lens.color == tracedraw_core::Color::WHITE {
+                        app.lens.color = tracedraw_core::Color::BLACK;
+                    }
                 }
             }
         })
@@ -1528,9 +1473,18 @@ fn lens(app: &mut App, ui: &mut Ui) {
                     "docker.lens_amount_desc",
                 ));
         }
-        9 | 11 => {
+        9 => {
             ui.horizontal(|ui| {
                 ui.label(tr("docker.color"));
+                color_button(ui, &mut l.color);
+            });
+        }
+        11 => {
+            // The objects beneath: their outlines and their insides (#2800).
+            ui.horizontal(|ui| {
+                ui.label(tr("docker.outline"));
+                color_button(ui, &mut l.color_to);
+                ui.label(tr("docker.fill"));
                 color_button(ui, &mut l.color);
             });
         }
@@ -2055,6 +2009,7 @@ fn bevel(app: &mut App, ui: &mut Ui) {
         light_color,
         level,
         emboss_color,
+        directional,
     }) = &cur
     {
         {
@@ -2067,6 +2022,7 @@ fn bevel(app: &mut App, ui: &mut Ui) {
                 light_color: *light_color,
                 level: *level,
                 emboss_color: *emboss_color,
+                directional: *directional,
             };
             app.bevel_synced_to = app.selection.first().copied();
         }
@@ -2084,10 +2040,14 @@ fn bevel(app: &mut App, ui: &mut Ui) {
     use crate::ui::tips::{keyed, pair};
     let b = &mut app.bevel;
     let mut changed = false;
-    // The style: two equal buttons across the panel.
+    // The style: three equal buttons across the panel.
     ui.horizontal(|ui| {
-        let w = (ui.available_width() - ui.spacing().item_spacing.x) / 2.0;
-        for (style, key) in [(0, "docker.soft_edge"), (1, "docker.emboss")] {
+        let w = (ui.available_width() - ui.spacing().item_spacing.x * 2.0) / 3.0;
+        for (style, key) in [
+            (0, "docker.soft_edge"),
+            (1, "docker.emboss"),
+            (2, "docker.bevel_center"),
+        ] {
             let pick = ui
                 .add_sized(
                     [w, 26.0],
@@ -2136,6 +2096,10 @@ fn bevel(app: &mut App, ui: &mut Ui) {
         .add(crate::ui::Slider::new(&mut b.intensity, 0.0..=100.0).text(tr("docker.intensity")))
         .rich_tip(pair("docker.intensity", "extrude.light_intensity_desc"))
         .changed();
+    changed |= ui
+        .checkbox(&mut b.directional, tr("docker.bevel_smooth_light"))
+        .rich_tip(keyed("docker.bevel_smooth_light"))
+        .changed();
     section(ui, None);
     row(ui, &tr("docker.light_color"), |ui| {
         changed |= color_button(ui, &mut b.light_color);
@@ -2171,9 +2135,12 @@ fn bevel(app: &mut App, ui: &mut Ui) {
         light_color: bv.light_color,
         level: bv.level,
         emboss_color: bv.emboss_color,
+        directional: bv.directional,
     };
     let has = !app.selection.is_empty();
-    if cur.is_some() && changed {
+    // Live: a change shows on the selection at once, also before Apply
+    // (#1034); Remove takes it away.
+    if has && changed {
         app.push_effect(effect.clone(), true);
     }
     ui.horizontal(|ui| {
@@ -2636,7 +2603,7 @@ pub fn hyperlink_field_id() -> egui::Id {
 /// elsewhere), the text typed when it differs from `stored`. `of` names
 /// what the field shows the text of (the object selected), so text typed
 /// for one object is never shown or stored for another.
-fn kept_text(
+pub(crate) fn kept_text(
     ui: &mut Ui,
     field: egui::Id,
     of: impl std::hash::Hash + std::fmt::Debug,
@@ -3201,11 +3168,13 @@ fn fit_to_path(app: &mut App, ui: &mut Ui) {
     let combo = |ui: &mut Ui, key: &str, id: &str, current: &str, add: &mut dyn FnMut(&mut Ui)| {
         ui.horizontal(|ui| {
             ui.label(tr(key));
-            crate::ui::keynav::ComboBox::from_id_salt(id)
+            let r = crate::ui::keynav::ComboBox::from_id_salt(id)
                 .selected_text(current)
                 .show_ui(ui, |ui| add(ui))
-                .response
-                .rich_tip(crate::ui::tips::pair(key, &format!("{key}_desc")));
+                .response;
+            let rect = r.rect;
+            r.rich_tip(crate::ui::tips::pair(key, &format!("{key}_desc")));
+            ui.ctx().data_mut(|d| d.insert_temp(fit_combo_id(id), rect));
         });
     };
     let radio = |ui: &mut Ui, on: bool, key: &str| -> bool {
@@ -3556,17 +3525,25 @@ fn fit_to_path(app: &mut App, ui: &mut Ui) {
         .iter()
         .find(|(o, _)| *o == f.order)
         .map_or(String::new(), |(_, k)| tr(k));
-    combo(
-        ui,
-        "docker.fit_to_path_order",
-        "fit_path_order",
-        &cur,
-        &mut |ui| {
-            for (o, k) in orders {
-                ui.selectable_value(&mut f.order, o, tr(k));
-            }
-        },
-    );
+    // The order sorts the objects fitted: one object (or one group) has
+    // none to change, so the list is greyed and says why (#2740).
+    let sortable = objects >= 2;
+    ui.add_enabled_ui(sortable, |ui| {
+        combo(
+            ui,
+            "docker.fit_to_path_order",
+            "fit_path_order",
+            &cur,
+            &mut |ui| {
+                for (o, k) in orders {
+                    ui.selectable_value(&mut f.order, o, tr(k));
+                }
+            },
+        );
+    });
+    if !sortable {
+        dim(ui, tr("docker.fit_to_path_order_needs_two"));
+    }
     ui.checkbox(&mut f.reverse, tr("docker.fit_to_path_reverse"))
         .rich_tip(crate::ui::tips::keyed("docker.fit_to_path_reverse"));
     if f != app.fit_path {
@@ -3592,6 +3569,12 @@ fn fit_to_path(app: &mut App, ui: &mut Ui) {
         app.fit_objects_to_path();
         app.docker_preview.clear();
     }
+}
+
+/// Where the Fit Objects to Path panel drew its list `id` (such as
+/// "fit_path_order") last frame, kept in the context's data.
+pub(crate) fn fit_combo_id(id: &str) -> egui::Id {
+    egui::Id::new(("fit_path_combo", id))
 }
 
 /// The id of square `i` (0 to 8, left to right from the top row) of the

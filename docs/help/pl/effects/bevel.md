@@ -14,6 +14,7 @@ dynamiczny, ustawiany w panelu [[docker.bevel]]; otwórz go poleceniem
    - [[docker.soft_edge]]: krawędź opada ku wnętrzu obiektu, oświetlona z jednej
      strony i zacieniona z drugiej;
    - [[docker.emboss]]: obiekt wydaje się wytłoczony ze strony.
+   - [[docker.bevel_center]]: Pas fazy w połowie wewnątrz, w połowie na zewnątrz konturu.
 3. Ustaw wygląd fazowania:
    - [[docker.depth]]: jak daleko fazowanie sięga od krawędzi, w głąb
      obiektu przy miękkiej krawędzi i na zewnątrz przy płaskorzeźbie;
@@ -22,6 +23,7 @@ dynamiczny, ustawiany w panelu [[docker.bevel]]; otwórz go poleceniem
      przechodzi od krawędzi do wnętrza;
    - [[docker.light_angle]]: kierunek, z którego pada światło;
    - [[docker.intensity]]: siła światła i cienia;
+   - [[docker.bevel_smooth_light]]: Światło pada wokół krawędzi według kierunku, każda część tak jasna, jak bardzo zwrócona jest do światła, zamiast dwóch połówek.
    - [[docker.light_color]] i [[docker.shadow_color]]: kolory oświetlonej
      i zacienionej strony;
    - [[docker.emboss_color]]: kolor, z którego tonowane jest fazowanie.

@@ -3,8 +3,23 @@
 A graphics tablet's stylus moves the pointer and presses its button like
 a mouse, so every tool works with it. Where the platform also reports how
 hard the pen is pressed, the Freehand and Brush Strokes tools let that
-pressure set the width of the stroke (#850). The mouse, and a pen whose
+pressure set the width of the stroke (#850), and so do the other tools
+that draw or work along a drag (#883). The mouse, and a pen whose
 platform gives no pressure, draw exactly as before: an even width.
+
+## The tools
+
+Options > Tools > Curve tools > Pen pressure (on by default) lets the
+pressure act; off, a pen works as the mouse does.
+
+| Tool | What the pressure sets |
+|---|---|
+| Freehand | the outline's width nodes along the line, from 5 % of the width at no pressure (`FREEHAND_FLOOR`) |
+| Brush Strokes | the stroke's width, as the drawing speed would in Expression mode, and as the mode's pressure setting says |
+| Painterly Brush | the brush marks' width along the stroke (#883): width nodes on the outline from 15 % of the brush size (`painterly_tool::PEN_FLOOR`), which the marks follow (`painterly::marks_along`, on screen and in PDF and SVG); a new size keeps them, scaled |
+| Sketch, and the lines Shape Recognition leaves | the outline's width nodes, as Freehand (#883); a recognised shape keeps an even outline, a stroke joined to a selected curve too |
+| Smooth, Smear, Twirl, Attract and Repel, Smudge, Roughen | the nib: from a fifth of its size at the lightest touch to all of it (`brushes::PEN_NIB_FLOOR`), read at each step of the drag (#883) |
+| Eraser, round nib | the band's width along the drag, from a fifth of the width (#883); the square nib keeps its width |
 
 ## Where the pressure comes from
 

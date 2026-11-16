@@ -40,6 +40,8 @@ pub struct OutlinePenState {
     /// What the drawing shows of the dialog (outline, fields set,
     /// overprint), so the preview is made again only when it changes.
     pub shown: Option<(Option<Stroke>, Vec<StrokeField>, Option<bool>)>,
+    /// The width box took the keys when the dialog opened.
+    pub width_focused: bool,
 }
 
 /// The widths the width list offers in unit `u`, as (millimetres, label):
@@ -105,6 +107,7 @@ impl App {
             node: None,
             defaults,
             shown: None,
+            width_focused: false,
         }));
     }
 
@@ -302,17 +305,21 @@ fn general(ui: &mut Ui, st: &mut OutlinePenState, lib: &crate::ui::line_style::O
                 }
             });
         let mut v = u.from_mm(st.stroke.width);
-        if ui
-            .add(
-                crate::ui::field::NumField::new(&mut v)
-                    .range(u.from_mm(0.001)..=u.from_mm(1000.0))
-                    .unit_mm(u.mm())
-                    .max_decimals(4)
-                    .width(60.0)
-                    .mixed(mixed(st, StrokeField::Width) || !st.has),
-            )
-            .changed()
-        {
+        let resp = ui.add(
+            crate::ui::field::NumField::new(&mut v)
+                .range(u.from_mm(0.001)..=u.from_mm(1000.0))
+                .unit_mm(u.mm())
+                .max_decimals(4)
+                .width(60.0)
+                .mixed(mixed(st, StrokeField::Width) || !st.has),
+        );
+        // The dialog opens with the width selected, as the reference
+        // program's does: F12, the width typed, Enter (#2597).
+        if !st.width_focused {
+            st.width_focused = true;
+            resp.request_focus();
+        }
+        if resp.changed() {
             st.stroke.width = u.to_mm(v).clamp(0.001, 1000.0);
             touch(st, StrokeField::Width);
         }
@@ -1470,5 +1477,63 @@ mod tests {
         let turned = nib_corners(c, 20.0, 1.0, 90.0);
         // A quarter turn: the right side's corner goes up.
         assert!((turned[1].x - 30.0).abs() < 1e-3 || (turned[1].y - 30.0).abs() < 1e-3);
+    }
+
+    /// F12 opens the dialog with the width selected: a number typed
+    /// replaces it and Enter applies it, as in the reference program
+    /// (#2597).
+    #[test]
+    fn the_dialog_opens_with_the_width_ready_to_type() {
+        let ctx = crate::theme::ui_context();
+        let mut app = App::headless();
+        app.show_welcome = false;
+        let a = app
+            .new_shape(ShapeKind::Rect {
+                rect: tracedraw_core::geometry::Rect::new(10.0, 10.0, 60.0, 40.0),
+                radius: 0.0,
+                corners: None,
+            })
+            .expect("rect");
+        app.select(vec![a]);
+        app.open_outline_pen();
+        for _ in 0..3 {
+            frame(&ctx, &mut app);
+        }
+        let units = crate::ui::line_style::OutlineLib::of(&app).units;
+        let send = |app: &mut App, events: Vec<egui::Event>| {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1600.0, 1000.0),
+                )),
+                events,
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(input, |ui| crate::ui::root(app, ui));
+            out.textures_delta.clear();
+        };
+        send(&mut app, vec![egui::Event::Text("3".into())]);
+        let key = |pressed| egui::Event::Key {
+            key: egui::Key::Enter,
+            physical_key: None,
+            pressed,
+            repeat: false,
+            modifiers: egui::Modifiers::NONE,
+        };
+        send(&mut app, vec![key(true), key(false)]);
+        for _ in 0..2 {
+            frame(&ctx, &mut app);
+        }
+        assert!(
+            matches!(app.dialog, crate::ui::dialogs::Dialog::None),
+            "Enter is OK"
+        );
+        let w = app
+            .doc()
+            .find_shape(a)
+            .and_then(|s| s.stroke.clone())
+            .expect("outline")
+            .width;
+        assert!((w - units.to_mm(3.0)).abs() < 1e-6, "{w}");
     }
 }

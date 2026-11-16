@@ -503,6 +503,18 @@ fn set_align(app: &mut App, a: TextAlign) {
     app.apply_text_align(a);
 }
 
+/// Set the direction of the selected paragraphs (#2670). Text left at
+/// the start edge follows it there: left-aligned text turned right to
+/// left is aligned right, and right-aligned text turned back left.
+fn set_direction(app: &mut App, d: tracedraw_core::TextDirection, align: Option<TextAlign>) {
+    edit_paragraphs(app, move |q| q.direction = d);
+    match (d.is_right_to_left(), align) {
+        (true, Some(TextAlign::Left | TextAlign::None)) => set_align(app, TextAlign::Right),
+        (false, Some(TextAlign::Right)) => set_align(app, TextAlign::Left),
+        _ => {}
+    }
+}
+
 /// "Apply to default text": new text takes the selected text's font,
 /// style, size, underline and alignment (only the ticked rows while the
 /// boxes are shown), and its fill and outline through the usual question
@@ -746,6 +758,37 @@ fn style_name(picks: &[(String, (String, bool, bool))], now: &(String, bool, boo
     tr(STYLES[idx].2)
 }
 
+/// The Character width picture (#2190): an A over a line with an arrow
+/// head at each end, drawn, so no font needs an arrow.
+pub(crate) fn char_width_icon(ui: &mut Ui) -> egui::Response {
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(18.0, 18.0), egui::Sense::hover());
+    let p = ui.painter();
+    let color = ui.visuals().text_color();
+    p.text(
+        rect.center_top() + egui::vec2(0.0, 1.0),
+        egui::Align2::CENTER_TOP,
+        "A",
+        egui::FontId::proportional(11.0),
+        color,
+    );
+    let y = rect.bottom() - 3.5;
+    let (l, r) = (rect.left() + 1.5, rect.right() - 1.5);
+    let stroke = egui::Stroke::new(1.0, color);
+    p.line_segment([egui::pos2(l, y), egui::pos2(r, y)], stroke);
+    for (tip, dir) in [(l, 1.0), (r, -1.0)] {
+        for dy in [-2.5, 2.5] {
+            p.line_segment(
+                [egui::pos2(tip, y), egui::pos2(tip + dir * 2.5, y + dy)],
+                stroke,
+            );
+        }
+    }
+    resp
+}
+
+/// The character widths a field takes (#2190), percent.
+pub(crate) const CHAR_WIDTH_RANGE: std::ops::RangeInclusive<f64> = 1.0..=1000.0;
+
 fn character(app: &mut App, ui: &mut Ui, first: Option<&tracedraw_core::Shape>) {
     // The character at the caret, the first one chosen with the Shape
     // tool, else the text's first (#1662).
@@ -825,6 +868,19 @@ fn character(app: &mut App, ui: &mut Ui, first: Option<&tracedraw_core::Shape>) 
             }
         }
         row_check(app, ui, "underline");
+    });
+    // Character width (#2190): the letters narrowed or widened, their
+    // height kept.
+    ui.horizontal(|ui| {
+        char_width_icon(ui).rich_tip(crate::ui::tips::keyed("docker.char_width"));
+        let mut width = span.as_ref().map_or(100.0, |s| s.width_pct);
+        let mut wc = false;
+        ui.add_enabled_ui(span.is_some(), |ui| {
+            wc = number(ui, &mut width, CHAR_WIDTH_RANGE, " %");
+        });
+        if wc {
+            edit_spans(app, move |sp| sp.width_pct = width);
+        }
     });
     // Text fill, background and outline.
     let mut more_fill = false;
@@ -1525,6 +1581,26 @@ fn paragraph(app: &mut App, ui: &mut Ui, first: Option<&tracedraw_core::Shape>) 
     let Some((_, mut p)) = app.paragraph_style_of(t) else {
         return;
     };
+    // The direction the paragraph runs in (#2670).
+    ui.horizontal(|ui| {
+        use tracedraw_core::TextDirection as D;
+        let tip = crate::ui::tips::pair("docker.text_direction", "docker.text_direction_desc");
+        ui.label(tr("docker.text_direction")).rich_tip(&tip);
+        for (d, key) in [
+            (D::LeftToRight, "docker.direction_ltr"),
+            (D::RightToLeft, "docker.direction_rtl"),
+        ] {
+            if ui
+                .selectable_label(p.direction == d, tr(key))
+                .rich_tip(&tip)
+                .clicked()
+                && p.direction != d
+            {
+                let align = app.paragraph_style_of(t).map(|(a, _)| a);
+                set_direction(app, d, align);
+            }
+        }
+    });
     let before = p.clone();
     let mut pc = false;
     let line_icon = |ui: &mut Ui, icon: ParaIcon, key: &str| {
@@ -1561,6 +1637,16 @@ fn paragraph(app: &mut App, ui: &mut Ui, first: Option<&tracedraw_core::Shape>) 
                         // Keep the spacing about the same in the new unit.
                         let size_pt = t_size_pt(t);
                         p.leading_pct = convert_leading(p.leading_pct, p.leading_unit, u, size_pt);
+                        // The space before and after in the new unit:
+                        // out of percent of the character height, the
+                        // distance it stood for (#2613).
+                        if u != LeadingUnit::PercentCharHeight {
+                            let line = char_height_mm(size_pt);
+                            p.space_before = p.space_before_mm(line);
+                            p.space_after = p.space_after_mm(line);
+                            p.space_before_pct = None;
+                            p.space_after_pct = None;
+                        }
                         p.leading_unit = u;
                         pc = true;
                     }
@@ -1575,12 +1661,12 @@ fn paragraph(app: &mut App, ui: &mut Ui, first: Option<&tracedraw_core::Shape>) 
             line_icon(ui, ParaIcon::LeftIndent, "docker.left_indent");
             pc |= length(ui, app, &mut p.left_indent);
             line_icon(ui, ParaIcon::SpaceBefore, "docker.space_before");
-            pc |= length(ui, app, &mut p.space_before);
+            pc |= space_field(ui, app, &mut p, true, t_size_pt(t));
             ui.end_row();
             line_icon(ui, ParaIcon::FirstLineIndent, "docker.first_line_indent");
             pc |= length(ui, app, &mut p.first_line_indent);
             line_icon(ui, ParaIcon::SpaceAfter, "docker.space_after");
-            pc |= length(ui, app, &mut p.space_after);
+            pc |= space_field(ui, app, &mut p, false, t_size_pt(t));
             ui.end_row();
             line_icon(ui, ParaIcon::RightIndent, "docker.right_indent");
             pc |= length(ui, app, &mut p.right_indent);
@@ -1648,6 +1734,54 @@ pub(crate) fn tab_summary(tabs: &[tracedraw_core::TabStop], u: crate::app::Units
         places.push("\u{2026}".into());
     }
     format!("{} {}", places.join(", "), u.short())
+}
+
+/// The character height of `size_pt` text, mm, as the docker takes it
+/// (1.2 times the size, see [`convert_leading`]).
+pub(crate) fn char_height_mm(size_pt: f64) -> f64 {
+    size_pt * 1.2 * 25.4 / 72.0
+}
+
+/// The space before (`before`) or after a paragraph: in percent of the
+/// character height while the line spacing is in that unit, as the
+/// reference program shows all three (before 100 % is no extra room,
+/// after 0 % none), else a length. A percent typed is kept as one, so the
+/// room follows the text's size; a length typed replaces it (#2613).
+pub(crate) fn space_field(
+    ui: &mut Ui,
+    app: &App,
+    p: &mut tracedraw_core::ParagraphStyle,
+    before: bool,
+    size_pt: f64,
+) -> bool {
+    let line = char_height_mm(size_pt);
+    let none = if before { 100.0 } else { 0.0 };
+    let (mm, pct) = if before {
+        (&mut p.space_before, &mut p.space_before_pct)
+    } else {
+        (&mut p.space_after, &mut p.space_after_pct)
+    };
+    if p.leading_unit == LeadingUnit::PercentCharHeight {
+        let shown = pct.unwrap_or_else(|| {
+            if line > 0.0 {
+                ((none + *mm / line * 100.0) * 10.0).round() / 10.0
+            } else {
+                none
+            }
+        });
+        let mut v = shown;
+        if number(ui, &mut v, 0.0..=10000.0, " %") && v != shown {
+            *pct = Some(v);
+            *mm = tracedraw_core::document::space_mm(*mm, Some(v), none, line);
+            return true;
+        }
+        false
+    } else if length(ui, app, mm) {
+        *pct = None;
+        true
+    } else {
+        false
+    }
 }
 
 /// The largest font size of a text, points.
@@ -1803,7 +1937,7 @@ fn frame(app: &mut App, ui: &mut Ui, first: Option<&tracedraw_core::Shape>) {
 
 /// The small pictures beside the paragraph spacing and indent fields.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ParaIcon {
+pub(crate) enum ParaIcon {
     Leading,
     LeftIndent,
     RightIndent,
@@ -1815,7 +1949,11 @@ enum ParaIcon {
 /// The lines of a paragraph icon in `r`: lines of text with an arrow or a
 /// bar showing what the field sets. Drawn rather than taken from a font,
 /// whose arrows the interface fonts of some systems lack (#863).
-fn para_icon_shapes(icon: ParaIcon, r: egui::Rect, color: egui::Color32) -> Vec<egui::Shape> {
+pub(crate) fn para_icon_shapes(
+    icon: ParaIcon,
+    r: egui::Rect,
+    color: egui::Color32,
+) -> Vec<egui::Shape> {
     let st = egui::Stroke::new(1.0, color);
     let c = r.center();
     let (l, rt) = (c.x - 7.0, c.x + 7.0);
@@ -2438,6 +2576,40 @@ mod tests {
         app.settings.text_docker_ticked = vec!["size".into()];
         apply_to_default(&mut app);
         assert_eq!((app.text_font.as_str(), app.text_size_pt), ("Other", 30.0));
+    }
+
+    /// Text turned right to left (#2670) runs from the right: the
+    /// paragraph's direction is set, and left-aligned text is aligned
+    /// right; turned back, right-aligned text is aligned left.
+    #[test]
+    fn text_turned_right_to_left_is_aligned_right() {
+        use tracedraw_core::TextDirection as D;
+        let mut app = App::headless();
+        let id = app
+            .new_shape(ShapeKind::Text {
+                spans: vec![TextSpan::new("Text", "Arial", 20.0)],
+                origin: Point::new(10.0, 10.0),
+                frame: Some(Size::new(50.0, 20.0)),
+                align: TextAlign::Left,
+                para: ParagraphStyle::default(),
+                on_path: None,
+            })
+            .expect("text");
+        app.select(vec![id]);
+        let state = |app: &App| {
+            let s = app.doc().find_shape(id).cloned().expect("text");
+            app.paragraph_style_of(&s)
+                .map(|(a, p)| (a, p.direction))
+                .expect("paragraph")
+        };
+        set_direction(&mut app, D::RightToLeft, Some(TextAlign::Left));
+        assert_eq!(state(&app), (TextAlign::Right, D::RightToLeft));
+        set_direction(&mut app, D::LeftToRight, Some(TextAlign::Right));
+        assert_eq!(state(&app), (TextAlign::Left, D::LeftToRight));
+        // Centred text stays centred.
+        set_align(&mut app, TextAlign::Center);
+        set_direction(&mut app, D::RightToLeft, Some(TextAlign::Center));
+        assert_eq!(state(&app), (TextAlign::Center, D::RightToLeft));
     }
 
     /// The fields edit the selected text: background, alignment and line

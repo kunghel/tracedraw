@@ -18,12 +18,17 @@ strumento.
   seleziona anche gli oggetti che tocca soltanto; <kbd>Alt</kbd> seleziona
   allora solo quelli completamente all'interno.
 
+- [[options.ctrl_shift_keys]] [[options.keys_traditional]]: [[options.keys_traditional_tip]]
+  [[options.keys_windows]]: [[options.keys_windows_tip]]
+
 ## Gomma {#eraser}
 
 ![Le opzioni dello strumento Gomma](../../img/customize-tool-options-eraser.png)
 
 [[options.eraser_width]] (6,35 mm in partenza), e [[options.eraser_round]] o
 [[options.eraser_square]].
+
+[[options.eraser_reduce_nodes]]: [[options.eraser_reduce_nodes_tip]]
 
 ## Zoom e spostamento {#zoom-pan}
 
@@ -39,6 +44,7 @@ strumento.
 - [[options.smooth_zoom]] (attivo): uno scatto della rotellina zooma con un breve
   scorrimento invece di un salto; più veloce gira la rotellina, più è breve.
   Disattivo, ogni scatto zooma subito.
+- [[options.light_zoom]]: [[options.light_zoom_tip]]
 - [[options.wheel_zoom_step]] di quanto uno scatto ingrandisce o riduce, da 1 a
   100 per cento (15 % all'inizio).
 - [[options.pan_right_button]] [[options.zoom_out]] o il [[options.context_menu]] (all'inizio).
@@ -60,6 +66,9 @@ strumento.
   per lo strumento [[tool.pen]]; vedere [Penna](../lines-shapes/lines.md#pen).
 - [[options.pen_tablet]]: [[options.pen_pressure]] (attiva); vedere
   [Disegnare con una tavoletta grafica](../lines-shapes/pen-pressure.md).
+
+- [[options.corner_threshold]]: [[options.corner_threshold_tip]]
+- [[options.straight_threshold]]: [[options.straight_threshold_tip]]
 
 ## Riconoscimento forme {#shape-recognition}
 
@@ -84,6 +93,9 @@ quattro angoli e [[toolbar.corners_together]]. [[options.scale_corners]]:
 [[options.ellipse]], [[options.pie]] o [[options.arc]], con
 l'[[options.starting_angle]] e l'[[options.ending_angle]].
 
+[[options.arc_direction]]: [[options.counterclockwise]] / [[options.clockwise]].
+[[options.arc_direction_desc]]
+
 ## Poligono {#polygon}
 
 ![Le opzioni dello strumento Poligono](../../img/customize-tool-options-polygon.png)
@@ -103,6 +115,9 @@ l'[[options.starting_angle]] e l'[[options.ending_angle]].
 [[options.revolutions]], e [[options.symmetrical_spiral]] o
 [[options.logarithmic_spiral]].
 
+[[options.spiral_expansion]]: [[options.spiral_expansion_tip]]
+[[options.spiral_preview_tip]]
+
 ## Tabella {#table}
 
 ![Le opzioni dello strumento Tabella](../../img/customize-tool-options-table.png)
@@ -118,11 +133,24 @@ Come si legge l'etichetta delle nuove quote: [[dimension.precision]],
 [[dimension.suffix]]. Le quote già disegnate mantengono la loro etichetta;
 selezionatene una e usate la barra delle proprietà per cambiarla.
 
+[[options.dimension_style]]: [[options.decimal]] / [[options.fractional]].
+[[options.dimension_style_tip]]
+
+## Quota angolare {#angular-dimension}
+
+[[dimension.precision]], [[dimension.show_units]], [[dimension.prefix]] and
+[[dimension.suffix]] of new angular dimensions.
+[[options.angular_units_tip]]
+
 ## Connettore {#connector}
 
 ![Le opzioni dello strumento Connettore](../../img/customize-tool-options-connector.png)
 
 [[connector.radius]] dei nuovi connettori arrotondati (3 mm all'inizio).
+
+[[options.connector_gap]]: [[options.connector_gap_tip]]
+
+[[options.connector_geometric_anchors]]: [[options.connector_geometric_anchors_tip]]
 
 ## Riempimento a maglia {#mesh-fill}
 

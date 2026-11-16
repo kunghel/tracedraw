@@ -14,6 +14,7 @@ side of the edge and shading the other. It is a live effect, set in the
      and shaded on the other;
    - [[docker.emboss]]: the object seems pressed out of the page; the
      bevel is drawn around the outline instead of inside it.
+   - [[docker.bevel_center]]: The bevel band half inside and half outside the outline.
 3. Set the look of the bevel:
    - [[docker.depth]]: how far the bevel reaches from the edge, into the
      object for a soft edge and out of it for an emboss;
@@ -22,12 +23,14 @@ side of the edge and shading the other. It is a live effect, set in the
      the edge inwards;
    - [[docker.light_angle]]: the direction the light comes from;
    - [[docker.intensity]]: how strong the light and the shade are;
+   - [[docker.bevel_smooth_light]]: The light falls round the edge by direction, each part as lit as it faces the light, instead of two halves.
    - [[docker.light_color]] and [[docker.shadow_color]]: the colours of the
      lit and the shaded side;
    - [[docker.emboss_color]]: the colour the bevel is toned from. Tick the
      box and pick a colour to use your own; left off, the object's own
      fill is used.
-4. Click [[docker.apply]].
+4. Click [[docker.apply]]. With an object selected, each change already shows
+   on it as you make it, before Apply.
 
 When you select an object that already has a bevel, the panel shows that
 bevel, and changing a setting edits it right away.

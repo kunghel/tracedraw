@@ -930,6 +930,19 @@ fn replacement(
     }
 }
 
+/// The fill a QR code made from the placeholder `s` takes: the
+/// placeholder's own colour (the sample code Insert Field makes, or the
+/// `<Field>` text, painted by the user), so every record's code comes out
+/// in it (#2796); black when the placeholder has none. Pictures keep
+/// `fill`.
+fn qr_paint(s: &Shape, kind: &FieldKind, fill: Fill) -> Fill {
+    if *kind == FieldKind::Qr && s.fill != Fill::None {
+        s.fill.clone()
+    } else {
+        fill
+    }
+}
+
 /// The picture or QR field whose placeholder `<Field>` is `text`.
 fn whole_field(st: &PrintMergeState, text: &str) -> Option<usize> {
     st.headers
@@ -1045,7 +1058,7 @@ fn fill_shape(
                 cmds.push(Command::SetShapeKind { shape: s.id, kind });
                 cmds.push(Command::SetFill {
                     shapes: vec![s.id],
-                    fill,
+                    fill: qr_paint(s, &kind_of(st, i), fill),
                 });
                 cmds.push(Command::SetStroke {
                     shapes: vec![s.id],
@@ -1126,6 +1139,24 @@ fn merge_barcode_spec(st: &PrintMergeState, s: &Shape) -> Option<crate::barcode:
         .then_some(spec)
 }
 
+/// Give each part of a barcode made again (`made`: background rectangle,
+/// bars, digits) the fill and outline of the same part of the barcode it
+/// replaces (`old`), so a recoloured barcode keeps its colours.
+fn keep_barcode_paint(old: &[Shape], made: &mut [Shape]) {
+    let part = |s: &Shape| match s.kind {
+        ShapeKind::Rect { .. } => 0,
+        ShapeKind::Path { .. } => 1,
+        ShapeKind::Text { .. } => 2,
+        _ => 3,
+    };
+    for m in made.iter_mut() {
+        if let Some(o) = old.iter().find(|o| part(o) == part(m) && part(m) < 3) {
+            m.fill = o.fill.clone();
+            m.stroke = o.stroke.clone();
+        }
+    }
+}
+
 /// The commands that make the barcode object `s` again with the record's
 /// values in its data, in its place (the new symbol centred where the old
 /// one was, in the object's own space, so a moved, scaled or turned
@@ -1168,6 +1199,11 @@ fn merged_barcode(
     let d = old.center() - made.center();
     for c in &mut shapes {
         c.transform_by(tracedraw_core::geometry::Affine::translate(d));
+    }
+    // The colours the user gave the bars, the background and the digits
+    // stay on every record's barcode (#2796).
+    if let ShapeKind::Group { children } = &s.kind {
+        keep_barcode_paint(children, &mut shapes);
     }
     let kind = match &s.kind {
         ShapeKind::Group { .. } => ShapeKind::Group { children: shapes },
@@ -1257,7 +1293,7 @@ fn named_placeholder(
                 cmds.push(Command::SetShapeKind { shape: s.id, kind });
                 cmds.push(Command::SetFill {
                     shapes: vec![s.id],
-                    fill,
+                    fill: qr_paint(s, &FieldKind::Qr, fill),
                 });
                 cmds.push(Command::SetStroke {
                     shapes: vec![s.id],
@@ -1799,6 +1835,108 @@ mod tests {
         assert_eq!(n, 1);
     }
 
+    /// #2796: Insert Field shows a sample QR code to paint and to Place
+    /// Inside a frame; each record's code takes the sample's colour, in
+    /// the frame too, and a barcode's recoloured bars keep their colour.
+    #[test]
+    fn qr_codes_and_barcodes_keep_their_colour_and_frame() {
+        use tracedraw_core::geometry::Rect;
+        let red = Fill::Solid(Color::Rgb {
+            r: 1.0,
+            g: 0.0,
+            b: 0.0,
+        });
+        let blue = Fill::Solid(Color::Rgb {
+            r: 0.0,
+            g: 0.0,
+            b: 1.0,
+        });
+        let green = Fill::Solid(Color::Rgb {
+            r: 0.0,
+            g: 0.6,
+            b: 0.0,
+        });
+        let mut app = App::headless();
+        app.merge_state = Some(state());
+        app.merge_docker.kind = 2;
+        app.merge_docker.column = 2;
+        app.insert_merge_field();
+        let qr = app.selection[0];
+        let s = app.doc().find_shape(qr).cloned().expect("sample");
+        assert_eq!(s.name.as_deref(), Some("<Link>"));
+        assert!(matches!(s.kind, ShapeKind::Path { .. }), "{:?}", s.kind);
+        assert_eq!(s.fill, Fill::Solid(Color::BLACK));
+        app.run(Command::SetFill {
+            shapes: vec![qr],
+            fill: red.clone(),
+        });
+        // A second sample, placed inside an ellipse.
+        app.insert_merge_field();
+        let clipped = app.selection[0];
+        app.run(Command::SetFill {
+            shapes: vec![clipped],
+            fill: blue.clone(),
+        });
+        let c = app.doc().find_shape(clipped).unwrap().bounds().center();
+        let ellipse = app
+            .new_shape(ShapeKind::Ellipse {
+                rect: Rect::from_center_size(c, (30.0, 30.0)),
+                arc: None,
+            })
+            .expect("ellipse");
+        app.run(Command::PlaceInside {
+            contents: vec![clipped],
+            frame: ellipse,
+        });
+        // A barcode of the Name field with green bars.
+        let spec = crate::barcode::BarcodeSpec {
+            symbology: crate::barcode::Symbology::Code128,
+            data: "<Name>".into(),
+            ..Default::default()
+        };
+        crate::ui::barcode_wizard::insert(&mut app, &spec).expect("inserted");
+        let bc = app.selection[0];
+        let mut kind = app.doc().find_shape(bc).unwrap().kind.clone();
+        if let ShapeKind::Group { children } = &mut kind {
+            for ch in children.iter_mut() {
+                if matches!(ch.kind, ShapeKind::Path { .. }) {
+                    ch.fill = green.clone();
+                }
+            }
+        } else {
+            panic!("a group: {kind:?}");
+        }
+        app.run(Command::SetShapeKind { shape: bc, kind });
+        let doc = merged_document(&app, &state()).expect("merged");
+        let first: Vec<&Shape> = doc.pages[0].layers.iter().flat_map(|l| &l.shapes).collect();
+        let code = first
+            .iter()
+            .find(|s| s.name.as_deref() == Some("<Link>"))
+            .expect("the code");
+        assert!(matches!(code.kind, ShapeKind::Path { .. }));
+        assert_eq!(code.fill, red, "the sample's colour");
+        let inside = first
+            .iter()
+            .find_map(|s| match &s.kind {
+                ShapeKind::ClipFrame { contents, .. } => contents.first(),
+                _ => None,
+            })
+            .expect("the frame keeps the code");
+        assert_eq!(inside.name.as_deref(), Some("<Link>"));
+        assert!(matches!(inside.kind, ShapeKind::Path { .. }));
+        assert_eq!(inside.fill, blue);
+        let (bar_shape, bar_spec) = barcodes(&doc.pages[0]).into_iter().next().expect("barcode");
+        assert_eq!(bar_spec.data, "Ana");
+        let ShapeKind::Group { children } = &bar_shape.kind else {
+            panic!("group");
+        };
+        let bars = children
+            .iter()
+            .find(|c| matches!(c.kind, ShapeKind::Path { .. }))
+            .expect("bars");
+        assert_eq!(bars.fill, green, "the bars keep their colour");
+    }
+
     /// The barcode objects of a page, with the settings they keep.
     fn barcodes(
         page: &tracedraw_core::document::Page,
@@ -1954,6 +2092,143 @@ mod tests {
         let doc = merged_document(&app, app.merge_state.as_ref().expect("data")).expect("merged");
         let codes = barcodes(&doc.pages[0]);
         assert_eq!(codes[0].1.data, "X1");
+    }
+
+    /// A serial number in a Print Merge barcode (#2158): Same keeps one
+    /// number on every record, Continue counts on from record to record
+    /// after the fixed digits; the wizard adds the counting field and the
+    /// records asked for, and its preview shows the first number.
+    #[test]
+    fn barcode_serial_numbers_stay_the_same_or_count_on() {
+        use crate::ui::barcode_wizard::{finish_wizard, BarcodeState, Serial};
+        for (mode, want) in [
+            (2, ["ABC-0015", "ABC-0020", "ABC-0025"]),
+            (1, ["ABC-0015", "ABC-0015", "ABC-0015"]),
+        ] {
+            let mut app = App::headless();
+            app.merge_state = Some(PrintMergeState {
+                headers: vec!["Name".into()],
+                rows: vec![vec!["a".into()]],
+                kinds: vec![FieldKind::Text],
+                ..Default::default()
+            });
+            let mut st = BarcodeState::for_merge_field("Name", false);
+            st.spec.data = "ABC-<Serial>".into();
+            st.serial = Serial {
+                mode,
+                start: 15,
+                step: 5,
+                digits: 4,
+                records: 3,
+                field: "Serial".into(),
+            };
+            assert_eq!(st.shown().data, "ABC-0015");
+            let mut close = false;
+            finish_wizard(&mut app, &mut st, &mut close);
+            assert!(close, "{}", st.error);
+            let data = app.merge_state.as_ref().expect("data");
+            assert_eq!(data.headers, ["Name", "Serial"]);
+            assert_eq!(data.rows.len(), 3);
+            let doc = merged_document(&app, data).expect("merged");
+            let got: Vec<String> = doc
+                .pages
+                .iter()
+                .map(|p| barcodes(p)[0].1.data.clone())
+                .collect();
+            assert_eq!(got, want, "mode {mode}");
+        }
+    }
+
+    /// The wizard's Serial number list puts the field at the end of the
+    /// data when a number is chosen, under a name no field has, and takes
+    /// it out again with None.
+    #[test]
+    fn choosing_a_serial_number_names_it_in_the_data() {
+        let headers = vec!["Serial".to_string()];
+        assert_eq!(
+            crate::ui::barcode_wizard::serial_field_name(&headers),
+            "Serial 2"
+        );
+        let s = crate::ui::barcode_wizard::Serial {
+            mode: 2,
+            start: 9,
+            step: 1,
+            digits: 2,
+            records: 0,
+            field: "Serial 2".into(),
+        };
+        assert_eq!(s.fill("590<Serial 2>", 0), "59009");
+        assert_eq!(s.fill("590<Serial 2>", 1), "59010");
+    }
+
+    /// Place Inside Frame with a barcode field (#1084): the wizard opens
+    /// for the selected shape, Finish puts the barcode inside it, scaled
+    /// to fit, and Print Merge makes it again inside the frame for every
+    /// record.
+    #[test]
+    fn a_barcode_field_goes_inside_the_selected_frame() {
+        let mut app = App::headless();
+        app.merge_state = Some(PrintMergeState {
+            headers: vec!["SKU".into()],
+            rows: vec![vec!["X1".into()], vec!["Y2".into()]],
+            kinds: vec![FieldKind::Text],
+            ..Default::default()
+        });
+        let frame = app
+            .new_shape(ShapeKind::Rect {
+                rect: Rect::new(20.0, 20.0, 60.0, 40.0),
+                radius: 0.0,
+                corners: None,
+            })
+            .expect("rect");
+        app.select(vec![frame]);
+        app.merge_docker.kind = 3;
+        app.merge_docker.column = 0;
+        app.place_merge_field_inside();
+        let crate::ui::dialogs::Dialog::Barcode(st) = &app.dialog else {
+            panic!("the wizard: {:?}", app.dialog);
+        };
+        assert_eq!(st.frames, vec![frame]);
+        let mut st = st.clone();
+        let mut close = false;
+        crate::ui::barcode_wizard::finish_wizard(&mut app, &mut st, &mut close);
+        assert!(close, "{}", st.error);
+        let s = app.doc().find_shape(frame).expect("frame").clone();
+        let ShapeKind::ClipFrame { contents, .. } = &s.kind else {
+            panic!("not a frame: {:?}", s.kind);
+        };
+        assert_eq!(contents.len(), 1);
+        assert!(crate::barcode::BarcodeSpec::of_shape(&contents[0]).is_some());
+        // Inside the frame's box, filling it one way.
+        let b = s.transform * contents[0].transform * contents[0].local_path();
+        let b = tracedraw_core::geometry::Shape::bounding_box(&b);
+        let area = Rect::new(20.0, 20.0, 60.0, 40.0);
+        assert!(b.x0 >= area.x0 - 1e-6 && b.x1 <= area.x1 + 1e-6, "{b:?}");
+        assert!(b.y0 >= area.y0 - 1e-6 && b.y1 <= area.y1 + 1e-6, "{b:?}");
+        assert!(
+            (b.width() - 36.0).abs() < 0.01 || (b.height() - 18.0).abs() < 0.01,
+            "{b:?}"
+        );
+        // Merged, each page's frame holds that record's barcode.
+        let doc = merged_document(&app, app.merge_state.as_ref().expect("data")).expect("merged");
+        let datas: Vec<String> = doc
+            .pages
+            .iter()
+            .map(|p| {
+                let f = p
+                    .layers
+                    .iter()
+                    .flat_map(|l| &l.shapes)
+                    .find_map(|s| match &s.kind {
+                        ShapeKind::ClipFrame { contents, .. } => contents.first().cloned(),
+                        _ => None,
+                    });
+                crate::barcode::BarcodeSpec::of_shape(&f.expect("framed barcode"))
+                    .expect("barcode")
+                    .data
+            })
+            .collect();
+        assert_eq!(datas, ["X1", "Y2"]);
     }
 
     /// Bulk cards (#377, #378): fields inside a group are filled, a

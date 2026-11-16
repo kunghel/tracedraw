@@ -593,6 +593,9 @@ pub(crate) fn faces(
             // Outward faces: [a0, a1, b1, b0] for back bodies (a0 nearer),
             // the other way round for front ones.
             let mut shown: Vec<Option<ShownFace>> = Vec::with_capacity(edges);
+            // Each solid face's light, for smooth shading along a curved
+            // side (#2706).
+            let mut solid_light: Vec<Option<f64>> = vec![None; edges];
             for i in 0..edges {
                 let j = (i + 1) % n;
                 let (a0, b0) = (ctx.turn(r0[i], u0), ctx.turn(r0[j], u0));
@@ -655,10 +658,13 @@ pub(crate) fn faces(
                             scale(lerp_color(side_from, to, 0.5), light),
                         )
                     }
-                    _ => (
-                        Fill::Solid(scale(side_from, light)),
-                        scale(side_from, light),
-                    ),
+                    _ => {
+                        solid_light[i] = Some(light);
+                        (
+                            Fill::Solid(scale(side_from, light)),
+                            scale(side_from, light),
+                        )
+                    }
                 };
                 s.fill = fill;
                 s.stroke = Some(crate::Stroke::hairline(edge));
@@ -713,13 +719,52 @@ pub(crate) fn faces(
                 let mut fk = 0.0;
                 let mut first_edge = Vec::new();
                 let mut second_edge = Vec::new();
+                // A run is a smooth stretch of the outline: its faces are
+                // shaded from the light where each meets the next, the
+                // mean of the two faces' lights, so a round side shades
+                // smoothly instead of in flat bands (#2706).
+                let all_round = closed && run.len() == edges;
+                let joint = |pos: usize, next: bool| -> Option<f64> {
+                    let here = solid_light[*run.get(pos)?]?;
+                    let other = if next {
+                        match run.get(pos + 1) {
+                            Some(&j) => Some(j),
+                            None if all_round => run.first().copied(),
+                            None => None,
+                        }
+                    } else if pos > 0 {
+                        run.get(pos - 1).copied()
+                    } else if all_round {
+                        run.last().copied()
+                    } else {
+                        None
+                    };
+                    let there = other.and_then(|j| solid_light[j]).unwrap_or(here);
+                    Some((here + there) / 2.0)
+                };
                 for (pos, &i) in run.iter().enumerate() {
                     let Some((fz, f, s, proj)) = &shown[i] else {
                         continue;
                     };
                     z += fz;
                     fk += f;
-                    drawn.push((*fz, *f, s.clone()));
+                    let mut s = s.clone();
+                    if let (Some(la), Some(lb)) = (joint(pos, false), joint(pos, true)) {
+                        // proj: back [a0, a1, b1, b0]; front [a0, b0, b1, a1].
+                        let (ma, mb) = if dir < 0.0 {
+                            (proj[0].midpoint(proj[1]), proj[3].midpoint(proj[2]))
+                        } else {
+                            (proj[0].midpoint(proj[3]), proj[1].midpoint(proj[2]))
+                        };
+                        if let Some(fill) = crate::extrude::fountain_between(
+                            &poly(proj, true),
+                            (ma, scale(from, la)),
+                            (mb, scale(from, lb)),
+                        ) {
+                            s.fill = fill;
+                        }
+                    }
+                    drawn.push((*fz, *f, s));
                     // proj: back [a0, a1, b1, b0]; front [a0, b0, b1, a1].
                     let (a_near, a_far, b_near, b_far) = if dir < 0.0 {
                         (proj[0], proj[1], proj[3], proj[2])
@@ -1054,6 +1099,52 @@ mod tests {
             "{:?}",
             f.above.iter().map(|s| s.bounds()).collect::<Vec<_>>()
         );
+    }
+
+    /// #2706: the sides of a bevelled round object were a row of flat
+    /// bands, each face one colour. Each face now shades from the light
+    /// where it meets the face before to the light where it meets the
+    /// next, so neighbours match where they join.
+    #[test]
+    fn a_bevelled_round_side_shades_smoothly() {
+        let mut c = square();
+        c.kind = ShapeKind::Ellipse {
+            rect: Rect::new(0.0, 0.0, 20.0, 20.0),
+            arc: None,
+        };
+        let f = body(ExtrudeKind::BackParallel, Solid::default(), 2.0).faces(&c);
+        let near = f.above.last().expect("near cap");
+        let sides: Vec<&Shape> = f.above[..f.above.len() - 1]
+            .iter()
+            .filter(|s| s.fill != Fill::None)
+            .collect();
+        assert!(sides.len() > 20, "{}", sides.len());
+        assert!(matches!(near.fill, Fill::Solid(_)));
+        let ends: Vec<(Color, Color)> = sides
+            .iter()
+            .filter_map(|s| match &s.fill {
+                Fill::Fountain(fo) => Some((fo.stops.first()?.color, fo.stops.last()?.color)),
+                _ => None,
+            })
+            .collect();
+        let solid = sides.len() - ends.len();
+        // Flat only where the light does not change between neighbours
+        // (where it is at its brightest or darkest).
+        assert!(
+            solid * 4 <= sides.len(),
+            "{solid} of {} faces are flat",
+            sides.len()
+        );
+        let rgb = |c: Color| c.to_rgb8();
+        for (a, _) in &ends {
+            assert!(
+                ends.iter().any(|(_, b)| rgb(*b) == rgb(*a))
+                    || sides
+                        .iter()
+                        .any(|s| s.fill.preview_color().map(rgb) == Some(rgb(*a))),
+                "a face starts in a colour no neighbour ends in"
+            );
+        }
     }
 
     /// #2205: a bevel wider than a letter's stems folded the near cap over

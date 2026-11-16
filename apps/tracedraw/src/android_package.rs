@@ -570,6 +570,99 @@ mod tests {
         }
     }
 
+    /// Keep the system's reason for destroying an activity alongside the
+    /// app's view of that destruction, even when the emulator check fails.
+    #[test]
+    fn activity_destruction_diagnostics_keep_the_system_reason() {
+        const EMULATOR_CHECK: &str = include_str!("../../../scripts/android/emulator_check.sh");
+        for detail in [
+            "isFinishing()",
+            "isChangingConfigurations()",
+            "getChangingConfigurations()",
+            "getTaskId()",
+        ] {
+            assert!(
+                ACTIVITY.contains(detail),
+                "activity diagnostics lack {detail}"
+            );
+        }
+        assert!(
+            EMULATOR_CHECK.contains("adb logcat -d -b events -v threadtime > \"$out/events.txt\"")
+        );
+        for event in ["wm_destroy_activity", "wm_finish_activity"] {
+            assert!(
+                EMULATOR_CHECK.contains(event),
+                "event summary lacks {event}"
+            );
+        }
+    }
+
+    /// Source contract for window events before the first resume and after
+    /// shutdown. The real event order is exercised by the emulator checks.
+    #[test]
+    fn window_events_wait_for_initial_resume_and_exit_after_shutdown() {
+        for (renderer, source) in [
+            (
+                "wgpu",
+                include_str!("../../../vendor/eframe/src/native/wgpu_integration.rs"),
+            ),
+            (
+                "glow",
+                include_str!("../../../vendor/eframe/src/native/glow_integration.rs"),
+            ),
+        ] {
+            let code: String = source
+                .lines()
+                .filter(|line| !line.trim_start().starts_with("//"))
+                .flat_map(str::chars)
+                .filter(|c| !c.is_whitespace())
+                .collect();
+            let handler = code
+                .split("fnwindow_event(")
+                .nth(1)
+                .and_then(|rest| rest.split("fnon_accesskit_event(").next())
+                .expect("the renderer handles window events");
+            assert!(
+                handler.contains(concat!(
+                    "ifletSome(running)=&mutself.running{",
+                    "Ok(running.on_window_event(window_id,&event))",
+                    "}elseifself.app_creator.is_some(){",
+                    "Ok(EventResult::Wait)",
+                    "}else{Ok(EventResult::Exit)}",
+                )),
+                "{renderer}: pending creation must wait and completed shutdown must exit"
+            );
+            // Both renderers begin with a pending creator and no running app.
+            assert!(
+                code.contains("app_creator:Some(app_creator),"),
+                "{renderer}"
+            );
+            assert!(code.contains("running:None,"), "{renderer}");
+            let creation = code
+                .split("fninit_run_state(")
+                .nth(1)
+                .and_then(|rest| rest.split("implWinitAppfor").next())
+                .expect("the renderer creates its running state");
+            let consumes = creation
+                .find("take(&mutself.app_creator)")
+                .expect("initialization consumes the pending creator");
+            let starts = creation
+                .find("self.running.insert(")
+                .expect("initialization installs the running app");
+            assert!(
+                consumes < starts,
+                "{renderer}: consume the creator before running"
+            );
+            assert_eq!(code.matches("take(&mutself.app_creator)").count(), 1);
+            let shutdown = code
+                .split("fnsave_and_destroy(")
+                .nth(1)
+                .and_then(|rest| rest.split("fnrun_ui_and_paint(").next())
+                .expect("the renderer handles shutdown");
+            assert!(shutdown.contains("self.running.take()"), "{renderer}");
+        }
+    }
+
     /// A document another app opens with TraceDraw (a file manager's Open
     /// with, Share) reaches the editor (#646): the manifest offers the app
     /// for VIEW, EDIT and SEND of drawings, the activity takes the intent

@@ -90,6 +90,10 @@ atom_manager! {
     XdndFinished,
     XdndTypeList,
     TextUriList: b"text/uri-list",
+    // TraceDraw: a picture dragged in from another program (#2349).
+    ImagePng: b"image/png",
+    ImageBmp: b"image/bmp",
+    ImageJpeg: b"image/jpeg",
     None: b"None",
 
     // TraceDraw: the label of a graphics tablet's pressure valuator.

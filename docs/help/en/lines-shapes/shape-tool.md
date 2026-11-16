@@ -50,6 +50,9 @@ over a control handle, a wave over a segment.
   and effects, is drawn again once, when you release the button.
 - The arrow keys nudge the selected nodes (<kbd>Shift</kbd> for a larger
   step, <kbd>Ctrl</kbd> for a smaller one).
+- Click a control handle to choose it (a ring shows round its head): the
+  arrow keys then move that handle instead of the nodes. Click anywhere
+  else to let go of it.
 - Double-click a segment to add a node there, a node to delete it. Click a
   segment to mark a spot, then press <kbd>+</kbd> to add a node there.
 - <kbd>Delete</kbd> or <kbd>-</kbd> deletes the selected nodes; <kbd>+</kbd>

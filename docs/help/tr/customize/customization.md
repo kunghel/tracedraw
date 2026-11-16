@@ -15,6 +15,9 @@ görüneceğini ve renk paletinin nasıl davranacağını ayarlar.
 - [[options.ui_shadows]] (daha az gölge yavaş grafik donanımına yardımcı
   olur).
 - [[options.colored_icons]]: her araç grubu kendi rengini alır.
+- [[options.docker_tabs_icons_only]]: pencerenin kenarlarındaki panel
+  sekmeleri yalnızca resimlerini gösterir, ad ipucunda yer alır. Kapalıyken
+  resmi ve adı gösterir; sığandan fazla sekmesi olan sütun kayar.
 - [[options.ui_size]]: menülerin, çubukların, simgelerin ve panellerin,
   sisteminizin monitöre verdiği ölçeklemeye göre ne kadar büyük olduğu
   (başlangıçta %100). [[options.reset_to_default]] %100'e geri döner. Arayüz

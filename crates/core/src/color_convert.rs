@@ -240,6 +240,32 @@ pub fn convert_document(
     n
 }
 
+/// Every use of a colour of `pairs` in the drawing (any object at any
+/// depth, the symbols) changed to its pair: a colour style edited, swapped
+/// or merged (#778). The number changed.
+pub fn replace_colors(doc: &mut Document, pairs: &[(Color, Color)]) -> usize {
+    let pairs: Vec<(Color, Color)> = pairs.iter().copied().filter(|(a, b)| a != b).collect();
+    if pairs.is_empty() {
+        return 0;
+    }
+    let f = |c: Color| {
+        pairs
+            .iter()
+            .find(|(from, _)| *from == c)
+            .map_or(c, |(_, to)| *to)
+    };
+    let mut n = 0;
+    for l in doc.all_layers_mut() {
+        for s in l.shapes.iter_mut() {
+            n += map_shape_colors(s, &f);
+        }
+    }
+    for sym in doc.symbols.iter_mut() {
+        n += map_shape_colors(&mut sym.shape, &f);
+    }
+    n
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -429,5 +455,23 @@ mod tests {
         // The mode survives the saved form.
         let json = serde_json::to_string(&doc.pages[0].layers[0].shapes[0]).unwrap_or_default();
         assert!(!json.contains("cmyk_bitmap"), "off is the default: {json}");
+    }
+
+    #[test]
+    fn replace_colors_swaps_pairs_at_once() {
+        let red = Color::rgb8(255, 0, 0);
+        let blue = Color::rgb8(0, 0, 255);
+        let mut doc = Document::new("t", Size::new(100.0, 100.0));
+        let mut a = rect(1);
+        a.fill = Fill::Solid(red);
+        a.stroke = Some(Stroke::new(blue, 1.0));
+        let l = doc.pages[0].layers[0].id;
+        doc.layer_mut(l).unwrap().shapes.push(a);
+        // Both ways in one go: a swap, not red to blue to red.
+        let n = replace_colors(&mut doc, &[(red, blue), (blue, red)]);
+        assert_eq!(n, 2);
+        let s = &doc.pages[0].layers[0].shapes[0];
+        assert_eq!(s.fill, Fill::Solid(blue));
+        assert_eq!(s.stroke.as_ref().unwrap().color, red);
     }
 }

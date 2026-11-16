@@ -1,5 +1,5 @@
 //! Small pictures of recent drawings for the Welcome Screen: the first
-//! page, at most 160 pixels on its long side, kept as PNG in the
+//! page with what lies beside it on the desktop (#2357), at most 160 pixels on its long side, kept as PNG in the
 //! preferences folder (`thumbnails/<hash of the path>.png`) when a drawing
 //! is opened or saved. The browser keeps no recent drawings, so none are
 //! made there.
@@ -54,16 +54,12 @@ pub fn clear() {
     }
 }
 
-/// The first page of the active drawing as a PNG thumbnail.
+/// The first page of the active drawing as a PNG thumbnail, with what
+/// lies beside it on the desktop (#2357).
 fn first_page_png(app: &App) -> Option<Vec<u8>> {
     let doc = app.doc();
     let page = doc.pages.first()?;
-    let longest = page.size.width.max(page.size.height);
-    if !(longest.is_finite() && longest > 0.0) {
-        return None;
-    }
-    let dpi = (SIZE * 25.4 / longest).clamp(0.5, 600.0);
-    let pm = tracedraw_render::render_page_image(doc, page.id, dpi)?;
+    let pm = tracedraw_render::render_whole_page_image(doc, page.id, SIZE)?;
     // The background is opaque white, so premultiplied data is plain RGBA.
     let img = image::RgbaImage::from_raw(pm.width(), pm.height(), pm.data().to_vec())?;
     crate::bitmap_fx::encode(&img)
@@ -176,5 +172,48 @@ mod tests {
         assert!(app.recent_thumbs.get(&drawing).is_some_and(|t| t.is_some()));
         let _ = std::fs::remove_file(&thumb);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// An object beside the page on the desktop is in the thumbnail too,
+    /// as in the reference program (#2357); one far out does not shrink
+    /// the page to a dot.
+    #[test]
+    fn the_thumbnail_shows_what_lies_beside_the_page() {
+        let mut app = App::headless();
+        let page = app.page_rect();
+        // A4 upright: a picture of the page alone is taller than wide.
+        let only = tracedraw_render::whole_page_area(app.doc(), app.page).expect("area");
+        assert_eq!(only, page);
+        app.new_shape(ShapeKind::Rect {
+            rect: Rect::new(page.x1 + 20.0, 20.0, page.x1 + 200.0, 100.0),
+            radius: 0.0,
+            corners: None,
+        });
+        let area = tracedraw_render::whole_page_area(app.doc(), app.page).expect("area");
+        assert!((area.x1 - (page.x1 + 200.0)).abs() < 1.0, "{area:?}");
+        let png = first_page_png(&app).expect("a thumbnail");
+        let img = image::load_from_memory(&png).expect("a PNG");
+        assert_eq!(img.width().max(img.height()), 160);
+        assert!(img.width() > img.height(), "page and object side by side");
+        // The object, on the right, is drawn (not white).
+        let rgba = img.to_rgba8();
+        let x = img.width() - img.width() / 8;
+        let any_ink = (0..img.height()).any(|yy| rgba.get_pixel(x, yy).0 != [255, 255, 255, 255]);
+        assert!(any_ink, "the object beside the page shows (column {x})");
+        // The thumbnail a .cdr file keeps shows it too; its page pictures
+        // stay the page alone.
+        let cdr = crate::app::cdr_previews(app.doc());
+        let t = cdr.thumbnail.expect("a .cdr thumbnail");
+        assert!(t.width > t.height, "{}x{}", t.width, t.height);
+        assert!(cdr.pages[0].height > cdr.pages[0].width);
+        // Far out on the desktop: the area stops a few page sizes away.
+        app.new_shape(ShapeKind::Rect {
+            rect: Rect::new(50_000.0, 0.0, 50_010.0, 10.0),
+            radius: 0.0,
+            corners: None,
+        });
+        let far = tracedraw_render::whole_page_area(app.doc(), app.page).expect("area");
+        let reach = page.width() * (1.0 + tracedraw_render::WHOLE_PAGE_REACH);
+        assert!(far.x1 <= reach + 1e-6, "{far:?}");
     }
 }

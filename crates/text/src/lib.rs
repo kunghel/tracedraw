@@ -26,6 +26,7 @@ pub mod hyphen;
 #[cfg(any(windows, all(test, not(target_arch = "wasm32"))))]
 mod installed;
 pub mod traits;
+pub mod type1;
 
 /// Points to millimetres.
 pub const PT_MM: f64 = 25.4 / 72.0;
@@ -485,6 +486,26 @@ fn code_page_name(name: &ttf_parser::name::Name) -> Option<String> {
     (!bad && !text.trim().is_empty()).then(|| text.into_owned())
 }
 
+/// The English name among a face's family `names` (US English first)
+/// when `family` is one of its names in another language, or a legacy
+/// name in another script (#1249); none when `family` is the English
+/// name, or a Latin legacy name ("Arial Narrow" of a face named "Arial"),
+/// or the face has no English name.
+pub fn english_name(family: &str, names: &[(String, fontdb::Language)]) -> Option<String> {
+    let english = |l: &fontdb::Language| format!("{l:?}").starts_with("English");
+    match names.iter().find(|(n, _)| n == family) {
+        Some((_, l)) if english(l) => return None,
+        None if family.is_ascii() => return None,
+        _ => {}
+    }
+    names
+        .iter()
+        .find(|(_, l)| *l == fontdb::Language::English_UnitedStates)
+        .or_else(|| names.iter().find(|(_, l)| english(l)))
+        .map(|(n, _)| n.clone())
+        .filter(|n| n != family && !n.trim().is_empty())
+}
+
 /// The legacy family names (name ID 1) a face's name table gives that
 /// differ from the families fontdb lists for it (the typographic family,
 /// name ID 16): "Arial Narrow" for a face fontdb files under "Arial".
@@ -712,6 +733,36 @@ fn load_code_page_named_in(db: &mut fontdb::Database, roots: &[std::path::PathBu
     }
 }
 
+/// Add the Type 1 fonts under `roots` (see [`type1::fonts_under`]),
+/// each turned into a font the engine reads. A face whose family and
+/// style a loaded font already has is left out: the font installed the
+/// usual way stays the one used.
+fn load_type1_in(db: &mut fontdb::Database, roots: &[std::path::PathBuf]) -> usize {
+    let key = |f: &fontdb::FaceInfo| {
+        f.families.first().map(|(n, _)| {
+            (
+                n.to_lowercase(),
+                f.weight.0,
+                f.style == fontdb::Style::Normal,
+            )
+        })
+    };
+    let have: std::collections::HashSet<_> = db.faces().filter_map(key).collect();
+    let mut added = 0;
+    for data in type1::fonts_under(roots) {
+        let mut probe = fontdb::Database::new();
+        probe.load_font_data(data.clone());
+        if probe.faces().filter_map(key).any(|k| have.contains(&k)) {
+            continue;
+        }
+        added += load_source(db, fontdb::Source::Binary(Arc::new(data))).len();
+    }
+    if added > 0 {
+        log::info!("{added} Type 1 font faces added");
+    }
+    added
+}
+
 /// How a family's fonts are built, for the icons of font lists.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Default)]
 pub enum FontKind {
@@ -773,6 +824,18 @@ pub struct FamilyInfo {
     pub feature_tags: Vec<[u8; 4]>,
     /// The folders its font files are in, sorted.
     pub folders: Vec<std::path::PathBuf>,
+    /// What the Font Manager's Favorites and collections remember its
+    /// faces by: each face's PostScript name, else its family and style
+    /// as `family|style` (see `catalog::FaceRecord::key`), sorted
+    /// (#867).
+    pub face_keys: Vec<String>,
+    /// A face of it is a font of the operating system's own folders,
+    /// which the Font Manager never uninstalls (#867).
+    pub system: bool,
+    /// The family's English name when the listed one is in another
+    /// language (a Hindi or Japanese name of the font), for the font
+    /// lists to show beside it (#1249).
+    pub english: Option<String>,
 }
 
 /// What a font list's filter reads of one face (#867).
@@ -1228,14 +1291,17 @@ fn right_to_left(c: char) -> bool {
 }
 
 /// `text` cut into runs of one direction, in the order they are seen,
-/// each with whether it runs right to left: the Unicode bidirectional
-/// algorithm, the text's first strong letter setting its direction. Text
-/// without right-to-left letters is one left-to-right run.
-fn bidi_runs(text: &str) -> Option<Vec<(Range<usize>, u8)>> {
-    if !text.chars().any(right_to_left) {
+/// each with its bidirectional level: the Unicode bidirectional
+/// algorithm, the text's first strong letter setting its direction, or
+/// right to left for a paragraph set to run right to left (`rtl`). Text
+/// without right-to-left letters in a left-to-right paragraph is one
+/// left-to-right run (`None`).
+fn bidi_runs(text: &str, rtl: bool) -> Option<Vec<(Range<usize>, u8)>> {
+    if !rtl && !text.chars().any(right_to_left) {
         return None;
     }
-    let info = unicode_bidi::BidiInfo::new(text, None);
+    let base = rtl.then_some(unicode_bidi::Level::rtl());
+    let info = unicode_bidi::BidiInfo::new(text, base);
     let mut out: Vec<(Range<usize>, u8)> = Vec::new();
     for (i, c) in text.char_indices() {
         let level = info.levels.get(i).map_or(0, |l| l.number());
@@ -1291,6 +1357,90 @@ fn display_order(glyphs: &[Glyph]) -> Option<Vec<usize>> {
         level -= 1;
     }
     Some(order)
+}
+
+/// One line of `text` as it is seen, its characters from left to right:
+/// the Unicode bidirectional algorithm, the first strong letter setting
+/// the direction, so the words of a Hebrew or Arabic name run from right
+/// to left and brackets inside them turn round. For a user interface
+/// whose text fields lay characters out in typed order (d#2122). `None`
+/// when the text holds no right-to-left letter.
+pub fn seen_order(text: &str) -> Option<String> {
+    let runs = bidi_runs(text, false)?;
+    let mut chars: Vec<(char, u8)> = Vec::new();
+    for (range, level) in runs {
+        chars.extend(text[range].chars().map(|c| (c, level)));
+    }
+    let base = if text.chars().find_map(strong_direction) == Some(true) {
+        1
+    } else {
+        0
+    };
+    // Spaces at the end take the paragraph's level, as on a line.
+    for (c, l) in chars.iter_mut().rev() {
+        if !c.is_whitespace() {
+            break;
+        }
+        *l = base;
+    }
+    let top = chars.iter().map(|&(_, l)| l).max().unwrap_or(0);
+    let lowest_odd = chars
+        .iter()
+        .map(|&(_, l)| l)
+        .filter(|l| l % 2 == 1)
+        .min()
+        .unwrap_or(top + 1);
+    let mut level = top;
+    while level >= lowest_odd && level > 0 {
+        let mut i = 0;
+        while i < chars.len() {
+            if chars[i].1 >= level {
+                let start = i;
+                while i < chars.len() && chars[i].1 >= level {
+                    i += 1;
+                }
+                chars[start..i].reverse();
+            } else {
+                i += 1;
+            }
+        }
+        level -= 1;
+    }
+    Some(
+        chars
+            .into_iter()
+            .map(|(c, l)| if l % 2 == 1 { mirror_bracket(c) } else { c })
+            .collect(),
+    )
+}
+
+/// Whether `c` is a strong right-to-left letter (`Some(true)`), a strong
+/// left-to-right one (`Some(false)`) or neither.
+fn strong_direction(c: char) -> Option<bool> {
+    if right_to_left(c) && c.is_alphabetic() {
+        Some(true)
+    } else if c.is_alphabetic() {
+        Some(false)
+    } else {
+        None
+    }
+}
+
+/// The bracket that faces the other way, for text seen right to left.
+fn mirror_bracket(c: char) -> char {
+    match c {
+        '(' => ')',
+        ')' => '(',
+        '[' => ']',
+        ']' => '[',
+        '{' => '}',
+        '}' => '{',
+        '<' => '>',
+        '>' => '<',
+        '\u{AB}' => '\u{BB}',
+        '\u{BB}' => '\u{AB}',
+        other => other,
+    }
 }
 
 /// `text` cut where its script changes (see [`script_of`]); what the
@@ -1369,6 +1519,7 @@ fn shapes_alike(a: &TextSpan, b: &TextSpan) -> bool {
         && a.tracking_pct == b.tracking_pct
         && a.baseline_shift_pt == b.baseline_shift_pt
         && a.offset_x_pct == b.offset_x_pct
+        && a.width_pct == b.width_pct
         && a.angle_deg == b.angle_deg
         && a.features == b.features
         && a.position == b.position
@@ -1552,6 +1703,10 @@ struct Glyph {
     /// The font glyph behind the outline, for writers that keep text as
     /// text; `None` for markers without an outline.
     src: Option<Arc<GlyphSource>>,
+    /// The paragraph's character spacing in `advance` (mm): the room it
+    /// puts before the next letter, left out at the end of a line when
+    /// the line is centred or set right (#2586).
+    spacing: f64,
 }
 
 /// Where a shaped glyph's outline comes from.
@@ -1657,6 +1812,8 @@ pub struct PathPlacement {
     /// The line's left end, x, and its baseline, y, in the straight layout.
     line_x0: f64,
     line_y: f64,
+    /// The line's length along the path.
+    width: f64,
     lift: f64,
     flip: bool,
     orientation: PathTextOrientation,
@@ -1676,8 +1833,19 @@ impl PathPlacement {
     pub fn unplace(&self, p: Point) -> Option<Point> {
         let (s, d) = self.baseline.nearest(p)?;
         let d = if self.flip { -d } else { d };
+        // Round a closed path the letters go on past its end from its
+        // start: a point there is that far along the line, not a whole
+        // round back (#2714: the letters past the path's start could not
+        // be clicked or selected). Measured from the line's middle, a
+        // point is placed on the nearer side of the gap.
+        let mut along = s - self.start;
+        let total = self.baseline.length();
+        if self.baseline.is_closed() && total > 0.0 {
+            let middle = self.width / 2.0;
+            along = (along - middle + total / 2.0).rem_euclid(total) - total / 2.0 + middle;
+        }
         Some(Point::new(
-            self.line_x0 + s - self.start,
+            self.line_x0 + along,
             self.line_y + d - self.lift,
         ))
     }
@@ -1727,6 +1895,11 @@ pub struct LineBox {
     /// The right x of each character's own glyph, `end_char - start_char`
     /// entries: with `starts`, the stretch a selection highlights.
     pub ends: Vec<f64>,
+    /// The paragraph's drop cap, on its first line: the right x of the
+    /// letter, the y of its baseline, lines below, and how many
+    /// characters it holds (a letter and its marks). They are the line's
+    /// first characters, clicked anywhere on the letter (#2576).
+    pub cap: Option<(f64, f64, usize)>,
 }
 
 impl LineBox {
@@ -1772,6 +1945,18 @@ impl TextLayout {
                 0.0
             }
         };
+        // On a drop cap, below its first line too: its character.
+        let on_cap = self.lines.iter().find_map(|l| {
+            let (right, base, chars) = l.cap?;
+            let left = l.starts.first().copied().unwrap_or(right);
+            (p.x >= left && p.x <= right && p.y <= l.baseline + l.ascent && p.y >= base)
+                .then_some((l, left, right, chars))
+        });
+        if let Some((l, left, right, chars)) = on_cap {
+            // The caret goes before or after it, by the nearer half.
+            let after = p.x > (left + right) / 2.0;
+            return Some(l.start_char + if after { chars } else { 0 });
+        }
         let in_band = self
             .lines
             .iter()
@@ -1857,6 +2042,9 @@ fn read_system_font_roots() -> Vec<std::path::PathBuf> {
     }
     #[cfg(all(unix, not(target_os = "macos"), not(target_os = "android")))]
     out.extend(fontconfig_font_roots(&|name| std::env::var(name).ok()));
+    // Adobe Fonts activated in Creative Cloud count as installed (#2741).
+    #[cfg(any(windows, target_os = "macos"))]
+    out.extend(adobe_font_dirs(&|name| std::env::var(name).ok()));
     let mut seen = std::collections::HashSet::new();
     out.retain(|dir| seen.insert(dir.clone()));
     out
@@ -1970,6 +2158,88 @@ fn fontconfig_font_roots(var: &dyn Fn(&str) -> Option<String>) -> Vec<std::path:
     out
 }
 
+/// The folders Creative Cloud keeps the Adobe Fonts it activates in
+/// (#2741): `Adobe\CoreSync\plugins\livetype` under the roaming
+/// `APPDATA` on Windows, under `~/Library/Application Support` on macOS,
+/// in its hidden `.r` folder (`r` in older versions). Windows' font
+/// registry does not list them and their files have no extension, so
+/// neither the font database nor the installed fonts' list finds them.
+/// `var` reads an environment variable.
+#[cfg_attr(not(any(windows, target_os = "macos")), allow(dead_code))]
+fn adobe_font_dirs(var: &dyn Fn(&str) -> Option<String>) -> Vec<std::path::PathBuf> {
+    let mut bases = Vec::new();
+    if let Some(app_data) = var("APPDATA") {
+        bases.push(std::path::PathBuf::from(app_data));
+    }
+    if let Some(home) = var("HOME") {
+        bases.push(
+            std::path::PathBuf::from(home)
+                .join("Library")
+                .join("Application Support"),
+        );
+    }
+    let mut out = Vec::new();
+    for base in bases {
+        let livetype = base
+            .join("Adobe")
+            .join("CoreSync")
+            .join("plugins")
+            .join("livetype");
+        for name in [".r", "r"] {
+            out.push(livetype.join(name));
+        }
+    }
+    out
+}
+
+/// Whether `head`, a file's first bytes, starts a font: OpenType with
+/// outlines or curves, TrueType or a collection.
+#[cfg_attr(not(any(windows, target_os = "macos")), allow(dead_code))]
+fn starts_a_font(head: &[u8]) -> bool {
+    matches!(
+        head.get(..4),
+        Some(b"OTTO") | Some(b"true") | Some(b"ttcf") | Some([0, 1, 0, 0])
+    )
+}
+
+/// Add the font files right in `dirs` whatever their names, as Adobe's
+/// have no extension (#2741), when no loaded face comes from them yet.
+/// Files that do not start as a font (its lists and settings) are left.
+/// Gives the number of faces added.
+#[cfg(not(target_arch = "wasm32"))]
+#[cfg_attr(not(any(windows, target_os = "macos")), allow(dead_code))]
+fn load_font_files_in(db: &mut fontdb::Database, dirs: &[std::path::PathBuf]) -> usize {
+    use std::io::Read;
+    let loaded: std::collections::HashSet<std::path::PathBuf> = db
+        .faces()
+        .filter_map(|f| match &f.source {
+            fontdb::Source::File(p) | fontdb::Source::SharedFile(p, _) => Some(p.clone()),
+            fontdb::Source::Binary(_) => None,
+        })
+        .collect();
+    let mut added = 0;
+    for dir in dirs {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if !entry.file_type().is_ok_and(|k| k.is_file()) || loaded.contains(&path) {
+                continue;
+            }
+            let mut head = [0u8; 4];
+            let is_font = std::fs::File::open(&path)
+                .and_then(|mut f| f.read_exact(&mut head))
+                .is_ok()
+                && starts_a_font(&head);
+            if is_font {
+                added += load_source(db, fontdb::Source::File(path)).len();
+            }
+        }
+    }
+    added
+}
+
 /// The folder `file` counts as in: the deepest of `roots` it lies
 /// under, else the folder it is in (#867).
 fn folder_under(
@@ -2000,6 +2270,20 @@ impl FontSystem {
         load_code_page_named_in(&mut db, &system_font_roots());
         #[cfg(windows)]
         installed::drop_unregistered(&mut db);
+        // Type 1 fonts (.pfb with its .pfm) in the system's font folders,
+        // as older Windows systems installed many (#193).
+        #[cfg(not(target_arch = "wasm32"))]
+        load_type1_in(&mut db, &system_font_roots());
+        // Adobe Fonts activated in Creative Cloud (#2741), after the
+        // registry's list, which does not name them.
+        #[cfg(any(windows, target_os = "macos"))]
+        {
+            let added =
+                load_font_files_in(&mut db, &adobe_font_dirs(&|name| std::env::var(name).ok()));
+            if added > 0 {
+                log::info!("{added} Adobe font faces added");
+            }
+        }
         if let Ok(extra) = EXTRA_FONTS.lock() {
             for data in extra.iter() {
                 let source: Arc<dyn AsRef<[u8]> + Sync + Send> = data.clone();
@@ -2545,6 +2829,24 @@ impl FontSystem {
         .flatten()
     }
 
+    /// Calls `f` with the family name, weight, file data and face index
+    /// of every upright face loaded (installed or brought by documents),
+    /// for the trace's comparison of small print with fonts.
+    pub fn each_upright_face(&self, mut f: impl FnMut(&str, u16, &[u8], u32)) {
+        let db = self.db();
+        let faces: Vec<(fontdb::ID, String, u16)> = db
+            .faces()
+            .filter(|face| face.style == fontdb::Style::Normal)
+            .filter_map(|face| {
+                let name = face.families.first()?.0.clone();
+                Some((face.id, name, face.weight.0))
+            })
+            .collect();
+        for (id, name, weight) in faces {
+            db.with_face_data(id, |d, i| f(&name, weight, d, i));
+        }
+    }
+
     /// Raw file data and face index of the first installed family in
     /// `candidates`, for registering UI fallback fonts (scripts the bundled
     /// UI font lacks: CJK, Arabic, Devanagari, Bengali...).
@@ -2780,10 +3082,18 @@ impl FontSystem {
         let mut embedding: Option<catalog::Embedding> = None;
         let mut feature_tags: Vec<[u8; 4]> = Vec::new();
         let mut folders: Vec<std::path::PathBuf> = Vec::new();
+        let mut face_keys: Vec<String> = Vec::new();
+        let mut system = false;
+        #[cfg(not(target_arch = "wasm32"))]
+        let system_roots = system_font_roots();
+        let mut english: Option<String> = None;
         for id in ids {
             let Some(info) = db.face(id) else {
                 continue;
             };
+            if english.is_none() {
+                english = english_name(family, &info.families);
+            }
             let read = db.with_face_data(id, |data, index| {
                 let f = ttf_parser::Face::parse(data, index).ok()?;
                 let tables = f.tables();
@@ -2824,6 +3134,7 @@ impl FontSystem {
                 if let Some(dir) = folder_under(p, roots) {
                     folders.push(dir);
                 }
+                system |= system_roots.iter().any(|r| p.starts_with(r));
             }
             if class == traits::FontClass::Unknown {
                 class = face_traits.class;
@@ -2846,6 +3157,11 @@ impl FontSystem {
                     (true, true) => "Bold Italic",
                 }
                 .to_string()
+            });
+            face_keys.push(if info.post_script_name.is_empty() {
+                format!("{family}|{name}")
+            } else {
+                info.post_script_name.clone()
             });
             if !faces.iter().any(|f| f.name == name) {
                 faces.push(FaceStyle {
@@ -2882,6 +3198,13 @@ impl FontSystem {
                 folders.dedup();
                 folders
             },
+            face_keys: {
+                face_keys.sort();
+                face_keys.dedup();
+                face_keys
+            },
+            system,
+            english,
         })
     }
 
@@ -3262,7 +3585,7 @@ impl FontSystem {
             req.spans
                 .iter()
                 .map(|s| format!(
-                    "{}|{}|{}|{}|{}|{}|{}|{}|{}|{:?}|{:?}|{}|{}|{:?}|{:?}|{:?}|{:?}|{}",
+                    "{}|{}|{}|{}|{}|{}|{}|{}|{}|{}|{:?}|{:?}|{}|{}|{:?}|{:?}|{:?}|{:?}|{}",
                     s.layout_only,
                     s.font_family,
                     s.size_pt,
@@ -3271,6 +3594,7 @@ impl FontSystem {
                     s.tracking_pct,
                     s.baseline_shift_pt,
                     s.offset_x_pct,
+                    s.width_pct,
                     s.angle_deg,
                     s.underline,
                     s.strikethrough,
@@ -3435,7 +3759,7 @@ impl FontSystem {
         // The runs of each direction, in text order, each with its level
         // (#628); text with no right-to-left letter is one run whose
         // direction harfbuzz takes from its script.
-        let runs = bidi_runs(text);
+        let runs = bidi_runs(text, para.direction.is_right_to_left());
         let runs: Vec<(Range<usize>, Option<u8>)> = match runs {
             Some(r) => r.into_iter().map(|(r, l)| (r, Some(l))).collect(),
             None => vec![(0..text.len(), None)],
@@ -3683,6 +4007,14 @@ impl FontSystem {
         let synth_bold = target >= 600 && weight < 600 && !own_weight;
         let synth_italic = span.italic && !slanted && !own_slant;
         let tracking = span.tracking_pct / 100.0 * full_size_pt * PT_MM;
+        // Character width (#2190): each glyph and its advance narrowed or
+        // widened about its origin; the tracking stays with the size.
+        let width = if span.width_pct.is_finite() {
+            (span.width_pct / 100.0).clamp(0.01, 100.0)
+        } else {
+            1.0
+        };
+        let widen = (width != 1.0).then(|| Affine::scale_non_uniform(width, 1.0));
         let mut baseline = span.baseline_shift_pt * PT_MM;
         if synthetic {
             baseline += span.position.synthetic_shift() * full_size_pt * PT_MM;
@@ -3833,8 +4165,8 @@ impl FontSystem {
                 };
                 face.outline_glyph(g, &mut sink);
                 Arc::new(HyphenGlyph {
-                    path: sink.path,
-                    advance: face.glyph_hor_advance(g).unwrap_or(0) as f64 * scale,
+                    path: widen.map_or_else(|| sink.path.clone(), |w| w * sink.path.clone()),
+                    advance: face.glyph_hor_advance(g).unwrap_or(0) as f64 * scale * width,
                 })
             })
         };
@@ -3868,6 +4200,9 @@ impl FontSystem {
                 let g2 = Affine::translate((off, 0.0)) * gp.clone();
                 gp.extend(g2.elements().iter().copied());
             }
+            if let Some(w) = widen {
+                gp = w * gp;
+            }
             let cluster = chars.iter().position(|(i, _)| *i == info.cluster as usize);
             let ch = cluster
                 .and_then(|k| chars.get(k))
@@ -3877,6 +4212,7 @@ impl FontSystem {
                 Some(g) => face.glyph_hor_advance(g).unwrap_or(0) as f64 * scale,
                 None => pos.x_advance as f64 * scale,
             };
+            adv *= width;
             if ch == ' ' {
                 adv *= word_scale;
             }
@@ -3920,10 +4256,16 @@ impl FontSystem {
                 claimed.push(start);
                 text.get(start..cluster_end).unwrap_or("").to_string()
             };
-            let mut local = Affine::translate((ring_shift, baseline)) * Affine::scale(size_mm);
+            // As the outline above: slanted, widened, then moved into the
+            // ring's room.
+            let mut local = Affine::translate((0.0, baseline)) * Affine::scale(size_mm);
             if synth_italic {
                 local = Affine::new([1.0, 0.0, 0.2, 1.0, 0.0, 0.0]) * local;
             }
+            if let Some(w) = widen {
+                local = w * local;
+            }
+            local = Affine::translate((ring_shift, 0.0)) * local;
             if let Some(a) = place {
                 local = a * local;
             }
@@ -3935,10 +4277,21 @@ impl FontSystem {
                 // A ring drawn round the glyph goes with it as curves.
                 exact: !synth_bold && !(ring && !ch.is_whitespace()),
             });
+            // Character spacing goes between letters: a space takes the
+            // word spacing alone, and the letter before it gives back its
+            // character spacing, as CorelDRAW lays text out (#2586).
+            let word_break = ch == ' ' || ch == '\u{3000}';
+            let spacing = if word_break { 0.0 } else { char_spacing };
+            if word_break && !rtl {
+                if let Some(prev) = out.last_mut().filter(|g| g.spacing != 0.0 && !g.rtl) {
+                    prev.advance -= prev.spacing;
+                    prev.spacing = 0.0;
+                }
+            }
             out.push(Glyph {
                 path: Arc::new(gp),
-                advance: adv + tracking + char_spacing,
-                x_offset: pos.x_offset as f64 * scale,
+                advance: adv + tracking + spacing,
+                x_offset: pos.x_offset as f64 * scale * width,
                 y_offset: pos.y_offset as f64 * scale,
                 ch,
                 char_idx: char_base + cluster.unwrap_or(0),
@@ -3948,6 +4301,7 @@ impl FontSystem {
                 span: span_idx,
                 joins,
                 hyphen_after: hyphen_glyph.clone(),
+                spacing,
                 src: Some(src),
             });
         }
@@ -4120,6 +4474,7 @@ impl FontSystem {
                                 joins: false,
                                 hyphen_after: None,
                                 src: None,
+                                spacing: 0.0,
                             })
                         }
                         char_idx += 1;
@@ -4269,8 +4624,15 @@ impl FontSystem {
         // line has (the column, less indents, drop caps and the objects the
         // text wraps around) and give every line its place.
         let columns = para.columns.max(1) as usize;
-        let col_width = frame
-            .map(|f| ((f.width - para.gutter * (columns as f64 - 1.0)) / columns as f64).max(1.0));
+        // Each column's left edge and width: equal ones, or widths of
+        // their own, in the order the text flows (#2192).
+        let col_boxes = frame.map(|f| para.column_boxes(f.width));
+        let col_w = |col: usize| -> f64 {
+            col_boxes
+                .as_ref()
+                .and_then(|b| b.get(col.min(columns - 1)))
+                .map_or(1.0, |b| b.1)
+        };
         let frame_h = frame.map(|f| f.height);
         let artistic = frame.is_none();
         // Vertical text does not wrap around objects.
@@ -4308,8 +4670,12 @@ impl FontSystem {
                 _ => (col, next),
             }
         };
-        let col_x_of =
-            |col: usize| col.min(columns - 1) as f64 * (col_width.unwrap_or(0.0) + para.gutter);
+        let col_x_of = |col: usize| -> f64 {
+            col_boxes
+                .as_ref()
+                .and_then(|b| b.get(col.min(columns - 1)))
+                .map_or(0.0, |b| b.0)
+        };
         let mut lines: Vec<Line> = Vec::new();
         let mut overflow = false;
         // The first line that does not fit the frame.
@@ -4322,19 +4688,41 @@ impl FontSystem {
         // its letter (from the column's left), the baseline of the last
         // line it spans and its column. The next paragraphs' lines beside
         // it are narrowed as its own are, and a paragraph with a drop cap
-        // of its own starts below it, so the letters do not overlap.
-        let mut cap_below: Option<(f64, f64, usize)> = None;
+        // of its own starts below it, so the letters do not overlap. Then
+        // how far its ink reaches below that baseline (a g, y or j hangs
+        // over the next line, #2575).
+        let mut cap_below: Option<(f64, f64, usize, f64)> = None;
         'paragraphs: for (pi, glyphs) in paragraphs.iter().enumerate() {
             let (_, ps) = style_of(pi);
+            // A paragraph running right to left (#2670): its indents
+            // change sides, the first line's going to the right edge.
+            let mirrored: ParagraphStyle;
+            let (ps, first_right) = if ps.direction.is_right_to_left() && !vertical {
+                let mut m = ps.clone();
+                m.left_indent = ps.right_indent;
+                m.right_indent = ps.left_indent;
+                m.first_line_indent = 0.0;
+                mirrored = m;
+                (&mirrored, ps.first_line_indent)
+            } else {
+                (ps, 0.0)
+            };
             let m_para = glyphs
                 .first()
                 .map(|g| metrics[g.span])
                 .unwrap_or_else(|| metrics[0]);
-            let bullet = if ps.bullets { ps.bullet_indent } else { 0.0 };
+            // The text starts past the bullet's distance from the frame
+            // and its indent; the lines after the first hang there too,
+            // or go back under the bullet (#1443).
+            let bullet = if ps.bullets {
+                ps.bullet.offset.max(0.0) + ps.bullet_indent
+            } else {
+                0.0
+            };
             let indent_first = ps.left_indent + ps.first_line_indent + bullet;
-            let indent_rest = ps.left_indent + bullet;
+            let indent_rest = ps.left_indent + if ps.bullet.no_hanging { 0.0 } else { bullet };
             let para_start = para_starts.get(pi).copied().unwrap_or(0);
-            let Some(w) = col_width else {
+            if col_boxes.is_none() {
                 // Artistic text: one line a paragraph.
                 let m = line_metrics(glyphs, metrics, m_para);
                 let advance = if pi == 0 {
@@ -4362,14 +4750,16 @@ impl FontSystem {
             };
             // A drop cap takes the first glyph out of the first line and
             // narrows the lines beside it.
-            let cap = glyphs.first().filter(|_| ps.drop_cap_lines > 1).map(|g| {
+            let cap = glyphs.first().filter(|_| ps.drop_cap_lines > 1).map(|_| {
                 let step = ps.line_step(m_para.line_height, m_para.size);
                 let n = ps.drop_cap_lines as f64;
-                let (scale, _) = drop_cap_placement(&g.path, n, step, 0.0, m_para.ascent);
+                let (outline, advance) = drop_cap_outline(glyphs);
+                let (scale, _) = drop_cap_placement(&outline, n, step, 0.0, m_para.ascent);
                 DropCap {
-                    width: g.advance * scale + 1.0,
+                    width: drop_cap_extent(&outline, advance).1 * scale + 1.0,
+                    depth: drop_cap_depth(&outline) * scale,
                     lines: ps.drop_cap_lines as usize,
-                    glyph_advance: g.advance,
+                    glyph_advance: advance,
                 }
             });
             let mut br = Breaker::new(
@@ -4381,12 +4771,13 @@ impl FontSystem {
                 pi,
                 para_start,
             );
-            if cap_below.is_some_and(|(_, _, c)| c != col) {
+            if cap_below.is_some_and(|(_, _, c, _)| c != col) {
                 cap_below = None;
             }
-            if let (Some(_), Some((_, last, _))) = (cap, cap_below) {
-                // Its first line goes on the line after the cap above.
-                y = y.min(last);
+            if let (Some(_), Some((_, last, _, depth))) = (cap, cap_below) {
+                // Its first line goes on the line after the cap above,
+                // below the ink hanging from it.
+                y = y.min(last - depth);
                 cap_below = None;
             }
             let mut row = 0usize;
@@ -4397,9 +4788,11 @@ impl FontSystem {
                 };
                 let mut a = ps.line_step(m.line_height, m.size);
                 if first {
-                    a += ps.space_before;
+                    // In percent of the character height, the space
+                    // follows the line's font (#2613).
+                    a += ps.space_before_mm(m.line_height);
                     if pp != pi {
-                        a += style_of(pp).1.space_after;
+                        a += style_of(pp).1.space_after_mm(m.line_height);
                     }
                 }
                 a
@@ -4407,12 +4800,21 @@ impl FontSystem {
             loop {
                 let first = br.first;
                 let indent = if first { indent_first } else { indent_rest };
+                let right_indent = ps.right_indent + if first { first_right } else { 0.0 };
+                // Whether the next line still stands beside the cap whose
+                // last baseline is `last`: up to that line, and past it
+                // while the line's letters would reach the ink hanging
+                // below it.
+                let beside = |last: f64, depth: f64| {
+                    let m_est = br.peek().map(|g| metrics[g.span]).unwrap_or(m_para);
+                    let next = y - advance_of(&m_est, first, prev_para);
+                    next >= last - 1e-6 || (depth > 0.05 && next + m_est.ascent > last - depth)
+                };
                 let cap_w = match (cap, cap_below) {
                     (Some(c), _) if row < c.lines => c.width,
-                    (None, Some((right, last, c))) if c == col => {
-                        let m_est = br.peek().map(|g| metrics[g.span]).unwrap_or(m_para);
-                        let next = y - advance_of(&m_est, first, prev_para);
-                        if next >= last - 1e-6 {
+                    (Some(c), Some((_, last, _, depth))) if beside(last, depth) => c.width,
+                    (None, Some((right, last, c, depth))) if c == col => {
+                        if beside(last, depth) {
                             (right - indent).max(0.0)
                         } else {
                             cap_below = None;
@@ -4426,7 +4828,14 @@ impl FontSystem {
                     Some(c) if first => c.glyph_advance,
                     _ => 0.0,
                 };
-                let base = (w - indent - ps.right_indent).max(1.0);
+                // The width of the column the line goes in: the one it
+                // is expected to land in, for columns of their own widths.
+                let est_col = {
+                    let m_est = br.peek().map(|g| metrics[g.span]).unwrap_or(m_para);
+                    row_at(y, col, advance_of(&m_est, first, prev_para), &m_est).0
+                };
+                let w = col_w(est_col);
+                let base = (w - indent - right_indent).max(1.0);
                 let room = |seg: f64| (seg + back).max(1.0);
                 let mut row_lines: Vec<Line> = Vec::new();
                 let (row_col, row_y);
@@ -4443,7 +4852,7 @@ impl FontSystem {
                     row_col = c;
                     row_y = ny;
                     row_lines.push(Line {
-                        avail: w - indent - ps.right_indent - cap_w,
+                        avail: w - indent - right_indent - cap_w,
                         ..line
                     });
                 } else {
@@ -4461,7 +4870,7 @@ impl FontSystem {
                     let segs = loop {
                         let col_x = col_x_of(c);
                         let lo = col_x + indent;
-                        let hi = col_x + w - ps.right_indent;
+                        let hi = col_x + col_w(c) - right_indent;
                         if c >= columns || guard > 20_000 {
                             break vec![(lo + cap_w, hi.max(lo + cap_w + 1.0))];
                         }
@@ -4561,7 +4970,11 @@ impl FontSystem {
                             line.cap_x = Some(line.x0 - cap_w);
                         }
                         if ps.bullets {
-                            line.bullet_x = Some(line.x0 - cap_w - indent + ps.left_indent);
+                            line.bullet_x = Some(
+                                line.x0 - cap_w - indent
+                                    + ps.left_indent
+                                    + ps.bullet.offset.max(0.0),
+                            );
                         }
                     }
                     lines.push(line);
@@ -4570,7 +4983,8 @@ impl FontSystem {
                     // The baseline of the cap's last line, in case the
                     // paragraph ends before it.
                     let step = ps.line_step(m_para.line_height, m_para.size);
-                    cap_below = Some((indent + c.width, l.y - (c.lines as f64 - 1.0) * step, col));
+                    let last = l.y - (c.lines as f64 - 1.0) * step;
+                    cap_below = Some((indent + c.width, last, col, c.depth));
                 }
                 row += 1;
                 // The rest does not show: no need to break it into lines.
@@ -4588,6 +5002,11 @@ impl FontSystem {
         // room but are not drawn (a text drawn in parts, one per character
         // colour).
         let span_drawn = |span: usize| spans.get(span).is_none_or(|s| !s.layout_only);
+        // Each paragraph's bullet number (#1443).
+        let bullet_nums = tracedraw_core::bullet_numbers((0..paragraphs.len()).map(|pi| {
+            let (_, ps) = style_of(pi);
+            (ps.bullets, &ps.bullet)
+        }));
         let mut path = BezPath::new();
         let mut glyphs_out = GlyphLayout::default();
         let mut glyph_count = 0usize;
@@ -4647,7 +5066,6 @@ impl FontSystem {
             let m = line.metrics;
             let (align, ps) = style_of(line.para);
             let align = *align;
-            let step = ps.line_step(m.line_height, m.size);
             let y = if mirror {
                 mirrored_baseline(line.y, m.ascent, m.descent)
             } else {
@@ -4665,9 +5083,24 @@ impl FontSystem {
             // baseline of the Nth line.
             let mut glyphs: &[Glyph] = &line.glyphs;
             let x0 = line.x0;
+            // The drop cap's character and where its letter stands: from,
+            // to, left and right x and its baseline.
+            let mut cap_box: Option<(usize, usize, f64, f64, f64)> = None;
             if let (Some(cap_x), Some(g), false) = (line.cap_x, glyphs.first(), artistic) {
                 let n = ps.drop_cap_lines as f64;
-                let (scale, baseline) = drop_cap_placement(&g.path, n, step, line.y, m.ascent);
+                // The letter and the marks of its cluster (an accent, the
+                // vowel sign of a syllable) drop together: a mark left in
+                // the line stood over the text beside the letter (#2575).
+                let count = drop_cap_glyphs(glyphs);
+                let (outline, advance) = drop_cap_outline(glyphs);
+                // Sized by its own paragraph's first letter, as the room
+                // beside it was: a larger word on the first line made the
+                // letter wider than its room (#2575).
+                let mp = metrics.get(g.span).copied().unwrap_or(m);
+                let cap_step = ps.line_step(mp.line_height, mp.size);
+                let (scale, baseline) =
+                    drop_cap_placement(&outline, n, cap_step, line.y, mp.ascent);
+                let (lead, extent) = drop_cap_extent(&outline, advance);
                 // Mirrored: the cap's band runs from the first line's top
                 // to its own descent, its baseline on the band's left.
                 let baseline = if mirror {
@@ -4675,21 +5108,58 @@ impl FontSystem {
                 } else {
                     baseline
                 };
-                let a = Affine::translate((cap_x, baseline)) * Affine::scale(scale);
-                let a = orient(a, g, m.ascent * scale);
-                if span_drawn(g.span) {
-                    place_glyph(collect, a, g, &mut line_glyphs);
-                    let gp = a * g.path.as_ref().clone();
-                    line_path.extend(gp.elements().iter().copied());
+                let to = glyphs
+                    .get(count)
+                    .filter(|n| n.char_idx > g.char_idx)
+                    .map_or_else(
+                        || {
+                            glyphs[..count]
+                                .iter()
+                                .map(|c| c.char_end)
+                                .max()
+                                .unwrap_or(g.char_end)
+                        },
+                        |n| n.char_idx,
+                    )
+                    .max(g.char_idx + 1);
+                cap_box = Some((g.char_idx, to, cap_x, cap_x + extent * scale, baseline));
+                let mut pen_x = 0.0;
+                for c in &glyphs[..count] {
+                    let a = Affine::translate((cap_x + lead * scale, baseline))
+                        * Affine::scale(scale)
+                        * Affine::translate((pen_x + c.x_offset, c.y_offset));
+                    let a = orient(a, c, m.ascent * scale);
+                    if span_drawn(c.span) {
+                        place_glyph(collect, a, c, &mut line_glyphs);
+                        let gp = a * c.path.as_ref().clone();
+                        line_path.extend(gp.elements().iter().copied());
+                    }
+                    pen_x += c.advance;
                 }
-                glyphs = &glyphs[1..];
-                glyph_count += 1;
+                glyphs = &glyphs[count..];
+                glyph_count += count;
             }
             // Bullet.
             if let (Some(bx), false) = (line.bullet_x, artistic) {
                 let first_span = glyphs.first().map(|g| g.span).unwrap_or(0);
                 if let Some(span) = spans.get(first_span).filter(|_| span_drawn(first_span)) {
-                    let b = self.shape_run(span, 0, &ps.bullet_char, size_scale, 0, ps, &[]);
+                    // The symbol or the paragraph's number, in the
+                    // bullet's own font, size and shift (#1443).
+                    let label = ps.bullet.label(
+                        &ps.bullet_char,
+                        bullet_nums.get(line.para).copied().unwrap_or(1),
+                    );
+                    let mut bspan = span.clone();
+                    if let Some(f) = ps.bullet.font.as_ref().filter(|f| !f.is_empty()) {
+                        bspan.font_family = f.clone();
+                    }
+                    if ps.bullet.size_pct.is_finite() && ps.bullet.size_pct > 0.0 {
+                        bspan.size_pt *= (ps.bullet.size_pct / 100.0).clamp(0.01, 100.0);
+                    }
+                    if ps.bullet.baseline_shift.is_finite() {
+                        bspan.baseline_shift_pt += ps.bullet.baseline_shift / PT_MM;
+                    }
+                    let b = self.shape_run(&bspan, 0, &label, size_scale, 0, ps, &[]);
                     for g in &b {
                         let a = orient(Affine::translate((bx, y)), g, m.ascent);
                         place_glyph(collect, a, g, &mut line_glyphs);
@@ -4704,6 +5174,21 @@ impl FontSystem {
             let content_w = line_width(glyphs, ps, x0 - col_start, tab_step);
             let hyphen_w = line.hyphen.as_ref().map(|h| h.advance).unwrap_or(0.0);
             let total_w = content_w + hyphen_w;
+            // A centred or right-set line is placed by its letters: the
+            // spaces it ends with and the character spacing after its last
+            // letter take no room, as in CorelDRAW (#2586).
+            let total_w = match align {
+                TextAlign::Center | TextAlign::Right if line.hyphen.is_none() => {
+                    let kept = glyphs
+                        .iter()
+                        .rposition(|g| !matches!(g.ch, ' ' | '\u{3000}' | '\n' | '\r'))
+                        .map_or(0, |i| i + 1);
+                    let trimmed = &glyphs[..kept];
+                    let w = line_width(trimmed, ps, x0 - col_start, tab_step);
+                    w - trimmed.last().map_or(0.0, |g| g.spacing)
+                }
+                _ => total_w,
+            };
             let (dx, extras) = match align {
                 TextAlign::Left | TextAlign::None => (0.0, Vec::new()),
                 TextAlign::Center => (((avail.min(1e9)) - total_w).max(0.0) / 2.0, Vec::new()),
@@ -4780,6 +5265,12 @@ impl FontSystem {
                     }
                 }
             };
+            // The drop cap's character covers its letter, so a click or a
+            // drag selects it for its colour or font (#2576); the caret
+            // after it stands where the line's text starts.
+            if let Some((from, to, a, b, _)) = cap_box {
+                record(from, to, a, b, false);
+            }
             // The first pen x of the right-to-left cluster being placed,
             // so the glyphs of one cluster (a letter and its marks) count
             // as one.
@@ -4903,6 +5394,7 @@ impl FontSystem {
                 edges,
                 starts,
                 ends,
+                cap: cap_box.map(|(from, to, _, right, base)| (right, base, to - from)),
             });
             if let Some(h) = &line.hyphen {
                 if line.glyphs.last().is_none_or(|g| span_drawn(g.span)) {
@@ -5139,6 +5631,61 @@ fn drop_cap_placement(
         lines
     };
     (scale.max(1.0), last)
+}
+
+/// How many glyphs at the start of `glyphs` a drop cap takes: the first
+/// and the further glyphs of its cluster (marks, the parts of a syllable
+/// shaped as one cluster).
+fn drop_cap_glyphs(glyphs: &[Glyph]) -> usize {
+    let Some(first) = glyphs.first() else {
+        return 0;
+    };
+    1 + glyphs
+        .iter()
+        .skip(1)
+        .take_while(|g| {
+            g.char_idx >= first.char_idx && g.char_idx < first.char_end.max(first.char_idx + 1)
+        })
+        .count()
+}
+
+/// The outline of a drop cap's glyphs (see [`drop_cap_glyphs`]) at text
+/// size, from the pen origin, and their advance.
+fn drop_cap_outline(glyphs: &[Glyph]) -> (BezPath, f64) {
+    let n = drop_cap_glyphs(glyphs);
+    let mut path = BezPath::new();
+    let mut pen = 0.0;
+    for g in glyphs.iter().take(n) {
+        let gp = Affine::translate((pen + g.x_offset, g.y_offset)) * g.path.as_ref().clone();
+        path.extend(gp.elements().iter().copied());
+        pen += g.advance;
+    }
+    (path, pen)
+}
+
+/// How far a drop cap's ink reaches below its baseline at text size (0
+/// for a letter standing on it).
+fn drop_cap_depth(glyph: &BezPath) -> f64 {
+    let y0 = glyph.bounding_box().y0;
+    if y0.is_finite() {
+        (-y0).max(0.0)
+    } else {
+        0.0
+    }
+}
+
+/// How far a drop cap's letter moves right so its ink starts at its
+/// place, and the width it takes from there, at text size: the advance,
+/// or the ink where it reaches past it (italic letters, a W or a J lean
+/// out of their advance, and scaled up by the cap they ran over the text
+/// beside them, #2575).
+fn drop_cap_extent(glyph: &BezPath, advance: f64) -> (f64, f64) {
+    let ink = glyph.bounding_box();
+    if !(ink.x0.is_finite() && ink.x1.is_finite()) || ink.x1 <= ink.x0 {
+        return (0.0, advance.max(0.0));
+    }
+    let lead = (-ink.x0).max(0.0);
+    (lead, (advance + lead).max(ink.x1 + lead).max(0.0))
 }
 
 /// Width of a line's glyphs with tab expansion, for a line starting
@@ -5560,6 +6107,8 @@ impl<'a> Breaker<'a> {
 struct DropCap {
     /// The indent of the lines beside it, mm.
     width: f64,
+    /// How far its ink reaches below its baseline, mm (a g, y or j).
+    depth: f64,
     /// How many lines it spans.
     lines: usize,
     /// The advance of the letter at text size (it leaves the first line).
@@ -5636,6 +6185,7 @@ fn place_on_path(
         start,
         line_x0: 0.0,
         line_y: 0.0,
+        width: text_w,
         lift,
         flip: tp.flipped(),
         orientation: tp.orientation,
@@ -5818,6 +6368,68 @@ fn decoration_rects(
 mod tests {
     use super::*;
 
+    /// d#2122: a Hebrew file name of two words reads right to left, the
+    /// second word left of the first, with Latin and digits kept left to
+    /// right inside it; a name without right-to-left letters is left alone.
+    #[test]
+    fn a_hebrew_name_is_seen_right_to_left() {
+        // "שלום עולם": the first word (shin lamed vav mem) on the right.
+        let name = "\u{5E9}\u{5DC}\u{5D5}\u{5DD} \u{5E2}\u{5D5}\u{5DC}\u{5DD}";
+        assert_eq!(
+            seen_order(name).as_deref(),
+            Some("\u{5DD}\u{5DC}\u{5D5}\u{5E2} \u{5DD}\u{5D5}\u{5DC}\u{5E9}")
+        );
+        // Digits and a Latin word keep their own order inside it.
+        let mixed = "\u{5D0}\u{5D1} 2026 abc";
+        assert_eq!(
+            seen_order(mixed).as_deref(),
+            Some("abc 2026 \u{5D1}\u{5D0}")
+        );
+        // Brackets turn round in right-to-left text.
+        assert_eq!(
+            seen_order("\u{5D0}(\u{5D1})").as_deref(),
+            Some("(\u{5D1})\u{5D0}")
+        );
+        // A Latin name with one Hebrew word keeps its own order around it.
+        assert_eq!(
+            seen_order("logo \u{5D0}\u{5D1}.tdraw").as_deref(),
+            Some("logo \u{5D1}\u{5D0}.tdraw")
+        );
+        assert_eq!(seen_order("plain name"), None);
+    }
+
+    #[test]
+    fn a_name_in_another_language_shows_its_english_name() {
+        use fontdb::Language as L;
+        let names = vec![
+            ("Mangal".to_string(), L::English_UnitedStates),
+            (
+                "\u{092e}\u{0902}\u{0917}\u{0932}".to_string(),
+                L::Hindi_India,
+            ),
+        ];
+        let hindi = "\u{092e}\u{0902}\u{0917}\u{0932}";
+        assert_eq!(english_name(hindi, &names).as_deref(), Some("Mangal"));
+        assert_eq!(english_name("Mangal", &names), None, "already English");
+        // A Latin legacy name of a face filed under another family.
+        let arial = vec![("Arial".to_string(), L::English_UnitedStates)];
+        assert_eq!(english_name("Arial Narrow", &arial), None);
+        // A legacy name in another script (a code page name, #860).
+        assert_eq!(
+            english_name("\u{30e1}\u{30a4}\u{30ea}\u{30aa}", &arial).as_deref(),
+            Some("Arial")
+        );
+        // Only names in other languages: nothing to show.
+        let only = vec![(hindi.to_string(), L::Hindi_India)];
+        assert_eq!(english_name(hindi, &only), None);
+        // Any English when there is no US English one.
+        let uk = vec![
+            ("Gill".to_string(), L::English_UnitedKingdom),
+            ("Gill FR".to_string(), L::French_France),
+        ];
+        assert_eq!(english_name("Gill FR", &uk).as_deref(), Some("Gill"));
+    }
+
     /// Lines of `text` broken to `chars` full-width cells (every glyph is
     /// 1 mm wide), as strings.
     fn cjk_lines(text: &str, chars: usize) -> Vec<String> {
@@ -5838,6 +6450,7 @@ mod tests {
                 joins: false,
                 hyphen_after: None,
                 src: None,
+                spacing: 0.0,
             })
             .collect();
         let metrics = [Metrics::default()];
@@ -6023,19 +6636,84 @@ mod tests {
         assert_eq!(line.ends[..], line.edges[1..]);
     }
 
+    /// A paragraph set to run right to left (#2670): Latin letters keep
+    /// their order, the full stop goes to the left end, a right-to-left
+    /// word after them to their left, and the indents change
+    /// sides (the first line's going to the right).
+    #[test]
+    fn a_right_to_left_paragraph_runs_from_the_right() {
+        if !has_fonts() {
+            return;
+        }
+        use tracedraw_core::TextDirection;
+        let lay = |text: &str, para: &ParagraphStyle| {
+            fonts().layout(&TextRequest {
+                spans: &[span(text)],
+                frame: Some(Size::new(100.0, 50.0)),
+                align: TextAlign::Right,
+                para,
+                on_path: None,
+            })
+        };
+        let ltr = ParagraphStyle::default();
+        let rtl = ParagraphStyle {
+            direction: TextDirection::RightToLeft,
+            ..ParagraphStyle::default()
+        };
+        let l = lay("abc.", &ltr);
+        if l.glyphs == 0 {
+            return;
+        }
+        let s = &l.lines[0].starts;
+        assert!(s[0] < s[1] && s[1] < s[2] && s[2] < s[3], "{s:?}");
+        let r = lay("abc.", &rtl);
+        let s = &r.lines[0].starts;
+        assert!(s[0] < s[1] && s[1] < s[2], "letters keep their order {s:?}");
+        assert!(s[3] < s[0], "the full stop goes left {s:?}");
+        // Latin words stay in their order between themselves, as the
+        // bidirectional algorithm has them; a Hebrew word after them goes
+        // to their left.
+        let r = lay("ab cd \u{5D0}\u{5D1}", &rtl);
+        let s = &r.lines[0].starts;
+        assert!(s[0] < s[3], "{s:?}");
+        assert!(s[6] < s[0], "{s:?}");
+        // Indents: the left one is kept at the right edge, the first
+        // line's indent too.
+        let ind = ParagraphStyle {
+            left_indent: 10.0,
+            first_line_indent: 5.0,
+            ..rtl.clone()
+        };
+        let r = lay("abc", &ind);
+        let right = r.lines[0].ends.iter().copied().fold(f64::MIN, f64::max);
+        assert!(right <= 85.0 + 1e-6 && right > 80.0, "{right}");
+        let back = ParagraphStyle {
+            direction: TextDirection::LeftToRight,
+            ..ind.clone()
+        };
+        let l = lay("abc", &back);
+        let right = l.lines[0].ends.iter().copied().fold(f64::MIN, f64::max);
+        assert!((right - 100.0).abs() < 1.0, "{right}");
+        // Arabic text in a right-to-left paragraph reads as before.
+        let ar = "\u{645}\u{631}\u{62D}\u{628}\u{627}";
+        let a = lay(ar, &ltr);
+        let b = lay(ar, &rtl);
+        assert_eq!(a.lines[0].starts, b.lines[0].starts);
+    }
+
     /// Text mixing directions is cut into runs of one level, in text
     /// order; the first strong letter sets the text's own direction, and
     /// text with no right-to-left letter is not analysed (#628).
     #[test]
     fn mixed_text_is_cut_into_runs_of_one_direction() {
         let runs = |t: &str| -> Vec<(String, u8)> {
-            bidi_runs(t)
+            bidi_runs(t, false)
                 .unwrap_or_default()
                 .into_iter()
                 .map(|(r, l)| (t[r].to_string(), l))
                 .collect()
         };
-        assert!(bidi_runs("plain text").is_none());
+        assert!(bidi_runs("plain text", false).is_none());
         let ar = "\u{645}\u{631}\u{62D}\u{628}\u{627}";
         assert_eq!(runs(ar), [(ar.into(), 1)]);
         assert_eq!(
@@ -6124,6 +6802,7 @@ mod tests {
             span: 0,
             hyphen_after: None,
             src: None,
+            spacing: 0.0,
             joins: false,
         };
         let order = |v: &[(u8, char)]| {
@@ -6214,6 +6893,7 @@ mod tests {
             tracking_pct: 0.0,
             baseline_shift_pt: 0.0,
             offset_x_pct: 0.0,
+            width_pct: 100.0,
             angle_deg: 0.0,
             underline: LineStyle::None,
             strikethrough: LineStyle::None,
@@ -6277,6 +6957,187 @@ mod tests {
         assert!(turned.path.bounding_box().x0 < -1.0);
     }
 
+    /// Character width (#2190): at 50 % the letters and their advances
+    /// are half as wide, their height as before; at 200 % twice as wide.
+    /// The exact glyphs (exports) carry the same width.
+    #[test]
+    fn character_width_scales_letters_and_advances() {
+        if !has_fonts() {
+            return;
+        }
+        let f = fonts();
+        let at = |w: f64| {
+            let mut s = span("Hamburg");
+            s.width_pct = w;
+            f.outline(&[s])
+        };
+        let (plain, narrow, wide) = (at(100.0), at(50.0), at(200.0));
+        let width = |l: &TextLayout| *l.lines[0].edges.last().expect("edges");
+        assert!((width(&narrow) - width(&plain) / 2.0).abs() < 1e-6);
+        assert!((width(&wide) - width(&plain) * 2.0).abs() < 1e-6);
+        let (pb, nb) = (plain.path.bounding_box(), narrow.path.bounding_box());
+        assert!(
+            (nb.width() - pb.width() / 2.0).abs() < 1e-6,
+            "{nb:?} {pb:?}"
+        );
+        assert!((nb.height() - pb.height()).abs() < 1e-6);
+        // The glyphs as the fonts draw them match the outline.
+        let mut s = span("H");
+        s.width_pct = 50.0;
+        let req = TextRequest {
+            spans: &[s],
+            frame: None,
+            align: TextAlign::Left,
+            para: &ParagraphStyle::default(),
+            on_path: None,
+        };
+        let g = f.glyph_layout(&req);
+        let outline = f.layout(&req).path.bounding_box();
+        let exact = g
+            .glyphs
+            .iter()
+            .map(|gl| gl.transform.determinant())
+            .next()
+            .expect("a glyph");
+        let mut full = span("H");
+        full.width_pct = 100.0;
+        let g_full = f.glyph_layout(&TextRequest {
+            spans: &[full],
+            ..req
+        });
+        let exact_full = g_full.glyphs[0].transform.determinant();
+        assert!((exact / exact_full - 0.5).abs() < 1e-9);
+        assert!(outline.width() > 0.0);
+    }
+
+    /// Columns of their own widths (#2192): the lines of each column
+    /// start at its own left edge and keep to its width; right to left,
+    /// the text starts in the right-hand column.
+    #[test]
+    fn uneven_columns_take_their_own_widths_and_order() {
+        if !has_fonts() {
+            return;
+        }
+        let f = fonts();
+        let text = "word ".repeat(400);
+        let lay = |para: &ParagraphStyle| {
+            f.layout(&TextRequest {
+                spans: &[span(&text)],
+                frame: Some(Size::new(100.0, 40.0)),
+                align: TextAlign::Left,
+                para,
+                on_path: None,
+            })
+        };
+        let uneven = ParagraphStyle {
+            columns: 2,
+            column_widths: vec![70.0, 20.0],
+            column_gutters: vec![10.0],
+            ..Default::default()
+        };
+        let l = lay(&uneven);
+        let starts: Vec<f64> = l.lines.iter().map(|b| b.edges[0]).collect();
+        let ends: Vec<f64> = l
+            .lines
+            .iter()
+            .map(|b| *b.edges.last().expect("edge"))
+            .collect();
+        let first_col: Vec<usize> = (0..starts.len()).filter(|&i| starts[i] < 1.0).collect();
+        let second_col: Vec<usize> = (0..starts.len()).filter(|&i| starts[i] > 79.0).collect();
+        assert!(
+            !first_col.is_empty() && !second_col.is_empty(),
+            "{starts:?}"
+        );
+        assert_eq!(
+            first_col.len() + second_col.len(),
+            starts.len(),
+            "{starts:?}"
+        );
+        assert!(
+            first_col.iter().all(|&i| ends[i] <= 70.0 + 1e-6),
+            "{ends:?}"
+        );
+        // The narrow column holds narrow lines.
+        assert!(second_col
+            .iter()
+            .all(|&i| ends[i] <= 100.0 + 1e-6 && ends[i] - starts[i] <= 20.0 + 1e-6));
+        // Right to left: the first line is in the right-hand column.
+        let rtl = lay(&ParagraphStyle {
+            columns: 2,
+            gutter: 10.0,
+            columns_right_to_left: true,
+            ..Default::default()
+        });
+        assert!(
+            (rtl.lines[0].edges[0] - 55.0).abs() < 1e-6,
+            "{:?}",
+            rtl.lines[0].edges[0]
+        );
+        let last = rtl.lines.last().expect("line");
+        assert!(last.edges[0] < 1.0, "{:?}", last.edges[0]);
+    }
+
+    /// Numbered bullets (#1443): each paragraph shows its number with the
+    /// suffix in place of the symbol, counting from the start set; with
+    /// the hanging indent off, the second line of a paragraph goes back
+    /// under the bullet.
+    #[test]
+    fn numbered_bullets_count_the_paragraphs() {
+        if !has_fonts() {
+            return;
+        }
+        let f = fonts();
+        let lay = |text: &str, para: &ParagraphStyle| {
+            f.layout(&TextRequest {
+                spans: &[span(text)],
+                frame: Some(Size::new(60.0, 200.0)),
+                align: TextAlign::Left,
+                para,
+                on_path: None,
+            })
+        };
+        let symbols = ParagraphStyle {
+            bullets: true,
+            ..Default::default()
+        };
+        let mut numbers = symbols.clone();
+        numbers.bullet.numbering = tracedraw_core::Numbering::Arabic;
+        numbers.bullet.start = 9;
+        // a, b, c: one glyph bullet each, or "9.", "10." and "11.".
+        let drawn = |para: &ParagraphStyle| {
+            f.glyph_layout(&TextRequest {
+                spans: &[span("a\nb\nc")],
+                frame: Some(Size::new(60.0, 200.0)),
+                align: TextAlign::Left,
+                para,
+                on_path: None,
+            })
+            .glyphs
+            .len()
+        };
+        let plain = drawn(&symbols);
+        let counted = drawn(&numbers);
+        assert_eq!(plain, 6);
+        assert_eq!(counted, 3 + 2 + 3 + 3);
+        // The bullet's distance from the frame moves the text along.
+        let mut off = symbols.clone();
+        off.bullet.offset = 4.0;
+        let x = |l: &TextLayout| l.lines[0].edges[0];
+        assert!((x(&lay("a", &off)) - x(&lay("a", &symbols)) - 4.0).abs() < 1e-6);
+        // Hanging off: the second line starts at the left indent.
+        let long = "word ".repeat(40);
+        let hang = lay(&long, &symbols);
+        let mut flat = symbols.clone();
+        flat.bullet.no_hanging = true;
+        let back = lay(&long, &flat);
+        assert!((hang.lines[1].edges[0] - symbols.bullet_indent).abs() < 1e-6);
+        assert!(
+            back.lines[1].edges[0].abs() < 1e-6,
+            "{}",
+            back.lines[1].edges[0]
+        );
+    }
+
     #[test]
     fn character_and_word_spacing_widen_the_text() {
         if !has_fonts() {
@@ -6285,7 +7146,7 @@ mod tests {
         let f = fonts();
         let measure = |para: &ParagraphStyle| {
             let l = f.layout(&TextRequest {
-                spans: &[span("a b c")],
+                spans: &[span("ab cd")],
                 frame: None,
                 align: TextAlign::Left,
                 para,
@@ -6302,17 +7163,48 @@ mod tests {
             word_spacing_pct: 300.0,
             ..Default::default()
         });
-        // Five characters, each one space wider; two spaces three times as
-        // wide.
+        // Character spacing goes after each letter but the one before
+        // the space (a, c and d: the letters' gaps and the end), never
+        // after the space itself (#2586); the space three times as wide.
         let space = f.measure(&span(" "), " ");
         assert!(
-            (wide - base - 5.0 * space).abs() < 1e-6,
+            (wide - base - 3.0 * space).abs() < 1e-6,
             "{base} {wide} {space}"
         );
         assert!(
-            (words - base - 4.0 * space).abs() < 1e-6,
+            (words - base - 2.0 * space).abs() < 1e-6,
             "{base} {words} {space}"
         );
+    }
+
+    #[test]
+    fn centred_lines_leave_out_the_spaces_they_end_with() {
+        // CorelDRAW centres "AAAAA " on its letters (#2586): the ending
+        // space, and the character spacing after the last letter, take no
+        // room, so every line shares the text's centre.
+        if !has_fonts() {
+            return;
+        }
+        let f = fonts();
+        let para = ParagraphStyle {
+            char_spacing_pct: 50.0,
+            ..Default::default()
+        };
+        let ink = |text: &str| {
+            let l = f.layout(&TextRequest {
+                spans: &[span(text)],
+                frame: None,
+                align: TextAlign::Center,
+                para: &para,
+                on_path: None,
+            });
+            l.path.bounding_box()
+        };
+        let plain = ink("HHH");
+        let spaced = ink("HHH  ");
+        assert!((plain.x0 - spaced.x0).abs() < 1e-9, "{plain:?} {spaced:?}");
+        // The letters sit evenly about the origin (H's bearings are equal).
+        assert!((plain.x0 + plain.x1).abs() < 0.05, "{plain:?}");
     }
 
     #[test]
@@ -6357,6 +7249,191 @@ mod tests {
         for l in &capped_layout.lines {
             let right = l.edges.last().copied().unwrap_or(0.0);
             assert!(right <= 40.0 + 0.01, "line ends at {right}");
+        }
+    }
+
+    /// The letter of a drop cap is a character to click and select like
+    /// the others, for its colour or font (#2576): its caret edges span
+    /// the letter, and a click anywhere on it, below the first line too,
+    /// lands before or after it.
+    #[test]
+    fn a_drop_cap_letter_can_be_clicked_and_selected() {
+        if !has_fonts() {
+            return;
+        }
+        let f = fonts();
+        let words = "Words in a paragraph long enough to wrap over several lines.";
+        let lay = f.layout(&TextRequest {
+            spans: &[span(words)],
+            frame: Some(Size::new(40.0, 100.0)),
+            align: TextAlign::Left,
+            para: &ParagraphStyle {
+                drop_cap_lines: 3,
+                ..Default::default()
+            },
+            on_path: None,
+        });
+        let first = &lay.lines[0];
+        let (right, base, chars) = first.cap.expect("drop cap on the first line");
+        assert_eq!(chars, 1);
+        let (left, text_x) = (first.starts[0], first.edges[1]);
+        assert!(right - left > 3.0, "letter from {left} to {right}");
+        assert!((first.ends[0] - right).abs() < 1e-6);
+        assert!(
+            text_x >= right - 1e-6,
+            "text at {text_x}, letter to {right}"
+        );
+        assert!(base < lay.lines[1].baseline, "cap baseline {base}");
+        // The second line's band, on the letter's left and right halves.
+        let y = lay.lines[1].baseline + 0.5;
+        assert_eq!(lay.hit_char(Point::new(left + 0.2, y)), Some(0));
+        assert_eq!(lay.hit_char(Point::new(right - 0.2, y)), Some(1));
+        // Beside the letter, the second line's text.
+        assert!(lay.hit_char(Point::new(text_x + 5.0, y)).unwrap_or(0) > 1);
+        // Plain paragraphs keep no cap.
+        let plain = f.layout(&TextRequest {
+            spans: &[span(words)],
+            frame: Some(Size::new(40.0, 100.0)),
+            align: TextAlign::Left,
+            para: &ParagraphStyle::default(),
+            on_path: None,
+        });
+        assert!(plain.lines.iter().all(|l| l.cap.is_none()));
+    }
+
+    /// A drop cap never runs over the text beside it (#2575): an italic
+    /// letter whose ink leans past its advance gets the room of its ink,
+    /// and a larger word on the first line does not make the letter
+    /// larger than the room it was given.
+    #[test]
+    fn a_drop_cap_keeps_clear_of_the_text_beside_it() {
+        if !has_fonts() {
+            return;
+        }
+        let f = fonts();
+        let para = ParagraphStyle {
+            drop_cap_lines: 3,
+            ..Default::default()
+        };
+        let lay = |spans: &[TextSpan]| {
+            f.layout(&TextRequest {
+                spans,
+                frame: Some(Size::new(60.0, 100.0)),
+                align: TextAlign::Left,
+                para: &para,
+                on_path: None,
+            })
+        };
+        let italic = |t: &str| {
+            let mut s = span(t);
+            s.italic = true;
+            s
+        };
+        for letter in ["W", "V", "f", "T"] {
+            // The letter alone: its ink as the cap draws it.
+            let alone = lay(&[italic(letter)]);
+            let ink = alone.path.bounding_box();
+            let with_text = lay(&[italic(&format!(
+                "{letter}ords in a paragraph long enough to wrap over several lines."
+            ))]);
+            let first = &with_text.lines[0];
+            let (right, _, _) = first.cap.expect("cap");
+            assert!(
+                ink.x1 <= right + 1e-6,
+                "{letter}: ink to {} past {right}",
+                ink.x1
+            );
+            assert!(ink.x0 >= -1e-6, "{letter}: ink from {}", ink.x0);
+            for l in &with_text.lines[1..3] {
+                let x = l.starts.first().copied().unwrap_or(0.0);
+                assert!(x > ink.x1, "{letter}: line at {x}, ink to {}", ink.x1);
+            }
+            assert!(
+                first.edges[1] > ink.x1,
+                "{letter}: {} {}",
+                first.edges[1],
+                ink.x1
+            );
+        }
+        // A larger word on the first line: the letter keeps its size.
+        let plain = lay(&[span("Words in a paragraph long enough to wrap over lines.")]);
+        let mut big = span("BIG ");
+        big.size_pt = 20.0;
+        let mixed = lay(&[
+            span("Wo "),
+            big,
+            span("in a paragraph long enough to wrap."),
+        ]);
+        let cap_right = |l: &TextLayout| l.lines[0].cap.expect("cap").0;
+        assert!(
+            (cap_right(&plain) - cap_right(&mixed)).abs() < 1e-6,
+            "{} {}",
+            cap_right(&plain),
+            cap_right(&mixed)
+        );
+        assert!(mixed.lines[0].edges[1] > cap_right(&mixed));
+        // A letter with a combining accent drops whole: the accent is
+        // not left in the line, and both characters are the cap's.
+        let accented = lay(&[span("E\u{301}cole in a paragraph long enough to wrap.")]);
+        let first = &accented.lines[0];
+        let (right, base, chars) = first.cap.expect("cap");
+        assert_eq!(chars, 2);
+        assert!(first.edges[2] > right, "{} {right}", first.edges[2]);
+        let y = accented.lines[1].baseline + 0.5;
+        assert!(y > base);
+        assert_eq!(accented.hit_char(Point::new(right - 0.2, y)), Some(2));
+        let alone = lay(&[span("E\u{301}")]).path.bounding_box();
+        assert!(alone.x1 <= right + 1e-6, "{} {right}", alone.x1);
+    }
+
+    /// A drop cap with a descender (a g, y or j) keeps the lines its ink
+    /// hangs beside narrowed, past the lines it spans, as the video of
+    /// #2575 shows a "g" over the fourth line.
+    #[test]
+    fn a_drop_cap_descender_keeps_the_lines_below_clear() {
+        if !has_fonts() {
+            return;
+        }
+        let f = fonts();
+        let para = ParagraphStyle {
+            drop_cap_lines: 3,
+            ..Default::default()
+        };
+        let lay = |t: &str| {
+            let mut s = span(t);
+            s.bold = true;
+            f.layout(&TextRequest {
+                spans: &[s],
+                frame: Some(Size::new(40.0, 100.0)),
+                align: TextAlign::Left,
+                para: &para,
+                on_path: None,
+            })
+        };
+        for letter in ["g", "y", "j", "u"] {
+            let ink = lay(letter).path.bounding_box();
+            let text = lay(&format!(
+                "{letter}ood gkgd gjkkas gjhgkasd gkgkjad fsdg cfghffg cghf xcgd more words to wrap"
+            ));
+            assert!(text.lines.len() > 5, "{}", text.lines.len());
+            for l in &text.lines[1..] {
+                let left = l.starts.first().copied().unwrap_or(0.0);
+                if l.baseline + l.ascent > ink.y0 + 1e-6 {
+                    assert!(
+                        left > ink.x1,
+                        "{letter}: line at {} beside the ink down to {}, starts {left} < {}",
+                        l.baseline,
+                        ink.y0,
+                        ink.x1
+                    );
+                }
+            }
+            // The lines below the ink go back to the margin.
+            let last = text.lines.last().expect("lines");
+            assert!(
+                last.starts.first().copied().unwrap_or(9.0) < 1.0,
+                "{letter}"
+            );
         }
     }
 
@@ -6406,7 +7483,8 @@ mod tests {
             &ParagraphStyle::default(),
         )));
         let mixed = lay(&[span("Short one.\n"), plain]);
-        let left = |i: usize| mixed.lines[i].edges[0];
+        // The first line starts with the letter (#2576): its text after it.
+        let left = |i: usize| mixed.lines[i].edges[usize::from(i == 0)];
         assert!(left(0) > 3.0, "{}", left(0));
         assert!((left(1) - left(0)).abs() < 0.01, "{} {}", left(1), left(0));
         assert!((left(2) - left(0)).abs() < 0.01, "{} {}", left(2), left(0));
@@ -6684,6 +7762,7 @@ mod tests {
                 joins: false,
                 hyphen_after: None,
                 src: None,
+                spacing: 0.0,
             })
             .collect()
     }
@@ -7102,6 +8181,58 @@ mod tests {
         assert!((right_end - 100.0).abs() < 0.05, "{right_end}");
         assert!(l.baselines[1].0 > 50.0);
         assert!((plain.baselines[1].1 - l.baselines[1].1 - 4.0).abs() < 1e-6);
+    }
+
+    /// The space before and after a paragraph in percent of the
+    /// character height, as the reference program gives them: before
+    /// 150 % is half a line more than the line spacing, after 131 % of
+    /// the paragraph above 1.31 lines more, at any size (#2613).
+    #[test]
+    fn paragraph_space_in_percent_of_the_character_height() {
+        if !has_fonts() {
+            return;
+        }
+        let f = fonts();
+        let gap = |size: f64, before: Option<f64>, after: Option<f64>| {
+            let mut sp = span("one\ntwo");
+            sp.size_pt = size;
+            let mut kind = tracedraw_core::ShapeKind::Text {
+                spans: vec![sp],
+                origin: Point::ZERO,
+                frame: Some(Size::new(100.0, 200.0)),
+                align: TextAlign::Left,
+                para: ParagraphStyle {
+                    space_after_pct: after,
+                    ..ParagraphStyle::default()
+                },
+                on_path: None,
+            };
+            tracedraw_core::paragraphs::edit_paragraph_formats(&mut kind, Some((4, 4)), |p| {
+                p.space_before_pct = before;
+            });
+            let tracedraw_core::ShapeKind::Text { spans, para, .. } = &kind else {
+                unreachable!()
+            };
+            let l = frame_layout(f, spans, para, 100.0);
+            assert_eq!(l.baselines.len(), 2);
+            l.baselines[0].1 - l.baselines[1].1
+        };
+        for size in [12.0, 30.0] {
+            let plain = gap(size, None, None);
+            assert!(plain > 0.0);
+            // 100 % before and 0 % after: no room.
+            assert!((gap(size, Some(100.0), Some(0.0)) - plain).abs() < 1e-6);
+            let before = gap(size, Some(150.0), None);
+            assert!(
+                (before - plain * 1.5).abs() < 1e-6,
+                "{size}: {before} {plain}"
+            );
+            let after = gap(size, None, Some(131.0));
+            assert!(
+                (after - plain * 2.31).abs() < 1e-6,
+                "{size}: {after} {plain}"
+            );
+        }
     }
 
     fn wrap_square(
@@ -7750,7 +8881,7 @@ mod tests {
     /// Selawik lacks ("Ĉ") and without one it has (U+0336).
     const QUICKSAND: &[u8] = include_bytes!("../testdata/Quicksand-VF.ttf");
 
-    fn system_with(files: &[&[u8]]) -> FontSystem {
+    pub(crate) fn system_with(files: &[&[u8]]) -> FontSystem {
         let mut db = fontdb::Database::new();
         for f in files {
             db.load_font_data(f.to_vec());
@@ -8234,6 +9365,10 @@ mod tests {
         assert_eq!(names, ["Regular", "Bold"]);
         assert!(selawik.faces[1].weight >= 600 && !selawik.faces[1].italic);
         assert!(!selawik.embedded && !selawik.symbol);
+        // What the Font Manager's collections remember each face by, and
+        // fonts loaded from memory are none of the system's (#867).
+        assert_eq!(selawik.face_keys, ["Selawik-Bold", "Selawik-Regular"]);
+        assert!(!selawik.system);
         let quicksand = f.family_info("Quicksand").expect("installed");
         assert_eq!(quicksand.kind, FontKind::Variable);
         assert_eq!(quicksand.faces.len(), 1);
@@ -9868,6 +11003,51 @@ mod font_folders {
         }
         let cached = t.elapsed();
         assert!(cached < std::time::Duration::from_millis(100), "{cached:?}");
+    }
+
+    /// #2741: Creative Cloud's Adobe Fonts folders, and its font files
+    /// with no extension load while its other files are left.
+    #[test]
+    fn adobe_fonts_with_no_extension_are_loaded() {
+        use std::path::PathBuf;
+        let env = |name: &str| -> Option<String> {
+            match name {
+                "APPDATA" => Some("C:\\Users\\me\\AppData\\Roaming".into()),
+                _ => None,
+            }
+        };
+        let livetype = PathBuf::from("C:\\Users\\me\\AppData\\Roaming")
+            .join("Adobe")
+            .join("CoreSync")
+            .join("plugins")
+            .join("livetype");
+        assert_eq!(
+            adobe_font_dirs(&env),
+            vec![livetype.join(".r"), livetype.join("r")]
+        );
+        let mac = adobe_font_dirs(&|name| (name == "HOME").then(|| "/Users/me".to_string()));
+        assert!(mac[0].ends_with("Library/Application Support/Adobe/CoreSync/plugins/livetype/.r"));
+        assert!(starts_a_font(b"OTTO...."));
+        assert!(starts_a_font(&[0, 1, 0, 0, 0]));
+        assert!(!starts_a_font(b"<?xml"));
+        assert!(!starts_a_font(b"OT"));
+
+        let dir = std::env::temp_dir().join(format!("tracedraw-adobe-{}", std::process::id()));
+        let r = dir.join(".r");
+        std::fs::create_dir_all(&r).unwrap();
+        let font = include_bytes!("../../../apps/tracedraw/assets/fonts/Selawik-Regular.ttf");
+        std::fs::write(r.join("28419"), font).unwrap();
+        std::fs::write(r.join("manifest"), b"<?xml version=\"1.0\"?>").unwrap();
+        let mut db = fontdb::Database::new();
+        let dirs = vec![r.clone(), dir.join("r")];
+        assert_eq!(load_font_files_in(&mut db, &dirs), 1);
+        assert!(db
+            .faces()
+            .any(|f| f.families.iter().any(|(n, _)| n.starts_with("Selawik"))));
+        // Already loaded: not added twice.
+        assert_eq!(load_font_files_in(&mut db, &dirs), 0);
+        assert_eq!(db.len(), 1);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// The system's folders are the ones the font database reads, so a

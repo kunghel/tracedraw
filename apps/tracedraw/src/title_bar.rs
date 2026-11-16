@@ -10,10 +10,13 @@
 //! Options > General > "Use the desktop's title bar" (`system_title_bar`)
 //! opens the window through XWayland on such a desktop, from the next
 //! start, where the desktop draws its own title bar, as for any X11
-//! program; `--x11` does the same for one start. It is off by default:
-//! through XWayland, a monitor scaled by a fraction shows the window
-//! slightly blurred, and on a desktop that offers title bars it changes
-//! nothing. See docs/behavior/about-and-startup.md.
+//! program; `--x11` does the same for one start. It is on by default
+//! (#2486): on GNOME the native Wayland window took no files dropped
+//! from the file manager, while the XWayland one does. Switched off, or
+//! with `--wayland` for one start, the window stays native Wayland,
+//! sharp on a monitor scaled by a fraction (through XWayland it shows
+//! slightly blurred there). On a desktop that offers title bars it
+//! changes nothing. See docs/behavior/about-and-startup.md.
 
 /// Whether this start opens the window through X11 for the desktop's
 /// title bar: asked for (`asked`) in a Wayland session (`wayland`) with
@@ -101,15 +104,31 @@ mod tests {
         assert!(!asked.get());
     }
 
-    /// The setting is off unless chosen, and kept (#2070).
+    /// The setting is on by default (#2486), and turned off it is kept
+    /// (#2070).
     #[test]
-    fn the_setting_is_off_by_default_and_kept() {
+    fn the_setting_is_on_by_default_and_kept_off() {
         let settings = crate::settings::Settings::default();
-        assert!(!settings.system_title_bar);
-        let mut on = settings.clone();
-        on.system_title_bar = true;
-        let text = serde_json::to_string(&on).expect("settings serialize");
+        assert!(settings.system_title_bar);
+        let mut off = settings.clone();
+        off.system_title_bar = false;
+        let text = serde_json::to_string(&off).expect("settings serialize");
         let back: crate::settings::Settings = serde_json::from_str(&text).expect("read back");
-        assert!(back.system_title_bar);
+        assert!(!back.system_title_bar);
+        assert!(!back.upgrade().system_title_bar);
+    }
+
+    /// Preferences saved before it was on by default (off, as they all
+    /// were) get it on once, so file drops reach the window on GNOME
+    /// (#2486); preferences without it start with it on.
+    #[test]
+    fn older_preferences_get_the_desktops_title_bar_once() {
+        let old: crate::settings::Settings =
+            serde_json::from_str(r#"{"upgrades": 7, "system_title_bar": false}"#)
+                .expect("old preferences");
+        assert!(old.upgrade().system_title_bar);
+        let bare: crate::settings::Settings =
+            serde_json::from_str("{}").expect("empty preferences");
+        assert!(bare.system_title_bar);
     }
 }

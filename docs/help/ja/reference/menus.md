@@ -472,6 +472,7 @@
 | [[menu.help.whats_new]] | [新機能](../welcome/whats-new.md) |
 | [[menu.help.highlight_whats_new]] | [新機能](../welcome/whats-new.md) |
 | [[menu.help.updates]] | [TraceDraw について、および更新](../welcome/about-and-updates.md) |
+| [[menu.help.benchmark]] | [TraceDraw のオプション](../customize/options-app.md#benchmark) |
 | [[menu.help.message_settings]] | [TraceDraw について、および更新](../welcome/about-and-updates.md) |
 | [[menu.help.community]] | [TraceDraw について、および更新](../welcome/about-and-updates.md) |
 | [[menu.help.support]] | [TraceDraw について、および更新](../welcome/about-and-updates.md) |

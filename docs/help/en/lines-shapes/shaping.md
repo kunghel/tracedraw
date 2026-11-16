@@ -70,6 +70,23 @@ Open the [[docker.shaping]] panel from
 4. Click the button named after the operation. It stays pale until enough
    objects are selected, and a line says how many are needed.
 
+## Outline Offset {#outline-offset}
+
+[[menu.object.outline_offset]] (Object menu) draws a new outline at a set
+distance from the selected objects, as a curve of its own:
+
+1. Select the objects and choose [[menu.object.outline_offset]].
+2. Type the [[dialog.outline_offset_distance]], in the drawing's units.
+3. Choose [[dialog.outline_offset_outside]] or [[dialog.outline_offset_inside]]
+   and click OK.
+
+Each object gets one new curve with sharp corners and the object's fill and
+outline; the original stays as it is. A curve outside goes behind its object
+and one inside in front of it, and the new curves are selected. An open line
+gets a closed band round both of its sides. The dialog remembers the last
+distance. For several outlines at once, or rounded corners, use the Contour
+tool.
+
 Related: [[menu.object.combine]] (<kbd>Ctrl+L</kbd>) makes several objects one
 curve without changing their shapes, and [[menu.object.break_apart]] splits a
 curve into its parts again. See

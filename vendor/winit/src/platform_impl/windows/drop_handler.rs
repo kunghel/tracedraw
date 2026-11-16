@@ -7,7 +7,11 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use windows_sys::core::{IUnknown, GUID, HRESULT};
 use windows_sys::Win32::Foundation::{DV_E_FORMATETC, HWND, POINTL, S_OK};
 use windows_sys::Win32::System::Com::{IDataObject, DVASPECT_CONTENT, FORMATETC, TYMED_HGLOBAL};
-use windows_sys::Win32::System::Ole::{CF_HDROP, DROPEFFECT_COPY, DROPEFFECT_NONE};
+use windows_sys::Win32::System::DataExchange::RegisterClipboardFormatW;
+use windows_sys::Win32::System::Memory::{GlobalLock, GlobalSize, GlobalUnlock};
+use windows_sys::Win32::System::Ole::{
+    ReleaseStgMedium, CF_DIB, CF_DIBV5, CF_HDROP, DROPEFFECT_COPY, DROPEFFECT_NONE,
+};
 use windows_sys::Win32::UI::Shell::{DragFinish, DragQueryFileW, HDROP};
 
 use tracing::debug;
@@ -29,6 +33,9 @@ pub struct FileDropHandlerData {
     cursor_effect: u32,
     hovered_is_valid: bool, /* If the currently hovered item is not valid there must not be any
                              * `HoveredFileCancelled` emitted */
+    // TraceDraw: the file a picture dragged in from another program was
+    // written to as it entered (#2349, `crate::picture_drop`).
+    picture: Option<PathBuf>,
 }
 
 pub struct FileDropHandler {
@@ -39,14 +46,19 @@ pub struct FileDropHandler {
 impl FileDropHandler {
     pub fn new(window: HWND, send_event: Box<dyn Fn(Event<()>)>) -> FileDropHandler {
         let data = Box::new(FileDropHandlerData {
-            interface: IDropTarget { lpVtbl: &DROP_TARGET_VTBL as *const IDropTargetVtbl },
+            interface: IDropTarget {
+                lpVtbl: &DROP_TARGET_VTBL as *const IDropTargetVtbl,
+            },
             refcount: AtomicUsize::new(1),
             window,
             send_event,
             cursor_effect: DROPEFFECT_NONE,
             hovered_is_valid: false,
+            picture: None,
         });
-        FileDropHandler { data: Box::into_raw(data) }
+        FileDropHandler {
+            data: Box::into_raw(data),
+        }
     }
 
     // Implement IUnknown
@@ -93,9 +105,24 @@ impl FileDropHandler {
                 });
             })
         };
-        drop_handler.hovered_is_valid = hdrop.is_some();
-        drop_handler.cursor_effect =
-            if drop_handler.hovered_is_valid { DROPEFFECT_COPY } else { DROPEFFECT_NONE };
+        // TraceDraw: not files but a picture (a paint program's canvas, a
+        // browser's page): written to a file, which hovers (#2349).
+        drop_handler.picture = None;
+        if hdrop.is_none() {
+            if let Some(path) = unsafe { Self::picture_file(pDataObj) } {
+                drop_handler.send_event(Event::WindowEvent {
+                    window_id: RootWindowId(WindowId(drop_handler.window)),
+                    event: HoveredFile(path.clone()),
+                });
+                drop_handler.picture = Some(path);
+            }
+        }
+        drop_handler.hovered_is_valid = hdrop.is_some() || drop_handler.picture.is_some();
+        drop_handler.cursor_effect = if drop_handler.hovered_is_valid {
+            DROPEFFECT_COPY
+        } else {
+            DROPEFFECT_NONE
+        };
         unsafe {
             *pdwEffect = drop_handler.cursor_effect;
         }
@@ -126,6 +153,10 @@ impl FileDropHandler {
                 event: HoveredFileCancelled,
             });
         }
+        // TraceDraw: a picture taken away again leaves no file (#2349).
+        if let Some(path) = drop_handler.picture.take() {
+            let _ = std::fs::remove_file(path);
+        }
 
         S_OK
     }
@@ -149,9 +180,83 @@ impl FileDropHandler {
         };
         if let Some(hdrop) = hdrop {
             unsafe { DragFinish(hdrop) };
+        } else if let Some(path) = drop_handler.picture.take() {
+            // TraceDraw: the picture written as it entered (#2349).
+            drop_handler.send_event(Event::WindowEvent {
+                window_id: RootWindowId(WindowId(drop_handler.window)),
+                event: DroppedFile(path),
+            });
         }
 
         S_OK
+    }
+
+    /// TraceDraw (#2349): the picture `data_obj` holds, as PNG or as a
+    /// device-independent bitmap (the best first), written to a file of
+    /// its own (`crate::picture_drop`); `None` when it holds none.
+    unsafe fn picture_file(data_obj: *const IDataObject) -> Option<PathBuf> {
+        let registered = |name: &str| -> u16 {
+            let wide: Vec<u16> = name.encode_utf16().chain(std::iter::once(0)).collect();
+            // SAFETY: a NUL-terminated name; registering a known name
+            // gives its number.
+            unsafe { RegisterClipboardFormatW(wide.as_ptr()) as u16 }
+        };
+        let formats: [(u16, &str); 4] = [
+            (registered("PNG"), "png"),
+            (registered("image/png"), "png"),
+            (CF_DIBV5, "dib"),
+            (CF_DIB, "dib"),
+        ];
+        for (format, ext) in formats {
+            if format == 0 {
+                continue;
+            }
+            let Some(bytes) = (unsafe { Self::global_bytes(data_obj, format) }) else {
+                continue;
+            };
+            let saved = if ext == "dib" {
+                crate::picture_drop::bmp_from_dib(&bytes)
+                    .and_then(|bmp| crate::picture_drop::save(&bmp, "bmp"))
+            } else {
+                crate::picture_drop::save(&bytes, ext)
+            };
+            if saved.is_some() {
+                return saved;
+            }
+        }
+        None
+    }
+
+    /// TraceDraw (#2349): the bytes `data_obj` holds in `format`, in a
+    /// memory block.
+    unsafe fn global_bytes(data_obj: *const IDataObject, format: u16) -> Option<Vec<u8>> {
+        let wanted = FORMATETC {
+            cfFormat: format,
+            ptd: ptr::null_mut(),
+            dwAspect: DVASPECT_CONTENT,
+            lindex: -1,
+            tymed: TYMED_HGLOBAL as u32,
+        };
+        let mut medium = unsafe { std::mem::zeroed() };
+        let get_data_fn = unsafe { (*(*data_obj).cast::<IDataObjectVtbl>()).GetData };
+        if unsafe { get_data_fn(data_obj as *mut _, &wanted, &mut medium) } < 0 {
+            return None;
+        }
+        let mut out = None;
+        if medium.tymed == TYMED_HGLOBAL as u32 {
+            let mem = unsafe { medium.u.hGlobal };
+            let size = unsafe { GlobalSize(mem) };
+            // A picture of up to 512 MB.
+            if size > 0 && size <= 512 << 20 {
+                let p = unsafe { GlobalLock(mem) } as *const u8;
+                if !p.is_null() {
+                    out = Some(unsafe { std::slice::from_raw_parts(p, size) }.to_vec());
+                    unsafe { GlobalUnlock(mem) };
+                }
+            }
+        }
+        unsafe { ReleaseStgMedium(&mut medium) };
+        out
     }
 
     unsafe fn from_interface<'a, InterfaceT>(this: *mut InterfaceT) -> &'a mut FileDropHandlerData {

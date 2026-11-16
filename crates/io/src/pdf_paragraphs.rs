@@ -16,10 +16,17 @@
 //! the file broke it, with the baselines where the file has them, the
 //! lines stay as they came (first with each line ended by a line break,
 //! then as artistic texts). The look of the page comes first.
+//!
+//! A line a PDF draws under some letters (it keeps no underlined text,
+//! only the line) becomes those letters' underline, and a wide gap in a
+//! line that the file left for a tab becomes a tab with a stop where the
+//! text after it starts (#2569).
 
 use std::collections::HashMap;
 use tracedraw_core::{
-    document::{text_outline, LeadingUnit, ParagraphStyle, Shape, ShapeKind, TextSpan},
+    document::{
+        text_outline, LeadingUnit, LineStyle, ParagraphStyle, Shape, ShapeKind, TabStop, TextSpan,
+    },
     geometry::{Affine, Point, Size},
     Fill, ShapeId, TextAlign,
 };
@@ -52,6 +59,8 @@ struct Line {
     w: f64,
     /// Where it ends along the baseline.
     right: f64,
+    /// Where the text after each tab in it starts along the baseline.
+    tabs: Vec<f64>,
     spans: Vec<TextSpan>,
     fill: Fill,
     opacity: f64,
@@ -90,7 +99,7 @@ impl Line {
         let text = self.text();
         let n = text
             .trim_start()
-            .split(' ')
+            .split([' ', '\t'])
             .next()
             .map_or(0, |w| w.chars().count());
         (n as f64 * 0.65 + 0.35) * self.em()
@@ -175,6 +184,9 @@ impl Block {
     /// have fitted after it.
     fn ends_paragraph(&self, i: usize, width: f64) -> bool {
         match self.lines.get(i + 1) {
+            // Lines with tabs are rows (a form, a list of items): each
+            // ends where the file ended it.
+            Some(next) if !next.tabs.is_empty() || !self.lines[i].tabs.is_empty() => true,
             Some(next) => self.room_after(i, width) > next.first_word_width(),
             None => true,
         }
@@ -239,12 +251,20 @@ impl Block {
 
 /// Make paragraph frames of the pages' lines of text, linking those that
 /// continue one another. `widths` gives each artistic text's length
-/// along its baseline, mm, as the file draws it.
-pub fn make_paragraphs(pages: &mut [ImportedPage], widths: &HashMap<ShapeId, f64>) {
+/// along its baseline, mm, as the file draws it, and `char_xs` where each
+/// of its characters starts along it (from its origin, mm), where known.
+pub fn make_paragraphs(
+    pages: &mut [ImportedPage],
+    widths: &HashMap<ShapeId, f64>,
+    char_xs: &HashMap<ShapeId, Vec<f64>>,
+) {
+    for page in pages.iter_mut() {
+        underlines_into_text(&mut page.shapes, widths, char_xs);
+    }
     // The blocks of every page, in order.
     let mut blocks: Vec<Vec<Block>> = pages
         .iter()
-        .map(|p| blocks_of(&lines_of(&p.shapes, widths)))
+        .map(|p| blocks_of(&lines_of(&p.shapes, widths, char_xs)))
         .collect();
     let links = links_between(&blocks);
     // A line alone that a frame flows on to takes that frame's width and
@@ -303,9 +323,158 @@ pub fn make_paragraphs(pages: &mut [ImportedPage], widths: &HashMap<ShapeId, f64
     }
 }
 
+/// Lines the file draws under letters (a stroked straight line or a thin
+/// filled bar, just below a text's baseline, along it) become the
+/// underline of the letters they run under, and go: a PDF keeps no
+/// underlined text, only the line. Only texts whose characters' places
+/// are known (`char_xs`) take one.
+fn underlines_into_text(
+    shapes: &mut Vec<Shape>,
+    widths: &HashMap<ShapeId, f64>,
+    char_xs: &HashMap<ShapeId, Vec<f64>>,
+) {
+    let texts: Vec<usize> = (0..shapes.len())
+        .filter(|&i| {
+            matches!(
+                &shapes[i].kind,
+                ShapeKind::Text { spans, frame: None, on_path: None, .. } if spans.len() == 1
+            ) && char_xs.contains_key(&shapes[i].id)
+        })
+        .collect();
+    if texts.is_empty() {
+        return;
+    }
+    let mut gone = vec![false; shapes.len()];
+    // Per text, the characters to underline and how thick the line is.
+    let mut marks: HashMap<usize, (Vec<bool>, bool)> = HashMap::new();
+    for j in 0..shapes.len() {
+        let Some((a, b, thick)) = bar_of(&shapes[j]) else {
+            continue;
+        };
+        for &i in &texts {
+            let t = &shapes[i];
+            let (Some(xs), Some(&width)) = (char_xs.get(&t.id), widths.get(&t.id)) else {
+                continue;
+            };
+            let ShapeKind::Text { spans, .. } = &t.kind else {
+                continue;
+            };
+            let em = spans[0].size_pt * PT_MM;
+            if em <= 0.0 || t.transform.determinant().abs() < 1e-9 {
+                continue;
+            }
+            let inv = t.transform.inverse();
+            let (p, q) = (inv * a, inv * b);
+            let (x0, x1) = (p.x.min(q.x), p.x.max(q.x));
+            let y = (p.y + q.y) / 2.0;
+            // Along the text, just below its baseline, under some of it.
+            if (p.y - q.y).abs() > 0.05 * em
+                || !(-0.4 * em..=-0.02 * em).contains(&y)
+                || x1 < 0.0
+                || x0 > width
+                || thick > 0.2 * em
+            {
+                continue;
+            }
+            let n = xs.len();
+            let entry = marks.entry(i).or_insert_with(|| (vec![false; n], false));
+            let mut any = false;
+            for k in 0..n {
+                let end = xs.get(k + 1).copied().unwrap_or(width);
+                let mid = (xs[k] + end) / 2.0;
+                if mid > x0 && mid < x1 {
+                    entry.0[k] = true;
+                    any = true;
+                }
+            }
+            if any {
+                entry.1 |= thick > 0.1 * em;
+                gone[j] = true;
+                break;
+            }
+        }
+    }
+    for (i, (under, thick)) in marks {
+        let ShapeKind::Text { spans, .. } = &mut shapes[i].kind else {
+            continue;
+        };
+        let style = if thick {
+            LineStyle::SingleThick
+        } else {
+            LineStyle::SingleThin
+        };
+        let base = spans[0].clone();
+        let mut out: Vec<TextSpan> = Vec::new();
+        for (c, u) in base.text.chars().zip(under.iter().copied()) {
+            let want = if u { style } else { base.underline };
+            match out.last_mut() {
+                Some(last) if last.underline == want => last.text.push(c),
+                _ => {
+                    let mut sp = base.clone();
+                    sp.text = c.to_string();
+                    sp.underline = want;
+                    out.push(sp);
+                }
+            }
+        }
+        if !out.is_empty() {
+            *spans = out;
+        }
+    }
+    let mut i = 0;
+    shapes.retain(|_| {
+        i += 1;
+        !gone[i - 1]
+    });
+}
+
+/// The two ends and the thickness of a straight horizontal-ish bar the
+/// file drew: a stroked line of two points with no fill, or a thin filled
+/// rectangle with no outline. `None` for anything else.
+fn bar_of(s: &Shape) -> Option<(Point, Point, f64)> {
+    use tracedraw_core::geometry::PathEl;
+    let ShapeKind::Path { path, .. } = &s.kind else {
+        return None;
+    };
+    let pts: Vec<Point> = path
+        .elements()
+        .iter()
+        .filter_map(|e| match e {
+            PathEl::MoveTo(p) | PathEl::LineTo(p) => Some(s.transform * *p),
+            PathEl::ClosePath => None,
+            _ => Some(Point::new(f64::NAN, f64::NAN)),
+        })
+        .collect();
+    if pts.iter().any(|p| !p.x.is_finite()) {
+        return None;
+    }
+    let filled = !matches!(s.fill, Fill::None);
+    match (pts.as_slice(), &s.stroke) {
+        ([a, b], Some(st)) if !filled => Some((*a, *b, st.width)),
+        ([a, b, c, d] | [a, b, c, d, _], None) if filled => {
+            // A rectangle: its long sides' middles, its short side as thick.
+            let (ab, bc) = (a.distance(*b), b.distance(*c));
+            let (cd, da) = (c.distance(*d), d.distance(*a));
+            if (ab - cd).abs() > 0.05 * ab.max(1e-9) || (bc - da).abs() > 0.05 * bc.max(1e-9) {
+                return None;
+            }
+            if ab >= bc {
+                Some((a.midpoint(*d), b.midpoint(*c), bc))
+            } else {
+                Some((a.midpoint(*b), d.midpoint(*c), ab))
+            }
+        }
+        _ => None,
+    }
+}
+
 /// The page's artistic texts on one baseline joined into lines, in the
 /// order they come.
-fn lines_of(shapes: &[Shape], widths: &HashMap<ShapeId, f64>) -> Vec<Line> {
+fn lines_of(
+    shapes: &[Shape],
+    widths: &HashMap<ShapeId, f64>,
+    char_xs: &HashMap<ShapeId, Vec<f64>>,
+) -> Vec<Line> {
     let mut lines: Vec<Line> = Vec::new();
     for (i, s) in shapes.iter().enumerate() {
         let ShapeKind::Text {
@@ -331,16 +500,30 @@ fn lines_of(shapes: &[Shape], widths: &HashMap<ShapeId, f64>) -> Vec<Line> {
         }
         let linear = [c[0], c[1], c[2], c[3]];
         // The place in the text's own directions.
-        let u = (c[3] * c[4] - c[2] * c[5]) / det;
+        let mut u = (c[3] * c[4] - c[2] * c[5]) / det;
         let w = (-c[1] * c[4] + c[0] * c[5]) / det;
         let fill = s.fill.clone();
         let mut spans = spans.clone();
+        let right = u + width;
+        // Spaces the text starts with move its start to its first letter,
+        // and wide gaps inside it are tabs.
+        let mut tabs = Vec::new();
+        if let Some(xs) = char_xs.get(&s.id) {
+            let em = spans[0].size_pt * PT_MM;
+            let (lead, inner) = gaps_into_tabs(&mut spans, xs, width, em);
+            tabs = inner.into_iter().map(|t| u + t).collect();
+            u += lead;
+        }
+        if spans.iter().all(|sp| sp.text.is_empty()) {
+            continue;
+        }
         let piece = Line {
             pieces: vec![i],
             linear,
             u,
             w,
-            right: u + width,
+            right,
+            tabs,
             spans: spans.clone(),
             fill: fill.clone(),
             opacity: s.opacity,
@@ -358,13 +541,23 @@ fn lines_of(shapes: &[Shape], widths: &HashMap<ShapeId, f64>) -> Vec<Line> {
                     .all(|(x, y)| (x - y).abs() < 1e-4)
                 && (prev.w - w).abs() < 0.05 * em
                 && u > prev.right - 0.2 * em
-                && u < prev.right + 3.0 * em
+                && u < prev.right + TAB_GAP_MAX_EM * em
                 && (prev.opacity - s.opacity).abs() < 1e-6;
             if follows {
-                let gap = u - prev.right;
+                // The gap without the spaces the texts end and start with.
+                let trailing = prev.text().len() - prev.text().trim_end().len();
+                let gap = u - prev.right + trailing as f64 * 0.28 * em;
                 let ends_space = prev.text().ends_with(' ');
                 let starts_space = spans[0].text.starts_with(' ');
-                if gap > 0.18 * em && !ends_space && !starts_space {
+                if gap > TAB_GAP_MIN_EM * em {
+                    // A tab: the spaces about it go, the stop is where the
+                    // text after it starts.
+                    trim_end_spans(&mut prev.spans);
+                    let first = &mut spans[0].text;
+                    *first = first.trim_start().to_string();
+                    first.insert(0, '\t');
+                    prev.tabs.push(u);
+                } else if gap > 0.18 * em && !ends_space && !starts_space {
                     spans[0].text.insert(0, ' ');
                 }
                 for sp in &mut spans {
@@ -374,13 +567,93 @@ fn lines_of(shapes: &[Shape], widths: &HashMap<ShapeId, f64>) -> Vec<Line> {
                 }
                 prev.spans.extend(spans);
                 prev.pieces.push(i);
-                prev.right = prev.right.max(u + width);
+                prev.right = prev.right.max(right);
+                prev.tabs.extend(piece.tabs.iter().copied());
                 continue;
             }
         }
         lines.push(piece);
     }
     lines
+}
+
+/// A gap in a line wider than this many ems (a few spaces' worth, more
+/// than a justified line stretches its spaces) is a tab.
+const TAB_GAP_MIN_EM: f64 = 1.6;
+/// Texts on one baseline further apart than this many ems are not one
+/// line (columns side by side).
+const TAB_GAP_MAX_EM: f64 = 8.0;
+
+/// The spaces `spans` (one text, its characters at `xs` along the
+/// baseline, `width` long) start with taken off, and each run of spaces
+/// wider than [`TAB_GAP_MIN_EM`] made a tab: how far its first letter is
+/// from where it started, and where the text after each tab starts.
+fn gaps_into_tabs(spans: &mut [TextSpan], xs: &[f64], width: f64, em: f64) -> (f64, Vec<f64>) {
+    let chars: Vec<(usize, char)> = spans
+        .iter()
+        .enumerate()
+        .flat_map(|(si, sp)| sp.text.chars().map(move |c| (si, c)))
+        .collect();
+    if chars.len() != xs.len() || em <= 0.0 {
+        return (0.0, Vec::new());
+    }
+    let at = |k: usize| xs.get(k).copied().unwrap_or(width);
+    let mut keep = vec![true; chars.len()];
+    let mut tab_at = vec![false; chars.len()];
+    let mut tabs = Vec::new();
+    let lead_n = chars.iter().take_while(|(_, c)| *c == ' ').count();
+    let lead = if lead_n < chars.len() {
+        at(lead_n)
+    } else {
+        0.0
+    };
+    for k in keep.iter_mut().take(lead_n) {
+        *k = false;
+    }
+    let mut k = lead_n;
+    while k < chars.len() {
+        if chars[k].1 != ' ' {
+            k += 1;
+            continue;
+        }
+        let end = (k..chars.len())
+            .find(|&j| chars[j].1 != ' ')
+            .unwrap_or(chars.len());
+        if end < chars.len() && at(end) - at(k) > TAB_GAP_MIN_EM * em {
+            for k in &mut keep[k..end] {
+                *k = false;
+            }
+            tab_at[k] = true;
+            tabs.push(at(end));
+        }
+        k = end;
+    }
+    if lead_n == 0 && tabs.is_empty() {
+        return (0.0, tabs);
+    }
+    for sp in spans.iter_mut() {
+        sp.text.clear();
+    }
+    for (k, (si, c)) in chars.into_iter().enumerate() {
+        if tab_at[k] {
+            spans[si].text.push('\t');
+        } else if keep[k] {
+            spans[si].text.push(c);
+        }
+    }
+    (lead, tabs)
+}
+
+/// The spaces at the end of `spans` taken off.
+fn trim_end_spans(spans: &mut Vec<TextSpan>) {
+    while let Some(last) = spans.last_mut() {
+        let keep = last.text.trim_end().len();
+        last.text.truncate(keep);
+        if !last.text.is_empty() || spans.len() == 1 {
+            break;
+        }
+        spans.pop();
+    }
 }
 
 /// Lines that follow one another in the page's objects, one under the
@@ -482,9 +755,14 @@ fn frame_of(
                 .filter(|&i| !block.ends_paragraph(i, width))
                 .map(|i| block.lines[i].right)
                 .collect();
-            let spread = full.iter().fold(f64::MIN, |a, &b| a.max(b))
-                - full.iter().fold(f64::MAX, |a, &b| a.min(b));
-            if full.len() >= 2 && spread < 0.3 {
+            // A line or two a little short (a producer that spreads a
+            // line of several fonts unevenly) leaves it justified while
+            // most reach the edge.
+            let edge = full.iter().fold(f64::MIN, |a, &b| a.max(b));
+            let reach = full.iter().filter(|&&r| edge - r < 0.3).count();
+            if full.len() >= 2
+                && (reach == full.len() || (reach >= 3 && reach * 4 >= full.len() * 3))
+            {
                 TextAlign::Justify
             } else {
                 TextAlign::Left
@@ -506,10 +784,35 @@ fn frame_of(
         let frame_width = width + more;
         let indent = if broken { 0.0 } else { block.indent };
         let (spans, starts) = block_text(block, width, broken, continues);
+        let left = match block.lined {
+            Lined::Left if broken => broken_left(block),
+            Lined::Left => block.left(),
+            Lined::Centre => first.centre() - frame_width / 2.0,
+            Lined::Right => first.right - frame_width,
+        };
+        // A stop where the text after each tab starts, from the frame's
+        // left edge.
+        let mut stops: Vec<f64> = block
+            .lines
+            .iter()
+            .flat_map(|l| l.tabs.iter().map(|t| t - left))
+            .chain(
+                block
+                    .lines
+                    .iter()
+                    .filter(|_| broken && block.lined == Lined::Left)
+                    .map(|l| l.u - left)
+                    .filter(|p| *p > LINE_UP_MM),
+            )
+            .filter(|p| *p > 0.0)
+            .collect();
+        stops.sort_by(f64::total_cmp);
+        stops.dedup_by(|a, b| (*a - *b).abs() < LINE_UP_MM);
         let para = ParagraphStyle {
             leading_pct: leading / PT_MM,
             leading_unit: LeadingUnit::Points,
             first_line_indent: indent,
+            tabs: stops.into_iter().map(TabStop::left).collect(),
             ..ParagraphStyle::default()
         };
         let req = text_outline::TextRequest {
@@ -539,12 +842,6 @@ fn frame_of(
             }
             None => (-0.9 * em, 0.3 * em),
         };
-        let left = match block.lined {
-            Lined::Left if broken => block.lines.iter().map(|l| l.u).fold(f64::MAX, f64::min),
-            Lined::Left => block.left(),
-            Lined::Centre => first.centre() - frame_width / 2.0,
-            Lined::Right => first.right - frame_width,
-        };
         let top = first.w - first_base;
         let bottom = block.last().w - last_depth - (0.15 * em).min(leading * 0.3);
         let l = first.linear;
@@ -572,6 +869,11 @@ fn frame_of(
     None
 }
 
+/// The left edge of a frame whose lines each end with a line break.
+fn broken_left(block: &Block) -> f64 {
+    block.lines.iter().map(|l| l.u).fold(f64::MAX, f64::min)
+}
+
 /// The block's text, its lines run on (or each ended by a line break,
 /// `broken`), with the character each line starts at. `continues`: a
 /// space (or nothing after a hyphen) at the end, for the text of the
@@ -587,12 +889,20 @@ fn block_text(
     let mut starts = Vec::new();
     let mut chars = 0;
     let n = block.lines.len();
+    let left = broken_left(block);
     for (i, line) in block.lines.iter().enumerate() {
         starts.push(chars);
         let mut own = line.spans.clone();
         if i == 0 {
             if let Some(s) = own.first_mut() {
                 s.text = s.text.trim_start().to_string();
+            }
+        }
+        // Each line its own paragraph: one that starts further in (the
+        // first of a paragraph) starts with a tab to its place.
+        if broken && block.lined == Lined::Left && line.u - left > LINE_UP_MM {
+            if let Some(s) = own.first_mut() {
+                s.text.insert(0, '\t');
             }
         }
         // The line's own colour where it is not the frame's.
@@ -714,7 +1024,7 @@ mod tests {
             ("away.", 20.0, 240.0, 12.0),
         ]);
         let mut pages = vec![p];
-        make_paragraphs(&mut pages, &widths);
+        make_paragraphs(&mut pages, &widths, &HashMap::new());
         assert_eq!(pages[0].shapes.len(), 1);
         assert_eq!(
             texts(&pages[0]),
@@ -748,7 +1058,7 @@ mod tests {
             ("Second paragraph starts", 20.0, 240.0, 70.0),
         ]);
         let mut pages = vec![p];
-        make_paragraphs(&mut pages, &widths);
+        make_paragraphs(&mut pages, &widths, &HashMap::new());
         assert_eq!(
             texts(&pages[0]),
             ["First paragraph goes on and ends here.\nSecond paragraph starts"]
@@ -767,7 +1077,7 @@ mod tests {
             spans[0].size_pt = 24.0;
         }
         let mut pages = vec![p];
-        make_paragraphs(&mut pages, &widths);
+        make_paragraphs(&mut pages, &widths, &HashMap::new());
         assert_eq!(pages[0].shapes.len(), 3);
         assert!(pages[0]
             .shapes
@@ -796,7 +1106,7 @@ mod tests {
             widths.insert(ShapeId(k.0 + 99), v);
         }
         let mut pages = vec![p1, p2];
-        make_paragraphs(&mut pages, &widths);
+        make_paragraphs(&mut pages, &widths, &HashMap::new());
         let flow = |s: &Shape| {
             s.data
                 .iter()
@@ -825,7 +1135,7 @@ mod tests {
             spans[0].bold = true;
         }
         let mut pages = vec![p];
-        make_paragraphs(&mut pages, &widths);
+        make_paragraphs(&mut pages, &widths, &HashMap::new());
         assert_eq!(pages[0].shapes.len(), 1);
         let ShapeKind::Text { spans, .. } = &pages[0].shapes[0].kind else {
             panic!()
@@ -836,5 +1146,96 @@ mod tests {
             "A line with a bold word in it and more text on the next line."
         );
         assert!(spans.iter().any(|s| s.bold && s.text.trim() == "bold"));
+    }
+
+    /// A line the file draws under two words becomes their underline,
+    /// and goes (#2569).
+    #[test]
+    fn a_line_under_words_becomes_their_underline() {
+        let (mut p, mut widths) = page(&[
+            ("Some words underlined here and", 20.0, 250.0, 80.0),
+            ("the rest of the text.", 20.0, 245.0, 40.0),
+        ]);
+        // "words underlined" is characters 5..21, each 80/30 mm wide.
+        let cw = 80.0 / 30.0;
+        let mut char_xs = HashMap::new();
+        char_xs.insert(
+            ShapeId(1),
+            (0..30).map(|k| k as f64 * cw).collect::<Vec<_>>(),
+        );
+        let mut bar = Shape::new(
+            ShapeId(9),
+            ShapeKind::Path {
+                path: {
+                    let mut b = tracedraw_core::geometry::BezPath::new();
+                    b.move_to((20.0 + 5.0 * cw, 249.5));
+                    b.line_to((20.0 + 21.0 * cw - 0.3, 249.5));
+                    b
+                },
+                closed: false,
+            },
+        );
+        bar.fill = Fill::None;
+        bar.stroke = Some(tracedraw_core::style::Stroke {
+            width: 0.2,
+            ..Default::default()
+        });
+        p.shapes.insert(1, bar);
+        widths.insert(ShapeId(9), 0.0);
+        let mut pages = vec![p];
+        make_paragraphs(&mut pages, &widths, &char_xs);
+        assert_eq!(pages[0].shapes.len(), 1, "{:?}", texts(&pages[0]));
+        let ShapeKind::Text { spans, .. } = &pages[0].shapes[0].kind else {
+            panic!()
+        };
+        let under: String = spans
+            .iter()
+            .filter(|s| s.underline != LineStyle::None)
+            .map(|s| s.text.as_str())
+            .collect();
+        assert_eq!(under, "words underlined");
+    }
+
+    /// A wide gap in a line is a tab, with a stop where the text after it
+    /// starts, and rows with tabs keep their own lines (#2569).
+    #[test]
+    fn a_wide_gap_is_a_tab_with_its_stop() {
+        let (p, widths) = page(&[
+            ("Name:", 20.0, 250.0, 12.0),
+            ("John Smith", 50.0, 250.0, 22.0),
+            ("Address:", 20.0, 245.0, 17.0),
+            ("12 Long Street", 50.0, 245.0, 30.0),
+        ]);
+        let mut pages = vec![p];
+        make_paragraphs(&mut pages, &widths, &HashMap::new());
+        assert_eq!(
+            texts(&pages[0]),
+            ["Name:\tJohn Smith\nAddress:\t12 Long Street"]
+        );
+        let ShapeKind::Text { para, .. } = &pages[0].shapes[0].kind else {
+            panic!()
+        };
+        assert_eq!(para.tabs.len(), 1, "{:?}", para.tabs);
+        assert!((para.tabs[0].pos - 30.0).abs() < 1e-6, "{:?}", para.tabs);
+    }
+
+    /// Spaces a text starts with move its start to its first letter, and
+    /// a wide run of spaces inside it is a tab to where the next letter
+    /// is (#2569).
+    #[test]
+    fn leading_spaces_and_wide_inner_gaps() {
+        let mut spans = vec![TextSpan::new("  Ab   Cd", "Arial", 10.0)];
+        // 1 mm a character, but the letters after the gap at 20 mm.
+        let xs = [0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 20.0, 21.0];
+        let em = 10.0 * PT_MM;
+        let (lead, tabs) = gaps_into_tabs(&mut spans, &xs, 22.0, em);
+        assert!((lead - 2.0).abs() < 1e-9);
+        assert_eq!(tabs, vec![20.0]);
+        assert_eq!(spans[0].text, "Ab\tCd");
+        // Ordinary word spaces stay.
+        let mut spans = vec![TextSpan::new("Ab Cd", "Arial", 10.0)];
+        let (lead, tabs) = gaps_into_tabs(&mut spans, &[0.0, 1.0, 2.0, 3.0, 4.0], 5.0, em);
+        assert_eq!((lead, tabs.len()), (0.0, 0));
+        assert_eq!(spans[0].text, "Ab Cd");
     }
 }

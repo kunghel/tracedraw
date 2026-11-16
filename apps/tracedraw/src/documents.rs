@@ -439,6 +439,28 @@ impl App {
         self.status.clear();
     }
 
+    /// The tab of window `from` dragged to place `to` among the document
+    /// tabs (#2903): the others keep their order and the same window
+    /// stays active. Each window keeps its number.
+    pub fn move_document(&mut self, from: usize, to: usize) {
+        let n = self.docs.len();
+        if from >= n || to >= n || from == to {
+            return;
+        }
+        let slot = self.docs.remove(from);
+        self.docs.insert(to, slot);
+        let a = self.active_doc;
+        self.active_doc = if a == from {
+            to
+        } else if from < a && a <= to {
+            a - 1
+        } else if to <= a && a < from {
+            a + 1
+        } else {
+            a
+        };
+    }
+
     /// Window > New Window: another window (tab) of the active drawing,
     /// after its last window, showing what the active window shows; it
     /// becomes the active window.
@@ -1217,8 +1239,8 @@ mod tests {
         app.save(false);
         app.switch_document(1);
         assert!(!app.engine.is_dirty());
-        let saved = std::fs::read_to_string(&path).unwrap_or_default();
-        let doc = Document::from_json(&saved).expect("saved drawing");
+        let saved = std::fs::read(&path).unwrap_or_default();
+        let doc = Document::from_tdraw_bytes(&saved).expect("saved drawing");
         assert_eq!(
             doc.pages[0]
                 .layers

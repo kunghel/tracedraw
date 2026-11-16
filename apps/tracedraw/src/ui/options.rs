@@ -58,6 +58,7 @@ pub enum OptionsPage {
     Eraser,
     ShapeRecognition,
     Dimension,
+    AngularDimension,
     Connector,
     MeshFill,
     // Tools > Options > Global.
@@ -141,6 +142,7 @@ impl OptionsSet {
                 Spiral,
                 Table,
                 Dimension,
+                AngularDimension,
                 Connector,
                 MeshFill,
             ],
@@ -198,6 +200,7 @@ impl OptionsPage {
             Eraser => Tool::Eraser,
             ShapeRecognition => Tool::ShapeRecognition,
             Dimension => Tool::ParallelDimension,
+            AngularDimension => Tool::AngularDimension,
             Connector => Tool::Connector,
             MeshFill => Tool::MeshFill,
             _ => return None,
@@ -240,6 +243,7 @@ impl OptionsPage {
             Eraser => "tool.eraser",
             ShapeRecognition => "tool.shape_recognition",
             Dimension => "options.dimension_tool",
+            AngularDimension => "tool.angular_dimension",
             Connector => "options.connector_tool",
             MeshFill => "tool.mesh_fill",
             FileLocations => "options.file_locations",
@@ -705,6 +709,7 @@ fn draw_page(app: &mut App, ui: &mut Ui) {
         Eraser => eraser_page(app, ui),
         ShapeRecognition => shape_recognition_page(app, ui),
         Dimension => dimension_page(app, ui),
+        AngularDimension => angular_dimension_page(app, ui),
         Connector => connector_page(app, ui),
         MeshFill => mesh_fill_page(app, ui),
         Curves => curves_page(app, ui),
@@ -1066,13 +1071,22 @@ fn general_page(app: &mut App, ui: &mut Ui) {
             hardware_acceleration(app, ui);
         }
         // Linux: the desktop's title bar on a Wayland desktop that leaves
-        // it to the application, from the next start (#2070).
+        // it to the application, from the next start (#2070); on by
+        // default, as only that window takes file drops there (#2486).
         #[cfg(target_os = "linux")]
         ui.checkbox(
             &mut app.settings.system_title_bar,
             tr("options.system_title_bar"),
         )
         .rich_tip(crate::ui::tips::keyed("options.system_title_bar"));
+        // Minimize, Maximize and Close on the menu bar, for a window
+        // without a title bar (#2574).
+        #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+        ui.checkbox(
+            &mut app.settings.window_buttons,
+            tr("options.window_buttons"),
+        )
+        .rich_tip(crate::ui::tips::keyed("options.window_buttons"));
     });
     chrome::section(ui, &tr("options.undo_levels"));
     ui.indent("undo", |ui| {
@@ -1142,6 +1156,17 @@ fn hardware_acceleration(app: &mut App, ui: &mut Ui) {
         dim(ui, trf("options.gpu_in_use", &[("name", name)]));
     }
     dim(ui, tr("options.restart_to_apply"));
+    // How fast this computer is, with this setting and the other one.
+    if ui
+        .button(tr("menu.help.benchmark"))
+        .rich_tip(crate::ui::tips::pair(
+            "menu.help.benchmark",
+            "menu.help.benchmark_tip",
+        ))
+        .clicked()
+    {
+        app.dialog = crate::ui::dialogs::Dialog::Benchmark;
+    }
     // What the card does and what the processor does, and why.
     ui.add_space(4.0);
     ui.scope(|ui| {
@@ -1199,6 +1224,14 @@ fn display_page(app: &mut App, ui: &mut Ui) {
                 "options.touch_keys",
                 "options.touch_keys_tip",
             ));
+        ui.checkbox(
+            &mut app.settings.touch_selection_bar,
+            tr("options.touch_selection_bar"),
+        )
+        .rich_tip(crate::ui::tips::pair(
+            "options.touch_selection_bar",
+            "options.touch_selection_bar_tip",
+        ));
     });
     chrome::section(ui, &tr("options.full_screen_preview"));
     ui.indent("fsp", |ui| {
@@ -3058,6 +3091,11 @@ fn appearance_page(app: &mut App, ui: &mut Ui) {
         .rich_tip(tr("options.ui_shadows_tip"));
     ui.checkbox(&mut app.settings.colored_icons, tr("options.colored_icons"))
         .rich_tip(tr("options.colored_icons_tip"));
+    ui.checkbox(
+        &mut app.settings.docker_tabs_icons_only,
+        tr("options.docker_tabs_icons_only"),
+    )
+    .rich_tip(tr("options.docker_tabs_icons_only_tip"));
     crate::ui::chrome::section(ui, &tr("options.ui_size"));
     // The size takes effect when the slider is let go or the field is
     // left, so the page does not grow under the pointer.
@@ -3142,7 +3180,9 @@ fn appearance_page(app: &mut App, ui: &mut Ui) {
     crate::ui::chrome::section(ui, &tr("options.color_section"));
     grid("appearance_color").show(ui, |ui| {
         row_label(ui, &tr("options.theme"));
-        let current = crate::theme::Theme::from_id(&app.settings.theme);
+        // With none picked yet, the desktop's light or dark one (#2748).
+        let current =
+            crate::theme::Theme::from_id(&crate::settings::chosen_theme_with(&app.settings, sys));
         let tip = crate::ui::tips::pair("options.theme", "options.theme_tip");
         crate::ui::tips::tip_over(ui, tip, |ui| {
             crate::ui::keynav::ComboBox::from_id_salt("ui_theme")
@@ -3401,6 +3441,9 @@ pub struct ShortcutEditor {
     pub keys_tab: bool,
     /// Reset all shortcuts was pressed: the question is shown.
     pub confirm_reset_all: bool,
+    /// The General tab's list of pictures to choose a command's icon
+    /// from is open (#2100).
+    pub icon_picker: bool,
 }
 
 /// The Commands page's category for the toolbox's tools.
@@ -3745,7 +3788,12 @@ fn commands_page(app: &mut App, ui: &mut Ui) {
                         egui::RichText::new(tr("options.no_command")).color(Tokens::text_dim()),
                     );
                 }
-                Some(c) if !app.shortcut_editor.keys_tab => command_general(app, ui, &c),
+                Some(c) if !app.shortcut_editor.keys_tab => {
+                    command_general(app, ui, &c);
+                    if c.id.starts_with("menu.") {
+                        command_icon(app, ui, &c);
+                    }
+                }
                 Some(c) => command_keys(app, ui, &c),
             }
         });
@@ -3862,6 +3910,140 @@ fn command_general(app: &App, ui: &mut Ui, c: &CommandItem) {
         });
         ui.end_row();
     });
+}
+
+/// The pictures a command's icon can be chosen from (#2100): those of
+/// the menu commands that have one of their own, then the tools'.
+pub(crate) fn icon_sources(entries: &[crate::ui::menus::invoke::Entry]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for e in entries {
+        if crate::ui::menus::has_own_picture(&e.key) && !out.contains(&e.key) {
+            out.push(e.key.clone());
+        }
+    }
+    out.extend(
+        crate::tools::Tool::ALL
+            .into_iter()
+            .map(|t| format!("{}{}", crate::ui::bar_items::TOOL, t.id())),
+    );
+    out
+}
+
+/// Give the command `key` the picture `source`, or its own back with
+/// `None`; kept in the settings (#2100).
+pub(crate) fn set_command_icon(app: &mut App, key: &str, source: Option<&str>) {
+    app.settings.command_icons.retain(|(k, _)| k != key);
+    if let Some(src) = source.filter(|s| *s != key) {
+        app.settings
+            .command_icons
+            .push((key.to_string(), src.to_string()));
+    }
+    crate::ui::menus::set_command_icons(&app.settings.command_icons);
+    app.settings.save();
+}
+
+/// The General tab's Icon (#2100): the command's picture, Choose... with
+/// the pictures to pick from, and Reset to Default. A command with a
+/// picture shows it on a toolbar instead of its name.
+fn command_icon(app: &mut App, ui: &mut Ui, c: &CommandItem) {
+    ui.add_space(6.0);
+    let chosen = crate::ui::menus::chosen_icon(&c.id).is_some();
+    ui.horizontal(|ui| {
+        ui.label(tr("options.command_icon"));
+        let (r, resp) = ui.allocate_exact_size(egui::vec2(32.0, 32.0), egui::Sense::hover());
+        ui.painter().rect_stroke(
+            r,
+            2.0,
+            egui::Stroke::new(1.0, Tokens::control_border()),
+            egui::StrokeKind::Inside,
+        );
+        if !crate::ui::menus::draw_menu_picture(
+            ui.painter(),
+            egui::Rect::from_center_size(r.center(), egui::vec2(20.0, 20.0)),
+            &c.id,
+            Tokens::icon(),
+        ) {
+            ui.painter().text(
+                r.center(),
+                egui::Align2::CENTER_CENTER,
+                "-",
+                egui::FontId::proportional(13.0),
+                Tokens::text_dim(),
+            );
+        }
+        resp.rich_tip(crate::ui::tips::pair(
+            "options.command_icon",
+            "options.command_icon_tip",
+        ));
+        let open = app.shortcut_editor.icon_picker;
+        if ui
+            .add(egui::Button::new(tr("options.command_icon_choose")).selected(open))
+            .rich_tip(crate::ui::tips::pair(
+                "options.command_icon_choose",
+                "options.command_icon_choose_tip",
+            ))
+            .clicked()
+        {
+            app.shortcut_editor.icon_picker = !open;
+        }
+        if ui
+            .add_enabled(chosen, egui::Button::new(tr("options.command_icon_reset")))
+            .rich_tip(crate::ui::tips::pair(
+                "options.command_icon_reset",
+                "options.command_icon_reset_tip",
+            ))
+            .clicked()
+        {
+            set_command_icon(app, &c.id, None);
+        }
+    });
+    if !app.shortcut_editor.icon_picker {
+        return;
+    }
+    let sources = icon_sources(&app.shortcut_editor.entries);
+    const CELL: f32 = 26.0;
+    egui::Frame::new()
+        .stroke(egui::Stroke::new(1.0, Tokens::control_border()))
+        .fill(Tokens::field())
+        .show(ui, |ui| {
+            egui::ScrollArea::vertical()
+                .id_salt("command_icon_picker")
+                .max_height(150.0)
+                .show(ui, |ui| {
+                    let per_row = ((ui.available_width() / CELL).floor() as usize).max(1);
+                    for row in sources.chunks(per_row) {
+                        ui.horizontal(|ui| {
+                            ui.spacing_mut().item_spacing.x = 0.0;
+                            for src in row {
+                                let (r, resp) = ui.allocate_exact_size(
+                                    egui::vec2(CELL, CELL),
+                                    egui::Sense::click(),
+                                );
+                                if resp.hovered() {
+                                    ui.painter().rect_filled(r, 2.0, Tokens::hovered_row());
+                                }
+                                crate::ui::menus::draw_icon_source(
+                                    ui.painter(),
+                                    egui::Rect::from_center_size(
+                                        r.center(),
+                                        egui::vec2(16.0, 16.0),
+                                    ),
+                                    src,
+                                    Tokens::icon(),
+                                );
+                                let name = match crate::ui::bar_items::tool_of(src) {
+                                    Some(t) => t.name(),
+                                    None => tr(src),
+                                };
+                                if resp.rich_tip(name).clicked() {
+                                    set_command_icon(app, &c.id, Some(src));
+                                    app.shortcut_editor.icon_picker = false;
+                                }
+                            }
+                        });
+                    }
+                });
+        });
 }
 
 /// The keys that run `c` now: the user's, else the built-in ones. The
@@ -4159,6 +4341,28 @@ fn pick_page(app: &mut App, ui: &mut Ui) {
         tr("options.marquee_touching"),
     )
     .rich_tip(tr("options.marquee_touching_tip"));
+    ui.add_space(6.0);
+    ui.label(tr("options.ctrl_shift_keys"));
+    ui.indent("pick_keys", |ui| {
+        ui.radio_value(
+            &mut app.settings.pick_windows_keys,
+            false,
+            tr("options.keys_traditional"),
+        )
+        .rich_tip(crate::ui::tips::pair(
+            "options.keys_traditional",
+            "options.keys_traditional_tip",
+        ));
+        ui.radio_value(
+            &mut app.settings.pick_windows_keys,
+            true,
+            tr("options.keys_windows"),
+        )
+        .rich_tip(crate::ui::tips::pair(
+            "options.keys_windows",
+            "options.keys_windows_tip",
+        ));
+    });
 }
 
 fn zoom_pan_page(app: &mut App, ui: &mut Ui) {
@@ -4205,6 +4409,12 @@ fn zoom_pan_page(app: &mut App, ui: &mut Ui) {
         .rich_tip(crate::ui::tips::pair(
             "options.smooth_zoom",
             "options.smooth_zoom_tip",
+        ));
+    // Slow computers: one jump a notch, one render once the zoom stops.
+    ui.checkbox(&mut app.settings.light_zoom, tr("options.light_zoom"))
+        .rich_tip(crate::ui::tips::pair(
+            "options.light_zoom",
+            "options.light_zoom_tip",
         ));
     ui.horizontal(|ui| {
         ui.label(tr("options.wheel_zoom_step"));
@@ -4387,7 +4597,15 @@ fn ellipse_page(app: &mut App, ui: &mut Ui) {
             }
         };
     }
+    let clockwise = &mut app.settings.ellipse_clockwise;
     if let Some(a) = &mut app.ellipse_arc {
+        // The angles as typed: from the start to the end in the chosen
+        // direction; the stored arc always runs counterclockwise (#1436).
+        let (mut start, mut end) = if *clockwise {
+            (a.end_deg, a.start_deg)
+        } else {
+            (a.start_deg, a.end_deg)
+        };
         grid("arc").show(ui, |ui| {
             row_label(ui, &tr("options.starting_angle"));
             crate::ui::tips::tip_over(
@@ -4395,7 +4613,7 @@ fn ellipse_page(app: &mut App, ui: &mut Ui) {
                 crate::ui::tips::pair("options.starting_angle", "options.starting_angle_tip"),
                 |ui| {
                     ui.add(
-                        crate::ui::field::NumField::new(&mut a.start_deg)
+                        crate::ui::field::NumField::new(&mut start)
                             .range(-360.0..=360.0)
                             .suffix("°"),
                     );
@@ -4409,7 +4627,7 @@ fn ellipse_page(app: &mut App, ui: &mut Ui) {
                 crate::ui::tips::pair("options.ending_angle", "options.ending_angle_tip"),
                 |ui| {
                     ui.add(
-                        crate::ui::field::NumField::new(&mut a.end_deg)
+                        crate::ui::field::NumField::new(&mut end)
                             .range(-360.0..=360.0)
                             .suffix("°"),
                     );
@@ -4417,7 +4635,20 @@ fn ellipse_page(app: &mut App, ui: &mut Ui) {
             );
 
             ui.end_row();
+            row_label(ui, &tr("options.arc_direction"));
+            ui.horizontal(|ui| {
+                ui.radio_value(clockwise, false, tr("options.counterclockwise"))
+                    .rich_tip(crate::ui::tips::keyed("options.arc_direction"));
+                ui.radio_value(clockwise, true, tr("options.clockwise"))
+                    .rich_tip(crate::ui::tips::keyed("options.arc_direction"));
+            });
+            ui.end_row();
         });
+        (a.start_deg, a.end_deg) = if *clockwise {
+            (end, start)
+        } else {
+            (start, end)
+        };
     }
 }
 
@@ -4488,6 +4719,60 @@ fn spiral_page(app: &mut App, ui: &mut Ui) {
     .rich_tip(crate::ui::tips::pair(
         "options.logarithmic_spiral",
         "options.logarithmic_spiral_tip",
+    ));
+    // How fast the logarithmic spiral widens, and a picture of the
+    // spiral the tool draws (#1436).
+    ui.add_enabled_ui(app.spiral_logarithmic, |ui| {
+        grid("spiral_expansion").show(ui, |ui| {
+            row_label(ui, &tr("options.spiral_expansion"));
+            ui.add(crate::ui::Slider::new(
+                &mut app.settings.spiral_expansion,
+                1..=100,
+            ))
+            .rich_tip(crate::ui::tips::pair(
+                "options.spiral_expansion",
+                "options.spiral_expansion_tip",
+            ));
+            ui.end_row();
+        });
+    });
+    spiral_picture(
+        ui,
+        app.spiral_revolutions,
+        app.spiral_logarithmic,
+        app.settings.spiral_expansion,
+    );
+}
+
+/// A small picture of the spiral the tool draws with these settings.
+fn spiral_picture(ui: &mut Ui, revolutions: u32, logarithmic: bool, expansion: u32) {
+    let side = 96.0;
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(side, side), egui::Sense::hover());
+    resp.on_hover_text(tr("options.spiral_preview_tip"));
+    let painter = ui.painter_at(rect);
+    painter.rect_stroke(
+        rect,
+        4.0,
+        egui::Stroke::new(1.0, Tokens::border()),
+        egui::StrokeKind::Inside,
+    );
+    let box_mm = tracedraw_core::geometry::Rect::new(0.0, 0.0, 1.0, 1.0);
+    let path = crate::tools2::spiral_path(box_mm, revolutions.min(20), logarithmic, expansion);
+    let inner = rect.shrink(8.0);
+    let mut pts = Vec::new();
+    tracedraw_core::geometry::flatten(&path, 0.002, &mut |el| {
+        use tracedraw_core::geometry::PathEl;
+        match el {
+            PathEl::MoveTo(p) | PathEl::LineTo(p) => pts.push(egui::pos2(
+                inner.left() + p.x as f32 * inner.width(),
+                inner.top() + p.y as f32 * inner.height(),
+            )),
+            _ => {}
+        }
+    });
+    painter.add(egui::Shape::line(
+        pts,
+        egui::Stroke::new(1.5, Tokens::text()),
     ));
 }
 
@@ -4561,6 +4846,24 @@ fn dimension_page(app: &mut App, ui: &mut Ui) {
             .rich_tip(crate::ui::tips::keyed("dimension.precision"));
         style.precision = precision;
         ui.end_row();
+        row_label(ui, &tr("options.dimension_style"));
+        crate::ui::keynav::ComboBox::from_id_salt("options_dimension_style")
+            .selected_text(tr(if style.fractional {
+                "options.fractional"
+            } else {
+                "options.decimal"
+            }))
+            .width(120.0)
+            .show_ui(ui, |ui| {
+                ui.selectable_value(&mut style.fractional, false, tr("options.decimal"));
+                ui.selectable_value(&mut style.fractional, true, tr("options.fractional"));
+            })
+            .response
+            .rich_tip(crate::ui::tips::pair(
+                "options.dimension_style",
+                "options.dimension_style_tip",
+            ));
+        ui.end_row();
         row_label(ui, &tr("dimension.units"));
         let choices = crate::dimensions::units_choices();
         let shown = choices
@@ -4597,7 +4900,49 @@ fn dimension_page(app: &mut App, ui: &mut Ui) {
     }
 }
 
-/// The corner radius new rounded connectors take.
+/// The decimals, degree sign, prefix and suffix new angular dimensions
+/// take (#1436).
+fn angular_dimension_page(app: &mut App, ui: &mut Ui) {
+    let a = &mut app.settings.angular_dimension;
+    grid("angular_dimension").show(ui, |ui| {
+        row_label(ui, &tr("dimension.precision"));
+        let mut precision = a.precision.min(6);
+        crate::ui::keynav::ComboBox::from_id_salt("options_angular_precision")
+            .selected_text(crate::ui::dimension_bar::precision_sample(precision))
+            .width(120.0)
+            .show_ui(ui, |ui| {
+                for p in 0..=6u8 {
+                    ui.selectable_value(
+                        &mut precision,
+                        p,
+                        crate::ui::dimension_bar::precision_sample(p),
+                    );
+                }
+            })
+            .response
+            .rich_tip(crate::ui::tips::keyed("dimension.precision"));
+        a.precision = precision;
+        ui.end_row();
+        row_label(ui, &tr("dimension.units"));
+        ui.label("\u{b0}").rich_tip(tr("options.angular_units_tip"));
+        ui.end_row();
+        ui.label("");
+        ui.checkbox(&mut a.show_units, tr("dimension.show_units"))
+            .rich_tip(crate::ui::tips::keyed("dimension.show_units"));
+        ui.end_row();
+        row_label(ui, &tr("dimension.prefix"));
+        ui.add(egui::TextEdit::singleline(&mut a.prefix).desired_width(190.0))
+            .rich_tip(crate::ui::tips::keyed("dimension.prefix"));
+        ui.end_row();
+        row_label(ui, &tr("dimension.suffix"));
+        ui.add(egui::TextEdit::singleline(&mut a.suffix).desired_width(190.0))
+            .rich_tip(crate::ui::tips::keyed("dimension.suffix"));
+        ui.end_row();
+    });
+}
+
+/// The corner radius new rounded connectors take, whether an object's
+/// nodes are anchors and how far right-angle connectors leave objects.
 fn connector_page(app: &mut App, ui: &mut Ui) {
     grid("connector").show(ui, |ui| {
         row_label(ui, &tr("connector.radius"));
@@ -4615,7 +4960,37 @@ fn connector_page(app: &mut App, ui: &mut Ui) {
             app.connector_radius = r.clamp(0.0, 1000.0);
         }
         ui.end_row();
+        row_label(ui, &tr("options.connector_gap"));
+        let mut gap = app.settings.connector_gap;
+        if ui
+            .add(
+                crate::ui::field::NumField::new(&mut gap)
+                    .speed(0.1)
+                    .range(0.0..=100.0)
+                    .suffix(" mm"),
+            )
+            .rich_tip(crate::ui::tips::pair(
+                "options.connector_gap",
+                "options.connector_gap_tip",
+            ))
+            .changed()
+        {
+            app.settings.connector_gap = if gap.is_finite() {
+                gap.clamp(0.0, 100.0)
+            } else {
+                0.0
+            };
+        }
+        ui.end_row();
     });
+    ui.checkbox(
+        &mut app.settings.connector_geometric_anchors,
+        tr("options.connector_geometric_anchors"),
+    )
+    .rich_tip(crate::ui::tips::pair(
+        "options.connector_geometric_anchors",
+        "options.connector_geometric_anchors_tip",
+    ));
 }
 
 /// The grid new mesh fills take.
@@ -4735,6 +5110,21 @@ fn curves_page(app: &mut App, ui: &mut Ui) {
         ));
         c.join_px = px;
         ui.end_row();
+        // Corners and straight stretches of freehand strokes (#1436).
+        row_label(ui, &tr("options.corner_threshold"));
+        ui.add(crate::ui::Slider::new(&mut c.corner_threshold, 0..=10))
+            .rich_tip(crate::ui::tips::pair(
+                "options.corner_threshold",
+                "options.corner_threshold_tip",
+            ));
+        ui.end_row();
+        row_label(ui, &tr("options.straight_threshold"));
+        ui.add(crate::ui::Slider::new(&mut c.straight_threshold, 0..=10).suffix(" px"))
+            .rich_tip(crate::ui::tips::pair(
+                "options.straight_threshold",
+                "options.straight_threshold_tip",
+            ));
+        ui.end_row();
         row_label(ui, &tr("options.pen"));
         ui.checkbox(&mut c.pen_preview, tr("options.pen_preview"))
             .rich_tip(crate::ui::tips::pair(
@@ -4822,6 +5212,14 @@ fn eraser_page(app: &mut App, ui: &mut Ui) {
             "options.eraser_square",
             "options.eraser_square_tip",
         ));
+    ui.checkbox(
+        &mut app.settings.eraser_reduce_nodes,
+        tr("options.eraser_reduce_nodes"),
+    )
+    .rich_tip(crate::ui::tips::pair(
+        "options.eraser_reduce_nodes",
+        "options.eraser_reduce_nodes_tip",
+    ));
 }
 
 // ----- Global ------------------------------------------------------------
@@ -4859,6 +5257,8 @@ fn global_general_page(app: &mut App, ui: &mut Ui) {
                 if ui.selectable_label(follows, label).clicked() {
                     crate::i18n::set_language(system);
                     app.settings.language = crate::i18n::SYSTEM.to_string();
+                    #[cfg(not(target_arch = "wasm32"))]
+                    crate::theme::language_changed(ui.ctx(), &current, system);
                 }
                 ui.separator();
                 for (code, n) in crate::i18n::LANGUAGES {
@@ -4866,6 +5266,8 @@ fn global_general_page(app: &mut App, ui: &mut Ui) {
                     if ui.selectable_label(picked, n).clicked() {
                         crate::i18n::set_language(code);
                         app.settings.language = code.to_string();
+                        #[cfg(not(target_arch = "wasm32"))]
+                        crate::theme::language_changed(ui.ctx(), &current, code);
                     }
                 }
             })
@@ -5180,6 +5582,7 @@ fn layout_page(app: &mut App, ui: &mut Ui) {
     }
     page_spacing_row(app, ui);
     facing_pages_row(app, ui);
+    page_margins_row(app, ui);
     ui.separator();
     ui.strong(tr("options.master_layers"));
     type MasterRow = (
@@ -5287,6 +5690,57 @@ fn facing_pages_row(app: &mut App, ui: &mut Ui) {
     });
     if changed {
         app.set_facing_pages(on, start);
+    }
+}
+
+/// Document Setup > Layout: Margins, the page margins for book layouts
+/// (#1660): top, bottom, inside (at the spine with facing pages, else
+/// on the left) and outside, in the document's units, one undo step a
+/// change. Shown on the pages as a dashed frame.
+fn page_margins_row(app: &mut App, ui: &mut Ui) {
+    use tracedraw_core::document::{PageMargins, MAX_PAGE_MARGIN};
+    let u = app.units;
+    let current = app.doc().metadata.margins;
+    let mut on = current.is_some();
+    let mut changed = ui
+        .checkbox(&mut on, tr("options.page_margins"))
+        .rich_tip(crate::ui::tips::pair(
+            "options.page_margins",
+            "options.page_margins_tip",
+        ))
+        .changed();
+    // Ticked: 12.7 mm all round to start with.
+    let mut m = current.unwrap_or(PageMargins::uniform(12.7));
+    ui.add_enabled_ui(on, |ui| {
+        grid("doc_page_margins").show(ui, |ui| {
+            for (key, v) in [
+                ("options.margin_top", &mut m.top),
+                ("options.margin_bottom", &mut m.bottom),
+                ("options.margin_inside", &mut m.inside),
+                ("options.margin_outside", &mut m.outside),
+            ] {
+                row_label(ui, &tr(key));
+                let mut shown = u.from_mm(*v);
+                if ui
+                    .add_sized(
+                        [100.0, 22.0],
+                        crate::ui::field::NumField::new(&mut shown)
+                            .range(0.0..=u.from_mm(MAX_PAGE_MARGIN))
+                            .speed(0.1)
+                            .suffix(format!(" {}", u.short())),
+                    )
+                    .rich_tip(crate::ui::tips::pair(key, "options.page_margins_tip"))
+                    .changed()
+                {
+                    *v = u.to_mm(shown);
+                    changed = true;
+                }
+                ui.end_row();
+            }
+        });
+    });
+    if changed {
+        app.set_page_margins(on.then_some(m));
     }
 }
 
@@ -5463,13 +5917,14 @@ mod tests {
         }
     }
 
-    /// On Linux the General page offers the desktop's title bar, and its
-    /// box turns the setting on (#2070).
+    /// On Linux the General page offers the desktop's title bar, on by
+    /// default (#2486), and its box turns it off for the native Wayland
+    /// window (#2070).
     #[cfg(target_os = "linux")]
     #[test]
     fn linux_offers_the_desktops_title_bar() {
         let mut app = App::headless();
-        assert!(!app.settings.system_title_bar);
+        assert!(app.settings.system_title_bar);
         let ctx = crate::theme::ui_context();
         let label = tr("options.system_title_bar");
         let mut at = None;
@@ -5499,7 +5954,7 @@ mod tests {
             let mut out = ctx.run_ui(input, |ui| general_page(&mut app, ui));
             out.textures_delta.clear();
         }
-        assert!(app.settings.system_title_bar);
+        assert!(!app.settings.system_title_bar);
     }
 
     /// #1148: every command can take a shortcut. A bar button that runs

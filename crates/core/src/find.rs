@@ -1,6 +1,7 @@
 //! Finding objects by their properties (Edit > Find and Replace, Find
 //! Objects by properties) and replacing a fill colour, outline colour,
-//! outline width or font in the objects found.
+//! outline width or font (of all characters, or only the numbers or the
+//! letters) in the objects found, or writing their digits as 0 to 9.
 //!
 //! A query is a set of optional criteria; an object is found when it meets
 //! every criterion that is set. Criteria about the look (fill, outline,
@@ -313,6 +314,42 @@ pub fn find(doc: &Document, q: &ObjectQuery, scope: Scope, page: usize) -> Vec<H
     out
 }
 
+/// Which characters of a text a new font goes to (#2585).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum CharClass {
+    /// Every character.
+    #[default]
+    All,
+    /// Numbers only: the digits of every script (0 to 9, Arabic-Indic,
+    /// Devanagari and the others) and other number characters.
+    Numbers,
+    /// Letters only, of every script, with the vowel signs written on
+    /// them.
+    Letters,
+}
+
+impl CharClass {
+    pub const ALL: [CharClass; 3] = [CharClass::All, CharClass::Numbers, CharClass::Letters];
+
+    /// Does this class take `c`?
+    pub fn takes(self, c: char) -> bool {
+        match self {
+            CharClass::All => true,
+            CharClass::Numbers => c.is_numeric(),
+            CharClass::Letters => c.is_alphabetic(),
+        }
+    }
+
+    /// A stable name, for the interface strings (`find.chars_<key>`).
+    pub fn key(self) -> &'static str {
+        match self {
+            CharClass::All => "all",
+            CharClass::Numbers => "numbers",
+            CharClass::Letters => "letters",
+        }
+    }
+}
+
 /// What to put in place of what was found; `None` keeps that property.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct Replacement {
@@ -321,6 +358,13 @@ pub struct Replacement {
     /// Outline width in millimetres.
     pub outline_width: Option<f64>,
     pub font: Option<String>,
+    /// The characters the new font goes to: all, or only the numbers or
+    /// only the letters (#2585).
+    pub font_chars: CharClass,
+    /// Write the digits of every script as 0 to 9 (Arabic-Indic, Persian,
+    /// Devanagari, Bengali, Thai, full-width and the others), the rest of
+    /// the text staying as it is (#2585).
+    pub western_digits: bool,
 }
 
 impl Replacement {
@@ -329,7 +373,126 @@ impl Replacement {
             && self.outline.is_none()
             && self.outline_width.is_none()
             && self.font.is_none()
+            && !self.western_digits
     }
+}
+
+/// The digit 0 to 9 a decimal digit of another script stands for, if `c`
+/// is one (the blocks of ten in Unicode's decimal digits).
+pub fn western_digit(c: char) -> Option<char> {
+    const ZEROS: [u32; 37] = [
+        0x0660, 0x06F0, 0x07C0, 0x0966, 0x09E6, 0x0A66, 0x0AE6, 0x0B66, 0x0BE6, 0x0C66, 0x0CE6,
+        0x0D66, 0x0DE6, 0x0E50, 0x0ED0, 0x0F20, 0x1040, 0x1090, 0x17E0, 0x1810, 0x1946, 0x19D0,
+        0x1A80, 0x1A90, 0x1B50, 0x1BB0, 0x1C40, 0x1C50, 0xA620, 0xA8D0, 0xA900, 0xA9D0, 0xA9F0,
+        0xAA50, 0xABF0, 0xFF10, 0x1D7CE,
+    ];
+    let u = c as u32;
+    if c.is_ascii_digit() {
+        return None;
+    }
+    // Mathematical digits come in five sets of ten from U+1D7CE.
+    if (0x1D7CE..0x1D800).contains(&u) {
+        return char::from_digit((u - 0x1D7CE) % 10, 10);
+    }
+    ZEROS
+        .iter()
+        .find(|z| (**z..**z + 10).contains(&u))
+        .and_then(|z| char::from_digit(u - z, 10))
+}
+
+/// `spans` with the font `to` given to the characters of class `chars`
+/// in the spans set in `from` (every span with no `from`), and with the
+/// digits of every script written as 0 to 9 there when `western` is set.
+/// Spans are cut where the class changes and merged again where they end
+/// up alike.
+fn replace_in_spans(
+    spans: &[crate::TextSpan],
+    from: Option<&str>,
+    to: Option<&str>,
+    chars: CharClass,
+    western: bool,
+) -> Vec<crate::TextSpan> {
+    let mut out = Vec::with_capacity(spans.len());
+    for sp in spans {
+        if !from.is_none_or(|f| sp.font_family.eq_ignore_ascii_case(f)) {
+            out.push(sp.clone());
+            continue;
+        }
+        let text: String = if western {
+            sp.text
+                .chars()
+                .map(|c| western_digit(c).unwrap_or(c))
+                .collect()
+        } else {
+            sp.text.clone()
+        };
+        let Some(to) = to else {
+            out.push(crate::TextSpan { text, ..sp.clone() });
+            continue;
+        };
+        if chars == CharClass::All || text.is_empty() {
+            out.push(crate::TextSpan {
+                text,
+                font_family: to.to_string(),
+                ..sp.clone()
+            });
+            continue;
+        }
+        // Runs of characters the class takes or not; a mark joined to a
+        // letter stays with it.
+        let mut runs: Vec<(bool, String)> = Vec::new();
+        for c in text.chars() {
+            let joined = !c.is_alphanumeric() && is_combining(c);
+            let take = match runs.last() {
+                Some((t, _)) if joined => *t,
+                _ => chars.takes(c),
+            };
+            match runs.last_mut() {
+                Some((t, run)) if *t == take => run.push(c),
+                _ => runs.push((take, c.to_string())),
+            }
+        }
+        for (take, run) in runs {
+            let mut n = crate::TextSpan {
+                text: run,
+                ..sp.clone()
+            };
+            if take {
+                n.font_family = to.to_string();
+            }
+            out.push(n);
+        }
+    }
+    crate::document::merge_equal_spans(out)
+}
+
+/// A combining mark written on the character before it (the common
+/// blocks of them).
+fn is_combining(c: char) -> bool {
+    matches!(
+        c as u32,
+        0x0300..=0x036F
+            | 0x0483..=0x0489
+            | 0x0591..=0x05C7
+            | 0x0610..=0x061A
+            | 0x064B..=0x065F
+            | 0x0670
+            | 0x06D6..=0x06ED
+            | 0x0900..=0x0903
+            | 0x093A..=0x094F
+            | 0x0951..=0x0957
+            | 0x0962..=0x0963
+            | 0x0981..=0x0983
+            | 0x09BC..=0x09D7
+            | 0x0E31..=0x0E3A
+            | 0x0E47..=0x0E4E
+            | 0x1AB0..=0x1AFF
+            | 0x1DC0..=0x1DFF
+            | 0x200C..=0x200D
+            | 0x20D0..=0x20FF
+            | 0xFE00..=0xFE0F
+            | 0xFE20..=0xFE2F
+    )
 }
 
 /// Swap `from` for `to` everywhere in `fill`; with no `from` the fill
@@ -445,22 +608,18 @@ pub fn replace_commands(
                     });
                 }
             }
-            if let (Some(to), ShapeKind::Text { spans, .. }) = (&r.font, &s.kind) {
-                if !to.is_empty() {
+            let to = r.font.as_deref().filter(|f| !f.is_empty());
+            if let (true, ShapeKind::Text { spans, .. }) =
+                (to.is_some() || r.western_digits, &s.kind)
+            {
+                let ns =
+                    replace_in_spans(spans, q.font.as_deref(), to, r.font_chars, r.western_digits);
+                if &ns != spans {
                     let mut kind = s.kind.clone();
-                    if let ShapeKind::Text { spans: ns, .. } = &mut kind {
-                        for sp in ns.iter_mut() {
-                            if q.font
-                                .as_ref()
-                                .is_none_or(|f| sp.font_family.eq_ignore_ascii_case(f))
-                            {
-                                sp.font_family = to.clone();
-                            }
-                        }
-                        if ns != spans {
-                            cmds.push(Command::SetShapeKind { shape: s.id, kind });
-                        }
+                    if let ShapeKind::Text { spans: own, .. } = &mut kind {
+                        *own = ns;
                     }
+                    cmds.push(Command::SetShapeKind { shape: s.id, kind });
                 }
             }
         }
@@ -807,5 +966,118 @@ mod tests {
         let q = query_from(&g);
         assert_eq!(q.object_type, Some(ObjectType::Group));
         assert_eq!(q.fill, Some(ColorQuery::Color(red())));
+    }
+
+    /// A new font for the numbers only, or the letters only (#2585): the
+    /// spans are cut where the kind of character changes; the digits of
+    /// other scripts can be written as 0 to 9.
+    #[test]
+    fn a_font_goes_to_the_numbers_or_the_letters_only() {
+        let sp = |t: &str, f: &str| TextSpan::new(t, f, 12.0);
+        let fonts = |v: &[TextSpan]| -> Vec<(String, String)> {
+            v.iter()
+                .map(|s| (s.text.clone(), s.font_family.clone()))
+                .collect()
+        };
+        let pair = |t: &str, f: &str| (t.to_string(), f.to_string());
+        let spans = vec![sp("Room 12, floor 3", "Serif"), sp("x9", "Sans")];
+        let n = replace_in_spans(
+            &spans,
+            Some("serif"),
+            Some("Mono"),
+            CharClass::Numbers,
+            false,
+        );
+        assert_eq!(
+            fonts(&n),
+            [
+                pair("Room ", "Serif"),
+                pair("12", "Mono"),
+                pair(", floor ", "Serif"),
+                pair("3", "Mono"),
+                pair("x9", "Sans"),
+            ]
+        );
+        let l = replace_in_spans(&spans, None, Some("Mono"), CharClass::Letters, false);
+        assert_eq!(
+            fonts(&l),
+            [
+                pair("Room", "Mono"),
+                pair(" 12, ", "Serif"),
+                pair("floor", "Mono"),
+                pair(" 3", "Serif"),
+                pair("x", "Mono"),
+                pair("9", "Sans"),
+            ]
+        );
+        let all = replace_in_spans(&spans, None, Some("Mono"), CharClass::All, false);
+        assert_eq!(fonts(&all), [pair("Room 12, floor 3x9", "Mono")]);
+        // A vowel sign stays with its letter.
+        let hi = vec![sp("\u{915}\u{93F}1", "A")];
+        let n = replace_in_spans(&hi, None, Some("B"), CharClass::Numbers, false);
+        assert_eq!(fonts(&n), [pair("\u{915}\u{93F}", "A"), pair("1", "B")]);
+        // Digits of other scripts written as 0 to 9, letters kept.
+        let ar = vec![sp(
+            "\u{628} \u{661}\u{662}\u{663} \u{6F4} \u{967} \u{FF15}",
+            "A",
+        )];
+        let w = replace_in_spans(&ar, None, None, CharClass::All, true);
+        assert_eq!(fonts(&w), [pair("\u{628} 123 4 1 5", "A")]);
+        assert_eq!(western_digit('7'), None);
+        assert_eq!(western_digit('a'), None);
+        assert_eq!(western_digit('\u{1D7D9}'), Some('1'));
+        assert_eq!(western_digit('\u{E50}'), Some('0'));
+    }
+
+    /// Replace All with the numbers-only option and digit conversion runs
+    /// as one batch on the objects found.
+    #[test]
+    fn replace_all_changes_only_the_numbers() {
+        let mut e = Engine::new(Document::default());
+        let id = e.new_shape_id();
+        let t = Shape::new(
+            id,
+            ShapeKind::Text {
+                spans: vec![TextSpan::new("Page \u{661}\u{662}", "Arial", 12.0)],
+                origin: crate::Point::new(0.0, 0.0),
+                frame: None,
+                align: Default::default(),
+                para: Default::default(),
+                on_path: None,
+            },
+        );
+        add(&mut e, 0, t);
+        let q = ObjectQuery {
+            font: Some("Arial".into()),
+            ..Default::default()
+        };
+        let hits = find(e.document(), &q, Scope::Page, 0);
+        assert_eq!(hits.len(), 1);
+        let r = Replacement {
+            font: Some("Mono".into()),
+            font_chars: CharClass::Numbers,
+            western_digits: true,
+            ..Default::default()
+        };
+        assert!(!r.is_empty());
+        let only_digits = Replacement {
+            western_digits: true,
+            ..Default::default()
+        };
+        assert!(!only_digits.is_empty());
+        e.run_batch("Replace", &replace_commands(e.document(), &hits, &q, &r))
+            .unwrap();
+        let ShapeKind::Text { spans, .. } = &e.document().find_shape(id).unwrap().kind else {
+            panic!("text")
+        };
+        assert_eq!(spans.len(), 2);
+        assert_eq!(
+            (spans[0].text.as_str(), spans[0].font_family.as_str()),
+            ("Page ", "Arial")
+        );
+        assert_eq!(
+            (spans[1].text.as_str(), spans[1].font_family.as_str()),
+            ("12", "Mono")
+        );
     }
 }

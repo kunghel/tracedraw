@@ -61,7 +61,14 @@ const MIN_TICK_PX: f64 = 5.0;
 /// number field (#1335): the change it asks for, `step` a notch (Ctrl
 /// `fine`, Shift ten steps); the panel around does not scroll then.
 /// `wheel_id` keeps the part of a notch a touchpad gave.
-fn hover_wheel(ui: &Ui, rect: Rect, wheel_id: egui::Id, step: f64, fine: f64) -> Option<f64> {
+fn hover_wheel(
+    ui: &Ui,
+    rect: Rect,
+    wheel_id: egui::Id,
+    step: f64,
+    fine: f64,
+    span: Option<f64>,
+) -> Option<f64> {
     if !ui.rect_contains_pointer(rect) {
         ui.data_mut(|d| d.remove::<f32>(wheel_id));
         return None;
@@ -78,14 +85,7 @@ fn hover_wheel(ui: &Ui, rect: Rect, wheel_id: egui::Id, step: f64, fine: f64) ->
             })
             .unwrap_or(i.modifiers)
     });
-    let step = if mods.command {
-        fine
-    } else if mods.shift {
-        step * 10.0
-    } else {
-        step
-    };
-    Some(f64::from(notches) * step)
+    Some(f64::from(notches) * field::wheel_step(step, fine, span, mods))
 }
 
 /// The wheel over a plain `egui::Slider` (its response `resp`, value and
@@ -98,10 +98,18 @@ pub(crate) fn wheel_on_hover<N: Numeric>(
     range: RangeInclusive<N>,
     step: f64,
 ) {
-    let Some(delta) = hover_wheel(ui, resp.rect, resp.id.with("wheel"), step, step / 10.0) else {
+    let (min, max) = (range.start().to_f64(), range.end().to_f64());
+    let span = (!N::INTEGRAL).then_some((max - min).abs());
+    let Some(delta) = hover_wheel(
+        ui,
+        resp.rect,
+        resp.id.with("wheel"),
+        step,
+        step / 10.0,
+        span,
+    ) else {
         return;
     };
-    let (min, max) = (range.start().to_f64(), range.end().to_f64());
     let old = value.to_f64();
     let v = (old + delta).clamp(min.min(max), max.max(min));
     if v != old && v.is_finite() {
@@ -662,6 +670,7 @@ impl<N: Numeric> Slider<'_, N> {
                 resp.id.with("wheel"),
                 self.key_step(),
                 self.fine_step(),
+                (!N::INTEGRAL).then_some(self.max - self.min),
             ) {
                 v = self.snapped(v + delta);
             }

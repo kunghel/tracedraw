@@ -472,6 +472,7 @@ soluk görünür. Menüler kendi kısayollarınızı gösterebilir; bkz.
 | [[menu.help.whats_new]] | [Yenilikler](../welcome/whats-new.md) |
 | [[menu.help.highlight_whats_new]] | [Yenilikler](../welcome/whats-new.md) |
 | [[menu.help.updates]] | [TraceDraw hakkında ve güncellemeler](../welcome/about-and-updates.md) |
+| [[menu.help.benchmark]] | [TraceDraw seçenekleri](../customize/options-app.md#benchmark) |
 | [[menu.help.message_settings]] | [TraceDraw hakkında ve güncellemeler](../welcome/about-and-updates.md) |
 | [[menu.help.community]] | [TraceDraw hakkında ve güncellemeler](../welcome/about-and-updates.md) |
 | [[menu.help.support]] | [TraceDraw hakkında ve güncellemeler](../welcome/about-and-updates.md) |

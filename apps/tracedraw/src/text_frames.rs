@@ -222,11 +222,81 @@ fn resized_any(s: &Shape, t: Affine) -> Option<ShapeKind> {
     resized_kind(s, t).or_else(|| resized_table(s, t))
 }
 
+/// A drag of a side handle with Alt held: paragraph texts and tables
+/// take the scale in their letters as well as in their frames, so their
+/// lines stay as they are, stretched (#1553).
+pub fn glyph_scale_drag(d: &crate::app::Drag) -> bool {
+    matches!(d, crate::app::Drag::Scale { handle, mods, .. } if mods.free && !handle.is_corner())
+}
+
+/// `spans` with their letters scaled by `sx` across and `sy` up (#1553):
+/// the size and baseline shift by `sy`, the character width by the rest
+/// of `sx`.
+fn scale_letters(spans: &[TextSpan], sx: f64, sy: f64) -> Vec<TextSpan> {
+    spans
+        .iter()
+        .map(|sp| {
+            let mut sp = sp.clone();
+            sp.size_pt *= sy;
+            sp.baseline_shift_pt *= sy;
+            let w = sp.width_pct * sx / sy;
+            sp.width_pct = if w.is_finite() {
+                w.clamp(1.0, 1000.0)
+            } else {
+                sp.width_pct
+            };
+            sp
+        })
+        .collect()
+}
+
+/// `kind` (a paragraph text or table just resized by `t`) with its
+/// letters scaled by `t` too; line spacing set in points follows.
+fn with_scaled_letters(kind: ShapeKind, t: Affine) -> ShapeKind {
+    let Some((sx, sy)) = axis_scale(t) else {
+        return kind;
+    };
+    match kind {
+        ShapeKind::Text {
+            spans,
+            origin,
+            frame,
+            align,
+            mut para,
+            on_path,
+        } => {
+            if para.leading_unit == tracedraw_core::LeadingUnit::Points {
+                para.leading_pct *= sy;
+            }
+            ShapeKind::Text {
+                spans: scale_letters(&spans, sx, sy),
+                origin,
+                frame,
+                align,
+                para,
+                on_path,
+            }
+        }
+        ShapeKind::Table(mut table) => {
+            for c in &mut table.cells {
+                c.text = scale_letters(&c.text, sx, sy);
+            }
+            ShapeKind::Table(table)
+        }
+        other => other,
+    }
+}
+
 impl App {
     /// `t` (page space) resizes table `id` instead of scaling it (see
     /// [`resized_table`]): `t` an axis-aligned scale by positive amounts
     /// that is not just a move.
     pub fn resizes_table(&self, id: ShapeId, t: Affine) -> bool {
+        // While a side handle is dragged with Alt the letters stretch
+        // with the frame: it shows as a plain scale (#1553).
+        if glyph_scale_drag(&self.drag) {
+            return false;
+        }
         let Some((sx, sy)) = axis_scale(t) else {
             return false;
         };
@@ -243,6 +313,11 @@ impl App {
     /// paragraph text lying on a layer, neither turned nor slanted, and `t`
     /// an axis-aligned scale by positive amounts that is not just a move.
     pub fn resizes_text_frame(&self, id: ShapeId, t: Affine) -> bool {
+        // While a side handle is dragged with Alt the letters stretch
+        // with the frame: it shows as a plain scale (#1553).
+        if glyph_scale_drag(&self.drag) {
+            return false;
+        }
         let Some((sx, sy)) = axis_scale(t) else {
             return false;
         };
@@ -285,6 +360,11 @@ impl App {
                 continue;
             };
             if let Some(kind) = resized_any(s, t) {
+                let kind = if self.glyph_scale {
+                    with_scaled_letters(kind, t)
+                } else {
+                    kind
+                };
                 cmds.push(Command::SetShapeKind { shape: *id, kind });
             }
             // A frame's symmetry goes with it, as an object's does in a
@@ -665,6 +745,110 @@ mod tests {
         assert_eq!(s.transform, turn);
         // Once turned, a scale scales the text as a whole.
         assert!(!app.resizes_text_frame(id, Affine::scale(2.0)));
+    }
+
+    /// A side handle dragged with Alt stretches a paragraph text's
+    /// letters with its frame (#1553): across, the character width takes
+    /// the scale; up and down, the size does, the width giving it back so
+    /// the letters keep their width. The lines stay as they were. A table
+    /// does the same to its cells' text. While dragging, the frame shows
+    /// as a plain scale.
+    #[test]
+    fn alt_on_a_side_handle_stretches_the_letters_with_the_frame() {
+        let mut app = App::headless();
+        let id = paragraph(&mut app);
+        let spans = |app: &App| match app.doc().shape(id).map(|(_, s)| s.kind.clone()) {
+            Ok(ShapeKind::Text { spans, .. }) => spans,
+            _ => panic!("text"),
+        };
+        let size = spans(&app)[0].size_pt;
+        let lines = |app: &App| match app.doc().find_shape(id).map(|s| &s.kind) {
+            Some(ShapeKind::Text {
+                spans,
+                frame: Some(f),
+                align,
+                para,
+                ..
+            }) => tracedraw_text::fonts()
+                .layout(&TextRequest {
+                    spans,
+                    frame: Some(*f),
+                    align: *align,
+                    para,
+                    on_path: None,
+                })
+                .lines
+                .len(),
+            _ => panic!("paragraph text"),
+        };
+        let lines_before = lines(&app);
+        let b = app.selection_bounds().expect("bounds");
+        // The drag, Alt held on the right side: shown as a scale.
+        let drag = crate::app::Drag::Scale {
+            handle: crate::app::Handle::E,
+            anchor: Point::new(b.x0, b.center().y),
+            start_bounds: b,
+            current: Point::new(b.x0 + 2.0 * b.width(), b.center().y),
+            grab: tracedraw_core::geometry::Vec2::ZERO,
+            mods: crate::app::HandleMods {
+                from_center: false,
+                steps: false,
+                free: true,
+            },
+            snapped: (false, false),
+        };
+        assert!(glyph_scale_drag(&drag));
+        let t = app.preview_transform_of(&drag).expect("a scale");
+        app.drag = drag;
+        assert!(!app.resizes_text_frame(id, t));
+        app.drag = crate::app::Drag::None;
+        assert!(app.resizes_text_frame(id, t));
+        // Released: the frame and the letters twice as wide.
+        app.glyph_scale = true;
+        app.transform_selection(t);
+        app.glyph_scale = false;
+        let (_, f) = frame_of(&app, id);
+        assert!((f.width - 120.0).abs() < 1e-6, "{f:?}");
+        let sp = spans(&app);
+        assert!(sp.iter().all(|s| (s.width_pct - 200.0).abs() < 1e-9));
+        assert!(sp.iter().all(|s| s.size_pt == size));
+        assert_eq!(lines(&app), lines_before);
+        // Half as tall from the top: the size halves, the width doubles
+        // back up so the letters keep their width.
+        app.select(vec![id]);
+        let b = app.selection_bounds().expect("bounds");
+        let t = Affine::translate((0.0, b.y0))
+            * Affine::scale_non_uniform(1.0, 0.5)
+            * Affine::translate((0.0, -b.y0));
+        app.glyph_scale = true;
+        app.transform_selection(t);
+        app.glyph_scale = false;
+        let sp = spans(&app);
+        assert!(sp.iter().all(|s| (s.size_pt - size / 2.0).abs() < 1e-9));
+        assert!(sp.iter().all(|s| (s.width_pct - 400.0).abs() < 1e-9));
+        assert!((frame_of(&app, id).1.height - 15.0).abs() < 1e-6);
+        // A table's cells.
+        let mut table = tracedraw_core::Table::new(Rect::new(10.0, 10.0, 130.0, 40.0), 2, 2, None);
+        table.cells[0].text = vec![TextSpan::new("Cell", "Arial", 10.0)];
+        let tid = app.new_shape(ShapeKind::Table(table)).expect("table");
+        app.select(vec![tid]);
+        let t = Affine::translate((10.0, 0.0))
+            * Affine::scale_non_uniform(0.5, 1.0)
+            * Affine::translate((-10.0, 0.0));
+        app.glyph_scale = true;
+        app.transform_selection(t);
+        app.glyph_scale = false;
+        let Ok(ShapeKind::Table(n)) = app.doc().shape(tid).map(|(_, s)| s.kind.clone()) else {
+            panic!("table");
+        };
+        assert!((n.cells[0].text[0].width_pct - 50.0).abs() < 1e-9);
+        assert_eq!(n.cells[0].text[0].size_pt, 10.0);
+        // Without Alt the letters stay as they were.
+        app.transform_selection(t);
+        let Ok(ShapeKind::Table(n)) = app.doc().shape(tid).map(|(_, s)| s.kind.clone()) else {
+            panic!("table");
+        };
+        assert!((n.cells[0].text[0].width_pct - 50.0).abs() < 1e-9);
     }
 
     /// A frame being resized lays its text out once per frame size (the

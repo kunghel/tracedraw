@@ -50,6 +50,7 @@ objects/index
   objects/comments
   objects/tables
   objects/barcodes
+  objects/formulas
   objects/tracecut
 color/index
   color/color-docker
@@ -58,6 +59,7 @@ color/index
   color/patterns
   color/eyedroppers
   color/color-styles
+  color/color-harmonies
   color/transparency
   color/spot-colors
   color/color-management
@@ -102,6 +104,7 @@ bitmaps/index
   bitmaps/tracing
   bitmaps/bitmap-mask
   bitmaps/remove-background
+  bitmaps/picture-captions
 printing/index
   printing/print
   printing/booklet
@@ -127,6 +130,7 @@ customize/index
   customize/reset-settings
   customize/ai
   customize/scripts
+  customize/plugins
   customize/time-tracker
 reference/index
   reference/keyboard-shortcuts

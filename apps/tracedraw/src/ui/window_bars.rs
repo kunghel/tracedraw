@@ -566,49 +566,105 @@ fn page_tabs(app: &mut App, ui: &mut Ui, area: Rect) {
         }
     }
     app.page_tabs_first = first;
-    let mut x = area.min.x + 4.0;
+    // A tab being dragged along the row (#2064): the page it came from
+    // and where the pointer took hold of it. While it is held the other
+    // tabs slide aside to show where it will land, and it follows the
+    // pointer (#2712).
+    let drag_key = egui::Id::new("page_tab_drag");
+    let (pointer_x, released, down) = ui.input(|inp| {
+        (
+            inp.pointer.latest_pos().map(|p| p.x),
+            inp.pointer.any_released(),
+            inp.pointer.any_down(),
+        )
+    });
+    let mut held = ui
+        .ctx()
+        .data(|d| d.get_temp::<(usize, f32)>(drag_key))
+        .filter(|(from, _)| *from < n && *from >= first);
+    if held.is_some() && !down && !released {
+        // A drag that ended without its tab seeing it (the tab went).
+        ui.ctx()
+            .data_mut(|d| d.remove_temp::<(usize, f32)>(drag_key));
+        held = None;
+    }
+    let start_x = area.min.x + 4.0;
+    let held_to = held.zip(pointer_x).map(|((from, grab), px)| {
+        let others: Vec<f32> = (first..n)
+            .filter(|j| *j != from)
+            .map(|j| width(ui, &names[j]) - SLANT)
+            .collect();
+        let held_w = width(ui, &names[from]) - SLANT;
+        // The dragged tab's middle decides, not the pointer's spot on it.
+        let mid = px - grab + held_w / 2.0;
+        (from, first + tab_drop_slot(&others, start_x, mid))
+    });
+    let order = match held_to {
+        Some((from, to)) => tab_order(n, from, to),
+        None => (0..n).collect(),
+    };
+    let mut floating: Option<(usize, Rect)> = None;
+    let mut x = start_x;
     let mut pending_move: Option<(tracedraw_core::PageId, usize)> = None;
     let mut clicked = None;
     let mut double = None;
-    for (i, name) in names.iter().enumerate().skip(first) {
+    for &i in order.iter().skip(first) {
+        let name = &names[i];
         let galley = ui
             .painter()
             .layout_no_wrap(name.clone(), font.clone(), Tokens::text());
         let w = galley.size().x + 24.0;
-        let r = Rect::from_min_max(Pos2::new(x, area.min.y), Pos2::new(x + w, area.max.y - 1.0));
-        if r.min.x > area.max.x {
-            break;
+        let slot = Rect::from_min_max(Pos2::new(x, area.min.y), Pos2::new(x + w, area.max.y - 1.0));
+        if slot.min.x > area.max.x && held_to.is_none_or(|(from, _)| from != i) {
+            continue;
         }
+        let held_here = held.filter(|(from, _)| *from == i);
+        // The dragged tab is drawn where the pointer holds it; its slot
+        // shows where it will go.
+        let r = match (held_here, pointer_x) {
+            (Some((_, grab)), Some(px)) => {
+                let left = (px - grab).clamp(area.min.x, (area.max.x - w).max(area.min.x));
+                Rect::from_min_max(
+                    Pos2::new(left, area.min.y),
+                    Pos2::new(left + w, area.max.y - 1.0),
+                )
+            }
+            _ => slot,
+        };
         let resp = ui
             .interact(r, egui::Id::new(("page_tab", i)), Sense::click_and_drag())
             .rich_tip(format!("{name}\n{}", tr("view.page_tab_desc")));
-        // A tab dragged along the row and let go over another moves its
-        // page there (#2064).
+        // A tab dragged along the row and let go moves its page to the
+        // place the other tabs made for it (#2064, #2712).
         if resp.drag_started() {
-            ui.ctx()
-                .data_mut(|d| d.insert_temp(egui::Id::new("page_tab_drag"), i));
+            let grab = pointer_x.map_or(w / 2.0, |px| px - r.min.x);
+            ui.ctx().data_mut(|d| d.insert_temp(drag_key, (i, grab)));
         }
         if resp.drag_stopped() {
-            let from = ui
-                .ctx()
-                .data_mut(|d| d.remove_temp::<usize>(egui::Id::new("page_tab_drag")));
-            let at = ui.ctx().input(|inp| inp.pointer.latest_pos());
-            if let (Some(from), Some(at)) = (from, at) {
-                if let Some(to) = app
-                    .page_tab_rects
-                    .iter()
-                    .chain(std::iter::once(&(i, r)))
-                    .find(|(_, tr)| tr.contains(at))
-                    .map(|(j, _)| *j)
-                    .or_else(|| (at.x > area.max.x - 8.0).then_some(n - 1))
-                {
-                    if to != from {
-                        if let Some(id) = app.doc().pages.get(from).map(|p| p.id) {
-                            pending_move = Some((id, to));
-                        }
+            ui.ctx()
+                .data_mut(|d| d.remove_temp::<(usize, f32)>(drag_key));
+            if let Some((from, to)) = held_to.filter(|(from, _)| *from == i) {
+                if to != from {
+                    if let Some(id) = app.doc().pages.get(from).map(|p| p.id) {
+                        pending_move = Some((id, to));
                     }
                 }
             }
+        }
+        if held_here.is_some() {
+            // An empty slot where the tab will land; the tab itself is
+            // drawn last, over its neighbours.
+            let p = ui.painter();
+            p.rect_stroke(
+                slot.shrink2(Vec2::new(SLANT, 2.0)),
+                2.0,
+                Stroke::new(1.0, Tokens::text_dim()),
+                egui::StrokeKind::Inside,
+            );
+            app.page_tab_rects.push((i, slot.intersect(area)));
+            floating = Some((i, r));
+            x += w - SLANT;
+            continue;
         }
         // A selection moved onto the tab goes to its page (#1346).
         app.page_tab_rects.push((i, r.intersect(area)));
@@ -665,6 +721,37 @@ fn page_tabs(app: &mut App, ui: &mut Ui, area: Rect) {
         }
         x += w - slant;
     }
+    if let Some((i, r)) = floating {
+        let galley = ui
+            .painter()
+            .layout_no_wrap(names[i].clone(), font.clone(), Tokens::text());
+        let shape = vec![
+            Pos2::new(r.min.x, r.min.y),
+            Pos2::new(r.max.x, r.min.y),
+            Pos2::new(r.max.x - SLANT, r.max.y),
+            Pos2::new(r.min.x + SLANT, r.max.y),
+        ];
+        let p = ui.painter();
+        let fill = if i == current {
+            crate::theme::Tokens::tab_active()
+        } else {
+            Tokens::tool_hover()
+        };
+        p.add(egui::epaint::PathShape::convex_polygon(
+            shape.clone(),
+            fill,
+            Stroke::new(1.0, Tokens::text_dim()),
+        ));
+        p.galley(
+            Pos2::new(
+                r.center().x - galley.size().x / 2.0,
+                r.center().y - galley.size().y / 2.0,
+            ),
+            galley,
+            Tokens::text(),
+        );
+        ui.ctx().request_repaint();
+    }
     // A moved selection resting on another page's tab goes there.
     let (time, ctrl) = ui.input(|i| (i.time, i.modifiers.command || i.modifiers.ctrl));
     app.track_page_tab_drag(time, ctrl);
@@ -689,6 +776,30 @@ fn page_tabs(app: &mut App, ui: &mut Ui, area: Rect) {
             .unwrap_or_default();
         app.dialog = crate::ui::dialogs::Dialog::RenamePage { name };
     }
+}
+
+/// Where a dragged page tab lands among the other tabs (#2712): the
+/// number of `others` (their widths along the row, from `start`) whose
+/// middle lies left of `mid`, the dragged tab's middle.
+pub(crate) fn tab_drop_slot(others: &[f32], start: f32, mid: f32) -> usize {
+    let mut x = start;
+    for (k, w) in others.iter().enumerate() {
+        if mid < x + w / 2.0 {
+            return k;
+        }
+        x += w;
+    }
+    others.len()
+}
+
+/// The order the `n` page tabs are drawn in while tab `from` is dragged
+/// to place `to`: the others keep their order and make room for it.
+pub(crate) fn tab_order(n: usize, from: usize, to: usize) -> Vec<usize> {
+    let mut order: Vec<usize> = (0..n).filter(|j| *j != from).collect();
+    if from < n {
+        order.insert(to.min(order.len()), from);
+    }
+    order
 }
 
 /// What the page tab menu asks for.
@@ -770,6 +881,94 @@ pub(crate) fn apply_page_tab_action(app: &mut App, action: PageTabAction) {
 #[cfg(test)]
 mod tests {
     use crate::app::App;
+
+    #[test]
+    fn a_dragged_page_tab_lands_by_its_middle() {
+        use super::{tab_drop_slot, tab_order};
+        // Three other tabs 50 wide from x = 0.
+        let others = [50.0, 50.0, 50.0];
+        assert_eq!(tab_drop_slot(&others, 0.0, 10.0), 0);
+        assert_eq!(tab_drop_slot(&others, 0.0, 30.0), 1);
+        assert_eq!(tab_drop_slot(&others, 0.0, 120.0), 2);
+        assert_eq!(tab_drop_slot(&others, 0.0, 500.0), 3);
+        // The others keep their order and make room.
+        assert_eq!(tab_order(4, 1, 0), [1, 0, 2, 3]);
+        assert_eq!(tab_order(4, 0, 3), [1, 2, 3, 0]);
+        assert_eq!(tab_order(4, 2, 2), [0, 1, 2, 3]);
+        assert_eq!(tab_order(3, 0, 9), [1, 2, 0]);
+    }
+
+    /// #2712: while "Page 2" is dragged before "Page 1" the tabs swap
+    /// places on the row before the button is let go, and letting go
+    /// moves the page there.
+    #[test]
+    fn page_tabs_slide_aside_while_one_is_dragged() {
+        use egui::{Event, PointerButton, Pos2};
+        crate::i18n::set_language("en");
+        let ctx = crate::theme::ui_context();
+        let mut app = App::headless();
+        app.show_welcome = false;
+        app.add_page();
+        let frame = |app: &mut App, events: Vec<Event>| {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1200.0, 800.0),
+                )),
+                events,
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(input, |ui| crate::ui::root(app, ui));
+            out.textures_delta.clear();
+        };
+        let button = |pos: Pos2, pressed: bool| Event::PointerButton {
+            pos,
+            button: PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        frame(&mut app, Vec::new());
+        frame(&mut app, Vec::new());
+        let rect = |app: &App, i: usize| {
+            app.page_tab_rects
+                .iter()
+                .find(|(j, _)| *j == i)
+                .map(|(_, r)| *r)
+                .expect("tab shown")
+        };
+        let first = app.doc().pages[0].id;
+        let second = app.doc().pages[1].id;
+        let (r0, r1) = (rect(&app, 0), rect(&app, 1));
+        assert!(r0.min.x < r1.min.x);
+        let grab = r1.center();
+        frame(&mut app, vec![Event::PointerMoved(grab)]);
+        frame(&mut app, vec![button(grab, true)]);
+        // Along the row, in steps, to the left of the first tab.
+        let to = Pos2::new(r0.min.x + 2.0, grab.y);
+        for k in 1..=6 {
+            let t = k as f32 / 6.0;
+            let p = Pos2::new(grab.x + (to.x - grab.x) * t, grab.y);
+            frame(&mut app, vec![Event::PointerMoved(p)]);
+        }
+        frame(&mut app, Vec::new());
+        // Still held: the page has not moved, but the first page's tab
+        // made room on the left for the dragged one.
+        assert_eq!(
+            app.doc().pages[0].id,
+            first,
+            "nothing moves before the drop"
+        );
+        assert!(
+            rect(&app, 0).min.x > rect(&app, 1).min.x,
+            "the other tab slid aside: {:?} {:?}",
+            rect(&app, 0),
+            rect(&app, 1)
+        );
+        frame(&mut app, vec![button(to, false)]);
+        frame(&mut app, Vec::new());
+        assert_eq!(app.doc().pages[0].id, second, "dropped first");
+        assert_eq!(app.doc().pages[1].id, first);
+    }
 
     /// Live test of 0.41: the Navigator has a key, N in the shortcut
     /// table under View > Navigator (free there, see

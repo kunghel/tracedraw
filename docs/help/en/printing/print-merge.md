@@ -39,8 +39,11 @@ data source you created or loaded:
   [[merge.scale_fill]] (the frame cuts what is outside) or
   [[merge.scale_stretch]].
 - **[[merge.insert_field]]** puts the field in the text you are editing, or
-  places a new text, picture frame or QR square in the middle of the view.
-  Move and size it like any object.
+  places a new text, picture frame or sample QR code in the middle of the view.
+  Move and size it like any object. Paint the sample QR code with any colour
+  and put it inside a shape with Place Inside Frame: every record's code
+  comes out in that colour, inside that shape. A barcode keeps the colours
+  given to its bars, background and digits in the same way.
 - To put each photo inside a shape of your own (a circle, an oval, any
   outline, also inside a grouped card design), choose Image and the photo
   column, select the shape and click **[[merge.place_inside]]**. Every card's

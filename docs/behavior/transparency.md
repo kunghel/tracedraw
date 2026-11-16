@@ -50,6 +50,14 @@ the line (`effect_line_tests::the_transparency_line_moves_the_whole_mask`). Edit
 "Transparency" per drag; the fill is left alone
 (`fill_tool::tests::the_transparency_mask_has_nodes_and_a_midpoint`).
 
+A node clicked with the tool opens a small bar under it with the node's
+own transparency (0 % opaque, 100 % clear: the node's grey in the mask),
+a slider and a field; a drag of the slider is one undo step. The
+property bar shows the same value for the picked node (the first one
+until a node is clicked) beside the gradient's kind, for every selected
+object with a gradient mask (#2737,
+`fill_tool::tests::a_mask_node_takes_a_transparency`).
+
 What a drag that sets the line acts on (#1661,
 `pick_drag_tests::the_transparency_tool_drags_on_the_selection_and_ctrl_constrains`):
 
@@ -236,10 +244,19 @@ The `.tdraw` name of a mode is its name in lower case without spaces
 | Color Burn | `b = 1`: 1; `s = 0`: 0; else `1 - min(1, (1 - b) / s)` | color-burn | ColorBurn |
 | Exclusion | `b + s - 2 b s` | exclusion | Exclusion |
 
-The SVG and PDF exports draw a non-uniform transparency at the mask's
-mean opacity (they have no masks of their own here) and set the blend of
-the table on a group (SVG, `style="mix-blend-mode:..."`) or a graphics
-state (PDF, `/ExtGState /BM`) around the object; modes without a blend
+The SVG export draws a non-uniform transparency at the mask's mean
+opacity (it has no masks of its own here). The PDF export draws it as a
+luminosity soft mask (`/SMask` with `/S /Luminosity`) whose transparency
+group paints the mask's own fill over the object's box, so a fountain
+transparency fades from solid to clear as on the screen (#2615,
+`pdf::tests::a_fountain_transparency_goes_in_as_a_soft_mask`). A faded
+object with a drop shadow, or with a fill and an outline that overlap,
+goes into the PDF as one transparency group drawn faded, as the screen
+fades it in a layer of its own: the shadow stays hidden under the object
+(d#2596, `pdf::tests::a_see_through_object_and_its_shadow_fade_as_one_group`).
+Both set the blend of the table on a group (SVG,
+`style="mix-blend-mode:..."`) or a graphics state (PDF, `/ExtGState /BM`)
+around the object; modes without a blend
 draw normally, and PDF/X-1a flattens the object into a picture instead
 (`svg::tests::merge_modes_go_out_as_mix_blend_mode`,
 `pdf::tests::transparency_merge_modes_go_out_as_blend_modes`). Drop

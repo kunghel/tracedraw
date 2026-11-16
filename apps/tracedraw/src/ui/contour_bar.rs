@@ -136,6 +136,20 @@ pub fn contour_controls(app: &mut App, ui: &mut Ui) {
             &tr("docker.outline_color"),
             true,
         );
+        // The end of a fountain fill (#1265): only fountain-filled
+        // objects use it, their steps keeping the fountain.
+        changed |= color_pick(
+            ui,
+            &palette,
+            "contour_fill_end_to",
+            &mut s.fill_end_to,
+            &format!(
+                "{}\n{}",
+                tr("contour.last_fill_color"),
+                tr("contour.last_fill_color_desc")
+            ),
+            true,
+        );
     });
     ui.horizontal(|ui| {
         changed |= accel(ui, "docker.object_acceleration", &mut s.accel_objects);

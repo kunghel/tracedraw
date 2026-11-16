@@ -14,6 +14,7 @@ impostato nel pannello [[docker.bevel]]; aprilo con
    - [[docker.soft_edge]]: il bordo scende in pendenza verso l'interno
      dell'oggetto, illuminato da un lato e ombreggiato dall'altro;
    - [[docker.emboss]]: l'oggetto sembra sbalzato fuori dalla pagina.
+   - [[docker.bevel_center]]: La fascia della smussatura metà dentro e metà fuori dal contorno.
 3. Imposta l'aspetto dello smusso:
    - [[docker.depth]]: fin dove lo smusso arriva dal bordo, dentro l'oggetto
      per il bordo morbido e fuori per il rilievo;
@@ -22,6 +23,7 @@ impostato nel pannello [[docker.bevel]]; aprilo con
      verso l'interno;
    - [[docker.light_angle]]: la direzione da cui arriva la luce;
    - [[docker.intensity]]: la forza della luce e dell'ombra;
+   - [[docker.bevel_smooth_light]]: La luce cade intorno al bordo secondo la direzione, ogni parte illuminata quanto è rivolta alla luce, invece di due metà.
    - [[docker.light_color]] e [[docker.shadow_color]]: i colori del lato
      illuminato e di quello in ombra;
    - [[docker.emboss_color]]: il colore da cui è tonalizzato lo smusso.

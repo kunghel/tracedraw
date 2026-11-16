@@ -314,6 +314,27 @@ impl App {
         true
     }
 
+    /// Document Setup > Layout: the page margins for book layouts
+    /// (#1660), `None` to remove them, as one undo step (a document
+    /// property saved with the drawing). Each margin is kept between 0
+    /// and the widest taken. False when nothing changed.
+    pub fn set_page_margins(
+        &mut self,
+        margins: Option<tracedraw_core::document::PageMargins>,
+    ) -> bool {
+        if !self.has_document() {
+            return false;
+        }
+        let margins = margins.map(|m| m.clamped());
+        if self.doc().metadata.margins == margins {
+            return false;
+        }
+        let mut metadata = self.doc().metadata.clone();
+        metadata.margins = margins;
+        self.run(tracedraw_core::Command::SetMetadata { metadata });
+        true
+    }
+
     /// View > Pages in Multipage View and the page bar's button next to
     /// the Multipage View's (#1440): the pages the view shows, as a range
     /// of page numbers ("1-3, 7"), empty for every page. Saved with the
@@ -1258,6 +1279,41 @@ mod tests {
         app.undo();
         assert!(!app.doc().metadata.facing_pages);
         assert_eq!(app.engine.undo_label(), undo);
+    }
+
+    /// #1660: page margins set in Document Setup, one undo step, show on
+    /// both pages of a spread with the inside margin at the spine.
+    #[test]
+    fn page_margins_show_on_both_pages_of_the_spread() {
+        use tracedraw_core::document::PageMargins;
+        let mut app = facing_app();
+        app.set_facing_pages(true, PageSide::Right);
+        let w = app.doc().pages[1].size.width;
+        assert!(crate::canvas::page_margin_boxes(&app).is_empty());
+        let m = PageMargins {
+            top: 10.0,
+            bottom: 10.0,
+            inside: 20.0,
+            outside: 5.0,
+        };
+        assert!(app.set_page_margins(Some(m)));
+        assert!(!app.set_page_margins(Some(m)), "no change");
+        assert_eq!(app.engine.undo_label(), Some("Document Properties"));
+        let boxes = crate::canvas::page_margin_boxes(&app);
+        assert_eq!(boxes.len(), 2);
+        // Page 2 on the left: inside margin on its right, at the spine.
+        assert!((boxes[0].x0 - 5.0).abs() < 1e-9 && (boxes[0].x1 - (w - 20.0)).abs() < 1e-9);
+        // Page 3 on the right: inside margin on its left.
+        assert!((boxes[1].x0 - (w + 20.0)).abs() < 1e-9);
+        assert!((boxes[1].x1 - (2.0 * w - 5.0)).abs() < 1e-9);
+        // Values out of range are kept in range.
+        app.set_page_margins(Some(PageMargins::uniform(-3.0)));
+        assert_eq!(app.doc().metadata.margins, Some(PageMargins::uniform(0.0)));
+        assert!(crate::canvas::page_margin_boxes(&app).is_empty());
+        app.undo();
+        assert_eq!(app.doc().metadata.margins, Some(m));
+        assert!(app.set_page_margins(None));
+        assert_eq!(app.doc().metadata.margins, None);
     }
 
     /// The other page of the spread becomes current where it is, from

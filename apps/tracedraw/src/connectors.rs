@@ -15,7 +15,7 @@ use crate::app::App;
 use serde::{Deserialize, Serialize};
 use tracedraw_core::{
     document::{Shape, ShapeKind},
-    geometry::{BezPath, PathEl, Point, Rect},
+    geometry::{BezPath, PathEl, Point, Rect, Vec2},
     Command, Fill, ShapeId,
 };
 
@@ -51,6 +51,10 @@ pub struct Connection {
     pub radius: f64,
     /// Where the ends were last put (page space).
     pub ends: (Point, Point),
+    /// How far a right-angle connector runs straight out of each object
+    /// before it turns, mm; 0 turns halfway as before (#1436).
+    #[serde(default)]
+    pub gap: f64,
 }
 
 impl Connection {
@@ -75,6 +79,93 @@ impl Connection {
                 .all(|p| p.x.is_finite() && p.y.is_finite());
         ok.then_some(c)
     }
+
+    /// The connector's path from `pa` to `pb`, leaving each object
+    /// straight out of the side its anchor is on for `gap`.
+    pub fn path(&self, pa: Point, pb: Point) -> BezPath {
+        route_clear(
+            self.kind,
+            self.radius,
+            self.gap,
+            (pa, side_out(self.from_anchor)),
+            (pb, side_out(self.to_anchor)),
+        )
+    }
+}
+
+/// The way out of an object from an anchor at fractions `f` of its
+/// bounds: across the nearer side, nothing from the middle.
+fn side_out(f: (f64, f64)) -> Vec2 {
+    let (dx, dy) = (f.0 - 0.5, f.1 - 0.5);
+    if dx.abs() < 1e-9 && dy.abs() < 1e-9 {
+        Vec2::ZERO
+    } else if dx.abs() >= dy.abs() {
+        Vec2::new(dx.signum(), 0.0)
+    } else {
+        Vec2::new(0.0, dy.signum())
+    }
+}
+
+/// [`route`], except that a right-angle connector first runs `gap` (mm)
+/// straight out of each end (`a` and `b`: the end and its way out)
+/// before it turns.
+pub fn route_clear(
+    kind: ConnectorKind,
+    radius: f64,
+    gap: f64,
+    a: (Point, Vec2),
+    b: (Point, Vec2),
+) -> BezPath {
+    let ((pa, da), (pb, db)) = (a, b);
+    if kind == ConnectorKind::Straight
+        || gap.is_nan()
+        || gap <= 1e-9
+        || (da == Vec2::ZERO && db == Vec2::ZERO)
+    {
+        return route(kind, radius, pa, pb);
+    }
+    let g = gap.min(1000.0);
+    let (qa, qb) = (pa + da * g, pb + db * g);
+    let mut pts = vec![pa];
+    for el in route(ConnectorKind::RightAngle, 0.0, qa, qb).elements() {
+        if let PathEl::MoveTo(p) | PathEl::LineTo(p) = el {
+            pts.push(*p);
+        }
+    }
+    pts.push(pb);
+    // Drop repeated points and those in the middle of a straight run.
+    let mut v: Vec<Point> = Vec::new();
+    for p in pts {
+        if v.last().is_some_and(|q| (*q - p).hypot() < 1e-9) {
+            continue;
+        }
+        if v.len() >= 2 {
+            let (o, m) = (v[v.len() - 2], v[v.len() - 1]);
+            if ((m - o).cross(p - m)).abs() < 1e-9 && (m - o).dot(p - m) >= 0.0 {
+                v.pop();
+            }
+        }
+        v.push(p);
+    }
+    let mut path = BezPath::new();
+    path.move_to(v[0]);
+    let r = radius.max(0.0);
+    for i in 1..v.len().saturating_sub(1) {
+        let (from, c, to) = (v[i - 1], v[i], v[i + 1]);
+        let (d1, d2) = (c - from, to - c);
+        let (l1, l2) = (d1.hypot(), d2.hypot());
+        if kind == ConnectorKind::Rounded && r > 1e-9 && l1 > 1e-9 && l2 > 1e-9 {
+            let rr = r.min(l1 / 2.0).min(l2 / 2.0);
+            path.line_to(c - d1 / l1 * rr);
+            path.quad_to(c, c + d2 / l2 * rr);
+        } else {
+            path.line_to(c);
+        }
+    }
+    if let Some(last) = v.last().filter(|_| v.len() > 1) {
+        path.line_to(*last);
+    }
+    path
 }
 
 /// Object data with the connection `c` (none: without one).
@@ -207,7 +298,7 @@ impl App {
             let mut copy = crate::app::reid_pub(s.clone(), id, &mut self.engine);
             copy.transform = tracedraw_core::geometry::Affine::IDENTITY;
             copy.kind = ShapeKind::Path {
-                path: route(c.kind, c.radius, pa, pb),
+                path: joined.path(pa, pb),
                 closed: false,
             };
             copy.data = with_connection(s.data.clone(), Some(&joined));
@@ -242,13 +333,14 @@ impl App {
             kind,
             radius: self.connector_radius,
             ends: (pa, pb),
+            gap: self.settings.connector_gap,
         };
         let layer = self.active_layer()?;
         let id = self.engine.new_shape_id();
         let mut s = Shape::new(
             id,
             ShapeKind::Path {
-                path: route(kind, c.radius, pa, pb),
+                path: c.path(pa, pb),
                 closed: false,
             },
         );
@@ -298,7 +390,7 @@ impl App {
             cmds.push(Command::SetShapeKind {
                 shape: id,
                 kind: ShapeKind::Path {
-                    path: s.transform.inverse() * route(c.kind, c.radius, c.ends.0, c.ends.1),
+                    path: s.transform.inverse() * c.path(c.ends.0, c.ends.1),
                     closed: false,
                 },
             });
@@ -389,7 +481,7 @@ impl App {
                     cmds.push(Command::SetShapeKind {
                         shape: id,
                         kind: ShapeKind::Path {
-                            path: local * route(c.kind, c.radius, pa, pb),
+                            path: local * c.path(pa, pb),
                             closed: false,
                         },
                     });
@@ -620,5 +712,86 @@ mod tests {
             other => panic!("{other:?}"),
         }
         assert_eq!(app.connector_radius, 5.0);
+    }
+
+    /// The points a connector's path runs through.
+    fn points(app: &App, id: ShapeId) -> Vec<Point> {
+        let s = app.doc().shape_on_page(id).expect("connector");
+        let ShapeKind::Path { path, .. } = &s.kind else {
+            panic!("{:?}", s.kind);
+        };
+        (s.transform * path.clone())
+            .elements()
+            .iter()
+            .filter_map(|e| match e {
+                PathEl::MoveTo(p) | PathEl::LineTo(p) => Some(*p),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Options > Tools > Connector, route distance: a right-angle
+    /// connector runs that far straight out of each object before it
+    /// turns, and keeps doing so when they move (#1436).
+    #[test]
+    fn right_angle_connectors_keep_their_distance_from_objects() {
+        let mut app = App::headless();
+        app.view.zoom = 1.0;
+        app.settings.connector_gap = 5.0;
+        let a = rect(&mut app, 0.0, 0.0);
+        let b = rect(&mut app, 60.0, 30.0);
+        let c = app
+            .connect(
+                a,
+                Point::new(20.0, 10.0),
+                b,
+                Point::new(60.0, 40.0),
+                ConnectorKind::RightAngle,
+            )
+            .expect("connector");
+        let pts = points(&app, c);
+        assert_eq!(pts.first(), Some(&Point::new(20.0, 10.0)));
+        assert_eq!(pts.get(1), Some(&Point::new(25.0, 10.0)), "{pts:?}");
+        assert_eq!(pts[pts.len() - 2], Point::new(55.0, 40.0), "{pts:?}");
+        assert_eq!(pts.last(), Some(&Point::new(60.0, 40.0)));
+        // Moved, it still leaves b straight for 5 mm.
+        app.run(Command::TransformShapes {
+            shapes: vec![b],
+            transform: Affine::translate((10.0, 0.0)),
+        });
+        app.refresh_connectors();
+        let pts = points(&app, c);
+        let (q, end) = (pts[pts.len() - 2], pts[pts.len() - 1]);
+        assert_eq!(end, Point::new(70.0, 40.0));
+        assert!(q.y == end.y && end.x - q.x >= 5.0, "{pts:?}");
+        // Without a distance it turns halfway, as before.
+        app.settings.connector_gap = 0.0;
+        let d = app
+            .connect(
+                a,
+                Point::new(20.0, 10.0),
+                b,
+                Point::new(70.0, 40.0),
+                ConnectorKind::RightAngle,
+            )
+            .expect("connector");
+        assert_eq!(points(&app, d)[1], Point::new(45.0, 10.0));
+    }
+
+    /// The way out of an object from an anchor is across its side.
+    #[test]
+    fn anchors_lead_out_across_their_side() {
+        assert_eq!(side_out((1.0, 0.5)), Vec2::new(1.0, 0.0));
+        assert_eq!(side_out((0.5, 0.0)), Vec2::new(0.0, -1.0));
+        assert_eq!(side_out((0.5, 0.5)), Vec2::ZERO);
+        // A straight connector ignores the distance.
+        let p = route_clear(
+            ConnectorKind::Straight,
+            0.0,
+            5.0,
+            (Point::ZERO, Vec2::new(1.0, 0.0)),
+            (Point::new(10.0, 10.0), Vec2::new(-1.0, 0.0)),
+        );
+        assert_eq!(p.elements().len(), 2);
     }
 }

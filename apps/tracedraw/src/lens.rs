@@ -91,12 +91,14 @@ impl LensSettings {
                 amount: self.amount,
             },
             9 => Lens::TintedGrayscale { color: self.color },
+            // The panel's Rate is how see-through the lens is, as in other
+            // drawing programs (#2800); the lens keeps the colour's share.
             10 => Lens::Transparency {
-                rate: self.rate,
+                rate: 100.0 - self.rate.clamp(0.0, 100.0),
                 color: self.color,
             },
             11 => Lens::Wireframe {
-                outline: Color::BLACK,
+                outline: self.color_to,
                 fill: self.color,
             },
             12 => Lens::Effects {
@@ -147,12 +149,13 @@ impl LensSettings {
             }
             Lens::Transparency { rate, color } => {
                 s.kind = 10;
-                s.rate = *rate;
+                s.rate = 100.0 - rate.clamp(0.0, 100.0);
                 s.color = *color;
             }
-            Lens::Wireframe { fill, .. } => {
+            Lens::Wireframe { outline, fill } => {
                 s.kind = 11;
                 s.color = *fill;
+                s.color_to = *outline;
             }
             Lens::Effects { effects } => {
                 s.kind = 12;
@@ -167,6 +170,38 @@ impl LensSettings {
 mod tests {
     use super::*;
     use tracedraw_core::live::Effect;
+
+    /// #2800: the panel's Transparency rate is how see-through the lens
+    /// is, Wireframe takes its outline colour, and both come back.
+    #[test]
+    fn transparency_rate_is_see_through_and_wireframe_keeps_its_outline() {
+        let s = LensSettings {
+            kind: 10,
+            rate: 80.0,
+            color: Color::rgb8(255, 0, 0),
+            ..Default::default()
+        };
+        let lens = s.to_lens().expect("a lens");
+        // 80 % see-through: white beneath stays mostly white.
+        let c = lens.map_color([1.0, 1.0, 1.0]);
+        assert!((c[1] - 0.8).abs() < 1e-4, "{c:?}");
+        assert_eq!(LensSettings::from_lens(&lens), s);
+        let s = LensSettings {
+            kind: 11,
+            color: Color::rgb8(255, 255, 0),
+            color_to: Color::rgb8(0, 0, 255),
+            ..Default::default()
+        };
+        let lens = s.to_lens().expect("a lens");
+        assert_eq!(
+            lens,
+            Lens::Wireframe {
+                outline: Color::rgb8(0, 0, 255),
+                fill: Color::rgb8(255, 255, 0),
+            }
+        );
+        assert_eq!(LensSettings::from_lens(&lens), s);
+    }
 
     #[test]
     fn effects_lens_settings_round_trip_and_effects_are_added_to_the_lens() {

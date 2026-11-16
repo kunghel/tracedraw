@@ -14,10 +14,11 @@
 //! A pointer painted in the window shows where the mouse was when the
 //! frame was made, and the frame reaches the screen a refresh or more
 //! later: next to the system's arrow, which the screen moves on its own,
-//! every drawn pointer trailed the hand (#2136). On Windows the drawn
-//! pointers are therefore handed to the system as bitmaps of the same
-//! drawing ([`bitmap`]), and the system moves them as it moves its own;
-//! only a nib too large for a pointer bitmap is still painted.
+//! every drawn pointer trailed the hand (#2136, and #2557 on Linux). On
+//! Windows and Linux the drawn pointers are therefore handed to the
+//! system as bitmaps of the same drawing ([`bitmap`]), and the system
+//! moves them as it moves its own; only a nib too large for a pointer
+//! bitmap is still painted.
 //!
 //! The Pick tools: over a corner handle the diagonal resize arrows, over
 //! a side handle the horizontal or vertical ones, over the selection (or
@@ -206,6 +207,16 @@ fn pick_cursor(app: &App, pos: Option<Pos2>) -> Option<ToolCursor> {
     if app.grab_turn_point(p).is_some() {
         return Some(ToolCursor::Rotate);
     }
+    // A guideline over a picture that is not selected takes the press,
+    // so its arrows show there (#2640).
+    let guides = app.page_guides();
+    let guide = app
+        .guide_at(p)
+        .and_then(|i| guides.get(i))
+        .filter(|g| !g.locked);
+    if let Some(g) = guide.filter(|_| app.guide_wins_press(p)) {
+        return Some(across_guide(&g.line));
+    }
     // Over an object: the move arrows only where a press would move what
     // is selected already (the object or one of its parts); over another
     // object the plain arrow, as a press there picks it first (#885).
@@ -213,7 +224,6 @@ fn pick_cursor(app: &App, pos: Option<Pos2>) -> Option<ToolCursor> {
     if let Some(selected) = app.over_selection(p) {
         return selected.then_some(moving);
     }
-    let guides = app.page_guides();
     let g = guides.get(app.guide_at(p)?)?;
     (!g.locked).then(|| across_guide(&g.line))
 }
@@ -645,14 +655,15 @@ fn pending_id() -> egui::Id {
     egui::Id::new("tool_cursor_bitmap")
 }
 
-/// Whether drawn pointers are handed to the system as bitmaps. On
-/// Windows, where the window already swaps the pointer for an image (the
-/// blank one, [`hidden_pointer`]) and a pointer bitmap is in the
-/// screen's pixels. Elsewhere they are painted as before: the browser
-/// takes no bitmap from the window, and how large a bitmap shows on a
-/// scaled screen differs between the other systems.
-/// `TRACEDRAW_BITMAP_POINTERS=1` turns it on anywhere and `0` off, for
-/// trying it out.
+/// Whether drawn pointers are handed to the system as bitmaps: on
+/// Windows and on Linux (X11 and Wayland), where a pointer bitmap is in
+/// the screen's pixels as [`bitmap`] draws it. On Linux a painted
+/// pointer trailed the mouse as it did on Windows, so with the drawing
+/// tools the pointer felt slow next to the Pick tool's arrow (#2557).
+/// Elsewhere they are painted as before: the browser takes no bitmap
+/// from the window, and macOS shows a pointer bitmap in points, not
+/// pixels. `TRACEDRAW_BITMAP_POINTERS=1` turns it on anywhere and `0`
+/// off, for trying it out.
 fn bitmap_pointers() -> bool {
     #[cfg(test)]
     {
@@ -669,7 +680,7 @@ fn bitmap_pointers() -> bool {
             match std::env::var("TRACEDRAW_BITMAP_POINTERS").as_deref() {
                 Ok("1") => true,
                 Ok("0") => false,
-                _ => cfg!(target_os = "windows"),
+                _ => cfg!(any(target_os = "windows", target_os = "linux")),
             }
         })
     }

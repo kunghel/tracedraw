@@ -14,6 +14,9 @@ aparecem e como a paleta de cores se comporta.
   desligado, abrem onde você as deixou.
 - [[options.ui_shadows]] (menos sombras ajudam gráficos mais lentos).
 - [[options.colored_icons]]: cada grupo de ferramentas recebe uma cor própria.
+- [[options.docker_tabs_icons_only]]: as abas dos painéis nas laterais da
+  janela mostram só as figuras, com o nome na dica. Desligado, mostram a
+  figura e o nome, e uma coluna com mais abas do que cabem rola.
 - [[options.ui_size]]: o tamanho de menus, barras, ícones e painéis, em
   relação à escala que o sistema dá ao monitor (100% de início).
   [[options.reset_to_default]] volta a 100%. O tamanho da interface nunca muda
@@ -51,6 +54,12 @@ teclas do comando de menu, assim como linhas que os menus mostram só às vezes
 (como Concluir edição do conteúdo). Uma lista **Botões das barras de
 ferramentas** tem todos os botões das barras Padrão e Zoom: arraste dali de
 volta para a barra um botão que você tirou.
+
+Um comando arrastado para uma barra de ferramentas mostra ali a figura dele,
+ou o nome quando não tem figura. Na aba **Geral**, **Ícone** mostra a figura
+do comando: **Escolher...** abre as figuras dos outros comandos e das
+ferramentas, e um clique dá aquela ao comando, nos menus e nas barras;
+**Restaurar padrão** devolve a figura dele.
 
 ## Barras de comando {#command-bars}
 

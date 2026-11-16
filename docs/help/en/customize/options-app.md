@@ -15,6 +15,12 @@ sets how the program works. Choose a page from the list on the left.
 - [[options.hardware_acceleration]] (on): draw the window with the graphics card chosen beside it ([[options.gpu_automatic]] at first); off, with the computer's software renderer. It takes effect at the next start. If the window cannot open that way, TraceDraw starts again with the software renderer, then with OpenGL, and keeps the one that worked.
 - [[options.undo_levels]]: how many steps you can undo (150 at first).
 
+On a computer, the page also has a choice that puts Minimize, Maximize and
+Close buttons at the right end of the menu bar (off at first). It is for a
+window without a title bar, such as under a tiling window manager. With it
+on, dragging the empty part of the menu bar moves the window, and a double
+click there maximizes or restores it.
+
 ## Display {#display}
 
 ![The Display page of the TraceDraw options](../../img/customize-options-app-display.png)
@@ -120,3 +126,13 @@ The page has five tabs.
   see [Dictionaries](../text/writing-tools.md#dictionaries).
 - [[dialog.autocorrect]]: what is corrected as you type; see
   [Autocorrect](../text/writing-tools.md#autocorrect).
+
+## [[benchmark.title]] {#benchmark}
+
+[[menu.help > menu.help.benchmark]]: [[menu.help.benchmark_tip]]
+
+[[benchmark.intro]]
+
+[[benchmark.compare_how]]
+
+[[options.light_zoom]]: [[options.light_zoom_tip]]

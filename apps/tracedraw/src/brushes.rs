@@ -34,6 +34,13 @@ use tracedraw_core::{
 /// held still, as a pointer move (mm).
 pub const HOLD_MM_PER_S: f64 = 10.0;
 
+/// How far Twirl turns per second while the button is down, as a pointer
+/// move (mm): at the bar's 50 % (0.05 rad per mm) one whole turn a
+/// second at the nib's centre, as CorelDRAW's Twirl winds the outline
+/// round while it is held. It went on as if the pointer moved 10 mm a
+/// second, a turn every 12 s, and read as slow (#2640).
+pub const TWIRL_MM_PER_S: f64 = std::f64::consts::TAU / 0.05;
+
 /// Attract and Repel's dose for each millimetre the pointer moves (or,
 /// held still, [`HOLD_MM_PER_S`] a second), times the bar's rate, over
 /// the nib's radius: at 50 % speed (rate 0.3) a 10 mm nib reaches its
@@ -50,14 +57,23 @@ pub struct StrokeBase {
     pub base: Vec<(ShapeId, BezPath)>,
     /// Attract and Repel's dose (-1 to 1) held so far on `base`.
     pub dose: f64,
+    /// Twirl: the turn (radians) held so far on `base`.
+    pub angle: f64,
     /// Roughen: where the nib went in this stroke.
     pub swath: Vec<Point>,
+    /// Smudge: where the stroke began and the farthest the nib went from
+    /// there; a move against that way is the way back (#2710).
+    pub smudge_out: Option<(Point, Point)>,
 }
 
 /// The smallest and the largest nib radius (mm), as the property bar
 /// takes them.
 pub const MIN_RADIUS: f64 = 0.5;
 pub const MAX_RADIUS: f64 = 500.0;
+
+/// The share of the nib a shaping brush keeps at the lightest touch of a
+/// pen (#883).
+pub const PEN_NIB_FLOOR: f64 = 0.2;
 
 /// How much one wheel notch grows (or, turned the other way, shrinks)
 /// the nib.
@@ -154,6 +170,22 @@ impl App {
         self.set_brush_radius(px / zoom);
     }
 
+    /// The share of the nib a pen's pressure gives the shaping brushes
+    /// right now (#883): [`PEN_NIB_FLOOR`] at the lightest touch, the
+    /// whole nib pressed fully; the whole nib with the mouse, or with
+    /// Options > Tools > Curve tools' pen pressure off.
+    pub fn pen_nib_scale(&self) -> f64 {
+        match self
+            .pen_pressure
+            .filter(|_| self.settings.curves.pen_pressure)
+        {
+            Some(p) if p.is_finite() => {
+                PEN_NIB_FLOOR + (1.0 - PEN_NIB_FLOOR) * f64::from(p.clamp(0.0, 1.0))
+            }
+            _ => 1.0,
+        }
+    }
+
     /// A stroke begins at `p`. Brushes change only what is selected:
     /// with nothing selected the stroke does nothing and the status bar
     /// says to select an object first (a click selects, see
@@ -196,7 +228,8 @@ impl App {
             return;
         };
         let delta = p - last;
-        let radius = self.brush_radius;
+        // A pen pressed lightly works with a smaller nib (#883).
+        let radius = self.brush_radius * self.pen_nib_scale();
         let b = self.brush;
         let held = if dt.is_finite() {
             dt.clamp(0.0, 0.1)
@@ -221,6 +254,22 @@ impl App {
             }
             self.brush_stroke.dose = dose;
         }
+        if self.tool == Tool::Twirl {
+            // Held in one place, the turn so far is worked out afresh from
+            // the outline the hold found, so a hold of several turns is
+            // one exact twirl, not many small ones each fitted again
+            // (#2640); a move starts afresh from the outline as it is.
+            if delta.hypot() > 1e-9 || self.brush_stroke.base.is_empty() {
+                self.brush_stroke.base = self.brush_page_paths();
+                self.brush_stroke.angle = 0.0;
+            }
+            let step = b.twirl_rate() * turn * (delta.hypot() + TWIRL_MM_PER_S * held);
+            if !step.is_finite() || step == 0.0 {
+                self.drag = Drag::Node { last: p };
+                return;
+            }
+            self.brush_stroke.angle += step;
+        }
         if self.tool == Tool::Roughen {
             if self.brush_stroke.base.is_empty() {
                 self.brush_stroke.base = self.brush_page_paths();
@@ -229,6 +278,20 @@ impl App {
                 self.brush_stroke.swath.push(p);
             }
         }
+        // Smudge: whether this move goes back against the way the stroke
+        // went out, so the outline it drew out comes back with the nib
+        // (#2710).
+        let smudge_back = if self.tool == Tool::Smudge {
+            let (start, far) = *self.brush_stroke.smudge_out.get_or_insert((last, last));
+            let out = far - start;
+            let back = out.hypot() > radius * 0.25 && delta.dot(out) < 0.0;
+            if (p - start).hypot() > out.hypot() {
+                self.brush_stroke.smudge_out = Some((start, p));
+            }
+            back
+        } else {
+            false
+        };
         let dose = self.brush_stroke.dose;
         let mut cmds = Vec::new();
         for s in self.selected_shapes() {
@@ -255,10 +318,17 @@ impl App {
                     delta * BrushSettings::pressure(b.smear_pressure),
                     radius,
                 ),
-                (Tool::Twirl, _) => {
-                    effects::twirl(&page_path, p, motion * b.twirl_rate() * turn, radius)
+                (Tool::Twirl, Some(from)) => {
+                    effects::twirl(from, p, self.brush_stroke.angle, radius)
                 }
                 (Tool::AttractRepel, Some(from)) => effects::attract(from, p, radius, dose),
+                (Tool::Smudge, _) if smudge_back => effects::smudge_back(
+                    &page_path,
+                    last,
+                    p,
+                    radius,
+                    BrushSettings::pressure(b.smudge_pressure),
+                ),
                 (Tool::Smudge, _) => effects::smudge(
                     &page_path,
                     last,
@@ -468,6 +538,29 @@ mod tests {
         assert!(half > 40.5 && half < full - 0.5, "{half} vs {full}");
     }
 
+    /// #2710: a Smudge stroke from inside the square out past its top
+    /// edge and back over the same path brings the edge back near where
+    /// it was; the outline it drew out used to stay out.
+    #[test]
+    fn smudge_out_and_back_in_one_stroke_returns_the_edge() {
+        let mut app = App::headless();
+        let id = square(&mut app);
+        app.tool = Tool::Smudge;
+        app.brush.smudge_pressure = 100;
+        app.brush_radius = 8.0;
+        app.brush_begin(Point::new(20.0, 34.0));
+        for k in 1..=20 {
+            app.brush_step(Point::new(20.0, 34.0 + k as f64), false, 0.0);
+        }
+        let out = bounds(&app, id).y1;
+        assert!(out > 50.0, "{out}");
+        for k in 1..=20 {
+            app.brush_step(Point::new(20.0, 54.0 - k as f64), false, 0.0);
+        }
+        let back = bounds(&app, id).y1;
+        assert!(back < 44.0, "the edge stayed out at {back}");
+    }
+
     /// Brushes change only the selected objects: a stroke over a
     /// selected square and an unselected one beside it reshapes the
     /// selected one alone, and with nothing selected a stroke changes
@@ -580,6 +673,65 @@ mod tests {
 mod hold_tests {
     use super::*;
     use tracedraw_core::Rect;
+
+    /// Held still on the right side of a square for four seconds at the
+    /// bar's 50 %, Twirl winds the side round the nib's centre about four
+    /// times, as CorelDRAW's does (#2640: it turned a little over half a
+    /// turn in that time and left a single hook). The outline comes back
+    /// a smooth spiral of a bounded number of curves, and each held step
+    /// is quick, since it is one twirl of the outline the hold found.
+    #[test]
+    fn a_held_twirl_winds_the_outline_round_several_times() {
+        let mut app = App::headless();
+        let id = app
+            .new_shape(ShapeKind::Rect {
+                rect: Rect::new(0.0, 0.0, 40.0, 40.0),
+                radius: 0.0,
+                corners: None,
+            })
+            .expect("shape");
+        app.select(vec![id]);
+        app.tool = Tool::Twirl;
+        app.brush_radius = 15.0;
+        let at = Point::new(40.0, 20.0);
+        app.brush_begin(at);
+        let t = std::time::Instant::now();
+        for _ in 0..240 {
+            app.brush_step(at, false, 1.0 / 60.0);
+        }
+        let per_step = t.elapsed().as_secs_f64() / 240.0;
+        let page = app.doc().shape_on_page(id).expect("shape").page_path();
+        // How often the outline crosses the ray from the nib's centre
+        // going up: a spiral of n turns on each side of the centre
+        // crosses it about 2 n times.
+        let mut crossings = 0;
+        let mut prev: Option<Point> = None;
+        tracedraw_core::geometry::flatten(&page, 0.01, &mut |e| match e {
+            tracedraw_core::geometry::PathEl::MoveTo(q) => prev = Some(q),
+            tracedraw_core::geometry::PathEl::LineTo(q) => {
+                if let Some(o) = prev {
+                    if (o.x < at.x) != (q.x < at.x) {
+                        let y = o.y + (q.y - o.y) * (at.x - o.x) / (q.x - o.x);
+                        if y > at.y && y < at.y + 15.0 {
+                            crossings += 1;
+                        }
+                    }
+                }
+                prev = Some(q);
+            }
+            _ => {}
+        });
+        assert!(
+            crossings >= 6,
+            "{crossings} crossings: wound round too little"
+        );
+        assert!(
+            page.elements().len() < 400,
+            "{} elements",
+            page.elements().len()
+        );
+        assert!(per_step < 0.25, "{per_step} s a step");
+    }
 
     /// Held still over the top side of a square, Attract and Repel move
     /// the side from the first step on, at a steady rate, and come to

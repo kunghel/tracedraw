@@ -25,6 +25,13 @@ object under the pointer, a locked one or one on a locked layer too
 (reading leaves it as it is; `App::hit_test_to_read`, #365). Applying a
 sampled colour or attributes never changes a locked object.
 
+A press let go is a click for both tools also when the pointer moved a
+little while the button was down (a pen, a shaky hand) or the button
+was held a moment, which the window takes for a drag or a long press:
+such a click sampled or applied nothing, so the attributes eyedropper
+seemed to apply only now and then (#2897,
+`pick_drag_tests::the_attributes_eyedropper_applies_on_every_click`).
+
 ## Sample again after applying
 
 Both tools' property bars have "Sample again after applying"
@@ -85,13 +92,15 @@ beside the pointer shows the colour a click would take
 - its name, in bold, when it has one: a spot colour's ink, else the first
   colour of the default palette or the palettes shown that is exactly
   equal (`ui::palette::name_of`);
-- its values in its own model when it is a CMYK or RGB colour (CMYK:
-  C, M, Y, K in %, RGB: R, G, B 0 to 255), so a colour converted with
+- its values in its own model, whatever the drawing's primary colour
+  mode (CMYK: C, M, Y, K in %, RGB: R, G, B 0 to 255, HSB and HSL: H in
+  degrees, S and B or L in %, Lab: L, a, b, YIQ: Y, I, Q 0 to 255,
+  grayscale: its level 0 to 255), so a colour converted with
   Tools > Convert Colors reads in the model it went to, a picture in
-  CMYK mode giving its pixels in CMYK (#1254); a colour
-  of another model (HSB, Lab, grey...) in the drawing's primary colour
-  mode (Document Setup); one per line; spot colours show their tint
-  and Registration its name;
+  CMYK mode giving its pixels in CMYK (#1254), and a colour set in HSB,
+  HSL, Lab, YIQ or grayscale reads in that model (#2612: they read in
+  CMYK); one per line; spot colours show their tint and Registration
+  its name;
 - its hex value, upper case (`#E02020`).
 
 The colour is the one the click would take: for the tool what

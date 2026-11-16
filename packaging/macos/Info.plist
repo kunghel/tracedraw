@@ -38,6 +38,22 @@
         <string>dev.tracedraw.cdr</string>
       </array>
     </dict>
+    <!-- Pictures open as a new drawing holding them (#2600); TraceDraw
+         is only an Alternate for them. -->
+    <dict>
+      <key>CFBundleTypeName</key><string>Picture</string>
+      <key>CFBundleTypeRole</key><string>Editor</string>
+      <key>LSHandlerRank</key><string>Alternate</string>
+      <key>LSItemContentTypes</key>
+      <array>
+        <string>public.png</string>
+        <string>public.jpeg</string>
+        <string>com.microsoft.bmp</string>
+        <string>com.compuserve.gif</string>
+        <string>org.webmproject.webp</string>
+        <string>public.tiff</string>
+      </array>
+    </dict>
   </array>
   <key>UTExportedTypeDeclarations</key>
   <array>

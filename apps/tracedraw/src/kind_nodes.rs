@@ -22,6 +22,10 @@ pub enum KindNode {
     /// The end of a rectangle corner's cut on the vertical edge
     /// (`vertical`) or on the horizontal one. A square corner has one node.
     Corner { corner: usize, vertical: bool },
+    /// The middle of a rectangle's edge (`edge` as in
+    /// [`tracedraw_core::Corners::bulge`]): dragging it out bows the
+    /// edges (#2188).
+    Edge { edge: usize },
     /// The node of a whole ellipse, or the start of a pie or arc.
     EllipseStart,
     /// The end of a pie or arc.
@@ -148,9 +152,34 @@ fn rect_nodes(rect: Rect, c: &tracedraw_core::Corners, t: Affine) -> Vec<(KindNo
     out
 }
 
+/// The nodes of `s` and, on a rectangle, the handle in the middle of
+/// each edge that bows it (#2188), in page space.
+pub fn handles(s: &Shape) -> Vec<(KindNode, Point)> {
+    let mut out = nodes(s);
+    out.extend(edge_handles(s));
+    out
+}
+
+/// A rectangle's edge handles (#2188): the middle of each edge as it is
+/// drawn, in page space; none for other objects.
+pub fn edge_handles(s: &Shape) -> Vec<(KindNode, Point)> {
+    if s.spline.is_some() || !matches!(s.kind, ShapeKind::Rect { .. }) {
+        return Vec::new();
+    }
+    let Some((rect, c)) = s.kind.rect_corners() else {
+        return Vec::new();
+    };
+    (0..4)
+        .map(|edge| {
+            let (mid, _) = c.edge_middle(edge, rect);
+            (KindNode::Edge { edge }, s.transform * mid)
+        })
+        .collect()
+}
+
 /// The node of `s` within `tol` (page mm) of `p`.
 pub fn node_at(s: &Shape, p: Point, tol: f64) -> Option<KindNode> {
-    nodes(s)
+    handles(s)
         .into_iter()
         .map(|(n, q)| (n, (q - p).hypot()))
         .filter(|(_, d)| *d <= tol)
@@ -295,6 +324,30 @@ pub fn drag_constrained(
             } else {
                 // Corners growing together stop where they fill a side.
                 c = c.fitted(rect, (sx, sy));
+            }
+            Some(ShapeKind::rect_with_corners(rect, c))
+        }
+        (ShapeKind::Rect { .. }, KindNode::Edge { edge }) => {
+            // The edge's middle follows the pointer out from the straight
+            // edge: every edge bows by the same amount, the one dragged
+            // alone with Ctrl (#2188).
+            let (rect, mut c) = start.kind.rect_corners()?;
+            let rect = rect.abs();
+            let straight = tracedraw_core::Corners {
+                bulge: [0.0; 4],
+                ..c
+            };
+            let (base, out) = straight.edge_middle(edge, rect);
+            let value = tracedraw_core::Corners::bulge_for(edge, rect, (lp - base).dot(out));
+            if single {
+                c.bulge[edge] = value;
+            } else {
+                let delta = value - c.edge_bulge(edge);
+                let was = c;
+                for (i, b) in c.bulge.iter_mut().enumerate() {
+                    *b = (was.edge_bulge(i) + delta).clamp(0.0, 1.0);
+                }
+                c.bulge[edge] = value;
             }
             Some(ShapeKind::rect_with_corners(rect, c))
         }
@@ -459,9 +512,12 @@ pub fn drag_constrained(
 }
 
 /// The undo step's name for dragging a node of `s`.
-pub fn label(s: &Shape) -> &'static str {
+pub fn label_for(s: &Shape, node: Option<KindNode>) -> &'static str {
     if s.spline.is_some() {
         return "Edit B-Spline";
+    }
+    if matches!(node, Some(KindNode::Edge { .. })) {
+        return "Edge Bulge";
     }
     match s.kind {
         ShapeKind::Rect { .. } => "Corner Radius",
@@ -470,9 +526,10 @@ pub fn label(s: &Shape) -> &'static str {
     }
 }
 
-/// The node whose drag changes one corner only: a corner node with Ctrl.
+/// The node whose drag changes one corner (or one edge's bow) only: a
+/// corner or edge node with Ctrl.
 pub fn single_corner(node: KindNode, ctrl: bool) -> bool {
-    matches!(node, KindNode::Corner { .. }) && ctrl
+    matches!(node, KindNode::Corner { .. } | KindNode::Edge { .. }) && ctrl
 }
 
 /// The corners of the rectangle `s` a drag of `node` changes together:
@@ -661,6 +718,46 @@ mod tests {
             ShapeId(1),
             ShapeKind::rect_with_corners(Rect::new(0.0, 0.0, 40.0, 20.0), corners),
         )
+    }
+
+    /// The handle in the middle of an edge bows every edge by the same
+    /// amount; with Ctrl only the edge dragged (#2188). The handle sits
+    /// on the bowed edge, and a drag back inside straightens it.
+    #[test]
+    fn an_edge_handle_bows_the_edges() {
+        let s = rect(Corners::default());
+        let top = KindNode::Edge {
+            edge: Corners::EDGE_TOP,
+        };
+        assert!(handles(&s).contains(&(top, Point::new(20.0, 20.0))));
+        assert_eq!(node_at(&s, Point::new(20.0, 20.2), 0.5), Some(top));
+        // Top edge 40 long: a quarter circle lifts its middle by
+        // (sqrt 2 - 1) * 20.
+        let full = (std::f64::consts::SQRT_2 - 1.0) * 20.0;
+        let mut turn = 0.0;
+        let p = Point::new(20.0, 20.0 + full / 2.0);
+        let kind = drag(&s, top, p, false, [false; 4], &mut turn).unwrap();
+        let (_, c) = kind.rect_corners().unwrap();
+        assert!(c.bulge.iter().all(|b| (b - 0.5).abs() < 1e-9), "{c:?}");
+        let kind = drag(&s, top, p, true, [false; 4], &mut turn).unwrap();
+        let (_, c) = kind.rect_corners().unwrap();
+        assert!((c.bulge[Corners::EDGE_TOP] - 0.5).abs() < 1e-9);
+        assert_eq!(c.bulge[Corners::EDGE_BOTTOM], 0.0);
+        let bowed = Shape::new(ShapeId(1), kind);
+        let (_, at) = edge_handles(&bowed)[Corners::EDGE_TOP];
+        assert!((at.y - p.y).abs() < 1e-9, "{at:?}");
+        let kind = drag(
+            &bowed,
+            top,
+            Point::new(20.0, 15.0),
+            true,
+            [false; 4],
+            &mut turn,
+        )
+        .unwrap();
+        let (_, c) = kind.rect_corners().unwrap();
+        assert_eq!(c.bulge, [0.0; 4]);
+        assert_eq!(label_for(&bowed, Some(top)), "Edge Bulge");
     }
 
     #[test]

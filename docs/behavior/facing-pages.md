@@ -57,6 +57,26 @@ existed only in print imposition.
   right and left pages their own master objects: with Start on Right
   side odd pages are right pages.
 
+## Margins
+
+- Document Options > Layout > Margins (#1660): Top, Bottom, Inside and
+  Outside, in the document's units, the box the text and pictures of
+  every page keep inside. Ticked, the margins start at 12.7 mm all
+  round; unticked, the drawing has none. Each change is one undo step
+  (Document Properties); the margins are a document property
+  (`Metadata::margins`), saved in `.tdraw` files only while set.
+- Each page shown, the facing page and the pages of the Multipage View
+  too, draws the margins as a dashed violet frame over the drawing,
+  like the guidelines; a frame is drawn only while a margin is above 0.
+- With facing pages the inside margin lies at the spine and the
+  outside one at the page's free edge, so the two swap sides between
+  left and right pages: on the right of a left page, on the left of a
+  right page. A page shown alone takes the inside margin on its left,
+  as a right-hand page (`spreads::tests::page_margins_mirror_at_the_spine`,
+  `multipage::tests::page_margins_show_on_both_pages_of_the_spread`).
+- Margins wider than the page leave a frame of no width there; values
+  below 0 or above 1000 mm are kept in range.
+
 ## Multipage View
 
 With facing pages the Multipage View lays the spreads out two a row
@@ -95,13 +115,36 @@ left page reaches across the spine stays at the spine. Each page took
 the side that put most of its own objects on it before, and the pages
 showed one by one: a book opened with pages mixed and no spreads
 (#1660, `parse::tests::a_book_on_facing_pages_opens_in_spreads`).
+
+The turns may break where the pages after hold their objects better
+the other way (#2833): each page scores the share of its objects that
+lands on it from the right of the spine and from the left, a break (two
+pages running on one side) costs 1.5 pages' worth, and the sides with
+the most score are taken (Viterbi's way through the pages,
+`parse::facing_sides`). One page whose objects reach across the spine
+keeps its turn (two breaks cost 3, more than its 1); a page the file
+holds more or less in a long book no longer throws every page after it
+half a page across, onto the page beside it. On a tie the first page is
+on the right and the turns go on
+(`parse::tests::facing_sides_take_turns_and_follow_a_lost_page`,
+`parse::tests::a_long_book_whose_turns_break_keeps_every_page_on_its_side`:
+300 pages whose sides change at page 151).
+
+A large file's record stream (`content/riffData.cdr` in version 14 and
+later packages) is read as far as the package declares it, up to 3 GB,
+as the data streams are: it was cut at 512 MB, so in a book of some 300
+pages in a 1 GB file the pages after the cut were lost and the last one
+read was cut short (#2833). A member that inflates past what it
+declares still stops at 512 MB or that size, whichever is larger.
+
 Nothing is written for facing pages: a `.cdr` saved from TraceDraw has
 single pages, each object where it shows on its page.
 
 ## Not done
 
-- Inside and outside margins, a table of contents and an advanced
-  booklet window asked for in #1660 are separate features.
+- An advanced booklet window asked for in #1660 is a separate
+  feature. The table of contents asked for there is Text > Table of
+  Contents (see `table-of-contents.md`).
 - The Page Sorter shows pages one by one, not in spreads.
 
 ## Formula

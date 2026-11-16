@@ -29,6 +29,10 @@ impl Default for PainterlySettings {
     }
 }
 
+/// How wide a brushstroke drawn with a pen is at no pressure, as a share
+/// of the brush size (#883).
+pub const PEN_FLOOR: f64 = 0.15;
+
 /// i18n keys of the picker's groups.
 pub const GROUPS: [&str; 3] = [
     "painterly.group_dry",
@@ -79,7 +83,19 @@ impl App {
             },
         );
         shape.fill = Fill::None;
-        shape.stroke = Some(self.painterly_stroke(None, id));
+        let mut stroke = self.painterly_stroke(None, id);
+        // Drawn with a pen: the brush follows its pressure along the
+        // stroke (#883); the mouse keeps it even.
+        if let Some(pen) = self
+            .pen_pressures(points)
+            .and_then(|pr| crate::pen::PressureProfile::new(points, pr))
+        {
+            stroke.widths =
+                pen.width_nodes(crate::pen::FREEHAND_NODES, stroke.width, PEN_FLOOR, &|_| {
+                    1.0
+                });
+        }
+        shape.stroke = Some(stroke);
         shape.name = Some(tr("painterly.object_name"));
         self.run(Command::AddShape { layer, shape });
         self.selection = vec![id];
@@ -102,6 +118,20 @@ impl App {
                 stroke.painterly.as_mut(),
             ) {
                 new.seed = old.seed;
+                // A pen's pressure stays with the stroke, scaled to the
+                // new size (#883).
+                if let Some(base) = s.stroke.as_ref().filter(|b| b.width > 1e-9) {
+                    let k = stroke.width / base.width;
+                    stroke.widths = base
+                        .widths
+                        .iter()
+                        .map(|n| tracedraw_core::style::WidthNode {
+                            at: n.at,
+                            left: n.left * k,
+                            right: n.right * k,
+                        })
+                        .collect();
+                }
             }
             self.run(Command::SetStroke {
                 shapes: vec![s.id],

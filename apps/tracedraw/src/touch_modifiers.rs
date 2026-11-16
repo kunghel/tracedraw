@@ -5,18 +5,22 @@
 //! finger has touched the window) a Shift, a Ctrl, an Alt and a Delete
 //! key float over the bottom left corner of the drawing (#1996; up to
 //! 0.42 the first three sat on the Standard toolbar), unless Options >
-//! Display turns them off: a tap on Shift, Ctrl or Alt holds the key
-//! down until the next tap on it, the key drawn pressed meanwhile, and
-//! Delete deletes as the Delete key does. A finger can also hold Shift,
-//! Ctrl or Alt down as a key is held, while another finger draws: the
-//! key is let go with the finger (#2362). The keys held this way join
+//! Display turns them off: a finger holds Shift, Ctrl or Alt down as a
+//! key is held, while another finger draws, and the key is let go with
+//! the finger (#2362); a tap of a finger on one is a key pressed and let
+//! go, so it no longer stays on as a switch (#2362, 14/11: keys, not
+//! switches). A click of a mouse on one, which cannot hold it while it
+//! draws, holds it down until the next click, the key drawn pressed
+//! meanwhile, and a finger's tap lets such a key go. Delete deletes as
+//! the Delete key does. The keys held this way join
 //! every frame's input (the app's raw input hook), so every tool reads
 //! them as it reads the keyboard's. See docs/behavior/android.md.
 
 use crate::app::App;
 
-/// The keys held down from the keys on the drawing: tapped on until the
-/// next tap, or held down by a finger on one of them (`pressed`).
+/// The keys held down from the keys on the drawing: clicked on with a
+/// mouse until the next click, or held down by a finger on one of them
+/// (`pressed`).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct TouchModifiers {
     pub shift: bool,
@@ -88,12 +92,21 @@ impl TouchModifiers {
             }
     }
 
-    /// A tap on `key`'s button: held down, or let go.
+    /// A click of a mouse on `key`'s button: held down, or let go.
     pub fn toggle(&mut self, key: ModKey) {
         match key {
             ModKey::Shift => self.shift = !self.shift,
             ModKey::Ctrl => self.ctrl = !self.ctrl,
             ModKey::Alt => self.alt = !self.alt,
+        }
+    }
+
+    /// A finger lifted from `key`: let go, also when a click held it.
+    pub fn release(&mut self, key: ModKey) {
+        match key {
+            ModKey::Shift => self.shift = false,
+            ModKey::Ctrl => self.ctrl = false,
+            ModKey::Alt => self.alt = false,
         }
     }
 
@@ -160,9 +173,6 @@ struct KeyFinger {
     /// It came down with no other finger on the screen, so the frame's
     /// pointer follows it: its pointer events are left out.
     pointer: bool,
-    /// Another finger touched the screen while it was down: when it
-    /// lifts, the key is let go instead of tapped on.
-    chord: bool,
 }
 
 /// The fingers on the screen as the keys on the drawing see them: a
@@ -184,9 +194,9 @@ pub struct KeyFingers {
 /// Take a finger held on Shift, Ctrl or Alt on the drawing out of the
 /// frame's input `raw`, holding the key down for as long as it stays,
 /// and give the moves of the finger drawing meanwhile as the pointer's.
-/// A finger lifted from a key with no other finger down in the meantime
-/// is a tap: the key is held until the next tap, as a tap on the
-/// button does. Runs in the raw input hook, before
+/// A finger lifted from a key lets it go, also after a tap: the keys are
+/// keys for a finger, not switches (#2362); a tap lets go a key a mouse
+/// clicked on. Runs in the raw input hook, before
 /// [`TouchModifiers::apply`].
 pub fn fingers_on_keys(app: &mut App, raw: &mut egui::RawInput) {
     use egui::{Event, PointerButton, TouchPhase};
@@ -235,15 +245,13 @@ pub fn fingers_on_keys(app: &mut App, raw: &mut egui::RawInput) {
                         id,
                         key,
                         pointer: first,
-                        chord: !first,
                     });
                     mods.pressed = Some(key);
                     swallow = first;
                     continue;
                 }
                 out.push(e);
-                if let Some(k) = f.key.as_mut() {
-                    k.chord = true;
+                if let Some(k) = f.key {
                     if k.pointer && f.other.is_none() {
                         f.other = Some(id);
                         out.extend([Event::PointerMoved(pos), press(pos, true)]);
@@ -264,9 +272,7 @@ pub fn fingers_on_keys(app: &mut App, raw: &mut egui::RawInput) {
                 if let Some(k) = on_key {
                     f.key = None;
                     mods.pressed = None;
-                    if !k.chord && phase == TouchPhase::End {
-                        mods.toggle(k.key);
-                    }
+                    mods.release(k.key);
                     continue;
                 }
                 out.push(e);

@@ -65,6 +65,10 @@ steps: undoing goes back to drawing it, with the tool chosen again and a line
 going on from the last node left, so you can undo node by node and draw on at
 once.
 
+<kbd>Space</kbd> ends the curve you are drawing with the Bezier, Pen,
+B-spline, Polyline or Freehand tool where the last node is, as a right click
+or <kbd>Enter</kbd> does, and changes to the Pick tool.
+
 <kbd>Backspace</kbd> or <kbd>Delete</kbd> while you draw with the Bezier, Pen,
 B-spline or Polyline tool removes the last node you placed, with its handles,
 one node a press. They never delete the selected objects while a curve is being

@@ -65,7 +65,10 @@ in the range, a value typed in the box too (12.5 in a whole-number
 slider is 13, which the box then shows); the value handed to the slider
 is clamped to the range too. Ctrl with the wheel or the box's arrows
 moves a tenth of a step on a slider without a step and one step on an
-integer or stepped one, which holds nothing finer. The box and the
+integer or stepped one, which holds nothing finer. A decimal slider whose
+step is below a unit over a range of ten units or more (the Bevel depth,
+0.1 to 50) steps whole units with the plain wheel and its own step with
+Ctrl+wheel, as a number field does (#2705). The box and the
 thumb always show the same value: the box reads the value each frame it
 is not being typed in.
 

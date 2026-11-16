@@ -142,6 +142,11 @@ pub fn general_page(app: &mut App, ui: &mut Ui) {
         };
         ui.add_enabled(on, egui::Label::new(format!("\u{2022} {}", tr(key))));
     }
+    // Its own service, set up under Service (#2713).
+    ui.add_enabled(
+        app.ai_vectorize_ready(),
+        egui::Label::new(format!("\u{2022} {}", tr("aivec.feature"))),
+    );
     ui.add_space(8.0);
     crate::ui::chrome::section(ui, &tr("aiui.privacy_title"));
     dim(ui, "aiui.privacy");
@@ -192,6 +197,72 @@ pub fn service_page(app: &mut App, ui: &mut Ui) {
         }
     }
     service_state(app, ui);
+    vectorize_section(app, ui);
+}
+
+/// The vectorization service of Vectorize with AI (#2713): its address,
+/// API id and key, the free test mode and whether the curves replace the
+/// bitmap.
+fn vectorize_section(app: &mut App, ui: &mut Ui) {
+    crate::ui::chrome::section(ui, &tr("aivec.section"));
+    dim(ui, "aivec.section_hint");
+    let prefs = &mut app.settings.ai_vectorize;
+    grid("ai_vectorize").show(ui, |ui| {
+        row_label(ui, &tr("ai.endpoint"));
+        ui.add(
+            egui::TextEdit::singleline(&mut prefs.endpoint)
+                .hint_text(crate::ai_vectorize::DEFAULT_ENDPOINT)
+                .desired_width(320.0),
+        )
+        .rich_tip(crate::ui::tips::pair("ai.endpoint", "aivec.endpoint_tip"));
+        ui.end_row();
+        row_label(ui, &tr("aivec.api_id"));
+        ui.add(egui::TextEdit::singleline(&mut prefs.api_id).desired_width(320.0))
+            .rich_tip(crate::ui::tips::pair("aivec.api_id", "aivec.api_id_tip"));
+        ui.end_row();
+        row_label(ui, &tr("ai.key"));
+        let key = ui
+            .add(
+                egui::TextEdit::singleline(&mut app.ai_vectorize.key)
+                    .password(true)
+                    .desired_width(320.0),
+            )
+            .rich_tip(crate::ui::tips::pair("ai.key", "aivec.key_tip"));
+        if key.changed() && prefs.remember_key {
+            prefs.key = app.ai_vectorize.key.clone();
+        }
+        ui.end_row();
+    });
+    if ui
+        .checkbox(&mut prefs.remember_key, tr("ai.remember_key"))
+        .rich_tip(crate::ui::tips::pair(
+            "ai.remember_key",
+            "ai.remember_key_tip",
+        ))
+        .changed()
+    {
+        prefs.key = if prefs.remember_key {
+            app.ai_vectorize.key.clone()
+        } else {
+            String::new()
+        };
+    }
+    ui.checkbox(&mut prefs.test_mode, tr("aivec.test_mode"))
+        .rich_tip(crate::ui::tips::pair(
+            "aivec.test_mode",
+            "aivec.test_mode_tip",
+        ));
+    ui.checkbox(&mut prefs.replace, tr("aivec.replace"))
+        .rich_tip(crate::ui::tips::pair("aivec.replace", "aivec.replace_tip"));
+    match &app.ai_vectorize.status {
+        crate::ai_vectorize::VectorizeStatus::Failed(e) => {
+            ui.label(RichText::new(e.as_str()).color(ERROR));
+        }
+        crate::ai_vectorize::VectorizeStatus::Waiting => {
+            ui.spinner();
+        }
+        _ => {}
+    }
 }
 
 #[cfg(test)]

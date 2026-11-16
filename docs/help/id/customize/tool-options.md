@@ -17,12 +17,17 @@ ada di bilah properti masing-masing alat.
   yang hanya disentuhnya; <kbd>Alt</kbd> lalu hanya memilih objek yang
   seluruhnya berada di dalam.
 
+- [[options.ctrl_shift_keys]] [[options.keys_traditional]]: [[options.keys_traditional_tip]]
+  [[options.keys_windows]]: [[options.keys_windows_tip]]
+
 ## Penghapus {#eraser}
 
 ![Opsi alat Penghapus](../../img/customize-tool-options-eraser.png)
 
 [[options.eraser_width]] (awalnya 6,35 mm), dan [[options.eraser_round]] atau
 [[options.eraser_square]].
+
+[[options.eraser_reduce_nodes]]: [[options.eraser_reduce_nodes_tip]]
 
 ## Zum dan Geser {#zoom-pan}
 
@@ -39,6 +44,7 @@ ada di bilah properti masing-masing alat.
 - [[options.smooth_zoom]] (aktif): satu takik roda melakukan zoom dalam luncuran
   singkat, bukan lompatan; makin cepat roda diputar, makin singkat. Nonaktif,
   tiap takik langsung melakukan zoom.
+- [[options.light_zoom]]: [[options.light_zoom_tip]]
 - [[options.wheel_zoom_step]] seberapa besar satu takik memperbesar atau
   memperkecil, 1 sampai 100 persen (awalnya 15 %).
 - [[options.pan_right_button]] [[options.zoom_out]] atau [[options.context_menu]] (awalnya).
@@ -60,6 +66,9 @@ ada di bilah properti masing-masing alat.
   untuk alat [[tool.pen]]; lihat [Pena](../lines-shapes/lines.md#pen).
 - [[options.pen_tablet]]: [[options.pen_pressure]] (aktif); lihat
   [Menggambar dengan tablet grafis](../lines-shapes/pen-pressure.md).
+
+- [[options.corner_threshold]]: [[options.corner_threshold_tip]]
+- [[options.straight_threshold]]: [[options.straight_threshold_tip]]
 
 ## Pengenalan Bentuk {#shape-recognition}
 
@@ -84,6 +93,9 @@ sudut, dan [[toolbar.corners_together]]. [[options.scale_corners]]:
 [[options.ellipse]], [[options.pie]], atau [[options.arc]], dengan
 [[options.starting_angle]] dan [[options.ending_angle]].
 
+[[options.arc_direction]]: [[options.counterclockwise]] / [[options.clockwise]].
+[[options.arc_direction_desc]]
+
 ## Poligon {#polygon}
 
 ![Opsi alat Poligon](../../img/customize-tool-options-polygon.png)
@@ -103,6 +115,9 @@ sudut, dan [[toolbar.corners_together]]. [[options.scale_corners]]:
 [[options.revolutions]], dan [[options.symmetrical_spiral]] atau
 [[options.logarithmic_spiral]].
 
+[[options.spiral_expansion]]: [[options.spiral_expansion_tip]]
+[[options.spiral_preview_tip]]
+
 ## Tabel {#table}
 
 ![Opsi alat Tabel](../../img/customize-tool-options-table.png)
@@ -118,11 +133,24 @@ Cara label dimensi baru terbaca: [[dimension.precision]],
 [[dimension.suffix]]. Dimensi yang sudah digambar mempertahankan labelnya;
 pilih satu dan gunakan bilah properti untuk mengubahnya.
 
+[[options.dimension_style]]: [[options.decimal]] / [[options.fractional]].
+[[options.dimension_style_tip]]
+
+## Dimensi Sudut {#angular-dimension}
+
+[[dimension.precision]], [[dimension.show_units]], [[dimension.prefix]] and
+[[dimension.suffix]] of new angular dimensions.
+[[options.angular_units_tip]]
+
 ## Konektor {#connector}
 
 ![Opsi alat Konektor](../../img/customize-tool-options-connector.png)
 
 [[connector.radius]] konektor bulat yang baru (awalnya 3 mm).
+
+[[options.connector_gap]]: [[options.connector_gap_tip]]
+
+[[options.connector_geometric_anchors]]: [[options.connector_geometric_anchors_tip]]
 
 ## Isian Jala {#mesh-fill}
 

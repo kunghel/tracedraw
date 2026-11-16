@@ -6963,6 +6963,7 @@ fn a_contour_opens_live_again() {
         to_center: false,
         fill_to: Color::rgb8(0, 0, 255),
         outline_to: None,
+        fill_end_to: None,
         color_blend: 0,
         corners: None,
         accel_objects: 0.0,
@@ -8884,6 +8885,45 @@ fn a_nonzero_curve_keeps_its_overlaps_filled_through_a_save() {
     }
 }
 
+/// Text fitted to a path goes out as the outline of its letters, and
+/// that outline fills with the nonzero rule as the text does (#2733):
+/// read back from version 16 on it fills nonzero; written as even-odd,
+/// the program that opened the file showed holes where letters overlap.
+#[test]
+fn text_fitted_to_a_path_goes_out_filling_nonzero() {
+    use tracedraw_core::shaping::FillRule;
+    let mut doc = doc_with(Vec::new());
+    let mut ids = doc.ids().clone();
+    let mut t = text_shape(
+        &mut ids,
+        vec![TextSpan::new("Overlap", "Arial", 24.0)],
+        TextAlign::Left,
+    );
+    let mut arc = BezPath::new();
+    arc.move_to((0.0, 0.0));
+    arc.curve_to((20.0, 30.0), (60.0, 30.0), (80.0, 0.0));
+    if let ShapeKind::Text { on_path, .. } = &mut t.kind {
+        *on_path = Some(tracedraw_core::document::TextOnPath {
+            path: arc,
+            ..Default::default()
+        });
+    }
+    assert!(!t.local_path().elements().is_empty(), "letters drawn");
+    doc.pages[0].layers[0].shapes = vec![t];
+    doc.set_ids(ids);
+    for v in versions().filter(|v| *v >= 16) {
+        let (back, rep) =
+            crate::open_bytes(&document_to_cdr_version(&doc, v), "back").expect("reads back");
+        let s = &back.pages[0].layers[0].shapes[0];
+        assert!(
+            matches!(s.kind, ShapeKind::Path { .. }),
+            "{v}: {:?}",
+            rep.warnings
+        );
+        assert_eq!(s.fill_rule, FillRule::NonZero, "{v}");
+    }
+}
+
 /// From version 16 the `font` records are the faces the text uses, and
 /// the style table names the first of them: the file of #1733 that
 /// program saved for bold "Khand" text has one Khand record, the bold
@@ -9473,5 +9513,244 @@ fn a_picture_in_a_frame_keeps_its_transparency() {
             found |= t.contains(r#""transparency":{"mode":"0","fill":{"type":"2""#);
         }
         assert!(found, "{v}");
+    }
+}
+
+#[test]
+fn radial_transparency_keeps_its_reach_through_a_file() {
+    // #2735: a radial transparency's scales are its radius in half sizes
+    // of the object, so the run reaches the same place when read back:
+    // our own run (to the box's corners) and one whose nodes place it.
+    use tracedraw_core::style::FountainHandles;
+    let b = Rect::new(10.0, 20.0, 50.0, 60.0);
+    let mut placed = tracedraw_core::Fountain::two(
+        tracedraw_core::FountainKind::Radial,
+        Color::WHITE,
+        Color::BLACK,
+        0.0,
+    );
+    let own = placed.clone();
+    placed.handles = Some(FountainHandles {
+        start: Point::new(0.0, 0.0),
+        end: Point::new(1.0, 0.0),
+        skew: Point::new(0.0, 1.0),
+    });
+    for mask in [own, placed] {
+        let mut doc = Document::new("w", Size::new(200.0, 100.0));
+        let mut ids = doc.ids().clone();
+        let mut r = Shape::new(
+            ids.shape(),
+            ShapeKind::Rect {
+                rect: b,
+                radius: 0.0,
+                corners: None,
+            },
+        );
+        r.fill = Fill::Solid(Color::rgb8(255, 0, 0));
+        r.effects.push(tracedraw_core::live::Effect::Transparency {
+            mask: Fill::Fountain(mask.clone()),
+            merge: tracedraw_core::live::MergeMode::Normal,
+            target: 2,
+        });
+        doc.pages[0].layers[0].shapes = vec![r];
+        doc.set_ids(ids);
+        let bytes = document_to_cdr_version(&doc, 21);
+        let (back, _) = crate::open_bytes(&bytes, "back").expect("reads back");
+        let s = &back.pages[0].layers[0].shapes[0];
+        let f = s
+            .effects
+            .iter()
+            .find_map(|e| match e {
+                tracedraw_core::live::Effect::Transparency {
+                    mask: Fill::Fountain(f),
+                    ..
+                } => Some(f.clone()),
+                _ => None,
+            })
+            .expect("mask");
+        use tracedraw_core::geometry::Shape as _;
+        let pb = (s.transform * s.local_path()).bounding_box();
+        // Where the run ends along the middle row, before and after.
+        let reach = |f: &tracedraw_core::Fountain, b: Rect| {
+            let h = f.handles.unwrap_or_else(|| f.default_handles(b));
+            let s = tracedraw_core::Fountain::rel_to_page(b, h.start);
+            let e = tracedraw_core::Fountain::rel_to_page(b, h.end);
+            (e - s).hypot()
+        };
+        let (want, got) = (reach(&mask, b), reach(&f, pb));
+        assert!((want - got).abs() < 0.01, "{want} vs {got}");
+    }
+}
+
+/// Each entry of a version 16+ package with `from` replaced by `to` (of
+/// the same length, so no chunk changes size), packed again without
+/// TraceDraw's own entries.
+fn package_with_bytes_replaced(bytes: &[u8], from: &[u8], to: &[u8]) -> (Vec<u8>, usize) {
+    use std::io::{Read, Write};
+    assert_eq!(from.len(), to.len());
+    let mut zin = zip::ZipArchive::new(std::io::Cursor::new(bytes)).expect("a package");
+    let mut out = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+    let mut hits = 0;
+    for i in 0..zin.len() {
+        let mut e = zin.by_index(i).expect("entry");
+        let name = e.name().expect("name").to_string();
+        // What TraceDraw keeps for itself is left out, as another
+        // program's file would not have it.
+        if name.starts_with("tracedraw/") {
+            continue;
+        }
+        let mut data = Vec::new();
+        e.read_to_end(&mut data).expect("read");
+        let mut at = 0;
+        while let Some(p) = data[at..].windows(from.len()).position(|w| w == from) {
+            data[at + p..at + p + to.len()].copy_from_slice(to);
+            at += p + to.len();
+            hits += 1;
+        }
+        let opts = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Stored);
+        out.start_file(name, opts).expect("start");
+        out.write_all(&data).expect("write");
+    }
+    (out.finish().expect("finish").into_inner(), hits)
+}
+
+#[test]
+fn a_reversed_radial_transparency_reads_reversed() {
+    // #2736: a radial transparency reversed with Reverse Fill drew as the
+    // plain one, while the same one reversed by swapping its nodes'
+    // transparency drew as intended. A file whose transparency section
+    // runs its amounts from 1 down to 0 reads as the reversed one.
+    let circle = |mask: Fill| {
+        let mut doc = Document::new("w", Size::new(200.0, 100.0));
+        let mut ids = doc.ids().clone();
+        let mut s = Shape::new(
+            ids.shape(),
+            ShapeKind::Ellipse {
+                rect: Rect::new(10.0, 10.0, 50.0, 50.0),
+                arc: None,
+            },
+        );
+        s.fill = Fill::Solid(Color::BLACK);
+        s.effects.push(tracedraw_core::live::Effect::Transparency {
+            mask,
+            merge: tracedraw_core::live::MergeMode::Normal,
+            target: 2,
+        });
+        doc.pages[0].layers[0].shapes = vec![s];
+        doc.set_ids(ids);
+        doc
+    };
+    let radial = |a: Color, b: Color| {
+        Fill::Fountain(tracedraw_core::Fountain::two(
+            tracedraw_core::FountainKind::Radial,
+            a,
+            b,
+            0.0,
+        ))
+    };
+    let mask_of = |bytes: &[u8]| {
+        let (back, _) = crate::open_bytes(bytes, "back").expect("reads back");
+        back.pages[0].layers[0].shapes[0]
+            .effects
+            .iter()
+            .find_map(|e| match e {
+                tracedraw_core::live::Effect::Transparency {
+                    mask: Fill::Fountain(f),
+                    ..
+                } => Some(f.stops.iter().map(|s| s.color).collect::<Vec<_>>()),
+                _ => None,
+            })
+            .expect("mask")
+    };
+    // Opaque in the middle, see-through at the rim, and the other way.
+    let save = |a: Color, b: Color| {
+        let bytes = document_to_cdr_version(&circle(radial(a, b)), 21);
+        package_with_bytes_replaced(&bytes, b"-", b"-").0
+    };
+    let plain = save(Color::WHITE, Color::BLACK);
+    let swapped = save(Color::BLACK, Color::WHITE);
+    let (reversed, hits) = package_with_bytes_replaced(
+        &plain,
+        br#""startTransparency":"0","endTransparency":"1""#,
+        br#""startTransparency":"1","endTransparency":"0""#,
+    );
+    assert_eq!(hits, 1);
+    assert_ne!(mask_of(&plain), mask_of(&swapped));
+    assert_eq!(mask_of(&reversed), mask_of(&swapped));
+}
+
+/// The same picture placed several times is stored once and every copy
+/// opens again with it (#2923: a 17 MB file with repeated pictures saved
+/// as hundreds of MB, one image record per object). A copy at another
+/// box size keeps its own record.
+#[test]
+fn repeated_pictures_are_stored_once() {
+    let png: SharedBytes = {
+        let mut pm = tiny_skia::Pixmap::new(4, 3).expect("pixmap");
+        pm.fill(tiny_skia::Color::from_rgba8(200, 40, 90, 255));
+        pm.encode_png().expect("png").into()
+    };
+    let mut ids = tracedraw_core::id::IdSource::default();
+    let mut picture = |rect: Rect, png: SharedBytes, at: f64| {
+        let mut s = Shape::new(
+            ids.shape(),
+            ShapeKind::Bitmap {
+                rect,
+                width_px: 4,
+                height_px: 3,
+                png,
+                fx: None,
+            },
+        );
+        s.fill = Fill::None;
+        s.stroke = None;
+        s.transform = Affine::translate((at, 0.0));
+        s
+    };
+    let box_a = Rect::new(0.0, 0.0, 40.0, 30.0);
+    let shapes = vec![
+        picture(box_a, png.clone(), 0.0),
+        picture(box_a, png.clone(), 50.0),
+        // The same bytes held apart (as two opened copies would be).
+        picture(box_a, png.to_vec().into(), 100.0),
+        picture(Rect::new(0.0, 0.0, 20.0, 15.0), png.clone(), 150.0),
+    ];
+    let doc = doc_with(shapes);
+    for v in versions() {
+        let bytes = document_to_cdr_version(&doc, v);
+        let (_, tree, riff) = chunk_ids(&bytes);
+        let mut records = 0;
+        tree.root.walk(&mut |c, _| {
+            if c.is(b"bmp ") && !tree.data(&riff, c).is_empty() {
+                records += 1;
+            }
+        });
+        assert_eq!(records, 2, "{v}: one record per distinct picture and size");
+        let (back, rep) = crate::open_bytes(&bytes, "back").expect("reads back");
+        let shapes: Vec<&Shape> = back
+            .pages
+            .iter()
+            .flat_map(|p| p.layers.iter())
+            .flat_map(|l| l.shapes.iter())
+            .collect();
+        let pictures: Vec<&Shape> = shapes
+            .iter()
+            .copied()
+            .filter(|s| matches!(s.kind, ShapeKind::Bitmap { .. }))
+            .collect();
+        assert_eq!(pictures.len(), 4, "{v}: {:?}", rep.warnings);
+        let mut lefts: Vec<f64> = pictures.iter().map(|s| s.bounds().x0).collect();
+        lefts.sort_by(f64::total_cmp);
+        for (got, want) in lefts.iter().zip([0.0, 50.0, 100.0, 150.0]) {
+            assert!((got - want).abs() < 0.05, "{v}: {lefts:?}");
+        }
+        for s in pictures {
+            let ShapeKind::Bitmap { png: p, .. } = &s.kind else {
+                unreachable!()
+            };
+            let pm = tiny_skia::Pixmap::decode_png(p).expect("decodes");
+            assert_eq!((pm.width(), pm.height()), (4, 3), "{v}");
+        }
     }
 }

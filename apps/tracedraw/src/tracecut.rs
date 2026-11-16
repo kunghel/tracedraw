@@ -80,10 +80,11 @@ pub enum ToolId {
     Eyelets,
     BoxMaker,
     FoldedTray,
+    CuttingGrid,
 }
 
 impl ToolId {
-    pub const ALL: [ToolId; 17] = [
+    pub const ALL: [ToolId; 18] = [
         ToolId::PlotterOutput,
         ToolId::CncToolpath,
         ToolId::Weeding,
@@ -101,13 +102,16 @@ impl ToolId {
         ToolId::Eyelets,
         ToolId::BoxMaker,
         ToolId::FoldedTray,
+        ToolId::CuttingGrid,
     ];
 
     pub fn group(self) -> Group {
         match self {
             ToolId::ShapeNesting | ToolId::RectNesting => Group::Nesting,
             ToolId::Measure | ToolId::CuttingTime | ToolId::Cost => Group::Measure,
-            ToolId::Eyelets | ToolId::BoxMaker | ToolId::FoldedTray => Group::Make,
+            ToolId::Eyelets | ToolId::BoxMaker | ToolId::FoldedTray | ToolId::CuttingGrid => {
+                Group::Make
+            }
             _ => Group::Cut,
         }
     }
@@ -132,19 +136,27 @@ impl ToolId {
             ToolId::Eyelets => "eyelets",
             ToolId::BoxMaker => "box_maker",
             ToolId::FoldedTray => "folded_tray",
+            ToolId::CuttingGrid => "cutting_grid",
         }
     }
 
     /// Whether the tool works on the selection (Box Maker and Folded
     /// Tray make their objects from their settings alone).
     pub fn needs_selection(self) -> bool {
-        !matches!(self, ToolId::BoxMaker | ToolId::FoldedTray)
+        !matches!(
+            self,
+            ToolId::BoxMaker | ToolId::FoldedTray | ToolId::CuttingGrid
+        )
     }
 
     /// Whether the window works the result out as the settings change,
     /// without Apply (the Measure tools and Folded Tray, all cheap).
     pub fn live(self) -> bool {
-        self.group() == Group::Measure || self == ToolId::FoldedTray
+        self.group() == Group::Measure
+            || matches!(
+                self,
+                ToolId::FoldedTray | ToolId::Eyelets | ToolId::CuttingGrid
+            )
     }
 
     /// The i18n key of the tool's name; `<key>_desc` describes it.
@@ -167,6 +179,7 @@ impl ToolId {
             ToolId::Eyelets => "tracecut.eyelets",
             ToolId::BoxMaker => "tracecut.box_maker",
             ToolId::FoldedTray => "tracecut.tray",
+            ToolId::CuttingGrid => "tracecut.grid",
         }
     }
 }
@@ -264,6 +277,7 @@ pub struct ToolSettings {
     pub eyelets: EyeletSpec,
     pub boxes: BoxSpec,
     pub tray: TraySpec,
+    pub grid: crate::tracecut_make::GridSpec,
 }
 
 /// Perimeter and Area has nothing to set; its presets are empty.
@@ -340,6 +354,10 @@ macro_rules! with_settings {
             }
             ToolId::FoldedTray => {
                 let $v = &mut $s.tray;
+                $body
+            }
+            ToolId::CuttingGrid => {
+                let $v = &mut $s.grid;
                 $body
             }
         }
@@ -624,6 +642,10 @@ pub struct Scene {
     pub moves: Vec<(Point, Point)>,
     /// Lines grooved or scored, not cut through.
     pub scored: Vec<BezPath>,
+    /// Eyelets: centre and hole diameter, drawn as grommet rings.
+    pub rings: Vec<(Point, f64)>,
+    /// Guide lines, drawn dashed.
+    pub guides: Vec<BezPath>,
     pub extent: Option<Rect>,
 }
 
@@ -716,6 +738,7 @@ impl App {
             ToolId::Eyelets => Outcome::Changes(Box::new(self.tracecut_eyelets(&settings.eyelets))),
             ToolId::BoxMaker => Outcome::Changes(Box::new(self.tracecut_box(&settings.boxes))),
             ToolId::FoldedTray => Outcome::Changes(Box::new(self.tracecut_tray(&settings.tray))),
+            ToolId::CuttingGrid => Outcome::Changes(Box::new(self.tracecut_grid(&settings.grid))),
             ToolId::Measure => Outcome::Report(Box::new(self.tracecut_measure())),
             ToolId::CuttingTime => Outcome::Report(Box::new(self.tracecut_time(&settings.time).0)),
             ToolId::Cost => {
@@ -962,6 +985,8 @@ impl App {
                     scene.scored = c.scored.clone();
                     scene.points = c.points.clone();
                     scene.moves = c.moves.clone();
+                    scene.rings = c.rings.clone();
+                    scene.guides = c.guides.clone();
                 }
             }
         }

@@ -1056,6 +1056,29 @@ const SMUDGE_MAX_STEPS: usize = 2048;
 /// behind the centre and a slow one, smoothed at every event, hardly
 /// moved the outline (#2228).
 pub fn smudge(path: &BezPath, from: Point, to: Point, radius: f64, pressure: f64) -> BezPath {
+    smudge_way(path, from, to, radius, pressure, false)
+}
+
+/// Smudge on the way back: a move of a stroke that turns back against
+/// the way it went out (see [`smudge`]). The outline the stroke drew
+/// out is behind the nib's centre now, and it comes back with the nib:
+/// the nib carries the outline on both sides of its centre, so pushing
+/// an edge out and dragging back over the same path in one stroke
+/// brings it back near where it was (#2710). The outline behind the
+/// nib at the start of a stroke still stays (#2546): only the way back
+/// carries it.
+pub fn smudge_back(path: &BezPath, from: Point, to: Point, radius: f64, pressure: f64) -> BezPath {
+    smudge_way(path, from, to, radius, pressure, true)
+}
+
+fn smudge_way(
+    path: &BezPath,
+    from: Point,
+    to: Point,
+    radius: f64,
+    pressure: f64,
+    back: bool,
+) -> BezPath {
     let delta = to - from;
     let len = delta.hypot();
     let usable = from.is_finite()
@@ -1090,7 +1113,7 @@ pub fn smudge(path: &BezPath, from: Point, to: Point, radius: f64, pressure: f64
     let dir = delta / len;
     let ahead = |along: f64| -> f64 {
         let fade = radius * SMUDGE_BEHIND;
-        if along >= 0.0 {
+        if back || along >= 0.0 {
             1.0
         } else if along <= -fade {
             0.0
@@ -1265,8 +1288,14 @@ fn spaced(pts: &[Carried], max_len: f64) -> Vec<Carried> {
 }
 
 /// Rotate points within `radius` of `at` by up to `angle` (Twirl tool).
+/// The stretch in reach is measured into points a sixth of the nib apart
+/// for a small turn and closer the more it turns, `radius / 6 / (1 +
+/// |angle|)`, so neighbours stay about as far apart once turned: a hold
+/// that twirls the outline round several times (#2640) still comes back
+/// as a smooth spiral, not a few points joined round the centre.
 pub fn twirl(path: &BezPath, at: Point, angle: f64, radius: f64) -> BezPath {
-    brush_each(path, at, radius, radius / 6.0, false, |pts, _| {
+    let spacing = radius / 6.0 / (1.0 + angle.abs().min(TWIRL_MAX_ANGLE));
+    brush_each(path, at, radius, spacing, false, |pts, _| {
         pts.into_iter()
             .map(|p| {
                 let v = p - at;
@@ -1281,6 +1310,10 @@ pub fn twirl(path: &BezPath, at: Point, angle: f64, radius: f64) -> BezPath {
             .collect()
     })
 }
+
+/// The turn (radians) past which [`twirl`] measures its points no
+/// closer: about twelve turns.
+const TWIRL_MAX_ANGLE: f64 = 75.0;
 
 /// Smooth tool: the stretch of the curve within the nib's reach is
 /// measured into close points (half a millimetre apart), each eased
@@ -2827,6 +2860,53 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// #2710: dragging the nib out past the edge and back over the same
+    /// path in one stroke brings the edge back near where it was. The way
+    /// back used to leave the tongue standing, since only the outline
+    /// ahead of the nib was pushed.
+    #[test]
+    fn smudge_out_and_back_returns_the_edge() {
+        let square = Rect::new(0.0, 0.0, 60.0, 40.0).to_path(0.01);
+        let (a, b) = (Point::new(30.0, 30.0), Point::new(30.0, 55.0));
+        let radius = 10.0;
+        let out = smudge_stroke(&square, a, b, 1.0, radius);
+        assert!(out.bounding_box().y1 > 54.0, "{:?}", out.bounding_box());
+        let n = 25;
+        let mut back = out.clone();
+        let mut last = b;
+        for k in 1..=n {
+            let at = b.lerp(a, k as f64 / n as f64);
+            back = smudge_back(&back, last, at, radius, 1.0);
+            last = at;
+        }
+        let bb = back.bounding_box();
+        assert!(bb.y1 < 44.0, "the tongue stayed out: {bb:?}");
+        // The edge is back along most of its width, not dented in far.
+        for x in [12.0, 20.0, 30.0, 40.0, 48.0] {
+            let top = densify(&back, 0.1)
+                .into_iter()
+                .filter(|p| (p.x - x).abs() < 0.5 && p.y > 20.0)
+                .map(|p| p.y)
+                .fold(f64::NEG_INFINITY, f64::max);
+            assert!(top > 33.0 && top < 44.0, "edge at x {x} is at {top}");
+        }
+        assert!(
+            (back.area().abs() - 2400.0).abs() < 200.0,
+            "{}",
+            back.area()
+        );
+        // Without the way back the tongue stays: the plain move pushes
+        // only what lies ahead.
+        let mut stays = out.clone();
+        let mut last = b;
+        for k in 1..=n {
+            let at = b.lerp(a, k as f64 / n as f64);
+            stays = smudge(&stays, last, at, radius, 1.0);
+            last = at;
+        }
+        assert!(stays.bounding_box().y1 > 50.0);
     }
 
     /// #2228: Smudge draws the outline out along the stroke into a

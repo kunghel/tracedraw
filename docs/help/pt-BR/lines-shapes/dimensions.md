@@ -55,6 +55,21 @@ cada objeto selecionado ganha seu próprio par. As cotas da seleção não são
 medidas, e um objeto sem altura (ou largura) não ganha cota para ela. As
 cotas novas ficam selecionadas e um desfazer tira todas.
 
+## Tamanhos e áreas {#sizes-areas}
+
+**Ferramentas > [[menu.tools.sizes_areas]]** lista os tamanhos dos objetos
+selecionados, a largura por altura da caixa de cada um, com os objetos do
+mesmo tamanho contados juntos (`[3x] 50.00 x 30.00 mm`), quantos objetos e
+tamanhos há, a área total das caixas e a área que os objetos fechados
+cobrem de fato (sem os furos), em metros quadrados (e pés quadrados com
+unidades imperiais). A aba **[[sizes.pages]]** lista o tamanho de cada
+página e a área total das páginas. Os tamanhos ficam na unidade do
+documento, pela escala do desenho para os objetos; as páginas, como
+impressas. **[[sizes.copy]]** põe a lista na área de transferência como
+texto, para um orçamento ou um pedido, e
+**[[menu.object.add_dimensions_each]]** marca em cada objeto selecionado a
+largura e a altura (veja acima).
+
 ## Estilo da cota {#dimension-style}
 
 A barra de propriedades mostra estas configurações com as ferramentas de cota e

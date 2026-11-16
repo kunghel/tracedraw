@@ -5,6 +5,21 @@ Export dialog. File > Export starts with the choices of Options > Global
 > File Formats, which can also keep those of the last export; the Web and
 Office presets start with their own (see `options.md`).
 
+## Layer exclusion
+
+A layer excluded from output stays visible on the canvas according to its
+eye state, and remains in native saves. Export prepares a separate copy
+without the contents of excluded page and master layers. The dialog, CLI
+and MCP use the same preparation, including SVG and bitmap output (#2868).
+Locked objects and layers still export when visible and not excluded;
+locking prevents edits and does not exclude artwork. Hiding and output
+exclusion are independent.
+
+Preparing output never changes the source drawing. A drawing without
+excluded content is borrowed without copying; an already prepared drawing
+does not need a second copy. Native and CDR file conversions retain source
+state, rather than applying static-output exclusion.
+
 ## Order: the file, then the options
 
 On the desktop, File > Export (the menu, Ctrl+E, the toolbar button)
@@ -106,19 +121,25 @@ Preferences saved before are brought back to off once (upgrade 7,
 | BMP, PSD | resolution |
 | PDF | Export all text as curves (off at first: every text becomes filled outlines, so the file needs no fonts and cannot be searched; #1382, `export::tests::export_pdf_text_as_curves_holds_no_font`), standard (PDF 1.4, PDF/X-1a, PDF/X-3, PDF/X-4), bleed, output condition for PDF/X; the author, subject and keywords come from the drawing's properties (File > Export as PDF has bookmarks and protection, see `publish-to-pdf.md`) |
 | AI | Compatibility: PDF-compatible (the default) or Illustrator 8 (EPS-based); see "AI files" below (#1728) |
-| SVG, EPS, DXF, HTML, EMF, WMF, PLT | none |
+| PLT | Scale (100 %), Plotter origin (bottom left of page or centre of page), Plotter units per inch (1016), Curve resolution (0.02 mm), HPGL/2 pen colours and widths (on), One pen for every outline (off); see `plt.md`, "Export choices" (#2652) |
+| SVG, EPS, DXF, HTML, EMF, WMF | none |
 | PostScript (`.ps`), PRN (`.prn`) | none; every exported page in one file (All pages, else the current page), each page setting its size with `setpagedevice` and ending with `showpage` (Document Structuring Conventions 3.0); a `.prn` print file is the same PostScript, to send to a PostScript printer |
 
 - Bitmap formats show Size: a width and a height and their unit (px,
   mm, cm or in, kept with the other choices; #617). In pixels the size
-  is the page (or selection) size over 25.4 times the resolution,
-  rounded up, and typing a width or a height sets the resolution that
-  gives it, so a 32 x 32 pixel icon is typed rather than worked out. In
-  a length it is the printed size: typing a width or a height sets the
-  scale of the artwork (the resolution stays), from 1 % to 10000 % and
-  never past what 2400 dpi can draw; a button with the scale ("200 %")
-  shows when it is not 100 % and puts it back. Either way the other side
-  follows the page's proportions.
+  is the page (or selection) size over 25.4 times the resolution and
+  the scale, rounded up; in a length it is the printed size. Typing a
+  width or a height sets the scale of the artwork that gives it, the
+  resolution staying, so a 32 x 32 pixel icon is typed rather than
+  worked out: from 1 % to 10000 % and never past what 2400 dpi can draw;
+  a button with the scale ("200 %") shows when it is not 100 % and puts
+  it back. Either way the other side follows the page's proportions.
+  The resolution typed or picked (72, 96, 150, 300) leaves the size
+  shown: in pixels the scale makes up for it, so as many pixels come
+  out, recorded at the new resolution; in a length the printed size
+  stays and the pixels follow. A size typed in pixels set the
+  resolution, and a resolution changed the pixels (#2640,
+  `export::tests::the_export_resolution_and_size_change_one_at_a_time`).
 - Under the size: what comes out, "1240 x 1754 pixels, 150 dpi, sRGB"
   ("sRGB + alpha" with a transparent background, "CMYK" or "Grayscale"
   in those colour modes).
@@ -289,6 +310,52 @@ dialog's choices, and Export for Web and Office keep their own (#617,
   written as the file's title and keywords (a classic AI file keeps the
   title in its `%%Title` comment and has no place for tags).
 - Checks: `ui::dialogs::tests::the_export_list_puts_the_common_formats_first`.
+
+## SVG text
+
+SVG has a Text list (#2289), kept with the last SVG export's choices
+and in presets:
+
+- As curves (the default, and what every earlier version wrote): every
+  text is filled curves, so the file needs no fonts.
+- As editable text: each text object is a `<g>` holding `<text>`
+  elements with the characters, so other programs can select, search
+  and edit the words. The glyphs keep the places the text engine gave
+  them: characters that share a direction and slant go into one
+  `<text>` whose transform is the first one's place, each run of one
+  span, font and size a `<tspan>` with an `x` and a `y` for every
+  character (the further characters of a ligature where it starts),
+  `font-family` the span's family, `font-size` in millimetres, bold and
+  italic as `font-weight` and `font-style`, `xml:space="preserve"`.
+  Fill, outline, spot colour names and transparency are the object's.
+  What has no characters (underlines, strike lines, added hyphens,
+  synthetic bold, letters no font has) is a curve beside the text.
+  The computer showing the file supplies the fonts.
+- As text with fonts embedded: the same, with every font file used in a
+  `<style>` of `@font-face` rules (`data:` addresses, TrueType or
+  OpenType), named by the font's own family; text names that family.
+  Fonts whose licence forbids embedding, and faces of font collections,
+  go in as curves.
+- Text with a gradient, pattern or texture fill or outline, a
+  calligraphic, positioned or painterly outline stays curves in every
+  choice, since those paints would move with each `<text>`'s transform.
+- Checks: `svg::text_out::tests::text_goes_in_as_text_when_asked`,
+  `fonts_go_in_when_asked_unless_their_licence_forbids`,
+  `marks_without_characters_and_gradients_are_curves`,
+  `export::tests::export_svg_text_as_curves_text_or_with_fonts`,
+  `ui::dialogs::tests::svg_text_choice_goes_to_the_writer_and_presets`.
+
+## PDF settings
+
+With PDF chosen, a PDF Settings... button under the PDF choices (#2197)
+closes the Export dialog and opens File > Export as PDF's PDF Settings
+dialog (see `publish-to-pdf.md`) for the same file, carrying text as
+curves, the standard, the output condition and the bleed: picture
+resolution and compression, all printers' marks (crop, bleed and
+registration marks, colour bars, densitometer scale and file
+information), passwords and permissions, fonts, bookmarks and
+document information are set there. Check:
+`ui::dialogs::tests::export_pdf_settings_opens_for_the_same_file`.
 
 ## AI files
 

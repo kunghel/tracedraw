@@ -49,6 +49,9 @@ ponto sobre uma alça de controle, uma onda sobre um segmento.
 - Arraste uma alça de controle para mudar a curvatura.
 - As setas do teclado deslocam os nós selecionados (<kbd>Shift</kbd> para um
   passo maior, <kbd>Ctrl</kbd> para um menor).
+- Clique numa alça de controle para escolhê-la (um anel aparece em volta da
+  ponta): as setas do teclado passam a mover essa alça em vez dos nós.
+  Clique em qualquer outro lugar para soltá-la.
 - Clique duas vezes em um segmento para acrescentar um nó ali, ou em um nó para
   excluí-lo. Clique em um segmento para marcar um ponto e pressione
   <kbd>+</kbd> para acrescentar um nó ali.

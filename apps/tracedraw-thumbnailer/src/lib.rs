@@ -1,8 +1,8 @@
 //! Thumbnails of `.tdraw` drawings in the Windows Explorer: a thumbnail
 //! provider (`IThumbnailProvider` with `IInitializeWithStream`) the
 //! installer registers for the `.tdraw` extension. Explorer hands it the
-//! file as a stream; it draws the drawing's first page on white paper at
-//! the size asked and returns it as a 32-bit bitmap with alpha.
+//! file as a stream; it draws the drawing's first page on white paper,
+//! with what lies beside it on the desktop (#2357), at the size asked and returns it as a 32-bit bitmap with alpha.
 //!
 //! The picture itself is made by [`thumbnail_rgba`], which every platform
 //! builds and tests; only the COM glue is Windows code.
@@ -13,21 +13,16 @@ use tracedraw_core::Document;
 /// under `.tdraw\ShellEx\{e357fccd-a995-4576-b01f-234630154e96}`.
 pub const CLSID_TEXT: &str = "{6B1E5D3A-2F41-4C8E-9B7A-1D2C3E4F5A60}";
 
-/// The first page of the drawing in `bytes` (a `.tdraw` file) drawn with
-/// its long side `size` pixels on white paper: width, height and RGBA
+/// The first page of the drawing in `bytes` (a `.tdraw` file), with what
+/// lies beside it on the desktop (#2357), drawn with its long side `size` pixels on white paper: width, height and RGBA
 /// pixels (straight, not premultiplied). `None` when the file cannot be
 /// read or has no page; never panics on what the file holds.
 pub fn thumbnail_rgba(bytes: &[u8], size: u32) -> Option<(u32, u32, Vec<u8>)> {
-    let text = std::str::from_utf8(bytes).ok()?;
-    let doc = Document::from_json(text).ok()?;
+    // Packed (gzip) or plain JSON, as every version saved it (#2849).
+    let doc = Document::from_tdraw_bytes(bytes).ok()?;
     let page = doc.pages.first()?;
-    let long = page.size.width.max(page.size.height);
-    if !long.is_finite() || long <= 0.0 {
-        return None;
-    }
     let size = f64::from(size.clamp(16, 2048));
-    let dpi = size / long * 25.4;
-    let pm = tracedraw_render::render_page_image(&doc, page.id, dpi)?;
+    let pm = tracedraw_render::render_whole_page_image(&doc, page.id, size)?;
     let mut rgba = Vec::with_capacity(pm.data().len());
     for px in pm.pixels() {
         let c = px.demultiply();

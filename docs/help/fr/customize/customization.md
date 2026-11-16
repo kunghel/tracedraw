@@ -15,6 +15,10 @@ affichées et le comportement de la palette de couleurs.
 - [[options.ui_shadows]] (moins d'ombres aide les cartes graphiques lentes).
 - [[options.colored_icons]] : chaque groupe d'outils reçoit sa propre
   couleur.
+- [[options.docker_tabs_icons_only]] : les onglets des panneaux sur les
+  côtés de la fenêtre n'affichent que leur image, le nom dans l'info-bulle.
+  Désactivé, ils affichent l'image et le nom, et une colonne qui a plus
+  d'onglets que de place défile.
 - [[options.ui_size]] : la taille des menus, des barres, des icônes et des
   panneaux, par rapport à la mise à l'échelle que votre système donne à
   l'écran (100 % au départ). [[options.reset_to_default]] revient à 100 %.

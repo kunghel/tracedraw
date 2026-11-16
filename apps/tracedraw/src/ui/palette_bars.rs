@@ -55,8 +55,8 @@ pub const PLACES: [(Dock, &str); 5] = [
     (Dock::Floating, "palette.float"),
 ];
 
-/// The swatch side of `which` set to `size` (the default palette's for
-/// the document palette row).
+/// The swatch side of `which` set to `size`, that palette's alone
+/// (#2900).
 pub fn set_swatch(app: &mut App, which: Row, size: u8) {
     let size = size.clamp(crate::settings::SWATCH_MIN, crate::settings::SWATCH_MAX);
     match which {
@@ -65,7 +65,13 @@ pub fn set_swatch(app: &mut App, which: Row, size: u8) {
                 b.swatch_size = size;
             }
         }
-        _ => app.settings.palette.swatch_size = size,
+        Row::Document => app.settings.palette.document_swatch_size = size,
+        Row::Main => {
+            // The document row keeps the size it shows.
+            let p = &mut app.settings.palette;
+            p.document_swatch_size = p.document_swatch();
+            p.swatch_size = size;
+        }
     }
 }
 

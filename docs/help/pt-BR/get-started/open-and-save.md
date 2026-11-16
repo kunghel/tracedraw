@@ -143,6 +143,9 @@ imagens e suas fontes em uma pasta (veja
 guarda desenhos em um repositório do GitHub (veja [GitHub](github.md)).
 [[menu.file.revert]] volta à versão salva por último.
 
+Arraste a guia de um desenho ao longo da faixa para mudar a ordem das guias:
+as outras se afastam para mostrar onde ela vai ficar.
+
 ## Fechar desenhos {#closing}
 
 Escolha [[menu.file > menu.file.close]] (<kbd>Ctrl+F4</kbd>), clique no botão

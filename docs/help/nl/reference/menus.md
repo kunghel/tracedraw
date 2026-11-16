@@ -472,6 +472,7 @@ eigen sneltoetsen tonen; zie [Aanpassingsopties](../customize/customization.md#c
 | [[menu.help.whats_new]] | [Wat is er nieuw](../welcome/whats-new.md) |
 | [[menu.help.highlight_whats_new]] | [Wat is er nieuw](../welcome/whats-new.md) |
 | [[menu.help.updates]] | [Over TraceDraw en updates](../welcome/about-and-updates.md) |
+| [[menu.help.benchmark]] | [TraceDraw-opties](../customize/options-app.md#benchmark) |
 | [[menu.help.message_settings]] | [Over TraceDraw en updates](../welcome/about-and-updates.md) |
 | [[menu.help.community]] | [Over TraceDraw en updates](../welcome/about-and-updates.md) |
 | [[menu.help.support]] | [Over TraceDraw en updates](../welcome/about-and-updates.md) |

@@ -28,7 +28,6 @@ pub enum Glyph {
     Exit,
     Mail,
     Acquire,
-    FromTemplate,
     // Edit
     Delete,
     Duplicate,
@@ -125,6 +124,15 @@ pub enum Glyph {
     Record,
     Grommet,
     SaveDefaults,
+    // View (#2100): so these commands show a picture on a toolbar too.
+    ViewWireframe,
+    ViewNormal,
+    ViewEnhanced,
+    ViewPixels,
+    MaskOutsidePage,
+    PreviewSelected,
+    PageSorter,
+    Multipage,
 }
 
 const RED: Color32 = Color32::from_rgb(0xD0, 0x2B, 0x2B);
@@ -146,6 +154,15 @@ pub fn for_key(key: &str) -> Option<Glyph> {
         "menu.help.community" => Community,
         "menu.help.support" | "menu.help.about" => Info,
         "menu.file.save_as" | "menu.file.save_as_template" => SaveAs,
+        "menu.view.wireframe" => ViewWireframe,
+        "menu.view.normal" => ViewNormal,
+        "menu.view.enhanced" => ViewEnhanced,
+        "menu.view.pixels" => ViewPixels,
+        "menu.view.mask_outside_page" => MaskOutsidePage,
+        "menu.view.preview_selected_only" => PreviewSelected,
+        "menu.view.page_sorter" => PageSorter,
+        "menu.view.multipage" => Multipage,
+        "menu.view.draw_in_perspective" => Perspective,
         "menu.file.close" => CloseDoc,
         "menu.file.close_all" => CloseAllDocs,
         "menu.file.revert" => Revert,
@@ -154,7 +171,6 @@ pub fn for_key(key: &str) -> Option<Glyph> {
         "menu.file.document_properties" => DocProperties,
         "menu.file.exit" => Exit,
         "menu.file.send_to_mail" => Mail,
-        "menu.file.new_from_template" => FromTemplate,
         "menu.file.acquire_image" => Acquire,
         "menu.edit.delete" => Delete,
         "menu.edit.duplicate" => Duplicate,
@@ -251,6 +267,7 @@ pub fn for_key(key: &str) -> Option<Glyph> {
         "menu.tools.ai_generate"
         | "menu.tools.options_ai"
         | "menu.bitmaps.remove_background"
+        | "menu.bitmaps.ai_vectorize"
         | "context.ai_remix"
         | "menu.object.ai_generate"
         | "menu.object.ai_create_image"
@@ -552,13 +569,6 @@ pub fn draw(painter: &Painter, r: Rect, g: Glyph, color: Color32) {
             line((3.0, 9.5), (13.0, 9.5), Stroke::new(1.4 * k, blue));
             page(4.0, 1.5, 12.0, 7.0);
         }
-        FromTemplate => {
-            page(2.0, 1.5, 12.0, 14.5);
-            for (y, w) in [(5.0, 6.0), (7.5, 4.0), (10.0, 6.0)] {
-                fillr(4.0, y - 0.6, 4.0 + w, y + 0.6, blue);
-            }
-            plus(12.5, 12.5, 2.5);
-        }
         Delete => cross(8.0, 8.0, 5.5),
         Duplicate => {
             rect(1.5, 1.5, 9.5, 9.5, paper, s);
@@ -673,17 +683,11 @@ pub fn draw(painter: &Painter, r: Rect, g: Glyph, color: Color32) {
             gear(11.5, 11.5, 4.0);
         }
         PageBackground => {
-            // The page on a backdrop in the accent: a tinted square with
-            // the accent frame, the page over it.
-            rect(
-                1.5,
-                1.5,
-                14.5,
-                14.5,
-                accent(blue.gamma_multiply(0.22)),
-                Stroke::new(1.0 * k, blue),
-            );
-            page(4.0, 3.5, 12.0, 13.0);
+            // The page in the same line as the other page pictures, with
+            // the background in the accent behind it (#1682): it was a
+            // tinted square framed in the accent, unlike the rest.
+            fillr(5.0, 4.0, 14.5, 15.0, blue);
+            page(1.5, 1.0, 11.0, 12.5);
         }
         PageSize => {
             page(3.0, 3.5, 12.5, 15.0);
@@ -1099,6 +1103,61 @@ pub fn draw(painter: &Painter, r: Rect, g: Glyph, color: Color32) {
             );
             text(12.5, 4.0, "+", 7.0, blue);
         }
+        // A circle and a square: outlines only, filled, smooth, in pixels.
+        ViewWireframe => {
+            circle(6.0, 7.0, 4.5, Color32::TRANSPARENT, thin);
+            rect(7.5, 7.5, 14.5, 14.5, Color32::TRANSPARENT, thin);
+        }
+        ViewNormal => {
+            circle(6.0, 7.0, 4.5, accent(blue), s);
+            rect(7.5, 7.5, 14.5, 14.5, accent(GOLD), s);
+        }
+        ViewEnhanced => {
+            circle(6.0, 7.0, 4.5, accent(blue), Stroke::NONE);
+            rect(7.5, 7.5, 14.5, 14.5, accent(GOLD), Stroke::NONE);
+            circle(4.6, 5.6, 1.4, Color32::from_white_alpha(150), Stroke::NONE);
+        }
+        ViewPixels => {
+            for (x, y) in [
+                (2.0, 4.0),
+                (4.0, 2.0),
+                (6.0, 2.0),
+                (8.0, 4.0),
+                (2.0, 6.0),
+                (8.0, 6.0),
+                (4.0, 8.0),
+                (6.0, 8.0),
+            ] {
+                fillr(x, y, x + 2.0, y + 2.0, accent(blue));
+            }
+            fillr(8.0, 9.0, 14.5, 14.5, accent(GOLD));
+        }
+        // The page, the desk around it shaded.
+        MaskOutsidePage => {
+            fillr(1.0, 1.0, 15.0, 15.0, color.gamma_multiply(0.45));
+            rect(4.0, 3.0, 12.0, 13.0, paper, s);
+        }
+        // One object shown, another dashed.
+        PreviewSelected => {
+            for i in 0..3 {
+                let x = 1.5 + i as f32 * 2.5;
+                line((x, 2.0), (x + 1.4, 2.0), thin);
+                line((x, 9.0), (x + 1.4, 9.0), thin);
+            }
+            line((1.5, 2.0), (1.5, 9.0), thin);
+            line((8.5, 2.0), (8.5, 9.0), thin);
+            rect(6.5, 6.5, 14.5, 14.5, accent(blue), s);
+        }
+        // Pages side by side.
+        PageSorter => {
+            for (x, y) in [(1.5, 1.5), (8.5, 1.5), (1.5, 8.5), (8.5, 8.5)] {
+                rect(x, y, x + 6.0, y + 6.0, paper, thin);
+            }
+        }
+        Multipage => {
+            rect(1.0, 3.0, 7.0, 12.5, paper, s);
+            rect(9.0, 3.0, 15.0, 12.5, paper, s);
+        }
         Clock => {
             circle(8.0, 8.0, 6.5, paper, s);
             line((8.0, 8.0), (8.0, 3.5), s);
@@ -1150,5 +1209,76 @@ mod tests {
             ));
         });
         out.textures_delta.clear();
+    }
+
+    /// #2100: the View commands of the video have pictures, so a toolbar
+    /// shows them as buttons, not as their names.
+    #[test]
+    fn the_view_commands_have_pictures() {
+        for key in [
+            "menu.view.wireframe",
+            "menu.view.normal",
+            "menu.view.enhanced",
+            "menu.view.pixels",
+            "menu.view.mask_outside_page",
+            "menu.view.preview_selected_only",
+            "menu.view.page_sorter",
+            "menu.view.multipage",
+            "menu.view.draw_in_perspective",
+        ] {
+            assert!(crate::ui::menus::has_menu_picture(key), "{key}");
+        }
+        let ctx = crate::theme::ui_context();
+        let mut out = ctx.run_ui(Default::default(), |ui| {
+            let r = Rect::from_min_size(Pos2::ZERO, Vec2::splat(16.0));
+            for g in [Glyph::PreviewSelected, Glyph::Perspective, Glyph::ViewPixels] {
+                draw(ui.painter(), r, g, Color32::GRAY);
+            }
+        });
+        out.textures_delta.clear();
+    }
+
+    /// #2100: a command without a picture takes the one chosen for it on
+    /// the Commands page (another command's or a tool's), kept in the
+    /// settings; Reset to Default takes it away again.
+    #[test]
+    fn a_chosen_picture_is_the_command_s() {
+        let mut app = crate::app::App::headless();
+        let key = "menu.view.bleed";
+        assert!(!crate::ui::menus::has_own_picture(key));
+        crate::ui::menus::set_command_icons(&[]);
+        assert!(!crate::ui::menus::has_menu_picture(key));
+        crate::ui::options::set_command_icon(&mut app, key, Some("tool:rectangle"));
+        assert_eq!(
+            app.settings.command_icons,
+            [(key.to_string(), "tool:rectangle".to_string())]
+        );
+        assert!(crate::ui::menus::has_menu_picture(key));
+        crate::ui::options::set_command_icon(&mut app, key, Some("menu.file.save"));
+        assert_eq!(app.settings.command_icons.len(), 1);
+        assert_eq!(
+            crate::ui::menus::chosen_icon(key).as_deref(),
+            Some("menu.file.save")
+        );
+        // The pictures to choose from: commands with their own, and tools.
+        let entries = vec![
+            crate::ui::menus::invoke::Entry {
+                key: "menu.file.save".into(),
+                shortcut: String::new(),
+                path: Vec::new(),
+            },
+            crate::ui::menus::invoke::Entry {
+                key: key.into(),
+                shortcut: String::new(),
+                path: Vec::new(),
+            },
+        ];
+        let sources = crate::ui::options::icon_sources(&entries);
+        assert_eq!(sources[0], "menu.file.save");
+        assert!(!sources.iter().any(|s| s == key));
+        assert!(sources.iter().any(|s| s == "tool:rectangle"));
+        crate::ui::options::set_command_icon(&mut app, key, None);
+        assert!(app.settings.command_icons.is_empty());
+        assert!(!crate::ui::menus::has_menu_picture(key));
     }
 }

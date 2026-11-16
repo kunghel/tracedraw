@@ -195,6 +195,10 @@ pub struct CornerDrag {
     /// The sharp corners the drag rounds or cuts, in the curve's own
     /// space: what a scallop or chamfer remembers (#2336).
     pub points: Vec<Point>,
+    /// The radius (or cut distance) the drag gives, as the tag beside
+    /// the pointer shows it ("Radius: 3.00 mm", #1147); empty until
+    /// the drag has rounded something.
+    pub shown: String,
 }
 
 /// A selected curve's corners on the page, for the property bar's corner
@@ -538,6 +542,7 @@ impl App {
                     from: p,
                     begun: false,
                     points: cut.points,
+                    shown: String::new(),
                 }));
                 self.node_selection.clear();
                 self.segment_spot = None;
@@ -626,6 +631,7 @@ impl App {
             from: w.space * t.inverse() * p,
             begun: false,
             points,
+            shown: String::new(),
         }));
         // The cut renumbers the nodes.
         self.node_selection.clear();
@@ -702,13 +708,14 @@ impl App {
         );
         let u = self.units;
         let digits = self.settings.precision.min(10) as usize;
-        self.status = crate::i18n::trf(
-            "status.corner_radius",
-            &[(
-                "r",
-                &format!("{:.*} {}", digits, u.world_from_mm(r.max(0.0)), u.label()),
-            )],
-        );
+        let shown = format!("{:.*} {}", digits, u.world_from_mm(r.max(0.0)), u.label());
+        self.status = crate::i18n::trf("status.corner_radius", &[("r", &shown)]);
+        let key = if op == CornerOp::Fillet {
+            "status.corner_tag_radius"
+        } else {
+            "status.corner_tag_distance"
+        };
+        d.shown = crate::i18n::trf(key, &[("r", &shown)]);
         d.begun = true;
         self.drag = Drag::CornerWidget(Box::new(d));
     }
@@ -1060,6 +1067,17 @@ impl App {
 /// Draw the corner widgets: white circles with a ring in the node
 /// colour, over the nodes; a chosen corner's is filled with the colour.
 pub fn draw(app: &App, painter: &egui::Painter, color: egui::Color32) {
+    // While a widget is dragged, its radius in a tag beside the pointer,
+    // where the eye is (#1147); the status bar says it too.
+    if let Drag::CornerWidget(d) = &app.drag {
+        if let Some(at) = painter
+            .ctx()
+            .pointer_latest_pos()
+            .filter(|_| !d.shown.is_empty())
+        {
+            tag(painter, at + egui::vec2(14.0, 14.0), &d.shown);
+        }
+    }
     for w in app.corner_widgets() {
         let fill = if w.chosen {
             color
@@ -1076,9 +1094,30 @@ pub fn draw(app: &App, painter: &egui::Painter, color: egui::Color32) {
     }
 }
 
+/// A small dark tag with `text`, its top left corner at `at`.
+fn tag(painter: &egui::Painter, at: egui::Pos2, text: &str) {
+    let galley = painter.layout_no_wrap(
+        text.to_string(),
+        egui::FontId::proportional(11.0),
+        egui::Color32::WHITE,
+    );
+    let rect = egui::Rect::from_min_size(at, galley.size() + egui::vec2(10.0, 6.0));
+    painter.rect_filled(
+        rect,
+        3.0,
+        egui::Color32::from_rgba_unmultiplied(30, 30, 30, 230),
+    );
+    painter.galley(
+        rect.min + egui::vec2(5.0, 3.0),
+        galley,
+        egui::Color32::WHITE,
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tracedraw_core::geometry::PathEl;
     use tracedraw_core::geometry::Shape as _;
 
     fn shapes() -> Vec<(&'static str, BezPath)> {
@@ -1408,6 +1447,68 @@ mod tests {
         assert!(fillets(&back).is_empty());
         assert_eq!(corners(&back).len(), 3);
         assert!((back.area() - cut.area()).abs() < 1e-6);
+    }
+
+    /// #2700: dragging the ring of a corner with a node a little way
+    /// along one side rounds up to that node and stops there; the
+    /// rounding never runs on past it and never takes the node away.
+    #[test]
+    fn a_corner_rounds_up_to_the_node_beside_it_and_keeps_it() {
+        let mut p = BezPath::new();
+        p.move_to((60.0, 60.0));
+        p.line_to((65.0, 60.0));
+        p.line_to((80.0, 60.0));
+        p.line_to((80.0, 80.0));
+        p.line_to((60.0, 80.0));
+        p.close_path();
+        let mut app = App::headless();
+        let id = app
+            .new_shape(ShapeKind::Path {
+                path: p,
+                closed: true,
+            })
+            .expect("a curve");
+        app.select(vec![id]);
+        app.tool = Tool::Shape;
+        app.settings.nodes.corner_widgets = true;
+        app.view.zoom = 4.0;
+        let at = Point::new(60.0, 60.0);
+        let w = app
+            .corner_widgets()
+            .into_iter()
+            .find(|w| (w.corner.at - at).hypot() < 1e-3)
+            .expect("the corner's ring");
+        let p = app.view.to_page(w.at);
+        assert!(app.start_corner_drag(w, p, false));
+        let Drag::CornerWidget(d) = app.drag.clone() else {
+            panic!("no drag");
+        };
+        assert!(d.max <= 5.0 + 1e-6, "{}", d.max);
+        // Dragged far into the corner.
+        app.corner_drag_to(*d, p + w.corner.inside * 30.0);
+        app.drag = Drag::None;
+        let now = match &app.doc().find_shape(id).expect("curve").kind {
+            ShapeKind::Path { path, .. } => path.clone(),
+            _ => panic!("a curve"),
+        };
+        let rounded = fillets(&now);
+        assert_eq!(rounded.len(), 1, "{rounded:?}");
+        assert!(rounded[0].radius <= 5.0 + 1e-6, "{rounded:?}");
+        // The node beside the corner is still there.
+        let ends: Vec<Point> = now
+            .elements()
+            .iter()
+            .filter_map(|e| match *e {
+                PathEl::MoveTo(q) | PathEl::LineTo(q) | PathEl::QuadTo(_, q) => Some(q),
+                PathEl::CurveTo(_, _, q) => Some(q),
+                PathEl::ClosePath => None,
+            })
+            .collect();
+        assert!(
+            ends.iter()
+                .any(|q| (*q - Point::new(65.0, 60.0)).hypot() < 1e-6),
+            "the node at 65,60 is gone: {ends:?}"
+        );
     }
 
     /// A corner with a smooth node close beside it shows its ring and

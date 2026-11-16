@@ -1867,7 +1867,7 @@ pub fn demo(checker: &Checker, installer: &Installer, ctx: Option<egui::Context>
 }
 
 #[cfg(not(target_arch = "wasm32"))]
-fn download(url: &str) -> Result<Box<dyn std::io::Read + Send>, String> {
+pub(crate) fn download(url: &str) -> Result<Box<dyn std::io::Read + Send>, String> {
     let agent: ureq::Agent = ureq::Agent::config_builder()
         .timeout_connect(Some(std::time::Duration::from_secs(20)))
         .tls_config(crate::net::tls_config())

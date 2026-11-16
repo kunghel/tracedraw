@@ -121,3 +121,13 @@ Sayfada beş sekme vardır.
   [[options.dictionaries]], bkz. [Sözlükler](../text/writing-tools.md#dictionaries).
 - [[dialog.autocorrect]]: yazarken neyin düzeltildiği; bkz.
   [Otomatik Düzelt](../text/writing-tools.md#autocorrect).
+
+## [[benchmark.title]] {#benchmark}
+
+[[menu.help > menu.help.benchmark]]: [[menu.help.benchmark_tip]]
+
+[[benchmark.intro]]
+
+[[benchmark.compare_how]]
+
+[[options.light_zoom]]: [[options.light_zoom_tip]]

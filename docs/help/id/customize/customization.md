@@ -15,6 +15,9 @@ perilaku palet warna.
 - [[options.ui_shadows]] (bayangan yang lebih sedikit membantu grafis yang
   lebih lambat).
 - [[options.colored_icons]]: setiap kelompok alat mendapat warnanya sendiri.
+- [[options.docker_tabs_icons_only]]: tab panel di sisi jendela hanya
+  menampilkan gambarnya, dengan nama di tip. Jika mati, tab menampilkan
+  gambar dan nama, dan kolom yang tabnya tidak muat dapat digeser.
 - [[options.ui_size]]: seberapa besar menu, bilah, ikon, dan panel, relatif
   terhadap penskalaan yang diberikan sistem Anda untuk monitor (awalnya 100%).
   [[options.reset_to_default]] kembali ke 100%. Ukuran antarmuka tidak pernah

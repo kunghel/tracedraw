@@ -60,7 +60,13 @@ column at the right and left for one at the left, mirrored in a
 right-to-left language) over a white page. The tab
 column to its right is 27 px wide: `#EAEAEA` under the title bar and
 below the tabs, a `#B2B2B2` line along the panel, grey `#D8D8D8` tabs
-with an icon and the name running downwards, the open panel's tab
+with an icon and the name running downwards (every panel has its
+picture, the same one its row in the three-dot menu shows; #2708,
+`ui::dockers::tests::every_docker_tab_has_a_picture`). The names stay
+however short the column: a column too short for its tabs slides.
+Options > Customization > Appearance > "Panel tabs: icons only" (off by
+default) shows the pictures alone, the name in the tab's tip (#2902,
+`ui::dockers::tests::tabs_keep_their_names_unless_icons_only_is_chosen`). The open panel's tab
 `#B2B2B2`; the three-dot button under the tabs lists every panel in the
 groups of Window > Panels with a box ticked at each one in the column
 (ticking opens the panel in front, unticking closes it). The pointer
@@ -129,6 +135,25 @@ a click lower on the tab brings the panel to the front
   at Right, Dock at Right, Second Column, Dock at Left, Dock at Left,
   Second Column, Floating and Close panel (a Second Column entry is grey
   while the column at that side's edge holds no other panel).
+- Two panels can share a column's height, one above the other (#2312,
+  `App::docker_stacks`, one `DockerStack` per column: the lower panel and
+  the upper panel's share, 60 % at first). Dropping a dragged panel on
+  the lowest 35 % of a shown column's panel (`dockers::STACK_ZONE`; the
+  band shows the lower part it would take) puts it there, under the
+  panel in front (`App::stack_docker`): from elsewhere it joins the
+  column's tabs after the front one; the front panel itself goes below
+  and the next tab comes up. The tab's and the title's menus have Show
+  Below, ticked while the panel is the lower one, to stack it or put it
+  back. Both panels draw with their own title bars, a 6 px bar between
+  them that drags to share the height (each keeps at least 15 %,
+  `dockers::stack_rects`). Both tabs show as open; a click on the lower
+  one's tab, its Window menu toggle or its title's fold button
+  ("Back to its tab", `App::unstack_docker`) leaves the upper panel
+  alone in the column. Bringing the lower panel to the front, closing
+  it or moving it away ends the stack (`App::settle_stacks`); opening
+  it from a menu keeps both. A second column that empties into the edge
+  column takes its stack with it. On a phone the column shows the front
+  panel only.
 - A floating panel is a window with a grey border and a shadow: the
   panel's title bar (its name and close; no collapse) over its page,
   resizable at its edges; where it is and how large are kept.
@@ -143,14 +168,18 @@ a click lower on the tab brings the panel to the front
   `left`, `left_front`, `left_shown`, `inner`, `inner_front`,
   `inner_shown`, `left_inner`, `left_inner_front`, `left_inner_shown`
   (the second columns, written only while they hold a panel),
-  `floating` with each window's corner and size); older preferences
+  `stacks` (each column's lower panel and share, written only while
+  there is one), `floating` with each window's corner and size); older preferences
   with the column alone read as before.
 - Checks: `app::tests::dockers_move_between_the_columns_and_float`,
   `app::tests::a_side_holds_a_second_docker_column`,
   `ui::dockers::tests::a_docker_dropped_beside_a_column_makes_a_second_column`,
   `app::tests::insert_docker_puts_a_tab_among_a_columns_tabs`,
   `ui::dockers::tests::a_docker_tab_dragged_along_its_column_changes_the_order`,
-  `ui::dockers::tests::a_docker_dragged_to_a_side_docks_there_and_the_window_draws_them_all`.
+  `ui::dockers::tests::a_docker_dragged_to_a_side_docks_there_and_the_window_draws_them_all`,
+  `app::tests::two_dockers_stack_in_one_column_and_come_back_so`,
+  `ui::dockers::tests::a_docker_dropped_low_in_a_column_stacks_under_the_front_one`,
+  `ui::dockers::tests::stacked_dockers_share_the_column_height`.
 
 ## Standard toolbar
 
@@ -158,15 +187,17 @@ A 35 px band (and its line): 32 px buttons with 20 px icons in groups
 split by thin lines:
 
 1. New (a page with a green plus), Open with the recent drawings behind
-   its arrow, Save, Print.
+   its arrow, Save (lit while the drawing has changes to save or was
+   never saved, pale once it is saved, #2640), Print.
 2. Cut, Copy, Paste, Delete (a waste bin: what the Delete key does to
    the selection: the selected characters of the text being edited, the
    chosen nodes with the Shape tool, the selected guidelines, else the
    selected objects; for a screen with no keyboard, #1611). Then, only
    with a touch screen (Android, or once a finger has touched the
-   window), Shift, Ctrl and Alt, buttons that read the key's name: a tap
-   holds the key down until the next tap on it, the button drawn pressed
-   meanwhile, and every tool reads the held keys as the keyboard's
+   window), Shift, Ctrl and Alt, buttons that read the key's name: a
+   finger holds the key down while it stays on it (a tap is a key pressed
+   and let go, #2362), a mouse click until the next click, the button
+   drawn pressed meanwhile, and every tool reads the held keys as the keyboard's
    (`touch_modifiers.rs`, #1499).
 3. Undo and Redo, each with its list of steps behind the arrow (choosing
    a step undoes or redoes up to it).
@@ -226,6 +257,12 @@ arrows at its right (11 px): a click on one steps the value by a unit
 (or the step the field was given), as does the mouse wheel over the
 field; Shift steps ten times as much, Ctrl a tenth; a whole-number field
 stays whole and the range holds (`ui::field::tests::arrows_and_the_wheel_step_the_value`).
+A decimal field stepping by less than a unit over a range of ten units
+or more (a depth, a length) steps whole units with the plain wheel, its
+own finer step (the decimals) with Ctrl+wheel and ten units with
+Shift+wheel, so typical values need no key held; its arrows keep their
+own step (#2705,
+`ui::field::tests::the_plain_wheel_steps_whole_units_and_ctrl_the_decimals`).
 A drag on the arrows, or on the field's label ("X:", shown with a
 left-right cursor), slides the value: one step every 4 pixels, right or
 up higher, left or down lower, with the same Shift and Ctrl steps,
@@ -261,8 +298,9 @@ for sliders stepped with the wheel (`step_merge::tests`).
 - Pick tool, nothing selected (page bar): page size list; page width and
   height; fit page to drawing (Layout's command, pale on an empty page);
   portrait, landscape; all pages or current page (which pages a size
-  change applies to, one undo step); Units; nudge distance; duplicate
-  distances; treat all objects as filled.
+  change applies to, one undo step); Units; the nudge distances (Nudge,
+  then Super nudge over Micro nudge, as Document Options > Rulers sets
+  them); duplicate distances; treat all objects as filled.
 - A selection (object bar): the object origin selector (a 3 x 3 grid,
   the centre by default: X and Y show and move that point of the
   selection's box, counted from the ruler origin), X and Y; width and
@@ -270,7 +308,16 @@ for sliders stepped with the wheel (`step_merge::tests`).
   that keeps proportions; the rotation angle of a single object (read
   from its transform, changed about the centre of rotation when it was
   moved, else about the origin point, #2478); mirror
-  horizontally and vertically.
+  horizontally and vertically; the nudge distances (Nudge, then Super
+  nudge over Micro nudge), so the arrow keys' steps change without
+  opening Document Options (#2608,
+  `ui::toolbar::tests::the_pick_bar_shows_and_sets_the_nudge_distances`).
+- A single object's scale percentages describe its transformed local
+  axes. On a rotated, skewed or mirrored object, editing one percentage
+  preserves both axes' directions and fixes the selected origin point.
+  The proportion lock applies the same factor to both axes.
+  With several objects selected, the fields show 100% and scale the
+  selection by the entered factor along the page axes.
 - Then, by the kind of the selected objects: rectangle corners (Round,
   Scalloped and Chamfered Corner buttons; the four corner sizes in two
   stacked columns, top left over bottom left, then top right over bottom
@@ -301,6 +348,23 @@ undo step, as in the number fields. With nothing selected
   transforms and Align Nodes, Reflect and Elastic toggles, Select All
   Nodes, Reduce Nodes with the Curve smoothness slider); toggles are drawn
   pressed while on. The full list is in `shape-tool.md`.
+
+### Text tool bar
+
+After the font, size, bold, italic, underline, strikethrough and the
+alignment, the Text tool's bar carries the settings of the Text docker
+so it need not be opened (#1822, `ui/text_bar.rs`): range kerning,
+character width, All caps, Change Case; line, character and word
+spacing; left, first line and right indent, space before and after a
+paragraph; Tabs, Columns, Bullets, Drop Cap; the Text docker and Edit
+Text. They change the selected text as the docker does (the characters
+selected while editing, else the whole text; the paragraphs at the
+caret, else every paragraph), and are dimmed with no text to change.
+A "+" button at the bar's end lists them all, each with a box that
+shows or hides it on the bar, and Reset to default puts every one back;
+what is hidden is kept with the bars' settings (`text_hidden`). A bar
+longer than the window slides as below
+(`pick_drag_tests::the_text_bar_has_more_settings_and_a_plus_list`).
 
 ## Bars longer than the window
 

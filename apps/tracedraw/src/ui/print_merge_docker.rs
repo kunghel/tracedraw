@@ -92,6 +92,18 @@ const PLACEHOLDER_MM: f64 = 40.0;
 /// The longest side a placeholder picture is given, mm.
 const PLACEHOLDER_MAX_MM: f64 = 80.0;
 
+/// The text of the sample QR code Insert Field shows for column `col`:
+/// the first record's value, else the field's name.
+fn qr_sample(st: &crate::ui::dialogs::PrintMergeState, col: usize) -> String {
+    crate::print_merge::values(st)
+        .iter()
+        .filter_map(|r| r.get(col))
+        .find(|v| !v.trim().is_empty())
+        .cloned()
+        .or_else(|| st.headers.get(col).cloned())
+        .unwrap_or_else(|| "QR".to_string())
+}
+
 /// The field a placeholder stands for: a text holding only `<Field>`, or
 /// an object named `<Field>`.
 pub fn field_of(s: &Shape) -> Option<String> {
@@ -184,16 +196,36 @@ impl App {
             at.y + h / 2.0,
         );
         let id = self.engine.new_shape_id();
-        let mut frame = Shape::new(
-            id,
-            ShapeKind::Rect {
-                rect,
-                radius: 0.0,
-                corners: None,
-            },
-        );
+        // A QR code: a sample code (of the first record's value, else of
+        // the field's name) to paint, outline and Place Inside a frame;
+        // every record's code comes out in its colour, where it is
+        // (#2796).
+        let sample = (d.kind == 2)
+            .then(|| self.merge_state.as_ref().map(|st| qr_sample(st, d.column)))
+            .flatten()
+            .and_then(|t| crate::ui::dialogs::qr_path(&t, w.min(h)).ok());
+        let mut frame = match sample {
+            Some(path) => {
+                let path = tracedraw_core::geometry::Affine::translate((rect.x0, rect.y0)) * path;
+                let mut code = Shape::new(id, ShapeKind::Path { path, closed: true });
+                code.fill = Fill::Solid(tracedraw_core::Color::BLACK);
+                code.stroke = None;
+                code
+            }
+            None => {
+                let mut frame = Shape::new(
+                    id,
+                    ShapeKind::Rect {
+                        rect,
+                        radius: 0.0,
+                        corners: None,
+                    },
+                );
+                frame.fill = Fill::None;
+                frame
+            }
+        };
         frame.name = Some(field);
-        frame.fill = Fill::None;
         if d.kind == 1 {
             frame.data = placement_data(d.scale, d.anchor);
         }
@@ -302,6 +334,15 @@ impl App {
             .collect();
         if frames.is_empty() {
             self.status = tr("merge.place_inside_none");
+            return;
+        }
+        // A barcode field: the wizard, its data the field; Finish puts a
+        // barcode inside each shape (#1084).
+        if d.kind == 3 {
+            let mut st =
+                crate::ui::barcode_wizard::BarcodeState::for_merge_field(&name, d.all_pages);
+            st.frames = frames.iter().map(|s| s.id).collect();
+            self.dialog = Dialog::Barcode(st);
             return;
         }
         let placeholder = (!d.placeholder.trim().is_empty())
@@ -909,17 +950,21 @@ pub fn print_merge(app: &mut App, ui: &mut Ui) {
         {
             app.insert_merge_field();
         }
-        if app.merge_docker.kind == 1 {
-            // A shape of the user's as the picture's frame (#460): the
-            // one selected, else the one clicked next, the pointer the
-            // Place Inside arrow meanwhile (#577).
+        if app.merge_docker.kind == 1 || app.merge_docker.kind == 3 {
+            // A shape of the user's as the picture's frame (#460), or the
+            // barcode's (#1084): the one selected, else the one clicked
+            // next, the pointer the Place Inside arrow meanwhile (#577).
             if ui
                 .add(
                     egui::Button::new(tr("merge.place_inside"))
                         .min_size(wide)
                         .selected(app.pending_merge_frame),
                 )
-                .rich_tip(tr("merge.place_inside_tip"))
+                .rich_tip(tr(if app.merge_docker.kind == 3 {
+                    "merge.place_inside_barcode_tip"
+                } else {
+                    "merge.place_inside_tip"
+                }))
                 .clicked()
             {
                 if app.selection.is_empty() {

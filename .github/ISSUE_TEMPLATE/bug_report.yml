@@ -29,6 +29,7 @@ body:
         - Windows
         - macOS
         - Linux
+        - Android
         - In the browser
     validations:
       required: true
