@@ -28,7 +28,7 @@ its result are one undo step. Checked by
 | Weld | 2 | one object covering all of them | nothing |
 | Trim | 2 | the target without what the sources cover | the sources |
 | Intersect | 2 | the area all of them share | the sources and the target |
-| Simplify | 1 | each object without what objects above it cover | the objects, changed in place |
+| Simplify | 1 | each object without what objects above it cover; a group's objects each by itself (the objects in front of it in the group cut it too), the group kept with their own fills; each object read by the area it fills, so a curve filled with the nonzero rule, or text, gets no holes where its contours overlap | the objects, changed in place |
 | Front Minus Back | 2 | the front object without the ones behind (its attributes) | nothing |
 | Back Minus Front | 2 | the back object without the ones in front (its attributes) | nothing |
 | Boundary | 1 | an outline around the selection, with no fill and the target's outline (a hairline if it has none), as in CorelDRAW (#2640) | every object |
@@ -75,6 +75,9 @@ Combine of open curves gives one open curve with a subpath for each;
 a closed object combined with them keeps its subpaths closed, so they
 still fill and Break Apart gives them back as closed curves
 (`command::tests::combining_open_curves_keeps_them_open`).
+The combined object is selected afterwards, in whatever order the parts
+were picked; picked from the top down, nothing was left selected
+(`ops::curves_and_target_tests::combine_selects_the_result_whatever_the_picking_order`).
 
 When the object whose attributes the result takes is a group: Trim, Front
 Minus Back and Back Minus Front cut each object of the group on its own,

@@ -4,6 +4,9 @@
 //! moves there, and dragged off the bars goes away; a command or a tool
 //! dragged from the Commands page onto a bar joins it (#563). Bars Reset
 //! (Options > Command Bars, or a bar's menu) brings the first buttons back.
+//! The toolbars the user makes (Command Bars, New) take buttons the same
+//! way, menu commands without a picture too, named in words (#3264).
+//! The toolbox takes commands the same way, after its tools (#3211).
 
 use crate::app::App;
 use egui::{Color32, Pos2, Rect, Sense, Stroke, Ui, Vec2};
@@ -13,6 +16,10 @@ use egui::{Color32, Pos2, Rect, Sense, Stroke, Ui, Vec2};
 pub enum ItemBar {
     Standard,
     Zoom,
+    /// A toolbar the user made, by its slot (`bars::CUSTOM_IDS`, #3264).
+    Custom(u8),
+    /// The commands put on the toolbox, after its tools (#3211).
+    Toolbox,
 }
 
 /// A separator between buttons.
@@ -73,13 +80,16 @@ const ZOOM: [&str; 10] = [
 ];
 
 impl ItemBar {
-    pub const ALL: [ItemBar; 2] = [ItemBar::Standard, ItemBar::Zoom];
+    /// The built-in bars whose buttons can be changed.
+    pub const ALL: [ItemBar; 3] = [ItemBar::Standard, ItemBar::Zoom, ItemBar::Toolbox];
 
     /// The key the bar's list is kept under in the settings.
     pub fn id(self) -> &'static str {
         match self {
             ItemBar::Standard => "standard",
             ItemBar::Zoom => "zoom",
+            ItemBar::Custom(n) => crate::ui::bars::Bar::Custom(n).id(),
+            ItemBar::Toolbox => "toolbox",
         }
     }
 
@@ -88,6 +98,9 @@ impl ItemBar {
         match self {
             ItemBar::Standard => &STANDARD,
             ItemBar::Zoom => &ZOOM,
+            // Made empty: the user drags its buttons onto it. The
+            // toolbox's tools are its own; it starts with no commands.
+            ItemBar::Custom(_) | ItemBar::Toolbox => &[],
         }
     }
 }
@@ -181,6 +194,8 @@ pub struct Slot {
     pub bar: ItemBar,
     pub rect: Rect,
     pub items: Vec<Rect>,
+    /// Its buttons go down a column (the toolbox on a side).
+    pub vertical: bool,
 }
 
 /// Buttons can be moved now: the Customization pages of the options are
@@ -250,22 +265,33 @@ pub fn draw_bar(app: &mut App, ui: &mut Ui, bar: ItemBar, draw: fn(&mut App, &mu
         bar,
         rect,
         items: rects,
+        vertical: false,
     });
 }
 
 /// The bar and place a button dropped at `p` goes to, and where to mark
-/// it (the x of the gap).
+/// it (the x of the gap; its y on a column of buttons).
 pub fn drop_target(slots: &[Slot], p: Pos2) -> Option<(ItemBar, usize, f32)> {
     let slot = slots.iter().find(|s| s.rect.expand(4.0).contains(p))?;
-    let index = slot.items.iter().filter(|r| r.center().x < p.x).count();
+    // Along the bar: x on a row, y down a column.
+    let (lo, hi, at, start): (fn(&Rect) -> f32, fn(&Rect) -> f32, f32, f32) = if slot.vertical {
+        (Rect::top, Rect::bottom, p.y, slot.rect.top())
+    } else {
+        (Rect::left, Rect::right, p.x, slot.rect.left())
+    };
+    let index = slot
+        .items
+        .iter()
+        .filter(|r| (lo(r) + hi(r)) / 2.0 < at)
+        .count();
     let x = match (
         index.checked_sub(1).and_then(|i| slot.items.get(i)),
         slot.items.get(index),
     ) {
-        (Some(a), Some(b)) => (a.right() + b.left()) / 2.0,
-        (Some(a), None) => a.right() + 1.0,
-        (None, Some(b)) => b.left() - 1.0,
-        (None, None) => slot.rect.left() + 2.0,
+        (Some(a), Some(b)) => (hi(a) + lo(b)) / 2.0,
+        (Some(a), None) => hi(a) + 1.0,
+        (None, Some(b)) => lo(b) - 1.0,
+        (None, None) => start + 2.0,
     };
     Some((slot.bar, index, x))
 }
@@ -340,13 +366,18 @@ fn drag_frame(app: &mut App, ctx: &egui::Context, slots: &[Slot], drag: &ItemDra
     }
     if let Some((bar, _, x)) = target {
         if let Some(s) = slots.iter().find(|s| s.bar == bar) {
-            painter.line_segment(
+            let ends = if s.vertical {
+                [
+                    Pos2::new(s.rect.left() + 2.0, x),
+                    Pos2::new(s.rect.right() - 2.0, x),
+                ]
+            } else {
                 [
                     Pos2::new(x, s.rect.top() + 2.0),
                     Pos2::new(x, s.rect.bottom() - 2.0),
-                ],
-                Stroke::new(2.0, crate::theme::Tokens::ACCENT),
-            );
+                ]
+            };
+            painter.line_segment(ends, Stroke::new(2.0, crate::theme::Tokens::ACCENT));
         }
     }
     if !down {
@@ -396,6 +427,7 @@ mod tests {
             bar,
             rect: Rect::from_min_size(Pos2::new(0.0, y), Vec2::new(n as f32 * 30.0, 28.0)),
             items,
+            vertical: false,
         }
     }
 
@@ -476,6 +508,30 @@ mod tests {
             Some((ItemBar::Zoom, 2))
         );
         assert!(drop_target(&slots, Pos2::new(500.0, 300.0)).is_none());
+        // Down the toolbox column (#3211): the gap by y, after the tools
+        // when it holds no commands yet.
+        let column = vec![Slot {
+            bar: ItemBar::Toolbox,
+            rect: Rect::from_min_size(Pos2::new(0.0, 0.0), Vec2::new(30.0, 400.0)),
+            items: (0..2)
+                .map(|i| {
+                    Rect::from_min_size(Pos2::new(0.0, 300.0 + i as f32 * 30.0), Vec2::splat(28.0))
+                })
+                .collect(),
+            vertical: true,
+        }];
+        assert_eq!(
+            drop_target(&column, Pos2::new(10.0, 100.0)).map(|t| (t.0, t.1)),
+            Some((ItemBar::Toolbox, 0))
+        );
+        assert_eq!(
+            drop_target(&column, Pos2::new(10.0, 320.0)).map(|t| (t.0, t.1, t.2)),
+            Some((ItemBar::Toolbox, 1, 329.0))
+        );
+        assert_eq!(
+            drop_target(&column, Pos2::new(10.0, 395.0)).map(|t| (t.0, t.1)),
+            Some((ItemBar::Toolbox, 2))
+        );
         assert_eq!(tool_of("tool:rectangle").map(|t| t.id()), Some("rectangle"));
     }
 }

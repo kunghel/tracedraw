@@ -13,6 +13,7 @@ barre sono visibili e come si comporta la tavolozza dei colori.
 - [[options.center_dialogs]]: le finestre di dialogo si aprono al centro
   della finestra; se disattivato, si aprono dove le hai lasciate.
 - [[options.ui_shadows]] (meno ombre aiutano le schede grafiche più lente).
+- [[options.translucent_menus]]: open menus let the drawing show through them, at the [[options.menu_opacity]] beside the box (off by default).
 - [[options.colored_icons]]: ogni gruppo di strumenti riceve un colore
   proprio.
 - [[options.docker_tabs_icons_only]]: le schede dei pannelli ai lati della

@@ -200,6 +200,7 @@ pub fn picture(preset: &StylePreset, shape: &Shape, px: u32) -> Option<(Vec<u8>,
                 zoom,
                 origin_x: 0.0,
                 origin_y: h as f64,
+                stretch_y: 1.0,
             },
             preview: None,
             wireframe: false,
@@ -240,6 +241,12 @@ impl crate::app::App {
         let Some(p) = self.settings.style_presets.get(index).cloned() else {
             return;
         };
+        self.apply_preset(&p);
+    }
+
+    /// Give the selection the look `p` (a saved or a built-in preset), as
+    /// one undo step.
+    pub fn apply_preset(&mut self, p: &StylePreset) {
         let shapes = self.selected_shapes();
         let cmds = p.commands(&shapes);
         if cmds.is_empty() {
@@ -269,6 +276,17 @@ impl crate::app::App {
         px: u32,
     ) -> Option<egui::TextureHandle> {
         let p = self.settings.style_presets.get(index)?;
+        self.preset_picture(ctx, p, px)
+    }
+
+    /// The picture of `p` on the first selected object (the sample shape
+    /// when nothing or a group is selected), as for a saved preset.
+    pub fn preset_picture(
+        &self,
+        ctx: &egui::Context,
+        p: &StylePreset,
+        px: u32,
+    ) -> Option<egui::TextureHandle> {
         let first = self
             .selected_shapes()
             .into_iter()

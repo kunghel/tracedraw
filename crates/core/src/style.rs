@@ -919,9 +919,19 @@ pub fn sample_stop(stops: &[Stop], t: f64) -> Stop {
         (Some(a), Some(b)) => {
             let span = (b.pos - a.pos).max(1e-9);
             let k = ((t - a.pos) / span).clamp(0.0, 1.0) as f32;
+            // At a stop its own colour, as chosen (a CMYK or spot colour
+            // stays one), not the mix's RGB: a PDF's shading took its
+            // colours from here and turned them to RGB and back.
+            let color = if k >= 1.0 {
+                b.color
+            } else if k <= 0.0 {
+                a.color
+            } else {
+                lerp_color(a.color, b.color, k)
+            };
             Stop {
                 pos: t,
-                color: lerp_color(a.color, b.color, k),
+                color,
                 mid: 0.5,
                 opacity: a.opacity + (b.opacity - a.opacity) * k,
             }
@@ -2975,6 +2985,29 @@ fn one() -> f64 {
 
 impl Stroke {
     pub const HAIRLINE: f64 = 0.0762;
+    /// Round dots two outline widths apart, centre to centre (#3404):
+    /// dashes of no length, which round caps draw as dots.
+    pub const ROUND_DOTS: [f64; 2] = [0.0, 2.0];
+
+    /// Whether a dash pattern has dashes of no length: dots, which only
+    /// round (or square) caps draw.
+    pub fn dash_has_dots(dash: &[f64]) -> bool {
+        let odd = dash.len() % 2 == 1;
+        dash.iter()
+            .enumerate()
+            .any(|(i, d)| *d <= 0.0 && (i % 2 == 0 || odd))
+    }
+
+    /// Take the dash pattern `dash`; dots get round caps, or they would
+    /// not show (#3404). True when the caps changed.
+    pub fn set_dash(&mut self, dash: &[f64]) -> bool {
+        self.dash = dash.to_vec();
+        if Self::dash_has_dots(dash) && self.cap == LineCap::Butt {
+            self.cap = LineCap::Round;
+            return true;
+        }
+        false
+    }
     /// Mitre limit of new outlines, degrees: a corner sharper than a
     /// right angle's half is bevelled, so a thick outline on lettering
     /// does not grow long spikes at its narrow turns (#894).
@@ -3082,6 +3115,29 @@ impl Stroke {
 
 #[cfg(test)]
 mod tests {
+    /// #3404: a pattern with dashes of no length is dots, and taking it
+    /// gives flat caps round ones; other caps and patterns are kept.
+    #[test]
+    fn dots_take_round_caps() {
+        assert!(Stroke::dash_has_dots(&Stroke::ROUND_DOTS));
+        assert!(Stroke::dash_has_dots(&[3.0, 2.0, 0.0, 2.0]));
+        // An odd pattern repeats, its gaps turning dashes.
+        assert!(Stroke::dash_has_dots(&[2.0, 0.0, 1.0]));
+        assert!(!Stroke::dash_has_dots(&[4.0, 0.0]));
+        assert!(!Stroke::dash_has_dots(&[]));
+        let mut st = Stroke::new(Color::BLACK, 1.0);
+        assert!(!st.set_dash(&[4.0, 2.0]));
+        assert_eq!(st.cap, LineCap::Butt);
+        assert!(st.set_dash(&Stroke::ROUND_DOTS));
+        assert_eq!(
+            (st.dash.as_slice(), st.cap),
+            (&[0.0, 2.0][..], LineCap::Round)
+        );
+        st.cap = LineCap::Square;
+        assert!(!st.set_dash(&Stroke::ROUND_DOTS));
+        assert_eq!(st.cap, LineCap::Square);
+    }
+
     use super::*;
 
     /// A run of width nodes, each wider than the last, widens in one
@@ -4251,15 +4307,102 @@ pub fn head_size_for_width(width: f64) -> (f64, f64) {
     ((w * HEAD_SIZE_PER_WIDTH).max(1.0), w)
 }
 
+/// How far back from its tip along the line a preset head is solid
+/// enough to hide the line's end, in the head's own frame (`size` the
+/// preset head size, `w` the width of its thin parts): the line is cut
+/// there so neither its end nor its cap shows past or beside the head
+/// (#2981). An arrow hides it up to its notch, round, square and diamond
+/// heads up to their middle, a bar up to its middle, an open arrow up to
+/// the inside of its point. Custom heads keep the whole line.
+fn head_cover(kind: &Arrowhead, size: f64, w: f64) -> f64 {
+    let t = w.max(0.2);
+    match kind {
+        Arrowhead::None | Arrowhead::Custom { .. } => 0.0,
+        Arrowhead::Arrow => size * 0.7,
+        Arrowhead::OpenArrow => t * 1.4,
+        Arrowhead::Circle | Arrowhead::Square => size * 0.35,
+        Arrowhead::Bar => t * 0.5,
+        Arrowhead::Diamond => size * 0.5,
+    }
+}
+
+/// The subpaths of `path`, each starting with its MoveTo.
+fn subpaths(path: &crate::geometry::BezPath) -> Vec<crate::geometry::BezPath> {
+    use crate::geometry::{BezPath, PathEl};
+    let mut out: Vec<BezPath> = Vec::new();
+    for el in path.elements() {
+        if matches!(el, PathEl::MoveTo(_)) || out.is_empty() {
+            out.push(BezPath::new());
+        }
+        if let Some(last) = out.last_mut() {
+            last.push(*el);
+        }
+    }
+    out.retain(|p| p.elements().len() > 1);
+    out
+}
+
+/// Arc length accuracy for cutting lines under heads, millimetres.
+const HEAD_ARCLEN_ACC: f64 = 1e-4;
+
+/// `sub`'s segments with `len` of its length cut from its start (or, with
+/// `from_end`, its end); `None` when it is not that long.
+fn cut_segments(segs: &[kurbo::PathSeg], len: f64, from_end: bool) -> Option<Vec<kurbo::PathSeg>> {
+    use kurbo::{ParamCurve, ParamCurveArclen};
+    let mut rest = len;
+    let order: Vec<usize> = if from_end {
+        (0..segs.len()).rev().collect()
+    } else {
+        (0..segs.len()).collect()
+    };
+    for (k, &i) in order.iter().enumerate() {
+        let seg = segs[i];
+        let l = seg.arclen(HEAD_ARCLEN_ACC);
+        if l > rest {
+            let piece = if from_end {
+                let t = seg.inv_arclen(l - rest, HEAD_ARCLEN_ACC);
+                seg.subsegment(0.0..t)
+            } else {
+                let t = seg.inv_arclen(rest, HEAD_ARCLEN_ACC);
+                seg.subsegment(t..1.0)
+            };
+            let mut kept: Vec<kurbo::PathSeg> = order[k + 1..].iter().map(|&j| segs[j]).collect();
+            kept.insert(0, piece);
+            if from_end {
+                kept.reverse();
+            }
+            return Some(kept);
+        }
+        rest -= l;
+    }
+    None
+}
+
+/// The point `len` back along `sub` from its start (or its end): where a
+/// head `len` long reaches back to, so the head is turned to lie on the
+/// curve, not along its tangent at the very end (#2981).
+fn point_back(sub: &crate::geometry::BezPath, len: f64, from_end: bool) -> Option<Point> {
+    use kurbo::ParamCurve;
+    let segs: Vec<kurbo::PathSeg> = sub.segments().collect();
+    let cut = cut_segments(&segs, len, from_end)?;
+    Some(if from_end {
+        cut.last()?.end()
+    } else {
+        cut.first()?.start()
+    })
+}
+
 /// Arrowhead outlines (page space) for an open path's ends, sized by the
 /// outline width (hairlines use 0.25 mm) and each end's placement (size,
 /// offset, mirror, rotation; the end takes the start's head and
 /// placement with Share attributes on). Filled with the outline colour.
+/// A head points from where its length reaches back to on the curve
+/// towards the end point, so on a curve it sits on the line (#2981).
 pub fn arrowhead_paths(
     path: &crate::geometry::BezPath,
     stroke: &Stroke,
 ) -> Vec<crate::geometry::BezPath> {
-    use crate::geometry::{BezPath, PathEl, Vec2};
+    use crate::geometry::{BezPath, PathEl, Shape as _, Vec2};
     let (size, w) = head_size_for_width(stroke.width);
     let mut pts: Vec<Point> = Vec::new();
     let mut closed = false;
@@ -4276,39 +4419,281 @@ pub fn arrowhead_paths(
     if closed || pts.len() < 2 {
         return Vec::new();
     }
+    let subs = subpaths(path);
     // A head in its own frame, placed at `tip` with the line's outward
-    // direction `dir`: x along the direction, y along its left normal.
-    let head =
-        |tip: Point, dir: Vec2, kind: &Arrowhead, at: &ArrowheadPlacement| -> Option<BezPath> {
-            let dir = dir.normalize();
-            if !dir.x.is_finite() {
-                return None;
-            }
-            let n = Vec2::new(-dir.y, dir.x);
-            let outline = head_outline(kind, size, w)?;
-            Some(at.place(tip, dir, n) * outline)
+    // direction: x along it, y along its left normal. The direction runs
+    // from the point the head's length reaches back to on the line, or
+    // along the line's last piece when the line is shorter than that.
+    let head = |tip: Point,
+                last: Vec2,
+                sub: Option<&BezPath>,
+                from_end: bool,
+                kind: &Arrowhead,
+                at: &ArrowheadPlacement|
+     -> Option<BezPath> {
+        let outline = head_outline(kind, size, w)?;
+        let reach = (-outline.bounding_box().x0).max(0.0) * at.scale();
+        let back = sub
+            .filter(|_| reach > 1e-6 && !at.mirror_h)
+            .and_then(|s| point_back(s, reach, from_end));
+        let dir = match back {
+            Some(b) if (tip - b).hypot() > 1e-9 => (tip - b).normalize(),
+            _ => last.normalize(),
         };
+        if !dir.x.is_finite() {
+            return None;
+        }
+        let n = Vec2::new(-dir.y, dir.x);
+        Some(at.place(tip, dir, n) * outline)
+    };
     let mut out = Vec::new();
     let n = pts.len();
     if let Some(p) = head(
         pts[0],
         pts[0] - pts[1.min(n - 1)],
+        subs.first(),
+        false,
         &stroke.start_arrow,
         &stroke.start_head,
     ) {
         out.push(p);
     }
     let (end_kind, end_at) = stroke.end_head_drawn();
-    if let Some(p) = head(pts[n - 1], pts[n - 1] - pts[n - 2], end_kind, end_at) {
+    if let Some(p) = head(
+        pts[n - 1],
+        pts[n - 1] - pts[n - 2],
+        subs.last(),
+        true,
+        end_kind,
+        end_at,
+    ) {
         out.push(p);
     }
     out
+}
+
+/// The path an open line with arrowheads is stroked along: cut back at
+/// each end with a head as far as the head hides it, so the line's end
+/// and its cap (round or square caps reach half a width past the end)
+/// do not show past the tip or beside the head (#2981). `None` when
+/// nothing is cut: no head, a closed path, a custom head, or a line no
+/// longer than its heads.
+pub fn arrowhead_stroke_path(
+    path: &crate::geometry::BezPath,
+    stroke: &Stroke,
+) -> Option<crate::geometry::BezPath> {
+    use crate::geometry::{BezPath, PathEl};
+    if path
+        .elements()
+        .iter()
+        .any(|e| matches!(e, PathEl::ClosePath))
+    {
+        return None;
+    }
+    let (size, w) = head_size_for_width(stroke.width);
+    let cut = |kind: &Arrowhead, at: &ArrowheadPlacement| -> f64 {
+        if at.mirror_h {
+            return 0.0;
+        }
+        (head_cover(kind, size, w) * at.scale() - at.offset_mm()).max(0.0)
+    };
+    let (end_kind, end_at) = stroke.end_head_drawn();
+    let (a, b) = (
+        cut(&stroke.start_arrow, &stroke.start_head),
+        cut(end_kind, end_at),
+    );
+    if a <= 1e-9 && b <= 1e-9 {
+        return None;
+    }
+    let mut subs = subpaths(path);
+    if subs.is_empty() {
+        return None;
+    }
+    let segs = |p: &BezPath| -> Vec<kurbo::PathSeg> { p.segments().collect() };
+    let rebuild = |segs: &[kurbo::PathSeg]| -> Option<BezPath> {
+        use kurbo::ParamCurve;
+        let mut p = BezPath::new();
+        p.move_to(segs.first()?.start());
+        for s in segs {
+            p.push(s.as_path_el());
+        }
+        Some(p)
+    };
+    let last = subs.len() - 1;
+    if subs.len() == 1 {
+        let all = segs(&subs[0]);
+        let total: f64 = {
+            use kurbo::ParamCurveArclen;
+            all.iter().map(|s| s.arclen(HEAD_ARCLEN_ACC)).sum()
+        };
+        if total <= a + b + 1e-6 {
+            return None;
+        }
+        let mut kept = all;
+        if a > 1e-9 {
+            kept = cut_segments(&kept, a, false)?;
+        }
+        if b > 1e-9 {
+            kept = cut_segments(&kept, b, true)?;
+        }
+        subs[0] = rebuild(&kept)?;
+    } else {
+        if a > 1e-9 {
+            if let Some(kept) = cut_segments(&segs(&subs[0]), a, false) {
+                subs[0] = rebuild(&kept)?;
+            }
+        }
+        if b > 1e-9 {
+            if let Some(kept) = cut_segments(&segs(&subs[last]), b, true) {
+                subs[last] = rebuild(&kept)?;
+            }
+        }
+    }
+    let mut out = BezPath::new();
+    for sp in subs {
+        for el in sp.elements() {
+            out.push(*el);
+        }
+    }
+    Some(out)
 }
 
 #[cfg(test)]
 mod arrowhead_tests {
     use super::*;
     use crate::geometry::{BezPath, Shape as _};
+
+    /// #2981: the line is cut back under each head as far as the head
+    /// hides it, so neither its end nor its cap shows at the tip: an
+    /// arrow up to its notch, a circle up to its middle. Custom heads,
+    /// heads turned back along the line, closed paths and lines no longer
+    /// than their heads keep the whole line.
+    #[test]
+    fn the_line_ends_under_its_arrowheads() {
+        use crate::geometry::ParamCurveArclen as _;
+        let mut line = BezPath::new();
+        line.move_to((0.0, 0.0));
+        line.line_to((50.0, 0.0));
+        let (size, _) = head_size_for_width(1.0);
+        let stroke = Stroke {
+            start_arrow: Arrowhead::Circle,
+            end_arrow: Arrowhead::Arrow,
+            cap: LineCap::Round,
+            ..Stroke::new(Color::BLACK, 1.0)
+        };
+        let cut = arrowhead_stroke_path(&line, &stroke).expect("cut under the heads");
+        let b = cut.bounding_box();
+        assert!((b.x0 - size * 0.35).abs() < 1e-3, "{b:?}");
+        assert!((b.x1 - (50.0 - size * 0.7)).abs() < 1e-3, "{b:?}");
+        // Half again as large, and moved 1 mm out past the end.
+        let bigger = Stroke {
+            end_head: ArrowheadPlacement {
+                size: 150.0,
+                offset: 1.0,
+                ..Default::default()
+            },
+            ..stroke.clone()
+        };
+        let b = arrowhead_stroke_path(&line, &bigger)
+            .unwrap()
+            .bounding_box();
+        assert!(
+            (b.x1 - (50.0 - size * 0.7 * 1.5 + 1.0)).abs() < 1e-3,
+            "{b:?}"
+        );
+        // A curve keeps its curves and loses the right length.
+        let mut arc = BezPath::new();
+        arc.move_to((0.0, 0.0));
+        arc.curve_to((10.0, 20.0), (30.0, 20.0), (40.0, 0.0));
+        let whole: f64 = arc.segments().map(|s| s.arclen(1e-6)).sum();
+        let cut = arrowhead_stroke_path(&arc, &stroke).unwrap();
+        let left: f64 = cut.segments().map(|s| s.arclen(1e-6)).sum();
+        assert!(
+            (whole - left - size * (0.35 + 0.7)).abs() < 1e-2,
+            "{whole} {left}"
+        );
+        assert!(matches!(
+            cut.elements()[1],
+            crate::geometry::PathEl::CurveTo(..)
+        ));
+        for kept in [
+            Stroke {
+                start_arrow: Arrowhead::None,
+                end_arrow: Arrowhead::from_shape_path(&triangle(), "Tri"),
+                ..stroke.clone()
+            },
+            Stroke {
+                start_arrow: Arrowhead::None,
+                end_head: ArrowheadPlacement {
+                    mirror_h: true,
+                    ..Default::default()
+                },
+                ..stroke.clone()
+            },
+            Stroke {
+                start_arrow: Arrowhead::None,
+                end_arrow: Arrowhead::None,
+                ..stroke.clone()
+            },
+        ] {
+            assert!(arrowhead_stroke_path(&line, &kept).is_none(), "{kept:?}");
+        }
+        let mut short = BezPath::new();
+        short.move_to((0.0, 0.0));
+        short.line_to((size, 0.0));
+        assert!(arrowhead_stroke_path(&short, &stroke).is_none());
+        assert!(arrowhead_stroke_path(&triangle(), &stroke).is_none());
+    }
+
+    /// #2981: on a curve a head points from where its length reaches back
+    /// to on the curve, so its back sits on the line; along the tangent
+    /// at the very end it stood off a tight curve.
+    #[test]
+    fn a_head_on_a_curve_sits_on_the_curve() {
+        use crate::geometry::{Circle, Shape as _};
+        // A quarter circle of radius 8 mm, ending going up.
+        let arc = Circle::new((0.0, 0.0), 8.0).to_path(1e-4);
+        let mut quarter = BezPath::new();
+        let mut started = false;
+        for seg in arc.segments() {
+            use kurbo::ParamCurve as _;
+            let (a, b) = (seg.start(), seg.end());
+            if a.y >= -1e-9 && b.y >= -1e-9 && a.x >= -1e-9 && b.x >= -1e-9 {
+                if !started {
+                    quarter.move_to(a);
+                    started = true;
+                }
+                quarter.push(seg.as_path_el());
+            }
+        }
+        let stroke = Stroke {
+            end_arrow: Arrowhead::Arrow,
+            ..Stroke::new(Color::BLACK, 1.0)
+        };
+        let heads = arrowhead_paths(&quarter, &stroke);
+        assert_eq!(heads.len(), 1);
+        // The middle of the arrow's two back corners lies on the circle.
+        let pts: Vec<Point> = heads[0]
+            .elements()
+            .iter()
+            .filter_map(|e| match e {
+                crate::geometry::PathEl::MoveTo(p) | crate::geometry::PathEl::LineTo(p) => Some(*p),
+                _ => None,
+            })
+            .collect();
+        let back = pts[1].midpoint(pts[3]);
+        let r = back.to_vec2().hypot();
+        // (A chord as long as the head, not its arc: a hundredth of a
+        // millimetre out; along the tangent it was most of a millimetre.)
+        assert!((r - 8.0).abs() < 0.05, "{back:?} at {r}");
+        // The tip stays at the curve's end.
+        let end = quarter
+            .elements()
+            .last()
+            .and_then(|e| e.end_point())
+            .unwrap();
+        assert!((pts[0] - end).hypot() < 1e-6);
+    }
 
     /// A triangle pointing right: tip at (30, 15), base from (10, 5) to (10, 25).
     fn triangle() -> BezPath {

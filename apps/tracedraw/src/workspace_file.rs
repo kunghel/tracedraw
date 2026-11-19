@@ -94,6 +94,11 @@ pub struct BarsPart {
     pub status_info: StatusInfo,
     /// The buttons of the Standard and Zoom toolbars, when changed.
     pub bar_items: std::collections::BTreeMap<String, Vec<String>>,
+    /// The dockers open, their columns, the one in front of each and the
+    /// floating ones with their windows: a workspace brings its panels
+    /// back (#3350). Absent in files written before.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dockers: Option<crate::settings::DockerSetup>,
 }
 
 /// The interface's look.
@@ -109,6 +114,25 @@ pub struct AppearancePart {
     pub page_border: bool,
     /// The page's shadow (#1906).
     pub page_shadow: bool,
+    /// The rest of Customization > Appearance: the theme, dialogs in the
+    /// middle, shadows, coloured tool icons, panel tabs as pictures and
+    /// following the desktop's text size and high contrast. An exported
+    /// workspace left them out, so importing it kept the theme and the
+    /// rest as they were. `None` in a file written before: kept as is.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub theme: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub center_dialogs: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ui_shadows: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub colored_icons: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub docker_tabs_icons_only: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub follow_text_size: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub follow_high_contrast: Option<bool>,
 }
 
 impl Default for AppearancePart {
@@ -119,6 +143,13 @@ impl Default for AppearancePart {
             desktop_custom: false,
             page_border: true,
             page_shadow: true,
+            theme: None,
+            center_dialogs: None,
+            ui_shadows: None,
+            colored_icons: None,
+            docker_tabs_icons_only: None,
+            follow_text_size: None,
+            follow_high_contrast: None,
         }
     }
 }
@@ -136,6 +167,10 @@ pub struct WorkspaceFile {
     /// Menu command keys and tool ids with their shortcuts.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub shortcuts: Option<Vec<(String, String)>>,
+    /// The Node editing table's shortcuts (with the shortcuts part,
+    /// #3243).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub node_shortcuts: Option<Vec<(String, String)>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub bars: Option<BarsPart>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -214,6 +249,9 @@ impl WorkspaceFile {
         if let Some(list) = self.shortcuts.take() {
             self.shortcuts = Some(clean_shortcuts(list));
         }
+        if let Some(list) = self.node_shortcuts.take() {
+            self.node_shortcuts = Some(clean_shortcuts(list));
+        }
         if let Some(bars) = &mut self.bars {
             let d = BarLayout::default();
             let l = &mut bars.layout;
@@ -244,14 +282,50 @@ impl WorkspaceFile {
             }
             bars.toolbox_hidden.truncate(MAX_LIST);
             bars.toolbox_hidden.retain(|id| short_text(id));
+            // The toolbars the user made (#3264): each slot once, a
+            // short name.
+            l.custom
+                .retain(|c| (c.slot as usize) < crate::ui::bars::MAX_CUSTOM);
+            let mut seen = std::collections::BTreeSet::new();
+            l.custom.retain(|c| seen.insert(c.slot));
+            for c in &mut l.custom {
+                if !short_text(&c.name) {
+                    c.name.clear();
+                }
+            }
+            let custom: Vec<&str> = l
+                .custom
+                .iter()
+                .map(|c| crate::ui::bars::Bar::Custom(c.slot).id())
+                .collect();
             bars.bar_items.retain(|bar, _| {
                 crate::ui::bar_items::ItemBar::ALL
                     .iter()
                     .any(|b| b.id() == bar)
+                    || custom.contains(&bar.as_str())
             });
             for list in bars.bar_items.values_mut() {
                 list.truncate(MAX_LIST);
                 list.retain(|id| short_text(id));
+            }
+            if let Some(d) = &mut bars.dockers {
+                for list in [
+                    &mut d.open,
+                    &mut d.left,
+                    &mut d.inner,
+                    &mut d.left_inner,
+                ] {
+                    list.truncate(MAX_LIST);
+                    list.retain(|k| short_text(k));
+                }
+                d.stacks.truncate(MAX_LIST);
+                d.stacks
+                    .retain(|st| st.split.is_finite() && short_text(&st.tab));
+                d.floating.truncate(MAX_LIST);
+                d.floating.retain(|f| {
+                    short_text(&f.tab)
+                        && f.pos.iter().chain(&f.size).all(|v| v.is_finite() && v.abs() <= MAX_POSITION)
+                });
             }
         }
         if let Some(bars) = &mut self.palette_bars {
@@ -266,6 +340,9 @@ impl WorkspaceFile {
         if let Some(a) = &mut self.appearance {
             if !(a.ui_size == 0.0 || (0.5..=4.0).contains(&a.ui_size)) {
                 a.ui_size = 0.0;
+            }
+            if a.theme.as_deref().is_some_and(|t| !short_text(t)) {
+                a.theme = None;
             }
         }
     }
@@ -309,6 +386,8 @@ impl App {
             version: VERSION,
             base: parts.bars.then(|| s.workspace.clone()),
             shortcuts: parts.shortcuts.then(|| s.shortcuts.clone()),
+            node_shortcuts: (parts.shortcuts && !s.node_shortcuts.is_empty())
+                .then(|| s.node_shortcuts.clone()),
             bars: parts.bars.then(|| BarsPart {
                 layout: s.bars.clone(),
                 shown: self.shown_bars(),
@@ -317,6 +396,7 @@ impl App {
                 show_outline_flyout: s.show_outline_flyout,
                 status_info: s.status_info,
                 bar_items: s.bar_items.clone(),
+                dockers: Some(self.docker_setup()),
             }),
             palette: parts.palette.then_some(s.palette),
             palette_bars: parts.palette.then(|| s.palette_bars.clone()),
@@ -328,6 +408,13 @@ impl App {
                 desktop_custom: s.desktop_custom,
                 page_border: self.show_page_border,
                 page_shadow: self.show_page_shadow,
+                theme: Some(s.theme.clone()),
+                center_dialogs: Some(s.center_dialogs),
+                ui_shadows: Some(s.ui_shadows),
+                colored_icons: Some(s.colored_icons),
+                docker_tabs_icons_only: Some(s.docker_tabs_icons_only),
+                follow_text_size: Some(s.follow_text_size),
+                follow_high_contrast: Some(s.follow_high_contrast),
             }),
         }
     }
@@ -352,12 +439,18 @@ impl App {
             self.settings.show_outline_flyout = b.show_outline_flyout;
             self.settings.status_info = b.status_info;
             self.settings.bar_items = b.bar_items.clone();
+            if let Some(dockers) = &b.dockers {
+                self.set_docker_setup(dockers);
+                self.settings.dockers = Some(self.docker_setup());
+            }
             applied.push(PART_BARS);
         }
         if let (true, Some(list)) = (parts.shortcuts, &file.shortcuts) {
             self.settings.shortcuts = list.clone();
             // A file written before a command key was renamed.
             crate::settings::migrate_command_keys(&mut self.settings.shortcuts);
+            self.settings.node_shortcuts = file.node_shortcuts.clone().unwrap_or_default();
+            crate::settings::migrate_command_keys(&mut self.settings.node_shortcuts);
             self.shortcut_editor.note = None;
             self.shortcut_editor.capture = None;
             applied.push(PART_SHORTCUTS);
@@ -380,6 +473,22 @@ impl App {
             self.settings.desktop_custom = a.desktop_custom;
             self.show_page_border = a.page_border;
             self.show_page_shadow = a.page_shadow;
+            let s = &mut self.settings;
+            if let Some(t) = &a.theme {
+                s.theme = t.clone();
+            }
+            for (from, to) in [
+                (a.center_dialogs, &mut s.center_dialogs),
+                (a.ui_shadows, &mut s.ui_shadows),
+                (a.colored_icons, &mut s.colored_icons),
+                (a.docker_tabs_icons_only, &mut s.docker_tabs_icons_only),
+                (a.follow_text_size, &mut s.follow_text_size),
+                (a.follow_high_contrast, &mut s.follow_high_contrast),
+            ] {
+                if let Some(v) = from {
+                    *to = v;
+                }
+            }
             applied.push(PART_APPEARANCE);
         }
         applied
@@ -528,6 +637,77 @@ mod tests {
         assert_eq!(again.settings.shortcuts, from.settings.shortcuts);
         assert!(again.status.contains("mine.tdws"), "{}", again.status);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A docker open when the workspace was exported, closed since, is
+    /// open again when the workspace is imported, in front (#3350).
+    #[test]
+    fn a_workspace_brings_its_dockers_back() {
+        use crate::app::DockerTab;
+        let mut app = App::headless();
+        app.open_docker(DockerTab::FindReplace);
+        app.open_docker(DockerTab::StepAndRepeat);
+        assert!(app.show_dockers);
+        let file = WorkspaceFile::from_bytes(&app.export_workspace(WorkspaceParts::ALL).to_bytes())
+            .expect("reads back");
+        app.close_docker(DockerTab::StepAndRepeat);
+        app.close_docker(DockerTab::FindReplace);
+        assert!(!app.open_dockers.contains(&DockerTab::FindReplace));
+        app.import_workspace(&file, WorkspaceParts::ALL);
+        assert!(app.show_dockers, "the dockers shown");
+        assert!(app.open_dockers.contains(&DockerTab::FindReplace), "{:?}", app.open_dockers);
+        assert!(app.open_dockers.contains(&DockerTab::StepAndRepeat));
+        assert_eq!(app.docker_tab, DockerTab::StepAndRepeat);
+        // A file written before dockers were kept leaves them as they are.
+        let mut old = file.clone();
+        if let Some(b) = &mut old.bars {
+            b.dockers = None;
+        }
+        app.close_docker(DockerTab::StepAndRepeat);
+        app.import_workspace(&old, WorkspaceParts::ALL);
+        assert!(!app.open_dockers.contains(&DockerTab::StepAndRepeat));
+    }
+
+    /// The appearance part carries the whole of Customization >
+    /// Appearance: the theme and the switches beside it came across as
+    /// they were on the computer importing, not as exported. A file
+    /// written before leaves them as they are.
+    #[test]
+    fn the_appearance_part_carries_the_theme_and_its_switches() {
+        let mut from = App::headless();
+        from.settings.theme = "dark".into();
+        from.settings.center_dialogs = !from.settings.center_dialogs;
+        from.settings.ui_shadows = !from.settings.ui_shadows;
+        from.settings.colored_icons = !from.settings.colored_icons;
+        from.settings.docker_tabs_icons_only = !from.settings.docker_tabs_icons_only;
+        from.settings.follow_text_size = !from.settings.follow_text_size;
+        from.settings.follow_high_contrast = !from.settings.follow_high_contrast;
+        let parts = WorkspaceParts {
+            shortcuts: false,
+            bars: false,
+            palette: false,
+            appearance: true,
+        };
+        let bytes = from.export_workspace(parts).to_bytes();
+        let file = WorkspaceFile::from_bytes(&bytes).expect("reads back");
+        let mut to = App::headless();
+        to.import_workspace(&file, parts);
+        let (a, b) = (&from.settings, &to.settings);
+        assert_eq!(b.theme, "dark");
+        assert_eq!(b.center_dialogs, a.center_dialogs);
+        assert_eq!(b.ui_shadows, a.ui_shadows);
+        assert_eq!(b.colored_icons, a.colored_icons);
+        assert_eq!(b.docker_tabs_icons_only, a.docker_tabs_icons_only);
+        assert_eq!(b.follow_text_size, a.follow_text_size);
+        assert_eq!(b.follow_high_contrast, a.follow_high_contrast);
+        // An older file has the size and colours alone.
+        let old = br#"{"kind":"tracedraw-workspace","version":1,"appearance":{"ui_size":1.5}}"#;
+        let file = WorkspaceFile::from_bytes(old).expect("old file");
+        let mut kept = App::headless();
+        kept.settings.theme = "light".into();
+        kept.import_workspace(&file, parts);
+        assert_eq!(kept.settings.theme, "light");
+        assert_eq!(kept.settings.ui_size, 1.5);
     }
 
     #[test]

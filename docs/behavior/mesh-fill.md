@@ -54,7 +54,18 @@ bounded by its four grid lines.
 | Rows, Columns | 2 x 2 (the selected mesh's when there is one) | 1 to 50 each |
 | Smooth colour | off | |
 | Transparency (the selected node) | 0 % | 0 to 100 % |
+| Colors | Aurora | Aurora, Sunset, Ocean, Candy, Forest, Neon, Document palette |
+| Shuffle | | every selected object gets a random mesh from the colours (below) |
 | Clear Mesh | | the selected objects lose their mesh fill (no fill) |
+
+Shuffle gives each selected object (not groups or pictures) a mesh over
+its bounds with its own rows and columns when it has a mesh, else the
+bar's: every node takes one colour of the set mixed with up to half of
+another, the inner nodes move up to 35 % of a cell off the grid, and
+Smooth colour is on. Each click takes the next seed, so it makes another
+mix; all the objects change in one undo step ("Shuffle Mesh"). Document
+palette uses the colours of the palette shown (the Aurora set when it has
+fewer than two). Checked by `mesh_tool::tests::shuffle_makes_a_new_random_mesh_each_click`.
 
 New meshes take the rows and columns, and a selected mesh changes to
 them keeping its colours: the new nodes are spread evenly over the old

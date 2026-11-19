@@ -171,6 +171,10 @@ pub struct DimensionStyle {
     /// The colour of the lines and arrowheads, and of the label (#475).
     pub line_color: Color,
     pub text_color: Color,
+    /// The label's text background, set on it with the Text tool: kept
+    /// when the dimension is drawn again (#3347).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub text_background: Option<Fill>,
     /// The lines' width, mm; 0 for a hairline.
     pub line_width: f64,
     pub arrows: ArrowStyle,
@@ -275,6 +279,7 @@ impl Default for DimensionStyle {
             font: String::new(),
             line_color: Color::BLACK,
             text_color: Color::BLACK,
+            text_background: None,
             line_width: 0.0,
             arrows: ArrowStyle::Filled,
             round_ends: false,
@@ -710,6 +715,9 @@ impl Dimension {
                     if sp.size_pt.is_finite() && (sp.size_pt - size).abs() > 1e-9 {
                         next.style.text_size = sp.size_pt.clamp(1.0, 500.0);
                     }
+                    // The text background set on the label stays when its
+                    // colour changes or the object it measures moves.
+                    next.style.text_background = sp.background.clone();
                 }
                 if let Fill::Solid(c) = l.fill {
                     next.style.text_color = c;
@@ -748,6 +756,9 @@ impl Dimension {
                 on_path: None,
             },
         );
+        if let ShapeKind::Text { spans, .. } = &mut label.kind {
+            spans[0].background = self.style.text_background.clone();
+        }
         label.fill = Fill::Solid(self.style.text_color);
         label.stroke = None;
         // The label's own box: its width and how far it reaches below and
@@ -1061,12 +1072,78 @@ pub fn group_of(
     g
 }
 
-fn with_data(mut data: Vec<(String, String)>, d: &Dimension) -> Vec<(String, String)> {
+pub(crate) fn with_data(mut data: Vec<(String, String)>, d: &Dimension) -> Vec<(String, String)> {
     data.retain(|(k, _)| k != DATA_KEY);
     if let Ok(v) = serde_json::to_string(d) {
         data.push((DATA_KEY.into(), v));
     }
     data
+}
+
+/// The anchors of `d`'s points (page space) that sit on a node of an
+/// object of `layers`, or else on one of its segments (an edge, its
+/// midpoint or any point along it, #1178): within `tol` mm of it. A node
+/// wins over a segment, so a corner stays a corner. The Dimension tool
+/// reaches 3 pixels; a script's dimension, typed to the object's
+/// corners, holds to them too (#2348).
+pub(crate) fn anchors_on(
+    layers: &[&tracedraw_core::Layer],
+    d: &Dimension,
+    tol: f64,
+) -> Vec<Anchor> {
+    use tracedraw_core::geometry::ParamCurveNearest;
+    let mut out = Vec::new();
+    for i in 0..3u8 {
+        let Some(p) = d.point(i) else {
+            continue;
+        };
+        let mut node_best: Option<(Anchor, f64)> = None;
+        let mut edge_best: Option<(Anchor, f64)> = None;
+        for layer in layers {
+            if !layer.visible {
+                continue;
+            }
+            for s in &layer.shapes {
+                if is_dimension(s) || !s.visible {
+                    continue;
+                }
+                let path = s.page_path();
+                if !path.bounding_box().inflate(tol, tol).contains(p) {
+                    continue;
+                }
+                for (node, q) in tracedraw_core::nodes::nodes(&path).into_iter().enumerate() {
+                    let dist = (q.pos - p).hypot();
+                    if dist <= tol && node_best.is_none_or(|b| dist < b.1) {
+                        let a = Anchor {
+                            point: i,
+                            shape: s.id,
+                            node,
+                            segment: None,
+                        };
+                        node_best = Some((a, dist));
+                    }
+                }
+                if node_best.is_some() {
+                    continue;
+                }
+                for (index, seg) in path.segments().enumerate() {
+                    let n = seg.nearest(p, 1e-6);
+                    let dist = n.distance_sq.sqrt();
+                    if dist <= tol && edge_best.is_none_or(|b| dist < b.1) {
+                        let a = Anchor {
+                            point: i,
+                            shape: s.id,
+                            node: 0,
+                            segment: Some((index, n.t)),
+                        };
+                        edge_best = Some((a, dist));
+                    }
+                }
+            }
+        }
+        out.extend(node_best.or(edge_best).map(|b| b.0));
+    }
+    out
 }
 
 /// How far Add Dimensions puts the dimension lines from the box they
@@ -1101,13 +1178,18 @@ impl App {
         };
         let g = self.dimension_group(measure);
         let group = g.id;
-        if let Err(e) = self
-            .engine
-            .run_batch(label, &[Command::AddShape { layer, shape: g }])
-        {
+        if let Err(e) = self.engine.run_batch(
+            label,
+            &[Command::AddShape {
+                layer,
+                shape: g.clone(),
+            }],
+        ) {
             self.status = e.to_string();
             return;
         }
+        // A macro being recorded makes it again (#2348).
+        self.note_recorded(&[Command::AddShape { layer, shape: g }]);
         self.select(vec![group]);
     }
 
@@ -1158,6 +1240,7 @@ impl App {
             self.status = e.to_string();
             return;
         }
+        self.note_recorded(&cmds);
         self.select(ids);
     }
 
@@ -1176,64 +1259,11 @@ impl App {
     }
 
     /// The anchors of `d`'s points (page space) that sit on a node of an
-    /// object on the page, or else on one of its segments (an edge, its
-    /// midpoint or any point along it, #1178): within 3 pixels of it. A
-    /// node wins over a segment, so a corner stays a corner.
+    /// object on the page, or else on one of its segments: within 3
+    /// pixels of it (see [`anchors_on`]).
     fn anchors_for(&self, d: &Dimension) -> Vec<Anchor> {
-        use tracedraw_core::geometry::ParamCurveNearest;
         let tol = (3.0 / self.view.zoom as f64).max(1e-3);
-        let mut out = Vec::new();
-        for i in 0..3u8 {
-            let Some(p) = d.point(i) else {
-                continue;
-            };
-            let mut node_best: Option<(Anchor, f64)> = None;
-            let mut edge_best: Option<(Anchor, f64)> = None;
-            for layer in self.page_layers() {
-                if !layer.visible {
-                    continue;
-                }
-                for s in &layer.shapes {
-                    if is_dimension(s) || !s.visible {
-                        continue;
-                    }
-                    let path = s.page_path();
-                    if !path.bounding_box().inflate(tol, tol).contains(p) {
-                        continue;
-                    }
-                    for (node, q) in tracedraw_core::nodes::nodes(&path).into_iter().enumerate() {
-                        let dist = (q.pos - p).hypot();
-                        if dist <= tol && node_best.is_none_or(|b| dist < b.1) {
-                            let a = Anchor {
-                                point: i,
-                                shape: s.id,
-                                node,
-                                segment: None,
-                            };
-                            node_best = Some((a, dist));
-                        }
-                    }
-                    if node_best.is_some() {
-                        continue;
-                    }
-                    for (index, seg) in path.segments().enumerate() {
-                        let n = seg.nearest(p, 1e-6);
-                        let dist = n.distance_sq.sqrt();
-                        if dist <= tol && edge_best.is_none_or(|b| dist < b.1) {
-                            let a = Anchor {
-                                point: i,
-                                shape: s.id,
-                                node: 0,
-                                segment: Some((index, n.t)),
-                            };
-                            edge_best = Some((a, dist));
-                        }
-                    }
-                }
-            }
-            out.extend(node_best.or(edge_best).map(|b| b.0));
-        }
-        out
+        anchors_on(&self.page_layers(), d, tol)
     }
 
     /// `d` (dimension group `g`'s) with its anchored points on their nodes
@@ -1547,6 +1577,49 @@ impl App {
         let mut cmds = vec![Command::Ungroup { group: id }];
         if !empty.is_empty() {
             cmds.push(Command::DeleteShapes { shapes: empty });
+        }
+        Some(cmds)
+    }
+
+    /// Deleting `ids` when some are parts of a dimension (its label, its
+    /// lines or its arrowheads, picked with Ctrl+click) and not the whole
+    /// of it (#3348): the commands that break each such dimension apart
+    /// first, so its other parts stay as objects of their own, and the
+    /// shapes then to delete (those the break leaves). Deleting the part
+    /// alone did nothing: the dimension drew it again at once. `None`
+    /// when no part of a dimension is among `ids`.
+    pub(crate) fn dimension_part_delete_commands(&self, ids: &[ShapeId]) -> Option<Vec<Command>> {
+        let doc = self.doc();
+        let groups: Vec<ShapeId> = doc
+            .all_layers()
+            .flat_map(|l| &l.shapes)
+            .filter(|s| !ids.contains(&s.id) && Dimension::of(s).is_some())
+            .filter(|s| match &s.kind {
+                ShapeKind::Group { children } => children.iter().any(|c| ids.contains(&c.id)),
+                _ => false,
+            })
+            .map(|s| s.id)
+            .collect();
+        if groups.is_empty() {
+            return None;
+        }
+        let mut cmds: Vec<Command> = groups
+            .into_iter()
+            .filter_map(|g| self.dimension_break_commands(g))
+            .flatten()
+            .collect();
+        // Parts the break already removes (empty arrowheads) are not
+        // deleted twice.
+        let gone: Vec<ShapeId> = cmds
+            .iter()
+            .flat_map(|c| match c {
+                Command::DeleteShapes { shapes } => shapes.clone(),
+                _ => Vec::new(),
+            })
+            .collect();
+        let shapes: Vec<ShapeId> = ids.iter().copied().filter(|id| !gone.contains(id)).collect();
+        if !shapes.is_empty() {
+            cmds.push(Command::DeleteShapes { shapes });
         }
         Some(cmds)
     }
@@ -2039,6 +2112,59 @@ mod tests {
         assert_eq!(app.hit_test(Point::new(40.0, 40.0)), Some(dim));
     }
 
+    /// An object and its dimension duplicated (Ctrl+D) or copied and
+    /// pasted together: the copied dimension measures the copied object
+    /// and follows it, and the first one stays with the original (#3345).
+    #[test]
+    fn a_dimension_copied_with_its_object_measures_the_copy() {
+        for paste in [false, true] {
+            let mut app = App::headless();
+            app.view.zoom = 1.0;
+            let rect = app
+                .new_shape(ShapeKind::Rect {
+                    rect: Rect::new(10.0, 10.0, 50.0, 30.0),
+                    radius: 0.0,
+                    corners: None,
+                })
+                .expect("rect");
+            app.create_dimension(
+                Point::new(10.0, 10.0),
+                Point::new(50.0, 10.0),
+                Point::new(30.0, 0.0),
+            );
+            let dim = app.selection[0];
+            app.select(vec![rect, dim]);
+            if paste {
+                app.copy();
+                app.paste();
+            } else {
+                app.duplicate();
+            }
+            app.bake_dimensions();
+            let copies = app.selection.clone();
+            assert_eq!(copies.len(), 2, "{copies:?}");
+            let dim_copy = *copies
+                .iter()
+                .find(|id| Dimension::of(app.doc().find_shape(**id).expect("copy")).is_some())
+                .expect("the dimension's copy");
+            let rect_copy = *copies.iter().find(|id| **id != dim_copy).expect("rect copy");
+            let d = Dimension::of(app.doc().find_shape(dim_copy).expect("copy")).expect("data");
+            assert_eq!(d.anchors.len(), 2, "{:?}", d.anchors);
+            assert!(d.anchors.iter().all(|a| a.shape == rect_copy), "{:?}", d.anchors);
+            // Twice as wide: the copy's dimension follows, the first stays.
+            app.run(Command::TransformShapes {
+                shapes: vec![rect_copy],
+                transform: Affine::scale_non_uniform(2.0, 1.0),
+            });
+            app.bake_dimensions();
+            let d = Dimension::of(app.doc().find_shape(dim_copy).expect("copy")).expect("data");
+            assert!((d.value() - 80.0).abs() < 1e-6, "paste {paste}: {}", d.value());
+            let d0 = Dimension::of(app.doc().find_shape(dim).expect("dim")).expect("data");
+            assert!((d0.value() - 40.0).abs() < 1e-6, "{}", d0.value());
+            assert!(d0.anchors.iter().all(|a| a.shape == rect));
+        }
+    }
+
     /// A dimension drawn between two nodes of an object holds to them:
     /// resizing or moving the object takes the dimension along and its
     /// value follows; a dimension moved by itself stays held (#1492); one whose
@@ -2361,6 +2487,51 @@ mod tests {
         let d = Dimension::of(app.doc().find_shape(dim).expect("dim")).expect("data");
         assert!(d.anchors.is_empty());
         assert!((d.value() - 40.0).abs() < 1e-9);
+    }
+
+    /// #3348: a dimension's label, picked on its own (Ctrl+click), goes
+    /// on its own with Delete and the lines stay; its lines go on their
+    /// own the same way; one Undo brings the whole dimension back.
+    #[test]
+    fn a_dimension_part_deletes_on_its_own() {
+        for part_is_label in [true, false] {
+            let mut app = App::headless();
+            app.view.zoom = 1.0;
+            app.create_dimension(
+                Point::new(10.0, 10.0),
+                Point::new(50.0, 10.0),
+                Point::new(30.0, 0.0),
+            );
+            let dim = app.selection[0];
+            let children = match &app.doc().find_shape(dim).expect("dim").kind {
+                ShapeKind::Group { children } => children.clone(),
+                _ => panic!("a group"),
+            };
+            let is_label = |c: &Shape| matches!(c.kind, ShapeKind::Text { .. });
+            let part = children
+                .iter()
+                .find(|c| is_label(c) == part_is_label && !matches!(&c.kind, ShapeKind::Path { path, .. } if path.elements().is_empty()))
+                .expect("part")
+                .id;
+            let kept: Vec<ShapeId> = children
+                .iter()
+                .filter(|c| is_label(c) != part_is_label)
+                .filter(|c| !matches!(&c.kind, ShapeKind::Path { path, .. } if path.elements().is_empty()))
+                .map(|c| c.id)
+                .collect();
+            app.select(vec![part]);
+            app.delete_selection();
+            app.bake_dimensions();
+            assert!(app.doc().find_shape(part).is_none(), "the part is gone");
+            assert!(app.doc().find_shape(dim).is_none(), "the dimension broke apart");
+            for id in &kept {
+                assert!(app.doc().find_shape(*id).is_some(), "the rest stays: {id:?}");
+            }
+            app.engine.undo().expect("undo");
+            let back = app.doc().find_shape(dim).expect("the dimension is back");
+            assert!(Dimension::of(back).is_some());
+            assert!(app.doc().find_shape(part).is_some());
+        }
     }
 
     /// The preview follows the pointer; Horizontal or Vertical keeps the
@@ -3090,6 +3261,46 @@ mod tests {
         // An empty label not being typed is the measured one.
         type_label(&mut app, id, " ");
         assert_eq!(label_of(&app, id), "40.00 mm");
+    }
+
+    /// A text background set on the label with the Text tool stays when
+    /// the label's colour changes and when the dimension is moved (#3347).
+    #[test]
+    fn the_label_keeps_its_text_background() {
+        let mut app = App::headless();
+        let id = forty(&mut app);
+        let lid = label_id(&app, id);
+        let black = Fill::Solid(Color::BLACK);
+        let background = |app: &App| {
+            let lid = label_id(app, id);
+            match &app.doc().find_shape(lid).expect("label").kind {
+                ShapeKind::Text { spans, .. } => spans[0].background.clone(),
+                other => panic!("{other:?}"),
+            }
+        };
+        let mut spans = match &app.doc().find_shape(lid).expect("label").kind {
+            ShapeKind::Text { spans, .. } => spans.clone(),
+            other => panic!("{other:?}"),
+        };
+        spans[0].background = Some(black.clone());
+        app.set_text_spans(lid, spans);
+        app.bake_dimensions();
+        assert_eq!(dimension(&app, id).style.text_background, Some(black.clone()));
+        let white = Color::WHITE;
+        app.run(Command::SetFill {
+            shapes: vec![label_id(&app, id)],
+            fill: Fill::Solid(white),
+        });
+        app.bake_dimensions();
+        assert_eq!(dimension(&app, id).style.text_color, white);
+        assert_eq!(background(&app), Some(black.clone()), "after the colour");
+        app.run(Command::TransformShapes {
+            shapes: vec![id],
+            transform: Affine::translate((0.0, 15.0)),
+        });
+        app.bake_dimensions();
+        assert_eq!(background(&app), Some(black), "after a move");
+        assert_eq!(dimension(&app, id).style.text_color, white);
     }
 
     /// The label noted when an edit of an older dimension began is for

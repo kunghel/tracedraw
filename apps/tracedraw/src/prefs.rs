@@ -69,6 +69,9 @@ pub struct PrintPrefs {
     /// Custom size last used.
     pub sheet_presets: Vec<(String, tracedraw_core::geometry::Size)>,
     pub custom_sheet: tracedraw_core::geometry::Size,
+    /// The printer's colour profile file and the intent by name (#3374).
+    pub output_profile: Option<String>,
+    pub output_intent: String,
 }
 
 impl Default for PrintPrefs {
@@ -107,6 +110,8 @@ impl Default for PrintPrefs {
             page_numbers: st.page_numbers,
             ps_level: st.ps_level,
             keep_size: st.keep_size,
+            output_profile: None,
+            output_intent: st.output_intent.name().to_string(),
         }
     }
 }
@@ -159,6 +164,9 @@ impl PrintPrefs {
                 PrintState::default().gutter_y,
             ),
             gaps_linked: self.gaps_linked,
+            output_profile: self.output_profile.clone(),
+            output_intent: tracedraw_core::icc::Intent::from_name(&self.output_intent)
+                .unwrap_or(tracedraw_core::icc::Intent::Perceptual),
             ..PrintState::default()
         }
     }
@@ -193,6 +201,8 @@ impl PrintPrefs {
         self.page_numbers = st.page_numbers;
         self.ps_level = st.ps_level;
         self.keep_size = st.keep_size;
+        self.output_profile = st.output_profile.clone();
+        self.output_intent = st.output_intent.name().to_string();
     }
 }
 
@@ -246,6 +256,10 @@ pub struct FormatPrefs {
     /// File > Import waits for a click, a drag or Space to place what
     /// came (#1936); off, it comes in at once where `import_place` says.
     pub import_with_cursor: bool,
+    /// A picture File > Import brings in stays linked to its file (Image >
+    /// Update from Link, read again when the file changes); off, it is
+    /// embedded only (#3089).
+    pub import_link_pictures: bool,
     /// The `.cdr` version Save As starts at (#613).
     pub cdr_version: u16,
     /// Save As starts at `.cdr` rather than TraceDraw for a drawing
@@ -254,6 +268,9 @@ pub struct FormatPrefs {
     /// File > Export goes straight to the file with the last choices
     /// ("Do not show filter dialog").
     pub skip_export_dialog: bool,
+    /// File > Export starts with Selected only ticked when objects are
+    /// selected (#3208).
+    pub export_selected_only: bool,
     /// PDF and AI files: text read in as curves from the fonts the file
     /// embeds (else as editable text, #386).
     pub pdf_text_as_curves: bool,
@@ -293,9 +310,11 @@ impl Default for FormatPrefs {
             remember_last: true,
             import_place: ImportPlace::AsInFile,
             import_with_cursor: true,
+            import_link_pictures: true,
             cdr_version: tracedraw_cdr::write::NEWEST_VERSION,
             save_new_as_cdr: false,
             skip_export_dialog: false,
+            export_selected_only: false,
             pdf_text_as_curves: false,
             pdf_text_paragraphs: true,
             pdf_ask_text: true,
@@ -348,6 +367,9 @@ pub struct LayoutPreset {
     pub margins: [f64; 4],
     pub booklet_binding: usize,
     pub signature_sheets: u32,
+    /// Booklet pages per sheet side: 0 two, 1 four, 2 eight (#3380).
+    #[serde(default)]
+    pub booklet_up: usize,
     pub creep: f64,
     pub booklet_gap: f64,
     pub bleed: bool,
@@ -581,6 +603,7 @@ impl LayoutPreset {
             margins: st.margins,
             booklet_binding: st.booklet_binding,
             signature_sheets: st.signature_sheets,
+            booklet_up: st.booklet_up,
             creep: st.creep,
             booklet_gap: st.booklet_gap,
             bleed: st.bleed,
@@ -644,6 +667,7 @@ impl LayoutPreset {
         }
         st.booklet_binding = self.booklet_binding.min(1);
         st.signature_sheets = self.signature_sheets.clamp(1, 32);
+        st.booklet_up = self.booklet_up.min(2);
         st.creep = num(self.creep, 0.0, 20.0, 0.0);
         st.booklet_gap = num(self.booklet_gap, 0.0, 100.0, 0.0);
         st.bleed = self.bleed;

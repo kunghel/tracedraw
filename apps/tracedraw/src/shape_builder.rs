@@ -22,6 +22,15 @@ pub struct Builder {
     pub parts: Vec<BezPath>,
     /// Alt was held during the drag: the parts go instead of merging.
     pub remove: bool,
+    /// The property bar's Delete mode: a drag or a click takes the parts
+    /// away, and Alt merges them (#3220).
+    pub delete_mode: bool,
+    /// The property bar's Keep Originals: a merge makes the new object
+    /// and leaves the objects it came from as they were (#3220).
+    pub keep_originals: bool,
+    /// The steps the tool made since it was chosen or since the last
+    /// Accept, for Cancel to undo (#3220).
+    pub session_steps: usize,
     hover: std::cell::RefCell<Option<Hover>>,
 }
 
@@ -149,17 +158,18 @@ impl App {
             }
             self.builder.parts.clear();
             self.builder_take(p);
-            self.builder_finish(mods.alt);
+            let remove = mods.alt != self.builder.delete_mode;
+            self.builder_finish(remove);
             return;
         }
         if response.drag_started_by(PointerButton::Primary) {
             self.builder.parts.clear();
-            self.builder.remove = mods.alt;
+            self.builder.remove = mods.alt != self.builder.delete_mode;
             self.drag = Drag::Freehand { points: vec![p] };
             self.builder_take(p);
         }
         if response.dragged_by(PointerButton::Primary) {
-            self.builder.remove = mods.alt;
+            self.builder.remove = mods.alt != self.builder.delete_mode;
             let step = 1.0 / self.view.zoom.max(1e-6) as f64;
             let mut add = Vec::new();
             if let Drag::Freehand { points } = &mut self.drag {
@@ -209,7 +219,13 @@ impl App {
         let mut cmds = Vec::new();
         let mut gone = Vec::new();
         let mut kept = Vec::new();
+        // Keep Originals: a merge leaves the objects as they were (#3220).
+        let keep = self.builder.keep_originals && !remove;
         for q in &pieces {
+            if keep {
+                kept.push(q.id);
+                continue;
+            }
             if q.area.bounding_box().intersect(area.bounding_box()).area() <= 0.0 {
                 kept.push(q.id);
                 continue;
@@ -271,9 +287,46 @@ impl App {
             self.status = e.to_string();
             return;
         }
+        self.builder.session_steps += 1;
         // The objects stay selected, with the new one, to go on building.
         kept.extend(made);
         self.select(kept);
+    }
+}
+
+impl App {
+    /// The Shape Builder's Accept (#3220): the shapes built stay, and the
+    /// Pick tool comes back.
+    pub fn builder_accept(&mut self) {
+        self.builder.session_steps = 0;
+        self.builder.parts.clear();
+        self.set_tool(Tool::Pick);
+    }
+
+    /// The Shape Builder's Cancel (#3220): every step the tool made since
+    /// it was chosen or since the last Accept is undone, so the drawing
+    /// is as it was; the tool stays. Steps of other tools in between stop
+    /// it (they are not the tool's to undo).
+    pub fn builder_cancel(&mut self) {
+        self.builder.parts.clear();
+        while self.builder.session_steps > 0 {
+            let ours = self
+                .engine
+                .undo_label()
+                .is_some_and(|l| l.starts_with("Shape Builder"));
+            if !ours || self.engine.undo().is_err() {
+                break;
+            }
+            self.builder.session_steps -= 1;
+        }
+        self.builder.session_steps = 0;
+        let ids: Vec<ShapeId> = self
+            .selection
+            .iter()
+            .copied()
+            .filter(|id| self.doc().find_shape(*id).is_some())
+            .collect();
+        self.select(ids);
     }
 }
 
@@ -311,6 +364,20 @@ pub fn draw(app: &App, painter: &Painter) {
         return;
     }
     let color = crate::theme::Tokens::SELECTION;
+    // The objects the tool works on are edged in grey, apart from the
+    // usual selection colour, so the ones taking part show (#3220).
+    for q in app.builder_pieces() {
+        for seg in q.area.segments() {
+            let pts: Vec<egui::Pos2> = (0..=8)
+                .map(|i| app.view.to_screen(seg.eval(i as f64 / 8.0)))
+                .collect();
+            painter.add(egui::Shape::line(
+                pts.clone(),
+                egui::Stroke::new(3.0, Color32::from_white_alpha(200)),
+            ));
+            painter.add(egui::Shape::line(pts, egui::Stroke::new(1.5, Color32::from_gray(96))));
+        }
+    }
     let mut shown: Vec<BezPath> = app.builder.parts.clone();
     if let Some(at) = painter.ctx().pointer_hover_pos() {
         if painter.clip_rect().contains(at) {
@@ -485,5 +552,57 @@ mod tests {
         assert_eq!(before, after);
         assert!((page_area(&app, a) - 200.0).abs() < 1e-6);
         assert!((page_area(&app, b) - 200.0).abs() < 1e-6);
+    }
+
+    /// The bar's options (#3220): Keep Originals leaves the squares as
+    /// they were while the merge makes the new object; Cancel undoes every
+    /// step since the tool was chosen; Accept keeps them and goes back to
+    /// the Pick tool.
+    #[test]
+    fn keep_originals_cancel_and_accept() {
+        let mut app = App::headless();
+        let a = square(&mut app, 0.0, 0.0, 20.0, 20.0);
+        let b = square(&mut app, 10.0, 0.0, 30.0, 20.0);
+        app.select(vec![a, b]);
+        app.set_tool(Tool::ShapeBuilder);
+        let count = |app: &App| {
+            app.doc().pages[0]
+                .layers
+                .iter()
+                .map(|l| l.shapes.len())
+                .sum::<usize>()
+        };
+        let before = count(&app);
+        app.builder.keep_originals = true;
+        app.builder_take(Point::new(15.0, 10.0));
+        app.builder_finish(false);
+        assert_eq!(count(&app), before + 1, "the new object, the squares kept");
+        assert!((page_area(&app, a) - 400.0).abs() < 1e-6);
+        assert!((page_area(&app, b) - 400.0).abs() < 1e-6);
+        app.builder.keep_originals = false;
+        app.builder_take(Point::new(5.0, 10.0));
+        app.builder_finish(true);
+        assert_eq!(app.builder.session_steps, 2);
+        app.builder_cancel();
+        assert_eq!(count(&app), before, "both steps undone");
+        assert!((page_area(&app, a) - 400.0).abs() < 1e-6);
+        assert_eq!(app.tool, Tool::ShapeBuilder, "the tool stays");
+        assert!(app.selection.iter().all(|id| app.doc().find_shape(*id).is_some()));
+        // Accept keeps what was built.
+        app.select(vec![a, b]);
+        app.builder_take(Point::new(15.0, 10.0));
+        app.builder_finish(false);
+        app.builder_accept();
+        assert_eq!(app.tool, Tool::Pick);
+        assert_eq!(app.builder.session_steps, 0);
+        assert!(app.doc().find_shape(a).is_some());
+        // Steps of another tool in between stop Cancel.
+        app.set_tool(Tool::ShapeBuilder);
+        app.select(vec![a, b]);
+        app.builder_take(Point::new(25.0, 10.0));
+        app.builder_finish(true);
+        let c = square(&mut app, 50.0, 50.0, 60.0, 60.0);
+        app.builder_cancel();
+        assert!(app.doc().find_shape(c).is_some(), "not the tool's to undo");
     }
 }

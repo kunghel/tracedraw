@@ -316,8 +316,34 @@ pub fn install(device: &wgpu::Device, queue: &wgpu::Queue) {
 }
 
 /// Follow Options: blur on the card or not. Cheap; called every frame.
+/// While Help > Benchmark compares the card with the processor
+/// ([`force`]), its choice wins.
 pub fn set_enabled(on: bool) {
     if let Some(b) = BLUR.get() {
+        let on = match FORCED.load(Ordering::Relaxed) {
+            1 => false,
+            2 => true,
+            _ => on,
+        };
+        b.enabled.store(on, Ordering::Relaxed);
+    }
+}
+
+/// 0: Options decides; 1: never on the card; 2: always on it.
+static FORCED: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+
+/// Help > Benchmark: blur on the card (`Some(true)`), on the processor
+/// (`Some(false)`), or as Options says again (`None`), from now on.
+pub fn force(on: Option<bool>) {
+    FORCED.store(
+        match on {
+            None => 0,
+            Some(false) => 1,
+            Some(true) => 2,
+        },
+        Ordering::Relaxed,
+    );
+    if let (Some(b), Some(on)) = (BLUR.get(), on) {
         b.enabled.store(on, Ordering::Relaxed);
     }
 }
@@ -524,6 +550,7 @@ mod tests {
                 zoom,
                 origin_x: 0.0,
                 origin_y: 297.0 * zoom,
+                stretch_y: 1.0,
             },
             draft: true,
             ..Default::default()

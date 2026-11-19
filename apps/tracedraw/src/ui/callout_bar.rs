@@ -74,7 +74,11 @@ pub fn callout_bar(app: &mut App, ui: &mut Ui) {
         .selected_text(dash_label(&style.dash))
         .width(96.0)
         .show_ui(ui, |ui| {
-            for d in DASHES {
+            // A callout's line has no caps to draw dots with.
+            for d in DASHES
+                .iter()
+                .filter(|d| !tracedraw_core::Stroke::dash_has_dots(d))
+            {
                 if ui
                     .selectable_label(style.dash.as_slice() == *d, dash_label(d))
                     .clicked()

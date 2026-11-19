@@ -471,6 +471,7 @@ fn render_preview(
             zoom,
             origin_x,
             origin_y,
+            stretch_y: 1.0,
         },
         ..tracedraw_render::RenderOptions::default()
     };

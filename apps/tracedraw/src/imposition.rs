@@ -137,6 +137,9 @@ pub struct Booklet {
     /// The space between the two pages of a spread, mm, centred on the
     /// fold.
     pub gap: f64,
+    /// Pages on each side of a sheet: 2 (one fold), 4 or 8 (a large
+    /// sheet folded into a signature of 8 or 16 pages, #3380).
+    pub up: u32,
 }
 
 impl Default for Booklet {
@@ -146,6 +149,7 @@ impl Default for Booklet {
             signature_sheets: 4,
             creep: 0.0,
             gap: 0.0,
+            up: 2,
         }
     }
 }
@@ -173,6 +177,123 @@ impl Booklet {
     pub fn creep_mm(&self) -> f64 {
         Self::safe(self.creep, 20.0)
     }
+
+    /// Pages on each side of a sheet: 2, 4 or 8.
+    pub fn pages_per_side(&self) -> usize {
+        match self.up {
+            4 => 4,
+            8 => 8,
+            _ => 2,
+        }
+    }
+
+    /// The grid of pages on a sheet side (columns, rows).
+    pub fn grid(&self) -> (u32, u32) {
+        match self.pages_per_side() {
+            4 => (2, 2),
+            8 => (4, 2),
+            _ => (2, 1),
+        }
+    }
+}
+
+/// Where the pages of one folded signature go on its sheet (#3380): the
+/// page number within the signature (0 first) of each place of the front
+/// and of the back (places left to right, top to bottom; the back as it
+/// is seen once the sheet is turned over side to side), each with whether
+/// the page stands upside down there. A sheet of `cols` x `rows` places
+/// is folded in half by `folds` in turn ('v' across the columns, the left
+/// half going behind; 'h' across the rows, the top half going behind),
+/// the last fold the spine; read front to back, the leaves of the folded
+/// sheet are the pages in order.
+fn folded_places(cols: usize, rows: usize, folds: &[u8]) -> [Vec<(usize, bool)>; 2] {
+    // Each place of the folded sheet: its leaves front to back, each a
+    // place of the flat sheet and whether its front faces the front.
+    let (mut w, mut h) = (cols, rows);
+    let mut stacks: Vec<Vec<(usize, bool)>> = (0..cols * rows).map(|i| vec![(i, true)]).collect();
+    let mut turned = vec![false; cols * rows];
+    for &f in folds {
+        let across = f == b'v';
+        let (nw, nh) = if across { (w / 2, h) } else { (w, h / 2) };
+        let stays = |x: usize, y: usize| if across { x >= nw } else { y >= nh };
+        let mut next: Vec<Vec<(usize, bool)>> = vec![Vec::new(); nw * nh];
+        for y in 0..h {
+            for x in 0..w {
+                if stays(x, y) {
+                    let (nx, ny) = if across { (x - nw, y) } else { (x, y - nh) };
+                    next[ny * nw + nx].extend(stacks[y * w + x].iter().copied());
+                }
+            }
+        }
+        for y in 0..h {
+            for x in 0..w {
+                if stays(x, y) {
+                    continue;
+                }
+                let (nx, ny) = if across {
+                    (w - 1 - x - nw, y)
+                } else {
+                    (x, h - 1 - y - nh)
+                };
+                let st = &stacks[y * w + x];
+                if !across {
+                    for &(i, _) in st {
+                        turned[i] = !turned[i];
+                    }
+                }
+                next[ny * nw + nx].extend(st.iter().rev().map(|&(i, front)| (i, !front)));
+            }
+        }
+        stacks = next;
+        (w, h) = (nw, nh);
+    }
+    let leaves = stacks.into_iter().next().unwrap_or_default();
+    let mut front = vec![(0, false); cols * rows];
+    let mut back = vec![(0, false); cols * rows];
+    for (k, (i, faces_front)) in leaves.into_iter().enumerate() {
+        let (a, b) = if faces_front {
+            (2 * k, 2 * k + 1)
+        } else {
+            (2 * k + 1, 2 * k)
+        };
+        let (x, y) = (i % cols, i / cols);
+        front[i] = (a, turned[i]);
+        // The back, turned over side to side: the column mirrored.
+        back[y * cols + (cols - 1 - x)] = (b, turned[i]);
+    }
+    [front, back]
+}
+
+/// The sides of the sheets of a booklet printed 4 or 8 pages a side
+/// (#3380), front then back of each sheet: the page in each place (`None`
+/// blank) and whether it stands upside down. Each sheet folds into a
+/// signature; saddle-stitched, the signatures nest one inside the other
+/// (the first holds the first and the last pages), perfect-bound they are
+/// gathered in order.
+pub fn folded_sides(pages: usize, b: &Booklet) -> Vec<Vec<(Option<usize>, bool)>> {
+    let up = b.pages_per_side();
+    let (cols, rows) = b.grid();
+    let folds: &[u8] = if up == 8 { b"vhv" } else { b"hv" };
+    let places = folded_places(cols as usize, rows as usize, folds);
+    let per = 2 * up;
+    let sheets = pages.div_ceil(per).max(1);
+    let padded = sheets * per;
+    let half = per / 2;
+    let mut out = Vec::new();
+    for s in 0..sheets {
+        let page = |i: usize| {
+            let p = match b.binding {
+                Binding::PerfectBound => s * per + i,
+                Binding::SaddleStitch if i < half => s * half + i,
+                Binding::SaddleStitch => padded - (s + 1) * half + (i - half),
+            };
+            (p < pages).then_some(p)
+        };
+        for side in &places {
+            out.push(side.iter().map(|&(i, turned)| (page(i), turned)).collect());
+        }
+    }
+    out
 }
 
 /// The page count of a booklet and what it takes to print it.
@@ -190,6 +311,17 @@ pub struct BookletInfo {
 
 /// What a booklet of `pages` pages bound as `b` says takes.
 pub fn booklet_info(pages: usize, b: &Booklet) -> BookletInfo {
+    if b.pages_per_side() > 2 {
+        // One signature a sheet.
+        let per = 2 * b.pages_per_side();
+        let sheets = pages.div_ceil(per).max(1);
+        return BookletInfo {
+            pages,
+            blanks: sheets * per - pages,
+            sheets,
+            signatures: sheets,
+        };
+    }
     let padded = pages.div_ceil(4).max(1) * 4;
     let sheets = padded / 4;
     let signatures = match b.binding {
@@ -374,6 +506,10 @@ pub struct Options {
     /// On a fixed sheet the pages stretch to fill the room inside the
     /// margins, width and height each on its own (#591).
     pub stretch_fit: bool,
+    /// Fit to page: on a fixed sheet the pages grow or shrink to fill the
+    /// room inside the margins, keeping their proportions. What runs off
+    /// a page stays cut at its edge, as on screen (#2678).
+    pub fit: bool,
     /// The binding, creep and gap of the Booklet layout.
     pub booklet: Booklet,
     pub marks: Marks,
@@ -404,6 +540,7 @@ impl Default for Options {
             cell_rotation: Vec::new(),
             cell_order: Vec::new(),
             stretch_fit: false,
+            fit: false,
             booklet: Booklet::default(),
             marks: Marks::default(),
             crop: CropStyle::default(),
@@ -488,11 +625,20 @@ pub fn plan(sizes: &[Size], o: &Options) -> Vec<SheetPlan> {
     if sizes.is_empty() {
         return Vec::new();
     }
-    let (cols, rows) = o.layout.grid();
+    let (cols, rows) = match o.layout {
+        Layout::Booklet => o.booklet.grid(),
+        _ => o.layout.grid(),
+    };
+    // A booklet printed 4 or 8 pages a side (#3380): its sides, with the
+    // pages that stand upside down.
+    let folded = match o.layout {
+        Layout::Booklet if o.booklet.pages_per_side() > 2 => folded_sides(sizes.len(), &o.booklet),
+        _ => Vec::new(),
+    };
     // A booklet's sides, and how far creep moves each side's pages
     // toward the spine.
     let sides = match o.layout {
-        Layout::Booklet => booklet_sides(sizes.len(), &o.booklet),
+        Layout::Booklet if folded.is_empty() => booklet_sides(sizes.len(), &o.booklet),
         _ => Vec::new(),
     };
     let creep: Vec<f64> = sides
@@ -521,6 +667,10 @@ pub fn plan(sizes: &[Size], o: &Options) -> Vec<SheetPlan> {
                 })
                 .collect()
         }
+        Layout::Booklet if !folded.is_empty() => folded
+            .iter()
+            .map(|side| side.iter().map(|(p, _)| *p).collect())
+            .collect(),
         Layout::Booklet => sides.iter().map(|s| vec![s.left, s.right]).collect(),
         Layout::Repeat { .. } => (0..sizes.len())
             .map(|i| vec![Some(i); (cols * rows) as usize])
@@ -540,6 +690,22 @@ pub fn plan(sizes: &[Size], o: &Options) -> Vec<SheetPlan> {
             })
             .collect()
     };
+    // The pages of a folded signature that stand upside down, moved with
+    // their pages.
+    let upside_down: Vec<Vec<bool>> = folded
+        .iter()
+        .map(|side| {
+            let flags: Vec<bool> = side.iter().map(|f| f.1).collect();
+            if o.cell_order.is_empty() {
+                flags
+            } else {
+                place_order(&o.cell_order, flags.len())
+                    .into_iter()
+                    .map(|i| flags[i])
+                    .collect()
+            }
+        })
+        .collect();
     let margin = if o.marks.any() { MARK_MARGIN } else { 0.0 } + o.bleed.max(0.0);
     let pm = o
         .paper_margins
@@ -607,6 +773,9 @@ pub fn plan(sizes: &[Size], o: &Options) -> Vec<SheetPlan> {
                         (1.0, 1.0)
                     } else if o.stretch_fit {
                         (avail_w / grid_w, avail_h / grid_h)
+                    } else if o.fit {
+                        let s = (avail_w / grid_w).min(avail_h / grid_h);
+                        (s, s)
                     } else {
                         let s = (avail_w / grid_w).min(avail_h / grid_h).min(1.0);
                         (s, s)
@@ -642,7 +811,12 @@ pub fn plan(sizes: &[Size], o: &Options) -> Vec<SheetPlan> {
                 .iter()
                 .enumerate()
                 .map(|(n, page)| {
-                    let turn = turn_at(n);
+                    // Upside down in a folded signature (#3380).
+                    let flip = upside_down
+                        .get(side)
+                        .and_then(|f| f.get(n))
+                        .is_some_and(|f| *f);
+                    let turn = turn_at(n) + if flip { std::f64::consts::PI } else { 0.0 };
                     let col = n as u32 % cols;
                     let col = if o.back_side { cols - 1 - col } else { col } as f64;
                     let row = (n as u32 / cols) as f64;
@@ -877,7 +1051,10 @@ pub fn marks(
         ));
         // A fold mark at a booklet's spine.
         if o.layout == Layout::Booklet {
-            if let (Some(a), Some(b)) = (sheet.cells.first(), sheet.cells.get(1)) {
+            // The middle pair of the top row: the spine of a booklet
+            // folded once, the first fold of a large sheet (#3380).
+            let mid = (o.booklet.grid().0 / 2) as usize;
+            if let (Some(a), Some(b)) = (sheet.cells.get(mid - 1), sheet.cells.get(mid)) {
                 // The fold: half way between the pages (creep moves them
                 // toward it by the same amount).
                 let x = (a.trim.x1 + b.trim.x0) / 2.0;
@@ -1599,10 +1776,122 @@ mod tests {
         assert!(near(far.x, m.x1) && near(far.y, m.y1), "{far:?} {m:?}");
     }
 
+    /// Fit to page: the page grows or shrinks to fill the room inside
+    /// the margins, keeping its proportions; without it a small page
+    /// keeps its size (#2678).
+    #[test]
+    fn fit_to_page_scales_the_page_to_the_paper() {
+        let a4 = Size::new(210.0, 297.0);
+        let near = |a: f64, b: f64| (a - b).abs() < 1e-9;
+        let o = |page: Size, fit| {
+            plan(
+                &[page],
+                &Options {
+                    sheet: Some(a4),
+                    paper_margins: [10.0, 10.0, 20.0, 20.0],
+                    fit,
+                    ..Default::default()
+                },
+            )[0]
+            .cells[0]
+                .trim
+        };
+        let small = Size::new(100.0, 50.0);
+        let t = o(small, true);
+        assert!(near(t.width(), 190.0) && near(t.height(), 95.0), "{t:?}");
+        assert!(near(t.center().x, 105.0), "centred: {t:?}");
+        let t = o(small, false);
+        assert!(near(t.width(), 100.0), "kept: {t:?}");
+        let big = Size::new(420.0, 594.0);
+        let t = o(big, true);
+        assert!(
+            near(t.height(), 257.0) && t.width() <= 190.0 + 1e-9,
+            "{t:?}"
+        );
+    }
+
     const A5: Size = Size {
         width: 148.0,
         height: 210.0,
     };
+
+    /// A large sheet printed 4 or 8 pages a side folds into a signature
+    /// of 8 or 16 pages: the places are the printers' layouts, the pages
+    /// of the top row upside down (#3380).
+    #[test]
+    fn large_sheets_fold_into_signatures_of_8_and_16_pages() {
+        let side = |up: u32, n: usize, binding: Binding| {
+            let b = Booklet {
+                up,
+                binding,
+                ..Default::default()
+            };
+            folded_sides(n, &b)
+                .into_iter()
+                .map(|side| {
+                    side.into_iter()
+                        .map(|(p, turned)| (p.map_or(0, |i| i + 1), turned))
+                        .collect::<Vec<_>>()
+                })
+                .collect::<Vec<_>>()
+        };
+        let pages = |v: &[(usize, bool)]| v.iter().map(|p| p.0).collect::<Vec<_>>();
+        let turned = |v: &[(usize, bool)]| v.iter().map(|p| p.1).collect::<Vec<_>>();
+        // 8 pages, 4 a side: 5 4 (upside down) over 8 1; behind, 3 6
+        // over 2 7.
+        let s = side(4, 8, Binding::SaddleStitch);
+        assert_eq!(s.len(), 2);
+        assert_eq!(pages(&s[0]), vec![5, 4, 8, 1]);
+        assert_eq!(pages(&s[1]), vec![3, 6, 2, 7]);
+        assert_eq!(turned(&s[0]), vec![true, true, false, false]);
+        assert_eq!(turned(&s[1]), vec![true, true, false, false]);
+        // 16 pages, 8 a side.
+        let s = side(8, 16, Binding::SaddleStitch);
+        assert_eq!(pages(&s[0]), vec![5, 12, 9, 8, 4, 13, 16, 1]);
+        assert_eq!(pages(&s[1]), vec![7, 10, 11, 6, 2, 15, 14, 3]);
+        assert_eq!(
+            turned(&s[0]),
+            vec![true, true, true, true, false, false, false, false]
+        );
+        // Two signatures of 8: saddle-stitched the first holds 1 to 4 and
+        // 13 to 16 (it goes round the second), perfect-bound 1 to 8.
+        let s = side(4, 16, Binding::SaddleStitch);
+        let mut first: Vec<usize> = pages(&s[0]).into_iter().chain(pages(&s[1])).collect();
+        first.sort();
+        assert_eq!(first, vec![1, 2, 3, 4, 13, 14, 15, 16]);
+        let s = side(4, 16, Binding::PerfectBound);
+        let mut first: Vec<usize> = pages(&s[0]).into_iter().chain(pages(&s[1])).collect();
+        first.sort();
+        assert_eq!(first, vec![1, 2, 3, 4, 5, 6, 7, 8]);
+        // 10 pages: two sheets, the last six places blank.
+        let info = booklet_info(
+            10,
+            &Booklet {
+                up: 4,
+                ..Default::default()
+            },
+        );
+        assert_eq!((info.sheets, info.blanks), (2, 6));
+        // On the sheet, the pages of the top row are turned half round.
+        let o = Options {
+            layout: Layout::Booklet,
+            booklet: Booklet {
+                up: 4,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let plan = plan(&[Size::new(100.0, 150.0); 8], &o);
+        assert_eq!(plan.len(), 2);
+        let c = &plan[0].cells;
+        assert_eq!(c.len(), 4);
+        let upside_down = |cell: &Cell| cell.transform.as_coeffs()[0] < 0.0;
+        assert!(upside_down(&c[0]) && upside_down(&c[1]));
+        assert!(!upside_down(&c[2]) && !upside_down(&c[3]));
+        assert!((plan[0].size.width - 200.0).abs() < 1e-9);
+        assert!((plan[0].size.height - 300.0).abs() < 1e-9);
+        assert!(c[0].trim.y0 >= c[2].trim.y1 - 1e-9, "the top row is above");
+    }
 
     /// Perfect binding folds each signature on its own: with one sheet
     /// per signature the first sheet holds pages 1 to 4 and the second 5
@@ -1712,6 +2001,7 @@ mod tests {
                 creep: -3.0,
                 signature_sheets: 0,
                 binding: Binding::PerfectBound,
+                up: 3,
             },
             ..o
         };

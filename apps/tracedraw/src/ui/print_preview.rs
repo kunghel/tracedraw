@@ -1798,6 +1798,18 @@ pub fn pages_to_print(sheets: usize, st: &PrintState, inks: &[bool]) -> usize {
     sheets * per_sheet * st.copies.max(1) as usize
 }
 
+/// The frame round a sheet thumbnail: the sheet shown in accent. Drawn
+/// inside the thumbnail, so the strip's edge does not cut off the first
+/// sheet's frame (#3242).
+fn thumb_frame(shown: bool) -> (egui::Stroke, egui::StrokeKind) {
+    let stroke = if shown {
+        egui::Stroke::new(2.0, Tokens::ACCENT)
+    } else {
+        egui::Stroke::new(1.0, Tokens::text_dim())
+    };
+    (stroke, egui::StrokeKind::Inside)
+}
+
 /// The strip of sheet thumbnails and the status line under it.
 fn strip_panel(app: &App, ui: &mut Ui, pv: &mut PrintPreview) {
     let sizes: Vec<tracedraw_core::geometry::Size> =
@@ -1872,16 +1884,8 @@ fn strip_panel(app: &App, ui: &mut Ui, pv: &mut PrintPreview) {
                                 );
                             }
                             let shown = i == pv.sheet;
-                            p.rect_stroke(
-                                pic,
-                                0.0,
-                                if shown {
-                                    egui::Stroke::new(2.0, Tokens::ACCENT)
-                                } else {
-                                    egui::Stroke::new(1.0, Tokens::text_dim())
-                                },
-                                egui::StrokeKind::Outside,
-                            );
+                            let (stroke, kind) = thumb_frame(shown);
+                            p.rect_stroke(pic, 0.0, stroke, kind);
                             p.text(
                                 egui::pos2(pic.center().x, pic.bottom() + 2.0),
                                 egui::Align2::CENTER_TOP,
@@ -2143,6 +2147,7 @@ fn render_part(
             zoom: px_per_mm,
             origin_x: -part.x0 * px_per_mm,
             origin_y: part.y1 * px_per_mm,
+            stretch_y: 1.0,
         },
         preview: None,
         wireframe: false,
@@ -3704,6 +3709,19 @@ mod tests {
         let pv = app.print_preview.as_ref().unwrap();
         assert!(pv.pan.x < -20.0 && pv.pan.y < -10.0, "{:?}", pv.pan);
         assert_eq!(pv.st.art_offset, (0.0, 0.0));
+    }
+
+    /// The frames of the thumbnails lie inside them: the strip clips
+    /// what lies outside its edge, which cut off the left side of the
+    /// first sheet's accent frame (#3242).
+    #[test]
+    fn thumbnail_frames_stay_inside_the_thumbnail() {
+        for shown in [true, false] {
+            let (stroke, kind) = thumb_frame(shown);
+            assert_eq!(kind, egui::StrokeKind::Inside);
+            assert!(stroke.width > 0.0);
+        }
+        assert!(thumb_frame(true).0.width > thumb_frame(false).0.width);
     }
 
     /// The strip shows every sheet; a click on one shows it. The status

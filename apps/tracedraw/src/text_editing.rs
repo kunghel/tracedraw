@@ -1307,6 +1307,82 @@ impl App {
     }
 }
 
+/// What a character that prints nothing shows as while its text is
+/// edited with Text > Show Non-Printing Characters on (#3271).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NonPrinting {
+    /// A space (also the no-break and ideographic ones): a dot.
+    Space,
+    /// A tab: an arrow across its width.
+    Tab,
+    /// The end of a paragraph (Enter): a pilcrow.
+    Paragraph,
+    /// A line break inside a paragraph (Shift+Enter): a bent arrow.
+    LineBreak,
+}
+
+/// A non-printing character of the text being edited, on the page: its
+/// left and right edge at half the x-height and the height of its line.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct NonPrintingMark {
+    pub kind: NonPrinting,
+    pub from: Point,
+    pub to: Point,
+    /// The line's ascent plus descent, page units.
+    pub height: f64,
+}
+
+impl App {
+    /// The marks of the spaces, tabs, paragraph ends and line breaks of
+    /// the text being edited, with Show Non-Printing Characters on; none
+    /// otherwise, or with no text edited (#3271: the option did nothing).
+    pub fn non_printing_marks(&self) -> Vec<NonPrintingMark> {
+        if !self.show_non_printing {
+            return Vec::new();
+        }
+        let Some(te) = self.text_edit.as_ref() else {
+            return Vec::new();
+        };
+        let Some((layout, to_page)) = self.text_layout_of(te.shape) else {
+            return Vec::new();
+        };
+        let mut out = Vec::new();
+        for (i, c) in self.edit_text().chars().enumerate() {
+            let kind = match c {
+                ' ' | '\u{a0}' | '\u{3000}' => NonPrinting::Space,
+                '\t' => NonPrinting::Tab,
+                '\n' => NonPrinting::Paragraph,
+                '\u{2028}' => NonPrinting::LineBreak,
+                _ => continue,
+            };
+            let Some((x0, base, asc, desc)) = layout.caret(i) else {
+                continue;
+            };
+            // A line end has no width of its own: its mark stands after
+            // the line's last letter.
+            let x1 = match kind {
+                NonPrinting::Space | NonPrinting::Tab => layout
+                    .caret(i + 1)
+                    .filter(|(_, b, _, _)| (*b - base).abs() < 1e-9)
+                    .map_or(x0, |(x, _, _, _)| x),
+                _ => x0,
+            };
+            let y = base + asc * 0.35;
+            let from = to_page * layout.placed(Point::new(x0, y));
+            let to = to_page * layout.placed(Point::new(x1, y));
+            let top = to_page * layout.placed(Point::new(x0, base + asc));
+            let bottom = to_page * layout.placed(Point::new(x0, base - desc));
+            out.push(NonPrintingMark {
+                kind,
+                from,
+                to,
+                height: (top - bottom).hypot(),
+            });
+        }
+        out
+    }
+}
+
 /// Layout of a text shape (any `ShapeKind::Text`, placed under `parent`)
 /// and the transform from layout space to the page.
 pub fn layout_of_text_shape(
@@ -1492,6 +1568,51 @@ pub fn alt_code_char(code: &str) -> Option<char> {
 mod tests {
     use super::*;
 
+    /// #3271: with Show Non-Printing Characters on, the text being edited
+    /// shows a mark for each space, tab, paragraph end and line break, in
+    /// text order and where the character is; off, or with no text being
+    /// edited, none.
+    #[test]
+    fn non_printing_characters_show_while_editing() {
+        let mut app = App::headless();
+        let id = app
+            .new_shape(ShapeKind::Text {
+                spans: vec![TextSpan::new("ab cd\tef\ngh\u{2028}ij", "Sans", 24.0)],
+                origin: Point::new(10.0, 100.0),
+                frame: None,
+                align: Default::default(),
+                para: Default::default(),
+                on_path: None,
+            })
+            .expect("text");
+        app.show_non_printing = true;
+        assert!(app.non_printing_marks().is_empty(), "nothing edited");
+        app.begin_text_edit(id);
+        let marks = app.non_printing_marks();
+        let kinds: Vec<NonPrinting> = marks.iter().map(|m| m.kind).collect();
+        assert_eq!(
+            kinds,
+            [
+                NonPrinting::Space,
+                NonPrinting::Tab,
+                NonPrinting::Paragraph,
+                NonPrinting::LineBreak
+            ]
+        );
+        if tracedraw_text::fonts().families().is_empty() {
+            return;
+        }
+        // The space and the tab have a width, left to right; the
+        // paragraph's mark and the line break's are on different lines.
+        assert!(marks[0].to.x > marks[0].from.x, "{:?}", marks[0]);
+        assert!(marks[1].to.x > marks[1].from.x, "{:?}", marks[1]);
+        assert!(marks[1].from.x > marks[0].to.x);
+        assert!((marks[2].from.y - marks[3].from.y).abs() > 1.0, "{marks:?}");
+        assert!(marks.iter().all(|m| m.height > 0.0));
+        app.show_non_printing = false;
+        assert!(app.non_printing_marks().is_empty(), "off");
+    }
+
     /// Two texts blended, grouped and given a perspective on the group:
     /// the Text tool reaches each text where it is drawn, through the
     /// perspective, and edits it (#2169). Plain grouped texts too.
@@ -1564,6 +1685,105 @@ mod tests {
             panic!("text");
         };
         assert_eq!(spans_text(spans), "CDE");
+    }
+
+    /// A text in a group given an envelope: a Text tool click on one of
+    /// its middle letters as the envelope draws it puts the caret there,
+    /// not at the end of the text (#3010).
+    #[test]
+    fn a_click_in_an_enveloped_grouped_text_puts_the_caret_by_the_letter() {
+        use tracedraw_core::geometry::{BezPath, Shape as _, Vec2};
+        use tracedraw_core::Command;
+        let mut app = App::headless();
+        let text = |app: &mut App, x: f64, t: &str| {
+            app.new_shape(ShapeKind::Text {
+                spans: vec![TextSpan::new(t, "Sans", 36.0)],
+                origin: Point::new(x, 100.0),
+                frame: None,
+                align: Default::default(),
+                para: Default::default(),
+                on_path: None,
+            })
+            .expect("text")
+        };
+        let a = text(&mut app, 0.0, "ABCDEFGHIJ");
+        let b = text(&mut app, 0.0, "KL");
+        let ab = app.doc().find_shape(a).expect("a").bounds();
+        app.run(Command::TransformShapes {
+            shapes: vec![b],
+            transform: Affine::translate((0.0, ab.height() * 3.0)),
+        });
+        app.select(vec![a, b]);
+        app.group_selection();
+        let g = app.selection[0];
+        let gb = app.doc().find_shape(g).expect("group").bounds();
+        let mut nodes = tracedraw_core::envelope::default_nodes(gb);
+        // An arch: the middles of the top and bottom sides pulled up.
+        let lift = gb.height() * 0.6;
+        nodes[1].y += lift;
+        nodes[5].y += lift;
+        app.run(Command::SetEffects {
+            shape: g,
+            effects: vec![tracedraw_core::live::Effect::Envelope {
+                nodes,
+                keep_lines: false,
+                handles: vec![],
+                corners: vec![],
+                mapping: Default::default(),
+            }],
+        });
+        // The place of the sixth letter as laid out, and where the
+        // envelope draws it (a small square there, beside the text).
+        app.begin_text_edit(a);
+        let laid = Point::new(ab.x0 + ab.width() * 0.55, ab.center().y);
+        let want = app.text_hit_char(laid).expect("a letter");
+        app.finish_text();
+        assert!(want > 2 && want < 8, "{want}");
+        let mut square = BezPath::new();
+        square.move_to(laid + Vec2::new(-0.5, -0.5));
+        square.line_to(laid + Vec2::new(0.5, -0.5));
+        square.line_to(laid + Vec2::new(0.5, 0.5));
+        square.close_path();
+        let mut gs = app.doc().find_shape(g).expect("group").clone();
+        let ShapeKind::Group { children } = &mut gs.kind else {
+            panic!("a group");
+        };
+        let mark = tracedraw_core::ShapeId(u64::MAX - 1);
+        children.insert(
+            1,
+            tracedraw_core::Shape::new(
+                mark,
+                ShapeKind::Path {
+                    path: square,
+                    closed: true,
+                },
+            ),
+        );
+        let drawn = tracedraw_core::live::evaluate(&gs).main;
+        let ShapeKind::Group { children } = &drawn.kind else {
+            panic!("a group");
+        };
+        let mut m = children
+            .iter()
+            .find(|c| c.id == mark)
+            .expect("square")
+            .clone();
+        m.transform_by(drawn.transform);
+        let p = m.page_path().bounding_box().center();
+        assert!(
+            (p.y - laid.y).abs() > ab.height() * 0.3,
+            "the envelope moves it"
+        );
+        assert_eq!(app.text_inside_at(g, p), Some((a, true)));
+        // A Text tool click there.
+        assert!(app.edit_text_inside(g, p));
+        let te = app.text_edit.as_ref().expect("editing");
+        assert_eq!(te.shape, a);
+        assert!(
+            te.caret.abs_diff(want) <= 1,
+            "caret {} wanted {want}",
+            te.caret
+        );
     }
 
     fn texts(app: &App) -> Vec<String> {

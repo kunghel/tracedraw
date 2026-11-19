@@ -124,7 +124,8 @@ such as product names. Those words break only there when hyphenation is on.
 selected text to
 [[menu.text.case_sentence]], [[menu.text.case_lower]],
 [[menu.text.case_upper]], [[menu.text.case_title]] or
-[[menu.text.case_toggle]].
+[[menu.text.case_toggle]]. With several texts selected they all change in
+one step to undo.
 
 ![The Change Case dialog box](../../img/text-writing-tools-change-case.png)
 

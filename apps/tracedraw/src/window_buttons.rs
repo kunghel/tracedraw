@@ -165,6 +165,63 @@ mod tests {
         assert!(app.quit_now);
     }
 
+    /// With the buttons on, a drag on the empty part of the menu bar,
+    /// right of the last title, moves the window, and a double click
+    /// there maximizes it (#3134).
+    #[test]
+    fn the_empty_bar_moves_and_maximizes_the_window() {
+        let ctx = crate::theme::ui_context();
+        let mut app = App::headless();
+        app.show_welcome = false;
+        app.settings.window_buttons = true;
+        let screen = Rect::from_min_size(egui::Pos2::ZERO, Vec2::new(1600.0, 900.0));
+        let run = |ctx: &egui::Context, app: &mut App, events: Vec<egui::Event>| {
+            let input = egui::RawInput {
+                screen_rect: Some(screen),
+                events,
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(input, |ui| crate::ui::root(app, ui));
+            out.textures_delta.clear();
+            out.viewport_output
+                .values()
+                .flat_map(|v| v.commands.clone())
+                .collect::<Vec<_>>()
+        };
+        for _ in 0..3 {
+            run(&ctx, &mut app, Vec::new());
+        }
+        // Halfway between the last title and the buttons.
+        let at = egui::pos2(screen.right() - WIDTH - 200.0, 12.0);
+        let button = |pressed| egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        run(&ctx, &mut app, vec![egui::Event::PointerMoved(at)]);
+        run(&ctx, &mut app, vec![button(true)]);
+        let mut sent = Vec::new();
+        for dx in [4.0, 12.0, 24.0] {
+            sent.extend(run(
+                &ctx,
+                &mut app,
+                vec![egui::Event::PointerMoved(at + Vec2::new(dx, 0.0))],
+            ));
+        }
+        run(&ctx, &mut app, vec![button(false)]);
+        assert!(sent.contains(&egui::ViewportCommand::StartDrag), "{sent:?}");
+        let mut sent = Vec::new();
+        for _ in 0..2 {
+            sent.extend(run(&ctx, &mut app, vec![button(true)]));
+            sent.extend(run(&ctx, &mut app, vec![button(false)]));
+        }
+        assert!(
+            sent.contains(&egui::ViewportCommand::Maximized(true)),
+            "{sent:?}"
+        );
+    }
+
     #[test]
     fn the_buttons_follow_the_option() {
         let mut app = App::headless();

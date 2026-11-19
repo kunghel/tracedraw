@@ -21,6 +21,11 @@ writes the AutoCAD 2000 (AC1015) dialect that every CAD reader accepts.
   and MTEXT (height to points, rotation, alignment, formatting codes
   stripped, `%%d`, `%%p`, `%%c` symbols), POINT (0.5 mm dot), INSERT
   (block as a group with position, scale and rotation, nested up to 16).
+  An ARC of any radius is a handful of curves: its tolerance is 0.1 mm,
+  or a millionth of the radius on huge arcs, so a damaged radius of
+  1e300 no longer runs out of memory (#3338). The box of groups nested
+  deep is worked out without copying them, so a million objects of
+  blocks nested 15 deep open in about a second (#3340).
 - Outline width: lineweight 370 in 1/100 mm, or a polyline's constant
   width (43); otherwise a hairline.
 - Not imported: DIMENSION, LEADER, MLINE, IMAGE, 3D solids and regions

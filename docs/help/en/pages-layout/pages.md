@@ -31,6 +31,12 @@ to it. Its buttons [[menu.layout.insert_page]], [[menu.layout.delete_page]] and
 
 ![The Insert Page dialog box](../../img/pages-layout-pages-insert-page.png)
 
+To bring in the pages of other drawings, choose File > Combine Files and
+pick one or more `.tdraw`, `.cdr` or `.cmx` files: their pages are added
+after the last page, with their names, sizes and objects. File > Save Pages
+as Files does the opposite: each page is saved as a drawing of its own,
+named after the file name you give with the page number.
+
 ## Deleting pages {#delete-page}
 
 [[menu.layout.delete_page]] asks which pages to delete: the page number in

@@ -15,6 +15,11 @@ Eine senkrechte Spiegelachse wird an den rechten Rand des Objekts gelegt,
 sodass die Kopie daneben erscheint, und TraceDraw wechselt direkt in die
 Bearbeitung der Symmetrie.
 
+Sie können auch auf einer leeren Seite beginnen: Ist nichts ausgewählt, legt
+[[menu.object.symmetry_create]] die Spiegelachse in die Seitenmitte und beginnt
+die Bearbeitung einer leeren Symmetrie. Alles, was Sie zeichnen, gehört dazu und
+wird gespiegelt. Beenden Sie ohne Zeichnung, verschwindet die leere Symmetrie.
+
 ## Eine Symmetrie bearbeiten {#edit}
 
 [[menu.object.symmetry_edit]] (<kbd>Alt+E</kbd>) bearbeitet die Symmetrie des
@@ -35,6 +40,9 @@ hinzu. Ziehen Sie eine Spiegelachse mit dem Auswahlwerkzeug, um die Achsen zu
 verschieben; ein Klick auf eine Achse zeigt runde Griffe an ihren Enden, mit
 denen Sie die Achsen drehen. Solange ein Objekt mit Symmetrie ausgewählt ist
 oder bearbeitet wird, werden seine Spiegelachsen gestrichelt angezeigt.
+
+Das Werkzeug [[tool.area_fill]] füllt eine Fläche in allen Kopien zugleich:
+klicken Sie die Fläche in einer beliebigen Kopie an.
 
 Klicken Sie auf der Leiste auf Fertig stellen oder wählen Sie
 [[menu.object.symmetry_finish]] (<kbd>Alt+Shift+E</kbd>), um die Bearbeitung

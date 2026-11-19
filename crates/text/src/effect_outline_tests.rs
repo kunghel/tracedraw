@@ -199,6 +199,7 @@ fn contour(outside: bool, offset: f64, join: Join) -> Effect {
         offset,
         outside,
         to_center: false,
+        both: false,
         fill_to: Color::WHITE,
         outline_to: None,
         fill_end_to: None,

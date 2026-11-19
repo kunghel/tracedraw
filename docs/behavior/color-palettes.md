@@ -383,6 +383,16 @@ spot colour adds its ink to the drawing, named as typed. A spot colour,
 an ink of the drawing, keeps its value; Save as writes the colours to a
 palette file without changing the drawing. Until 2026-11-14 the name and
 Spot colour were greyed in the document palette.
+A colour made a spot colour, in the document palette or in a palette of
+the user's, as it is (its value not changed too), also goes to the
+objects of the open drawing painted with it: their fills, outlines and
+the other colours they hold in that colour take the spot colour, and its
+ink joins the drawing, as one undo step (the document palette's own
+step). So separations, PDF, EPS and PostScript output and a printer's RIP
+see the ink; the objects were left in process inks, and a UV printer
+printed its white as black (#2580,
+`ui::palette_editor::tests::a_colour_made_spot_paints_the_objects_that_use_it`,
+`a_document_colour_made_spot_paints_the_objects_that_use_it`).
 Spot colours have a small dot in the corner of their swatch, in the
 editor and on the palette bars, black on a light ink and white on a dark
 one. The fill and outline swatches of the status bar and the Colour panel carry

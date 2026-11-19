@@ -40,6 +40,10 @@ pub const TRANSFORM: &[EffectSpec] = &[
         apply: solarize,
         reach: no_reach,
     },
+    super::glitch::DITHER,
+    super::glitch::GRADIENT_MAP,
+    super::print::RISO,
+    super::print::NEWSPRINT,
 ];
 
 pub const CONTOUR: &[EffectSpec] = &[

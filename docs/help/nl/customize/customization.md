@@ -13,6 +13,7 @@ zijn en hoe het kleurenpalet zich gedraagt.
 - [[options.center_dialogs]]: dialoogvensters openen in het midden van het
   venster; uitgeschakeld openen ze waar u ze hebt achtergelaten.
 - [[options.ui_shadows]] (minder schaduwen helpen bij tragere grafische
+- [[options.translucent_menus]]: open menus let the drawing show through them, at the [[options.menu_opacity]] beside the box (off by default).
   kaarten).
 - [[options.colored_icons]]: elke groep gereedschappen krijgt een eigen kleur.
 - [[options.docker_tabs_icons_only]]: de paneeltabbladen aan de zijkanten

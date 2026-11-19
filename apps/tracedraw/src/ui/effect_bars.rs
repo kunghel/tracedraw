@@ -79,7 +79,7 @@ pub fn blend_bar(app: &mut App, ui: &mut Ui) {
     app.blend_accel_objects = accel_o;
     app.blend_accel_colors = accel_c;
     crate::ui::propbar::sep(ui);
-    match cur {
+    match &cur {
         Some(Effect::Blend { .. }) => {
             if changed {
                 let steps = steps.clamp(1, 999);
@@ -101,6 +101,52 @@ pub fn blend_bar(app: &mut App, ui: &mut Ui) {
                     Some(e)
                 });
             }
+            // Fit the blend to a path, then place its ends along it, or
+            // take it off the path (#2946).
+            if ui
+                .button(tr("docker.new_path"))
+                .rich_tip(crate::ui::tips::keyed("docker.new_path"))
+                .clicked()
+            {
+                app.pending_blend_path = true;
+                app.status = tr("status.click_blend_path");
+            }
+            if let Some(Effect::Blend {
+                path: Some(_),
+                options,
+                ..
+            }) = &cur
+            {
+                let (a, b) = options.path_ends();
+                let (mut from, mut to) = (a * 100.0, b * 100.0);
+                let mut moved = false;
+                for (key, v) in [
+                    ("docker.blend_path_start", &mut from),
+                    ("docker.blend_path_end", &mut to),
+                ] {
+                    moved |= crate::ui::toolbar::dim_labelled(ui, key, |ui| {
+                        ui.add(
+                            NumField::new(v)
+                                .range(0.0..=100.0)
+                                .speed(0.5)
+                                .max_decimals(1)
+                                .suffix(" %"),
+                        )
+                    })
+                    .changed();
+                }
+                if moved {
+                    app.set_blend_path_ends(from / 100.0, to / 100.0);
+                }
+                if ui
+                    .button(tr("docker.detach_path"))
+                    .rich_tip(crate::ui::tips::keyed("docker.detach_path"))
+                    .clicked()
+                {
+                    app.detach_blend_path();
+                }
+            }
+            crate::ui::propbar::sep(ui);
             if ui
                 .button(tr("docker.clear_blend"))
                 .rich_tip(crate::ui::tips::keyed("docker.clear_blend"))

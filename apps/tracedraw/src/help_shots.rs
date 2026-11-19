@@ -104,7 +104,7 @@ impl Raster {
 pub(crate) fn rasterise(w: usize, h: usize, ppp: f32, body: impl FnOnce(&egui::Painter)) -> Raster {
     let ctx = egui::Context::default();
     Raster {
-        canvas: crate::soft_canvas::rasterise(&ctx, w, h, ppp, body),
+        canvas: crate::soft_canvas::rasterise(&ctx, &mut Textures::default(), w, h, ppp, body),
     }
 }
 

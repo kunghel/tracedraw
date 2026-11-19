@@ -25,7 +25,7 @@
 | EMF, WMF | caminhos, canetas, pincéis, texto, bitmaps, recortes |
 | PLT (HPGL) | traços de caneta de plotter |
 | PSD, PSB | as camadas como bitmaps, com opacidade, visibilidade e máscaras |
-| PNG, JPEG, BMP, GIF, WebP, TIFF | bitmaps |
+| PNG, JPEG, BMP, GIF, WebP, TIFF, JPEG XL | bitmaps |
 | TXT, RTF, DOCX | texto de parágrafo com a formatação |
 
 Alguns aplicativos mantêm fechado o formato dos seus próprios arquivos, sem
@@ -43,7 +43,7 @@ imagens editáveis, ou como SVG, e abra esse arquivo.
 | EPS, PostScript (`.ps`), PRN | vetorial, para impressão |
 | DXF, PLT | vetorial, para CAD, plotters e plotters de recorte |
 | EMF, WMF | vetorial, para programas de escritório |
-| PNG, JPEG, WebP, GIF, BMP, TIFF | bitmap |
+| PNG, JPEG, WebP, GIF, BMP, TIFF, JPEG XL | bitmap |
 | PSD | bitmap, uma camada por camada do desenho |
 
 Scripts podem acrescentar mais formatos para importar e exportar; veja

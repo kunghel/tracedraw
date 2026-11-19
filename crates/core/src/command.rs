@@ -1129,27 +1129,28 @@ impl Command {
                 // Bottom to top: by layer (in drawing order), then by place
                 // in the layer, so members from several layers keep the
                 // order they were drawn in.
-                let layer_rank = |l: LayerId| {
-                    doc.pages
-                        .iter()
-                        .flat_map(|p| p.layers.iter())
-                        .chain(doc.master.iter())
-                        .position(|x| x.id == l)
-                        .unwrap_or(usize::MAX)
-                };
+                let mut ranks: std::collections::HashMap<LayerId, usize> =
+                    std::collections::HashMap::new();
+                for (r, x) in doc
+                    .pages
+                    .iter()
+                    .flat_map(|p| p.layers.iter())
+                    .chain(doc.master.iter())
+                    .enumerate()
+                {
+                    ranks.entry(x.id).or_insert(r);
+                }
+                let layer_rank = |l: LayerId| ranks.get(&l).copied().unwrap_or(usize::MAX);
                 located.sort_by_key(|(_, l, i)| (layer_rank(*l), *i));
+                // An id named twice lies at one place: group it once.
+                located.dedup_by_key(|(id, _, _)| *id);
                 let layer_id = located[0].1;
                 let insert_at = located[0].2;
-                let mut children = Vec::with_capacity(shapes.len());
-                for (id, l, _) in &located {
-                    let layer = doc.layer_mut(*l)?;
-                    let i = layer
-                        .shapes
-                        .iter()
-                        .position(|s| s.id == *id)
-                        .ok_or(Error::ShapeNotFound(*id))?;
-                    children.push(layer.shapes.remove(i));
-                }
+                let mut taken = take_out(doc, &located)?;
+                let children = located
+                    .iter()
+                    .map(|(id, _, _)| taken.remove(id).ok_or(Error::ShapeNotFound(*id)))
+                    .collect::<Result<Vec<_>>>()?;
                 let gid = doc.ids_mut().shape();
                 let mut group = Shape::new(gid, ShapeKind::Group { children });
                 group.stroke = None;
@@ -1419,12 +1420,7 @@ impl Command {
                         path.extend(part);
                     }
                 }
-                for (id, l, _) in &located {
-                    let layer = doc.layer_mut(*l)?;
-                    if let Some(i) = layer.shapes.iter().position(|s| s.id == *id) {
-                        layer.shapes.remove(i);
-                    }
-                }
+                take_out(doc, &located)?;
                 // The parts lie in page space: a mesh fill goes there too,
                 // or becomes its mean colour where it would not cover them
                 // all (a live test of 0.41: the colour was lost).
@@ -2354,6 +2350,39 @@ fn box_to_box(
             * Affine::scale_non_uniform(to.width() / from.width(), to.height() / from.height())
             * Affine::translate((-from.x0, -from.y0)),
     )
+}
+
+/// Take the objects `located` names (id, layer, place) off their layers,
+/// walking each layer once: taking them one at a time, each a
+/// `Vec::remove`, made Group and Combine of tens of thousands of objects
+/// take a minute. An object not on its layer is left out.
+fn take_out(
+    doc: &mut Document,
+    located: &[(ShapeId, LayerId, usize)],
+) -> Result<std::collections::HashMap<ShapeId, Shape>> {
+    let mut by_layer: Vec<(LayerId, std::collections::HashSet<ShapeId>)> = Vec::new();
+    for (id, l, _) in located {
+        match by_layer.iter_mut().find(|(x, _)| x == l) {
+            Some((_, ids)) => {
+                ids.insert(*id);
+            }
+            None => by_layer.push((*l, std::collections::HashSet::from([*id]))),
+        }
+    }
+    let mut out = std::collections::HashMap::with_capacity(located.len());
+    for (l, ids) in by_layer {
+        let layer = doc.layer_mut(l)?;
+        let all = std::mem::take(&mut layer.shapes);
+        layer.shapes.reserve(all.len().saturating_sub(ids.len()));
+        for s in all {
+            if ids.contains(&s.id) && !out.contains_key(&s.id) {
+                out.insert(s.id, s);
+            } else {
+                layer.shapes.push(s);
+            }
+        }
+    }
+    Ok(out)
 }
 
 #[cfg(test)]
@@ -3348,6 +3377,104 @@ mod tests {
         )
     }
 
+    /// Group and Combine of objects named in any order (they now come off
+    /// their layer in one walk): the members keep their drawing order, the other objects
+    /// stay where they were, and lookups stay right after objects move.
+    #[test]
+    fn group_and_combine_of_shuffled_objects_keep_order_and_the_rest() {
+        let mut doc = Document::default();
+        let layer = doc.pages[0].layers[0].id;
+        let mut ids = Vec::new();
+        for k in 0..60 {
+            let s = rect(&mut doc, k as f64 * 20.0);
+            ids.push(s.id);
+            Command::AddShape { layer, shape: s }
+                .apply(&mut doc)
+                .unwrap();
+        }
+        // Every third object, named back to front and one named twice.
+        let mut pick: Vec<ShapeId> = ids.iter().copied().step_by(3).collect();
+        pick.reverse();
+        pick.push(pick[0]);
+        Command::Group {
+            shapes: pick.clone(),
+        }
+        .apply(&mut doc)
+        .unwrap();
+        let g = doc.top_level_of(ids[0]).unwrap();
+        let ShapeKind::Group { children } = &doc.find_shape(g).unwrap().kind else {
+            panic!("not a group");
+        };
+        let got: Vec<ShapeId> = children.iter().map(|c| c.id).collect();
+        let want: Vec<ShapeId> = ids.iter().copied().step_by(3).collect();
+        assert_eq!(got, want);
+        let shapes = &doc.pages[0].layers[0].shapes;
+        assert_eq!(shapes.len(), 60 - 20 + 1);
+        assert_eq!(shapes[0].id, g);
+        let rest: Vec<ShapeId> = shapes[1..].iter().map(|s| s.id).collect();
+        let want_rest: Vec<ShapeId> = ids
+            .iter()
+            .enumerate()
+            .filter(|(k, _)| k % 3 != 0)
+            .map(|(_, id)| *id)
+            .collect();
+        assert_eq!(rest, want_rest);
+        // Lookups of nested and moved objects after the change.
+        assert_eq!(doc.ancestors(ids[3]), vec![g]);
+        assert!(doc.ancestors(ids[1]).is_empty());
+        for id in &ids {
+            assert!(doc.find_shape(*id).is_some(), "{id:?} lost");
+        }
+        // An object put in front moves every other one: still found.
+        let front = rect(&mut doc, -50.0);
+        let fid = front.id;
+        doc.pages[0].layers[0].shapes.insert(0, front);
+        assert_eq!(doc.locate(ids[59]).unwrap().1, 41);
+        assert_eq!(doc.locate(fid).unwrap().1, 0);
+        // Combine of the loose ones, named back to front.
+        let mut loose = want_rest.clone();
+        loose.reverse();
+        Command::Combine { shapes: loose }.apply(&mut doc).unwrap();
+        let shapes = &doc.pages[0].layers[0].shapes;
+        assert_eq!(shapes.len(), 3, "front, group and the combined curve");
+        assert_eq!(shapes[0].id, fid);
+        assert_eq!(shapes[1].id, g);
+    }
+
+    /// Keeping only the objects still there checks nested ones and drops
+    /// missing ones, with a long list (one walk) as with a short one.
+    #[test]
+    fn retain_existing_keeps_nested_drops_gone_in_order() {
+        let mut doc = Document::default();
+        let layer = doc.pages[0].layers[0].id;
+        let mut ids = Vec::new();
+        for k in 0..40 {
+            let s = rect(&mut doc, k as f64 * 20.0);
+            ids.push(s.id);
+            Command::AddShape { layer, shape: s }
+                .apply(&mut doc)
+                .unwrap();
+        }
+        Command::Group {
+            shapes: ids[..5].to_vec(),
+        }
+        .apply(&mut doc)
+        .unwrap();
+        let gone: Vec<ShapeId> = (0..30).map(|_| doc.ids_mut().shape()).collect();
+        let mut long: Vec<ShapeId> = Vec::new();
+        for (k, id) in ids.iter().enumerate() {
+            long.push(*id);
+            if k < gone.len() {
+                long.push(gone[k]);
+            }
+        }
+        doc.retain_existing(&mut long);
+        assert_eq!(long, ids);
+        let mut short = vec![gone[0], ids[2], gone[1], ids[30]];
+        doc.retain_existing(&mut short);
+        assert_eq!(short, vec![ids[2], ids[30]]);
+    }
+
     /// Objects inside a group take page-space transforms, fills and
     /// outlines, and can be deleted; a group left empty goes too.
     #[test]
@@ -3482,6 +3609,7 @@ mod tests {
             offset: 1.5,
             outside: true,
             to_center: false,
+            both: false,
             fill_to: Color::WHITE,
             outline_to: None,
             fill_end_to: None,

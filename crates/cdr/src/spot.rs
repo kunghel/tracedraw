@@ -53,6 +53,9 @@ pub struct Preview {
     /// thumbnails of version 3 files, 16 dithered colours) rather than the
     /// page; colours are then averaged, not picked by median.
     pub covers_drawing: bool,
+    /// The picture shows the drawing's extent fitted into it whole,
+    /// centred, its proportions kept (the `DISP` picture of RIFF files).
+    pub fitted: bool,
 }
 
 impl Preview {
@@ -74,7 +77,40 @@ impl Preview {
             height: pm.height(),
             rgba,
             covers_drawing: false,
+            fitted: false,
         })
+    }
+
+    /// The `DISP` chunk of a RIFF file (versions 4 to 13): a u32, then a
+    /// device-independent bitmap (a 40-byte header, the palette, the
+    /// pixels) of the drawing fitted into a square.
+    pub fn from_disp(data: &[u8]) -> Option<Preview> {
+        let dib = data.get(4..)?;
+        let u32_at = |i: usize| -> Option<u32> {
+            Some(u32::from_le_bytes(dib.get(i..i + 4)?.try_into().ok()?))
+        };
+        let header = u32_at(0)? as usize;
+        if !(40..=124).contains(&header) {
+            return None;
+        }
+        let bpp = u16::from_le_bytes(dib.get(14..16)?.try_into().ok()?);
+        let used = u32_at(32)? as usize;
+        let palette = match (bpp, used) {
+            (1..=8, 0) => 1usize << bpp,
+            (1..=8, n) => n.min(256),
+            _ => used.min(256),
+        };
+        let pixels_at = 14 + header + 4 * palette;
+        let mut file = Vec::with_capacity(14 + dib.len());
+        file.extend_from_slice(b"BM");
+        file.extend_from_slice(&((14 + dib.len()) as u32).to_le_bytes());
+        file.extend_from_slice(&[0; 4]);
+        file.extend_from_slice(&(pixels_at as u32).to_le_bytes());
+        file.extend_from_slice(dib);
+        let mut p = Preview::decode(&file)?;
+        p.covers_drawing = true;
+        p.fitted = true;
+        Some(p)
     }
 
     /// The colour (0 to 1) at page point `p` of the area `frame` (in page
@@ -96,6 +132,24 @@ impl Preview {
         }
         Some([px[0], px[1], px[2]].map(|v| v as f64 / 255.0))
     }
+}
+
+/// The area a picture of `width` x `height` pixels covers when it shows
+/// the drawing's extent `b` fitted into it whole and centred: `b` grown
+/// on its shorter side to the picture's proportions.
+fn fit_frame(
+    b: tracedraw_core::geometry::Rect,
+    width: u32,
+    height: u32,
+) -> tracedraw_core::geometry::Rect {
+    let (pw, ph) = (f64::from(width.max(1)), f64::from(height.max(1)));
+    let scale = (b.width() / pw).max(b.height() / ph);
+    if !(scale > 0.0 && scale.is_finite()) {
+        return b;
+    }
+    let (w, h) = (pw * scale, ph * scale);
+    let c = b.center();
+    tracedraw_core::geometry::Rect::new(c.x - w / 2.0, c.y - h / 2.0, c.x + w / 2.0, c.y + h / 2.0)
 }
 
 /// Every top-level and nested shape of the first page, bottom to top,
@@ -144,10 +198,22 @@ fn paints_inside(s: &Shape, fill_open: bool) -> bool {
 /// The library ink and tint a fill paints with, when it is one.
 fn fill_ink(f: &Fill) -> Option<(u32, f32)> {
     match f {
-        Fill::Solid(Color::Spot { ink, tint, .. }) if ink & LIBRARY_INK != 0 => Some((*ink, *tint)),
+        Fill::Solid(c) => stop_ink(c),
         _ => None,
     }
 }
+
+/// The library ink and tint of a colour, when it is one.
+fn stop_ink(c: &Color) -> Option<(u32, f32)> {
+    match c {
+        Color::Spot { ink, tint, .. } if ink & LIBRARY_INK != 0 => Some((*ink, *tint)),
+        _ => None,
+    }
+}
+
+/// How far along a fountain (0 to 1) a point may lie from a stop and
+/// still be taken as showing that stop's colour.
+const STOP_REACH: f64 = 0.04;
 
 /// Give each library ink of `doc` the colour `preview` shows where the
 /// objects filled with it lie uncovered (the median of up to a few
@@ -168,6 +234,7 @@ pub fn colours_from_preview(doc: &mut Document, preview: &Preview) -> usize {
             .filter(|b| b.width().is_finite() && b.height().is_finite())
             .reduce(|a, b| a.union(b))
         {
+            Some(b) if preview.fitted => fit_frame(b, preview.width, preview.height),
             Some(b) => b,
             None => return 0,
         }
@@ -176,9 +243,19 @@ pub fn colours_from_preview(doc: &mut Document, preview: &Preview) -> usize {
     };
     let mut samples: std::collections::BTreeMap<u32, Vec<[f64; 3]>> = Default::default();
     for (i, s) in shapes.iter().enumerate() {
-        let Some((ink, tint)) = fill_ink(&s.fill) else {
-            continue;
+        let solid = fill_ink(&s.fill);
+        let fountain = match &s.fill {
+            Fill::Fountain(f)
+                if f.kind != tracedraw_core::FountainKind::Shaped
+                    && f.stops.iter().any(|st| stop_ink(&st.color).is_some()) =>
+            {
+                Some(f)
+            }
+            _ => None,
         };
+        if solid.is_none() && fountain.is_none() {
+            continue;
+        }
         let Some(path) = paths.get(i) else {
             continue;
         };
@@ -186,7 +263,15 @@ pub fn colours_from_preview(doc: &mut Document, preview: &Preview) -> usize {
         if !(b.width() > 0.0 && b.height() > 0.0) {
             continue;
         }
-        let n = 24;
+        // A fountain's place on the page as the renderer works it out.
+        let placed = fountain.map(|f| {
+            let mut f = f.clone();
+            if f.handles.is_none() {
+                f.handles = Some(f.default_handles(b));
+            }
+            f
+        });
+        let n = if placed.is_some() { 48 } else { 24 };
         for gy in 0..n {
             for gx in 0..n {
                 let p = Point::new(
@@ -203,6 +288,32 @@ pub fn colours_from_preview(doc: &mut Document, preview: &Preview) -> usize {
                 if covered {
                     continue;
                 }
+                // The ink that paints here: the solid fill's, or the
+                // fountain stop's the point lies close to (between stops
+                // the colours mix, and tell nothing of either ink).
+                let (ink, tint) = match (&solid, &placed) {
+                    (Some(it), _) => *it,
+                    (None, Some(f)) => {
+                        let Some(t) = f.param_at(b, p) else {
+                            continue;
+                        };
+                        let u = f.stop_param(t);
+                        let near = f
+                            .stops
+                            .iter()
+                            .min_by(|x, y| (x.pos - u).abs().total_cmp(&(y.pos - u).abs()));
+                        match near {
+                            Some(st) if (st.pos - u).abs() <= STOP_REACH => {
+                                match stop_ink(&st.color) {
+                                    Some(it) => it,
+                                    None => continue,
+                                }
+                            }
+                            _ => continue,
+                        }
+                    }
+                    _ => continue,
+                };
                 let Some(rgb) = preview.at(p, frame) else {
                     continue;
                 };
@@ -337,6 +448,7 @@ mod tests {
             height: 10,
             rgba,
             covers_drawing: false,
+            fitted: false,
         };
         assert_eq!(colours_from_preview(&mut doc, &preview), 1);
         let fill = &doc.pages[0].layers[0].shapes[0].fill;
@@ -349,8 +461,102 @@ mod tests {
         assert!(doc.inks[0].cmyk[3] < 0.5);
     }
 
+    /// A page of 100 x 100 with one rectangle over `rect`, filled `fill`.
+    fn one_shape(rect: Rect, fill: Fill) -> Document {
+        let mut doc = Document::new("t", tracedraw_core::geometry::Size::new(100.0, 100.0));
+        doc.inks.push(ink_entry(0x22, 1));
+        doc.inks.push(ink_entry(0x22, 2));
+        let mut s = Shape::new(
+            doc.ids_mut().shape(),
+            ShapeKind::Rect {
+                rect,
+                radius: 0.0,
+                corners: None,
+            },
+        );
+        s.fill = fill;
+        if let Some(l) = doc.pages[0].layers.first_mut() {
+            l.shapes.push(s);
+        }
+        doc
+    }
+
+    #[test]
+    fn a_fountain_of_library_inks_takes_each_stop_s_colour() {
+        // Left to right from ink 1 to ink 2 over the whole page; the
+        // preview runs from red to blue.
+        let fill = Fill::Fountain(tracedraw_core::Fountain::two(
+            tracedraw_core::FountainKind::Linear,
+            library_color(0x22, 1, 100),
+            library_color(0x22, 2, 100),
+            0.0,
+        ));
+        let mut doc = one_shape(Rect::new(0.0, 0.0, 100.0, 100.0), fill);
+        let mut rgba = Vec::new();
+        for _y in 0..50 {
+            for x in 0..50u32 {
+                let t = x as f64 / 49.0;
+                let r = (255.0 * (1.0 - t)) as u8;
+                let b = (255.0 * t) as u8;
+                rgba.extend_from_slice(&[r, 0, b, 255]);
+            }
+        }
+        let preview = Preview {
+            width: 50,
+            height: 50,
+            rgba,
+            covers_drawing: false,
+            fitted: false,
+        };
+        assert_eq!(colours_from_preview(&mut doc, &preview), 2);
+        let Fill::Fountain(f) = &doc.pages[0].layers[0].shapes[0].fill else {
+            panic!("fill");
+        };
+        let [r0, _, b0] = f.stops[0].color.to_rgb8();
+        let [r1, _, b1] = f.stops[1].color.to_rgb8();
+        assert!(r0 > b0 + 100, "first stop {r0} {b0}");
+        assert!(b1 > r1 + 100, "last stop {r1} {b1}");
+    }
+
+    #[test]
+    fn a_disp_picture_frames_the_drawing_fitted_in_a_square() {
+        // A wide drawing (80 x 20 mm, ink 1) fitted into an 8 x 8 picture
+        // on white: rows 3 and 4 of the picture are green, the rest white.
+        let fill = Fill::Solid(library_color(0x22, 1, 100));
+        let mut doc = one_shape(Rect::new(10.0, 40.0, 90.0, 60.0), fill);
+        let mut dib = Vec::new();
+        dib.extend_from_slice(&8u32.to_le_bytes());
+        dib.extend_from_slice(&40u32.to_le_bytes());
+        dib.extend_from_slice(&8i32.to_le_bytes());
+        dib.extend_from_slice(&8i32.to_le_bytes());
+        dib.extend_from_slice(&1u16.to_le_bytes());
+        dib.extend_from_slice(&8u16.to_le_bytes());
+        dib.extend_from_slice(&[0; 4]);
+        dib.extend_from_slice(&64u32.to_le_bytes());
+        dib.extend_from_slice(&[0; 8]);
+        dib.extend_from_slice(&2u32.to_le_bytes());
+        dib.extend_from_slice(&[0; 4]);
+        // Palette (B, G, R, 0): white, green.
+        dib.extend_from_slice(&[255, 255, 255, 0, 40, 200, 40, 0]);
+        // Bottom-up rows.
+        for y in 0..8 {
+            let v = u8::from(y == 3 || y == 4);
+            dib.extend_from_slice(&[v; 8]);
+        }
+        let preview = Preview::from_disp(&dib).expect("picture");
+        assert!(preview.fitted && preview.covers_drawing);
+        assert_eq!(colours_from_preview(&mut doc, &preview), 1);
+        let Fill::Solid(c) = &doc.pages[0].layers[0].shapes[0].fill else {
+            panic!("fill");
+        };
+        let [r, g, b] = c.to_rgb8();
+        assert!(g > 150 && r < 90 && b < 90, "{r} {g} {b}");
+    }
+
     #[test]
     fn bad_previews_give_nothing() {
+        assert!(Preview::from_disp(b"").is_none());
+        assert!(Preview::from_disp(&[8, 0, 0, 0, 3, 0, 0, 0]).is_none());
         assert!(Preview::decode(b"").is_none());
         assert!(Preview::decode(b"\x89PNG broken").is_none());
         assert!(Preview::decode(b"BM").is_none());

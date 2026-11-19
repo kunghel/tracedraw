@@ -8,7 +8,7 @@ Contour panel share the controls in `ui/contour_bar.rs`.
 
 | Control | Default | Range |
 |---|---|---|
-| To centre, Inside, Outside | Outside | |
+| To centre, Inside, Outside, Both | Outside | |
 | Steps | 3 | 1 to 999 (to centre: as many as fit); a slider on a logarithmic scale with its number box |
 | Offset | 2 mm | 0.001 to 1000 mm, between steps |
 | Corners | Mitred | Mitred, Round, Bevelled |
@@ -79,16 +79,30 @@ step count, side and end colours, and the steps the file stores go
   before.
 - Outside steps are drawn behind the object, farthest first; inside
   steps in front of it, outermost first.
+- Both (#3085): the steps go inside and outside at once, as many on
+  each side, with the same offset, corners, colours and accelerations;
+  each side is drawn exactly as the one-sided contour draws it (the
+  outside steps behind, the inside ones in front). Saved as `both: true`
+  on the effect, with `outside` true; a contour without it (older files,
+  and every one-sided contour, which does not write it) is one-sided, so
+  older versions read a both-sided contour as an outside one
+  (`live::tests::a_contour_can_go_inside_and_outside_at_once`,
+  `contour_tool::tests::the_contour_can_go_both_ways`).
 
 ## The tool
 
 - A drag starting on an object (inside it counts, filled or not): away
   from the object's middle gives an outside contour, toward it an
-  inside one (To centre stays to centre); the distance from the start
+  inside one (To centre and Both stay as they are); the distance from the start
   is `steps * offset` (the steps kept, the offset following). The
   contour is drawn live while dragging; one undo step.
-- A click selects the object under the pointer (or nothing). Groups and
-  bitmaps get no contour.
+- A click selects the object under the pointer (or nothing). Bitmaps get
+  no contour.
+- A group takes a contour (#3245): the steps go round the area its
+  objects cover as one (their union, so overlapping objects make one
+  outline), in the fill and outline of the first object in it that has a
+  fill (else an outline) (`live::tests::a_group_takes_a_contour_round_all_its_objects`,
+  `contour_tool::tests::a_group_takes_a_contour`).
 
 ## Handles
 
@@ -99,7 +113,8 @@ pixels wide, or the node size of Options > Nodes and Handles and two
 pixels more when that is larger, #2731):
 
 - A line from the middle of the object's right edge (page bounds, `a`),
-  to the right for Outside, to the left for Inside and To centre.
+  to the right for Outside and Both, to the left for Inside and To
+  centre.
 - The offset handle (a square) at its end: `a + d * steps * offset`
   (To centre: `a + d * offset`), `d` being 1 or -1. Dragging it sets the
   distance `t` along the line from `a` (the pointer's height is
@@ -121,7 +136,10 @@ pixels more when that is larger, #2731):
 
 - The controls show the selected object's contour and edit the selected
   contours live (a run of changes is one undo step). Apply (shown when
-  a selected object has no contour) adds the contour; Clear Contour
+  a selected object has no contour) adds the contour, as Enter does in
+  a number box of the bar or panel (d#2945,
+  `contour_bar::tests::enter_in_a_box_of_the_panel_applies_the_contour`);
+  Clear Contour
   removes it; Break Apart turns the steps into objects, grouped beside
   the object when there are several (`App::break_effect_groups`).
 - Object > Break Contour Group Apart (Ctrl+K, and the right-click

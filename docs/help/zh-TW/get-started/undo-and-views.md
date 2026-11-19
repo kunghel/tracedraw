@@ -19,6 +19,7 @@
 - 轉動滑鼠滾輪，即可以指標為中心放大或縮小。
 - 使用標準工具列上的縮放方塊：輸入比例，或從其清單中選擇（10% 到 1600%），或縮放至選取範圍、所有物件、頁面、頁面寬度或頁面高度。
 - [[menu.view > menu.view.zoom_in]] 和 [[menu.view.zoom_out]] 會縮放一級；[[menu.view.zoom_to_fit]]（<kbd>F4</kbd>）會顯示所有物件，[[menu.view.zoom_to_page]]（<kbd>Shift+F4</kbd>）顯示頁面，[[menu.view.zoom_to_selected]]（<kbd>Shift+F2</kbd>）顯示選取範圍。
+- [[menu.view > menu.view.zoom_1to1]] 以實際尺寸 (100%) 顯示繪圖，與列印效果一致。預設沒有按鍵，可在鍵盤設定中指定。
 - 在觸控板上以雙指捏合可縮放；在觸控螢幕上，無論使用哪個工具，都可以用兩指平移和捏合。
 
 ### 縮放工具 {#zoom-tool}
@@ -35,7 +36,7 @@
 
 - 使用任何工具時，按住滑鼠中鍵並拖曳。
 - 選擇 [[tool.pan]] 工具（<kbd>H</kbd>）並拖曳。
-- <kbd>Ctrl</kbd>+滾輪可上下捲動，<kbd>Alt</kbd>+滾輪可左右捲動。
+- <kbd>Ctrl</kbd>+滾輪與 <kbd>Shift</kbd>+滾輪可左右捲動，<kbd>Alt</kbd>+滾輪可上下捲動。若要以 <kbd>Ctrl</kbd>+滾輪縮放，請在 [[options.zoom_pan]] 頁面勾選 [[options.ctrl_wheel_zooms]]。
 - 使用捲軸，其範圍涵蓋頁面及其周圍一個頁面大小的區域。
 - 按住捲軸之間角落的「導覽器」按鈕或 <kbd>N</kbd> 鍵，並將指標移到頁面縮圖上。[[menu.view > menu.view.navigator]] 會讓縮圖保持開啟直到按一下：按一下縮圖即前往該處，按其他地方或 <kbd>Esc</kbd> 則關閉。
 - <kbd>PgUp</kbd> 和 <kbd>PgDn</kbd> 可前往上一頁和下一頁。

@@ -778,8 +778,7 @@ impl App {
             if let Err(e) = self.engine.run_batch("Delete Segment", &[cmd]) {
                 self.status = e.to_string();
             }
-            self.selection
-                .retain(|id| self.engine.document().find_shape(*id).is_some());
+            self.engine.document().retain_existing(&mut self.selection);
         }
         true
     }
@@ -849,8 +848,7 @@ impl App {
             self.status = e.to_string();
             return false;
         }
-        self.selection
-            .retain(|id| self.engine.document().find_shape(*id).is_some());
+        self.engine.document().retain_existing(&mut self.selection);
         true
     }
 
@@ -905,8 +903,7 @@ impl App {
             self.status = e.to_string();
             return false;
         }
-        self.selection
-            .retain(|id| self.engine.document().find_shape(*id).is_some());
+        self.engine.document().retain_existing(&mut self.selection);
         true
     }
 }

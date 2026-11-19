@@ -715,6 +715,16 @@ fn shape_paired_nodes(
         // Reversed, the run still starts at the first node.
         rb[1..].reverse();
     }
+    // Two polygons of as many corners (a rectangle and a rectangle of
+    // other proportions) pair corner for corner, b started at the corner
+    // that best fits a's first, so every step keeps the corners: paired
+    // by share of length they would cut each other's sides (#3223).
+    if sa.len() == sb.len() && sa.iter().chain(&sb).all(|s| s.line) {
+        if let Some(k) = corner_shift(&sa, &sb) {
+            sb.rotate_left(k);
+            return Some((sa, sb));
+        }
+    }
     // Each run about its centre, at unit size.
     let normal = |r: &[Point]| -> Option<Vec<Vec2>> {
         let n = r.len() as f64;
@@ -811,6 +821,30 @@ fn shape_paired_nodes(
     let sa = cut_at(&sa, &ma, &cut_a);
     let sb = cut_at(&sb, &mb, &cut_b);
     (sa.len() == sb.len()).then_some((sa, sb))
+}
+
+/// How far to turn `b`'s corners (the starts of its segments) so they
+/// best fit `a`'s, both taken about their own centre at unit size.
+/// `None` when either has no size.
+fn corner_shift(a: &[Seg], b: &[Seg]) -> Option<usize> {
+    let normal = |s: &[Seg]| -> Option<Vec<Vec2>> {
+        let n = s.len() as f64;
+        let c = Point::new(
+            s.iter().map(|g| g.p0.x).sum::<f64>() / n,
+            s.iter().map(|g| g.p0.y).sum::<f64>() / n,
+        );
+        let size = (s.iter().map(|g| (g.p0 - c).hypot2()).sum::<f64>() / n).sqrt();
+        (size.is_finite() && size > 1e-12).then(|| s.iter().map(|g| (g.p0 - c) / size).collect())
+    };
+    let (na, nb) = (normal(a)?, normal(b)?);
+    let m = na.len();
+    (0..m)
+        .map(|k| {
+            let cost: f64 = (0..m).map(|i| (na[i] - nb[(i + k) % m]).hypot2()).sum();
+            (k, cost)
+        })
+        .min_by(|x, y| x.1.partial_cmp(&y.1).unwrap_or(std::cmp::Ordering::Equal))
+        .map(|(k, _)| k)
 }
 
 /// Parallel extrusion: side faces from each edge toward `depth` offset.
@@ -2505,6 +2539,40 @@ mod tests {
         assert!((bb.x0 - 25.0).abs() < 1e-6 && (bb.x1 - 45.0).abs() < 1e-6);
         assert!((bb.y0).abs() < 1e-6 && (bb.y1 - 20.0).abs() < 1e-6);
         assert!((mid[0].area().abs() - 400.0).abs() < 1e-6);
+    }
+
+    /// Two rectangles of different proportions blend into rectangles,
+    /// corner to corner: four straight sides each step (#3223).
+    #[test]
+    fn blend_of_rectangles_of_other_proportions_keeps_four_corners() {
+        for (a, b) in [
+            (
+                Rect::new(0.0, 0.0, 10.0, 10.0),
+                Rect::new(50.0, 0.0, 110.0, 10.0),
+            ),
+            (
+                Rect::new(0.0, 0.0, 40.0, 10.0),
+                Rect::new(60.0, -20.0, 80.0, 40.0),
+            ),
+            (
+                Rect::new(0.0, 0.0, 5.0, 30.0),
+                Rect::new(40.0, 0.0, 100.0, 20.0),
+            ),
+        ] {
+            let steps = blend(&a.to_path(0.01), &b.to_path(0.01), 3, 120);
+            assert_eq!(steps.len(), 3);
+            for (k, step) in steps.iter().enumerate() {
+                let els = step.elements();
+                assert_eq!(els.len(), 6, "{a:?} {b:?} step {k}: {els:?}");
+                assert!(els[1..5].iter().all(|e| matches!(e, PathEl::LineTo(_))));
+                // A rectangle: its area fills its bounding box.
+                let bb = step.bounding_box();
+                assert!(
+                    (step.area().abs() - bb.area()).abs() < 1e-6 * bb.area().max(1.0),
+                    "{a:?} {b:?} step {k}: {els:?}"
+                );
+            }
+        }
     }
 
     /// Paired from given nodes, a square blends into the same square as

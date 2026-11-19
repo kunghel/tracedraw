@@ -40,6 +40,13 @@ running toward a mirror line runs toward it from the other side too
   group (one "Symmetry" undo step), so they mirror together; Ctrl+click
   picks one of them inside the group (round handles) to move or colour
   it alone, the copies following.
+- With nothing selected (#2995) Create New Symmetry (enabled then, as
+  Alt+S) adds an empty symmetry group named "Symmetry" to the active
+  layer, its vertical line through the page's centre, and goes into
+  editing it: what is drawn then joins it and is mirrored. Finished
+  with nothing in it, the empty group goes again, folded into the step
+  that made it when nothing came between
+  (`ops2::symmetry_tests::a_new_symmetry_starts_empty_with_nothing_selected`).
 - While a symmetry is edited, an object drawn, pasted or duplicated
   joins it: the group takes it in (an object that was alone with the
   symmetry becomes a group of it and the newcomer, the symmetry moving
@@ -48,7 +55,10 @@ running toward a mirror line runs toward it from the other side too
   (`App::join_symmetry`,
   `ops2::symmetry_tests::a_symmetry_takes_several_objects_and_those_made_while_editing`).
 - Edit (Object > Symmetry > Edit Symmetry, Alt+E): the symmetry editing
-  mode (`symmetry_edit.rs`). A bar floats at the top left of the drawing
+  mode (`symmetry_edit.rs`). Alt+E edits only while an object with a
+  symmetry is selected; otherwise it opens the Edit menu, as Alt and the
+  other titles' letters open theirs (#2881,
+  `ui::keynav::tests::alt_e_opens_the_edit_menu`). A bar floats at the top left of the drawing
   window: Finish; the mirror lines icon and their number (1 to 12); the
   centre (X, Y in the drawing's units); the angle of rotation icon and
   the angle (0 to 360 degrees), every number field with spin arrows and

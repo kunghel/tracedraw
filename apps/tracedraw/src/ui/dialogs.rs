@@ -396,7 +396,7 @@ pub const SVG_TEXT_KEYS: [&str; 3] = [
     "dialog.svg_text_fonts",
 ];
 
-pub const EXPORT_FORMATS: [(&str, &str); 18] = [
+pub const EXPORT_FORMATS: [(&str, &str); 19] = [
     ("SVG", "svg"),
     ("PDF", "pdf"),
     ("PNG", "png"),
@@ -415,6 +415,7 @@ pub const EXPORT_FORMATS: [(&str, &str); 18] = [
     ("PSD", "psd"),
     ("PostScript", "ps"),
     ("PRN", "prn"),
+    ("JPEG XL", "jxl"),
 ];
 
 /// The kinds of AI file the export writes, as translation keys: the
@@ -437,6 +438,7 @@ pub fn export_patterns(ext: &str) -> &'static str {
         "png" => "*.png",
         "bmp" => "*.bmp",
         "webp" => "*.webp",
+        "jxl" => "*.jxl",
         "gif" => "*.gif",
         "eps" => "*.eps",
         "ai" => "*.ai",
@@ -591,6 +593,9 @@ pub struct PrintState {
     pub booklet_binding: usize,
     /// Sheets in each signature of a perfect-bound booklet.
     pub signature_sheets: u32,
+    /// Booklet pages on each side of a sheet: 0 two, 1 four, 2 eight
+    /// (#3380).
+    pub booklet_up: usize,
     /// Saddle-stitch creep compensation at the innermost sheet, mm.
     pub creep: f64,
     /// Space between the two pages of a booklet spread, mm (#947).
@@ -663,6 +668,14 @@ pub struct PrintState {
     pub tile_overlap: f64,
     /// Trim marks and each tile's name in the paper's margins.
     pub tile_marks: bool,
+    /// The printer's colour profile (a file's path) the composite
+    /// output is converted to, and the intent; `None` prints the colours
+    /// as they are (#3374).
+    pub output_profile: Option<String>,
+    pub output_intent: tracedraw_core::icc::Intent,
+    /// The RGB and CMYK profiles found here, read when the Color tab
+    /// first shows.
+    pub output_profiles: Option<Vec<crate::color_policy::FoundProfile>>,
 }
 
 /// The sheets the Print dialog offers: fitted to the pages, then paper
@@ -777,6 +790,11 @@ impl PrintState {
             signature_sheets: self.signature_sheets,
             creep: self.creep,
             gap: self.booklet_gap,
+            up: match self.booklet_up {
+                1 => 4,
+                2 => 8,
+                _ => 2,
+            },
         }
     }
 
@@ -950,6 +968,7 @@ impl Default for PrintState {
             layout_preset_request: None,
             booklet_binding: 0,
             signature_sheets: 4,
+            booklet_up: 0,
             creep: 0.0,
             booklet_gap: 0.0,
             preflight: None,
@@ -982,6 +1001,9 @@ impl Default for PrintState {
             tile: false,
             tile_overlap: 10.0,
             tile_marks: true,
+            output_profile: None,
+            output_intent: tracedraw_core::icc::Intent::Perceptual,
+            output_profiles: None,
             crop_length: crate::imposition::CropStyle::default().length,
             crop_offset: crate::imposition::CropStyle::default().offset,
             crop_width: crate::imposition::CropStyle::default().width,
@@ -1271,6 +1293,9 @@ pub use crate::ui::palette_editor::PaletteEditorState;
 #[derive(Debug, Clone, PartialEq)]
 pub enum Dialog {
     None,
+    /// The window of a trace running off the interface thread
+    /// (`ui/trace_progress.rs`); the trace itself is `App::trace_job`.
+    Tracing,
     /// Edit Line Style: custom dash patterns.
     LineStyle(crate::ui::line_style::State),
     /// File > New From Template.
@@ -1375,6 +1400,8 @@ pub enum Dialog {
         /// The object's own solid fill: the colour of characters that
         /// have none of their own.
         ink: Option<tracedraw_core::Color>,
+        /// The text's alignment, set in the box and kept on OK (#3270).
+        align: tracedraw_core::TextAlign,
     },
     DocumentProperties(Box<crate::ui::doc_properties::DocPropsState>),
     /// Save on a drawing opened from a `.cdr` version TraceDraw does not
@@ -1472,6 +1499,8 @@ pub enum Dialog {
     ConvertColors(crate::ui::convert_colors::ConvertColorsState),
     /// Tools > Recolor.
     Recolor(crate::ui::recolor::RecolorState),
+    /// Tools > Replace Color (#2858).
+    ReplaceColor(crate::ui::replace_color::ReplaceColorState),
     FontManager(FontManagerState),
     /// Launch > TraceCut, Tools > TraceCut.
     TraceCut(Box<crate::tracecut::TraceCutState>),
@@ -1646,11 +1675,24 @@ fn convert_fields(app: &App, ui: &mut Ui, o: &mut crate::bitmap_modes::ConvertOp
             "dialog.anti_aliasing",
             "dialog.convert_anti_alias_desc",
         ));
-    ui.checkbox(&mut o.transparent, tr("dialog.transparent_background"))
-        .rich_tip(crate::ui::tips::pair(
-            "dialog.transparent_background",
-            "dialog.convert_transparent_desc",
-        ));
+    // Black and white is 1-bit and has no alpha: the box shows off and
+    // can't be ticked (#3204).
+    let tip = crate::ui::tips::pair(
+        "dialog.transparent_background",
+        "dialog.convert_transparent_desc",
+    );
+    let can_see_through = o.mode != ConvertMode::BlackWhite;
+    let mut shown = o.keeps_transparency();
+    let r = ui
+        .add_enabled(
+            can_see_through,
+            egui::Checkbox::new(&mut shown, tr("dialog.transparent_background")),
+        )
+        .rich_tip(&tip)
+        .rich_disabled_tip(&tip);
+    if can_see_through && r.changed() {
+        o.transparent = shown;
+    }
     // The size of the bitmap made: drop shadows and outlines count (#2351).
     if let Some(b) = app.convert_to_bitmap_area() {
         let w = (b.width() / 25.4 * o.dpi).ceil().max(1.0) as u64;
@@ -1943,10 +1985,16 @@ fn case_radio_keys(
 }
 
 /// Names of the dialogs' multi-line fields, where Enter inserts a line.
-const MULTILINE_NAMES: [&str; 2] = ["dialog_multiline_qr", "dialog_multiline_notes"];
+/// The multi-line fields of dialogs, where Enter starts a new line and
+/// does not press OK; the box of Text > Edit Text is one (#3370).
+const MULTILINE_NAMES: [&str; 3] = [
+    "dialog_multiline_qr",
+    "dialog_multiline_notes",
+    "edit_text_dialog_box",
+];
 
 pub(crate) fn multiline_id(i: usize) -> egui::Id {
-    egui::Id::new(MULTILINE_NAMES[i.min(MULTILINE_NAMES.len() - 1)])
+    egui::Id::new(MULTILINE_NAMES[i.min(1)])
 }
 
 /// Enter was pressed this frame and no multi-line text field holds it.
@@ -2036,6 +2084,10 @@ pub fn show(app: &mut App, ctx: &Context) {
     {
         app.end_bitmap_effect_preview();
     }
+    // A trace running shows its window, whatever closed it.
+    if app.trace_job.is_some() && matches!(app.dialog, Dialog::None) {
+        app.dialog = Dialog::Tracing;
+    }
     let mut dialog = std::mem::replace(&mut app.dialog, Dialog::None);
     app.dialog_help = crate::help::dialog_topic(&dialog, app.options_page);
     if !matches!(dialog, Dialog::None) {
@@ -2056,6 +2108,7 @@ pub fn show(app: &mut App, ctx: &Context) {
     let mut close = false;
     match &mut dialog {
         Dialog::None => {}
+        Dialog::Tracing => crate::ui::trace_progress::dialog(app, ctx, &mut close),
         Dialog::LineStyle(st) => crate::ui::line_style::dialog(app, ctx, st, &mut close),
         Dialog::BitmapBw(s) => crate::ui::bitmap_dialogs::bw_dialog(app, ctx, s, &mut close),
         Dialog::RemoveBackground(st) => {
@@ -2477,6 +2530,7 @@ pub fn show(app: &mut App, ctx: &Context) {
             text,
             spans,
             ink,
+            align,
         } => {
             let title = tr("menu.text.edit_text");
             let title = title
@@ -2484,12 +2538,60 @@ pub fn show(app: &mut App, ctx: &Context) {
                 .trim_end_matches('\u{2026}')
                 .trim()
                 .to_string();
-            window(ctx, title).show(ctx, |ui| {
-                edit_text_box(ui, text, spans, *ink);
-                if ok_cancel(ui, &mut close) {
-                    app.set_text_spans(*shape, spans.clone());
+            // Alt+O is OK, as the access key of the button is in other
+            // programs; it neither opens the Object menu nor types an
+            // "o" into the text (#3370).
+            let alt_ok = ctx.input_mut(|i| {
+                let hit = i.events.iter().any(|e| {
+                    matches!(e, egui::Event::Key { key: egui::Key::O, pressed: true, modifiers, .. }
+                        if modifiers.alt && !modifiers.ctrl && !modifiers.shift)
+                });
+                if hit {
+                    i.events.retain(|e| {
+                        !matches!(e, egui::Event::Text(_) | egui::Event::Key { key: egui::Key::O, .. })
+                    });
+                }
+                hit
+            });
+            let mut asked = EditTextAsk::Nothing;
+            // The box is sized by the user (#3270).
+            window(ctx, title)
+                .resizable(egui::vec2(640.0, 440.0), egui::vec2(460.0, 300.0))
+                .show(ctx, |ui| {
+                asked = edit_text_box(ui, text, spans, *ink, align);
+                if ok_cancel(ui, &mut close) || alt_ok {
+                    close = true;
+                    app.set_edit_text(*shape, spans.clone(), *align);
                 }
             });
+            match asked {
+                EditTextAsk::Nothing => {}
+                // Import Text: a text file's characters go in at the end
+                // of the box, in the look of the character before them.
+                EditTextAsk::Import => crate::files::Dialog::new()
+                    .add_filter("Text (*.txt, *.rtf, *.docx)", &["txt", "rtf", "docx"])
+                    .pick_file(app, |app, path| {
+                        match crate::app::App::parse_text_file(&path) {
+                            Ok(t) => {
+                                if let Dialog::EditText { text, .. } = &mut app.dialog {
+                                    text.push_str(&t.text());
+                                }
+                            }
+                            Err(e) => {
+                                app.status =
+                                    crate::i18n::trf("status.import_failed", &[("e", &e)])
+                            }
+                        }
+                    }),
+                // Spell Check: the text as it stands in the box, then
+                // Writing Tools on its Spell Check page.
+                EditTextAsk::Spell => {
+                    app.set_edit_text(*shape, spans.clone(), *align);
+                    app.dialog =
+                        Dialog::WritingTools(crate::ui::writing_tools::WritingToolsState::on_tab(0));
+                    return;
+                }
+            }
         }
         Dialog::Options => crate::ui::options::options_dialog(app, ctx, &mut close),
         Dialog::OutlinePen(st) => crate::ui::outline_pen::dialog(app, ctx, st, &mut close),
@@ -3243,7 +3345,78 @@ pub fn show(app: &mut App, ctx: &Context) {
                             st.set_dpi(dpi);
                         }
                         ui.end_row();
+                        // The size on the page, in the unit chosen below (#3138).
+                        ui.label(tr("resample.size_row"));
+                        let u = st.unit;
+                        let suffix = format!(" {}", u.label());
+                        let (mut sw, mut sh) = (u.from_mm(st.size_to.0), u.from_mm(st.size_to.1));
+                        if ui
+                            .add(
+                                NumField::new(&mut sw)
+                                    .range(0.001..=1.0e7)
+                                    .fixed_decimals(2)
+                                    .suffix(&suffix)
+                                    .width(90.0),
+                            )
+                            .rich_tip(crate::ui::tips::pair(
+                                "resample.width",
+                                "resample.size_w_desc",
+                            ))
+                            .changed()
+                        {
+                            st.set_size_w(u.to_mm(sw));
+                        }
+                        if ui
+                            .add(
+                                NumField::new(&mut sh)
+                                    .range(0.001..=1.0e7)
+                                    .fixed_decimals(2)
+                                    .suffix(&suffix)
+                                    .width(90.0),
+                            )
+                            .rich_tip(crate::ui::tips::pair(
+                                "resample.height",
+                                "resample.size_h_desc",
+                            ))
+                            .changed()
+                        {
+                            st.set_size_h(u.to_mm(sh));
+                        }
+                        ui.end_row();
                     });
+                ui.horizontal(|ui| {
+                    ui.label(tr("resample.units"));
+                    crate::ui::keynav::ComboBox::from_id_salt("resample_units")
+                        .selected_text(st.unit.label())
+                        .width(120.0)
+                        .show_ui(ui, |ui| {
+                            for u in crate::app::Units::ALL {
+                                ui.selectable_value(&mut st.unit, u, u.label());
+                            }
+                        })
+                        .response
+                        .rich_tip(crate::ui::tips::keyed("resample.units"));
+                    ui.label(tr("resample.fit_to"));
+                    let mut papers = vec![(tr("resample.fit_page"), app.page_size())];
+                    let presets = paper_presets();
+                    for name in FAVOURITE_PAPERS {
+                        if let Some((_, size)) = presets.iter().find(|(n, _)| *n == name) {
+                            papers.push((name.to_string(), *size));
+                        }
+                    }
+                    crate::ui::keynav::ComboBox::from_id_salt("resample_fit")
+                        .selected_text(tr("resample.fit_pick"))
+                        .width(140.0)
+                        .show_ui(ui, |ui| {
+                            for (name, size) in &papers {
+                                if ui.selectable_label(false, name).clicked() {
+                                    st.fit_paper((size.width, size.height));
+                                }
+                            }
+                        })
+                        .response
+                        .rich_tip(crate::ui::tips::keyed("resample.fit_to"));
+                });
                 ui.checkbox(&mut st.keep_aspect, tr("resample.keep_aspect"))
                     .rich_tip(crate::ui::tips::pair(
                         "resample.keep_aspect",
@@ -3386,6 +3559,7 @@ pub fn show(app: &mut App, ctx: &Context) {
         Dialog::BorderGrommet(st) => border_grommet_dialog(app, ctx, st, &mut close),
         Dialog::ConvertColors(st) => crate::ui::convert_colors::dialog(app, ctx, st, &mut close),
         Dialog::Recolor(st) => crate::ui::recolor::dialog(app, ctx, st, &mut close),
+        Dialog::ReplaceColor(st) => crate::ui::replace_color::dialog(app, ctx, st, &mut close),
         Dialog::ColorManagement(st) => {
             crate::ui::color_management::dialog(app, ctx, st, &mut close)
         }
@@ -4253,6 +4427,7 @@ pub(crate) fn page_size_page(app: &mut App, ui: &mut Ui) {
                 "options.show_page_shadow",
                 "options.show_page_shadow_tip",
             ));
+        page_look_editor(ui, &mut app.settings.page_look);
         ui.add_space(6.0);
         if ui
             .add_sized(
@@ -4528,11 +4703,7 @@ pub fn export_format_of(path: &std::path::Path) -> Option<usize> {
 /// exported to last, else the drawing's own (#1817).
 fn export_save_dialog(app: &App, st: &ExportState) -> crate::files::Dialog {
     let (name, ext) = EXPORT_FORMATS[st.format.min(EXPORT_FORMATS.len() - 1)];
-    let stem = app
-        .file
-        .as_ref()
-        .and_then(|p| p.file_stem().map(|s| s.to_string_lossy().to_string()))
-        .unwrap_or_else(|| "Graphic1".into());
+    let stem = app.export_stem();
     let mut dialog = crate::files::Dialog::new().add_filter(name, &export_extensions(ext));
     for (other, e) in EXPORT_FORMATS.iter() {
         if *e != ext {
@@ -5200,11 +5371,30 @@ fn export_dialog(app: &mut App, ctx: &Context, st: &mut ExportState, close: &mut
                 if !scripted && EXPORT_FORMATS[st.format.min(EXPORT_FORMATS.len() - 1)].1 == "plt" {
                     plt_export_fields(ui, st);
                 }
-                ui.checkbox(&mut st.selection_only, tr("dialog.selected_only"))
-                    .rich_tip(crate::ui::tips::pair(
-                        "dialog.selected_only",
-                        "dialog.export_selected_desc",
-                    ));
+                ui.horizontal(|ui| {
+                    ui.checkbox(&mut st.selection_only, tr("dialog.selected_only"))
+                        .rich_tip(crate::ui::tips::pair(
+                            "dialog.selected_only",
+                            "dialog.export_selected_desc",
+                        ));
+                    // Selected only from the start of every export with
+                    // objects selected (#3208).
+                    let mut always = app.settings.formats.export_selected_only;
+                    if ui
+                        .checkbox(&mut always, tr("dialog.selected_only_default"))
+                        .rich_tip(crate::ui::tips::pair(
+                            "dialog.selected_only_default",
+                            "dialog.selected_only_default_tip",
+                        ))
+                        .changed()
+                    {
+                        app.settings.formats.export_selected_only = always;
+                        if always {
+                            st.selection_only = true;
+                        }
+                        app.settings.save();
+                    }
+                });
                 if !st.selection_only {
                     export_range_fields(app, ui, st);
                 }
@@ -5364,11 +5554,7 @@ pub fn export_dialog_ok(app: &mut App, st: &ExportState) {
             write(app, path, st);
             return;
         }
-        let stem = app
-            .file
-            .as_ref()
-            .and_then(|p| p.file_stem().map(|s| s.to_string_lossy().to_string()))
-            .unwrap_or_else(|| "Graphic1".into());
+        let stem = app.export_stem();
         let ext = exts.first().cloned().unwrap_or_default();
         let patterns: Vec<&str> = exts.iter().map(String::as_str).collect();
         let st2 = st.clone();
@@ -6140,13 +6326,28 @@ fn booklet_fields(ui: &mut Ui, st: &mut PrintState) {
 }
 
 fn booklet_rows(ui: &mut Ui, st: &mut PrintState) {
-    if st.booklet_binding == 1 {
+    // Pages on each side of the sheet: one fold, or a large sheet folded
+    // into a signature of 8 or 16 pages (#3380).
+    let ups = ["print.booklet_up_2", "print.booklet_up_4", "print.booklet_up_8"];
+    ui.label(tr("print.booklet_up"))
+        .rich_tip(crate::ui::tips::keyed("print.booklet_up"));
+    egui::ComboBox::from_id_salt("print_booklet_up")
+        .selected_text(tr(ups[st.booklet_up.min(2)]))
+        .show_ui(ui, |ui| {
+            for (i, key) in ups.iter().enumerate() {
+                ui.selectable_value(&mut st.booklet_up, i, tr(key));
+            }
+        })
+        .response
+        .rich_tip(crate::ui::tips::keyed("print.booklet_up"));
+    ui.end_row();
+    if st.booklet_binding == 1 && st.booklet_up == 0 {
         ui.label(tr("print.signature_sheets"))
             .rich_tip(crate::ui::tips::keyed("print.signature_sheets"));
         ui.add(crate::ui::field::NumField::new(&mut st.signature_sheets).range(1..=32))
             .rich_tip(crate::ui::tips::keyed("print.signature_sheets"));
         ui.end_row();
-    } else {
+    } else if st.booklet_up == 0 {
         ui.label(tr("print.creep"))
             .rich_tip(crate::ui::tips::keyed("print.creep"));
         ui.add(
@@ -6368,11 +6569,19 @@ fn print_dialog(app: &mut App, ctx: &Context, st: &mut PrintState, close: &mut b
                 // printer waits for it (#614).
                 let waiting =
                     st.destination == 0 && st.looking_for_printers && st.printers.is_empty();
+                // Enter prints, as Print is the dialog's default button
+                // (Ctrl+P then Enter, #3337), unless a box being typed in
+                // or an open list takes it.
+                let enter = !waiting
+                    && ui.input(|i| i.key_pressed(egui::Key::Enter) && i.modifiers.is_none())
+                    && !ui.memory(|m| m.focused().is_some())
+                    && !egui::Popup::is_any_open(ui.ctx());
                 if ui
                     .add_enabled(!waiting, egui::Button::new(tr("dialog.print")))
                     .rich_tip(crate::ui::tips::pair("dialog.print", "print.print_desc"))
                     .rich_disabled_tip(crate::ui::tips::pair("dialog.print", "print.print_desc"))
                     .clicked()
+                    || enter
                 {
                     match crate::export::print(app, st) {
                         Ok(msg) if !msg.is_empty() => app.status = msg,
@@ -6671,6 +6880,78 @@ fn print_tab_general(app: &App, ui: &mut Ui, st: &mut PrintState) -> Option<Stri
     properties
 }
 
+/// The printer's colour profile and its intent, on the Color tab (#3374):
+/// None, then the RGB and CMYK profiles found on this computer; composite
+/// output only.
+fn print_profile_row(ui: &mut Ui, st: &mut PrintState) {
+    use crate::color_policy::Space;
+    use tracedraw_core::icc::Intent;
+    let found = st
+        .output_profiles
+        .get_or_insert_with(|| {
+            crate::color_policy::system_profiles()
+                .into_iter()
+                .filter(|p| matches!(p.space, Space::Rgb | Space::Cmyk))
+                .collect()
+        })
+        .clone();
+    let on = !st.separations && !st.grayscale;
+    ui.label(tr("print.profile"));
+    ui.add_enabled_ui(on, |ui| {
+        ui.horizontal(|ui| {
+            let shown = match &st.output_profile {
+                None => tr("print.profile_none"),
+                Some(path) => found
+                    .iter()
+                    .find(|p| &p.path == path)
+                    .map(|p| p.name.clone())
+                    .unwrap_or_else(|| {
+                        std::path::Path::new(path)
+                            .file_name()
+                            .map(|n| n.to_string_lossy().to_string())
+                            .unwrap_or_else(|| path.clone())
+                    }),
+            };
+            crate::ui::keynav::ComboBox::from_id_salt("print_profile")
+                .selected_text(shown)
+                .width(220.0)
+                .show_ui(ui, |ui| {
+                    ui.selectable_value(&mut st.output_profile, None, tr("print.profile_none"));
+                    for p in &found {
+                        ui.selectable_value(&mut st.output_profile, Some(p.path.clone()), &p.name);
+                    }
+                })
+                .response
+                .rich_tip(crate::ui::tips::keyed("print.profile"))
+                .rich_disabled_tip(crate::ui::tips::keyed("print.profile"));
+            let intent_key = |i: Intent| match i {
+                Intent::Perceptual => "color_mgmt.intent_perceptual",
+                Intent::RelativeColorimetric => "color_mgmt.intent_relative",
+                Intent::Saturation => "color_mgmt.intent_saturation",
+                Intent::AbsoluteColorimetric => "color_mgmt.intent_absolute",
+            };
+            ui.add_enabled_ui(st.output_profile.is_some(), |ui| {
+                crate::ui::keynav::ComboBox::from_id_salt("print_profile_intent")
+                    .selected_text(tr(intent_key(st.output_intent)))
+                    .width(160.0)
+                    .show_ui(ui, |ui| {
+                        for i in [
+                            Intent::Perceptual,
+                            Intent::RelativeColorimetric,
+                            Intent::Saturation,
+                            Intent::AbsoluteColorimetric,
+                        ] {
+                            ui.selectable_value(&mut st.output_intent, i, tr(intent_key(i)));
+                        }
+                    })
+                    .response
+                    .rich_tip(crate::ui::tips::keyed("print.profile_intent"));
+            });
+        });
+    });
+    ui.end_row();
+}
+
 fn print_tab_color(ui: &mut Ui, st: &mut PrintState) {
     egui::Grid::new("print_color")
         .num_columns(2)
@@ -6709,6 +6990,7 @@ fn print_tab_color(ui: &mut Ui, st: &mut PrintState) {
             ui.label("");
             ui.checkbox(&mut st.spot_to_cmyk, tr("print.spot_to_cmyk"));
             ui.end_row();
+            print_profile_row(ui, st);
         });
     ui.add_space(8.0);
     ui.label(egui::RichText::new(tr("print.color_hint")).color(Tokens::text_dim()));
@@ -7682,9 +7964,10 @@ fn print_merge_dialog(app: &mut App, ctx: &Context, st: &mut PrintMergeState, cl
                 {
                     *close = true;
                 }
-                // Finish keeps the data source and opens the Print Merge
+                // Continue keeps the data source and opens the Print Merge
                 // docker, where the fields are put on the page and the
-                // merge is made, as in the reference program (#437).
+                // merge is made (#437); it read Finish, though the merge
+                // is still to be made (#3183).
                 if ui
                     .add_enabled(
                         !st.headers.is_empty(),
@@ -8570,6 +8853,13 @@ pub(crate) fn palette_entry_color(name: &str, c: Color, spot: bool) -> Color {
 
 #[cfg(test)]
 pub(crate) mod tests {
+
+    /// #3183: the Data Merge dialog's button that opens the docker reads
+    /// Continue, as the merge is still to be made there.
+    #[test]
+    fn the_data_merge_dialog_goes_on_with_continue() {
+        assert_eq!(crate::i18n::tr("merge.finish"), "Continue");
+    }
 
     /// Every page size preset has its own name and size (in either
     /// orientation), so a page's size names one preset; the favourites
@@ -9691,6 +9981,29 @@ pub(crate) mod tests {
         })
     }
 
+    /// Help > Benchmark: Options opens the Options window at the page with
+    /// hardware acceleration, instead of the Benchmark window putting
+    /// itself back over it (#3351).
+    #[test]
+    fn benchmark_options_opens_the_options_window() {
+        use egui::accesskit::Role;
+        let mut app = App::headless();
+        let ctx = crate::theme::ui_context();
+        app.dialog = Dialog::Benchmark;
+        frame_widgets(&ctx, &mut app, Vec::new());
+        let w = frame_widgets(&ctx, &mut app, Vec::new());
+        let options = tr("menu.tools.options");
+        let (_, _, enabled, id) = w
+            .iter()
+            .find(|(r, l, _, _)| *r == Role::Button && *l == options)
+            .cloned()
+            .expect("an Options button");
+        assert!(enabled);
+        frame_widgets(&ctx, &mut app, vec![click(id)]);
+        assert!(matches!(app.dialog, Dialog::Options), "{:?}", app.dialog);
+        assert_eq!(app.options_page, OptionsPage::General);
+    }
+
     /// The update progress dialog: a progress bar and Cancel while the
     /// file downloads, Cancel greyed while it is checked, Restart Now and
     /// Later when the update is ready, Try Again and the website after a
@@ -9892,6 +10205,19 @@ mod booklet_fields_tests {
         let o = crate::export::print_layout(&app, &st, app.doc());
         assert_eq!(o.booklet.binding, crate::imposition::Binding::PerfectBound);
         assert_eq!(o.layout, crate::imposition::Layout::Booklet);
+        // Pages per side (#3380): 4 a side folds a sheet into a signature
+        // of 8 pages, so 6 pages take one sheet; sheets per signature and
+        // creep do not apply.
+        assert!(has(&texts, &tr("print.booklet_up")));
+        assert!(has(&texts, &tr("print.booklet_up_2")));
+        st.booklet_up = 1;
+        let texts = run(&mut st, Vec::new());
+        assert!(has(&texts, &tr("print.booklet_up_4")));
+        assert!(!has(&texts, &tr("print.signature_sheets")));
+        assert!(!has(&texts, &tr("print.creep")));
+        let o = crate::export::print_layout(&app, &st, app.doc());
+        assert_eq!(o.booklet.up, 4);
+        assert_eq!(crate::imposition::booklet_info(6, &o.booklet).sheets, 1);
     }
 
     /// The summary under the sketch counts the pages that print, not the
@@ -10244,7 +10570,9 @@ fn edit_text_box(
     text: &mut String,
     spans: &mut Vec<tracedraw_core::TextSpan>,
     ink: Option<tracedraw_core::Color>,
-) {
+    align: &mut tracedraw_core::TextAlign,
+) -> EditTextAsk {
+    let mut asked = EditTextAsk::Nothing;
     use tracedraw_core::{spans_apply, spans_char_count, LineStyle};
     let id = egui::Id::new("edit_text_dialog_box");
     crate::ops2::retext_keeping_styles(spans, text);
@@ -10331,23 +10659,116 @@ fn edit_text_box(
             ui.weak(&first.font_family);
         });
     }
+    // The second row (#3270): the text's alignment, the case of the
+    // selected characters, the box's zoom, the marks of spaces and tabs,
+    // Import Text and Spell Check.
+    let zoom_id = egui::Id::new("edit_text_dialog_zoom");
+    let marks_id = egui::Id::new("edit_text_dialog_marks");
+    let mut zoom = ui.ctx().data(|d| d.get_temp::<f32>(zoom_id)).unwrap_or(1.0);
+    let mut marks = ui.ctx().data(|d| d.get_temp::<bool>(marks_id)).unwrap_or(false);
+    ui.horizontal_wrapped(|ui| {
+        use tracedraw_core::TextAlign as A;
+        for (a, key) in [
+            (A::None, "edit_text.align_none"),
+            (A::Left, "edit_text.align_left"),
+            (A::Center, "edit_text.align_center"),
+            (A::Right, "edit_text.align_right"),
+            (A::Justify, "edit_text.align_justify"),
+        ] {
+            if ui
+                .selectable_label(*align == a, tr(key))
+                .rich_tip(crate::ui::tips::pair(key, "edit_text.align_tip"))
+                .clicked()
+            {
+                *align = a;
+            }
+        }
+        ui.separator();
+        let mut case = None;
+        crate::ui::keynav::ComboBox::from_id_salt("edit_text_case")
+            .selected_text(tr("edit_text.case"))
+            .width(110.0)
+            .show_ui(ui, |ui| {
+                use crate::ops2::CaseMode as C;
+                for (m, key) in [
+                    (C::Sentence, "menu.text.case_sentence"),
+                    (C::Lower, "menu.text.case_lower"),
+                    (C::Upper, "menu.text.case_upper"),
+                    (C::Title, "menu.text.case_title"),
+                    (C::Toggle, "menu.text.case_toggle"),
+                ] {
+                    if ui.selectable_label(false, tr(key)).clicked() {
+                        case = Some(m);
+                    }
+                }
+            })
+            .response
+            .rich_tip(crate::ui::tips::pair("edit_text.case", "edit_text.case_tip"));
+        if let Some(m) = case {
+            edit_text_change_case(spans, from, to, m);
+            *text = tracedraw_core::spans_text(spans);
+        }
+        ui.separator();
+        if ui
+            .add_enabled(zoom > 0.51, egui::Button::new("\u{2212}"))
+            .rich_tip(crate::ui::tips::pair("edit_text.zoom_out", "edit_text.zoom_tip"))
+            .clicked()
+        {
+            zoom = (zoom / 1.25).max(0.5);
+        }
+        ui.label(format!("{:.0} %", zoom * 100.0));
+        if ui
+            .add_enabled(zoom < 3.99, egui::Button::new("+"))
+            .rich_tip(crate::ui::tips::pair("edit_text.zoom_in", "edit_text.zoom_tip"))
+            .clicked()
+        {
+            zoom = (zoom * 1.25).min(4.0);
+        }
+        ui.separator();
+        ui.checkbox(&mut marks, tr("edit_text.marks"))
+            .rich_tip(crate::ui::tips::pair("edit_text.marks", "edit_text.marks_tip"));
+        ui.separator();
+        if ui
+            .button(tr("edit_text.import"))
+            .rich_tip(crate::ui::tips::pair("edit_text.import", "edit_text.import_tip"))
+            .clicked()
+        {
+            asked = EditTextAsk::Import;
+        }
+        if ui
+            .button(tr("edit_text.spell"))
+            .rich_tip(crate::ui::tips::pair("edit_text.spell", "edit_text.spell_tip"))
+            .clicked()
+        {
+            asked = EditTextAsk::Spell;
+        }
+    });
+    ui.ctx().data_mut(|d| {
+        d.insert_temp(zoom_id, zoom);
+        d.insert_temp(marks_id, marks);
+    });
     let shown = spans.clone();
     let mut layouter = |ui: &Ui, buf: &dyn egui::TextBuffer, wrap: f32| {
         let mut sp = shown.clone();
         crate::ops2::retext_keeping_styles(&mut sp, buf.as_str());
-        let mut job = edit_text_job(&sp, ink);
+        let mut job = edit_text_job_zoomed(&sp, ink, zoom, marks);
         job.wrap.max_width = wrap;
         ui.fonts_mut(|f| f.layout_job(job))
     };
+    // The text fills the box as the user sizes it.
+    let width = ui.available_width().max(300.0);
     egui::ScrollArea::vertical()
         .id_salt("edit_text_scroll")
-        .max_height(360.0)
+        .max_height((ui.available_height() - 40.0).max(120.0))
         .show(ui, |ui| {
             ui.add(
                 egui::TextEdit::multiline(text)
                     .id(id)
-                    .desired_width(480.0)
+                    .desired_width(width)
                     .desired_rows(10)
+                    // Tab types a tab into the text, as on the page, and
+                    // does not move to the OK button (#3372).
+                    .lock_focus(true)
                     // A white page: dark characters stay readable in the
                     // dark theme.
                     .background_color(egui::Color32::WHITE)
@@ -10355,6 +10776,116 @@ fn edit_text_box(
             );
         });
     crate::ops2::retext_keeping_styles(spans, text);
+    asked
+}
+
+/// What the Edit Text box asks of the program (#3270).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum EditTextAsk {
+    Nothing,
+    /// Import Text: a text file's characters into the box.
+    Import,
+    /// Spell Check: keep the text and open Writing Tools.
+    Spell,
+}
+
+/// Change Case on characters `from..to` of the Edit Text box's spans,
+/// each keeping its look; a sentence or a word goes on from one span
+/// into the next (#3270).
+fn edit_text_change_case(
+    spans: &mut [tracedraw_core::TextSpan],
+    from: usize,
+    to: usize,
+    mode: crate::ops2::CaseMode,
+) {
+    // The part of each span inside the selection, as byte ranges.
+    let mut parts = Vec::new();
+    let mut at = 0usize;
+    for (i, s) in spans.iter().enumerate() {
+        let n = s.text.chars().count();
+        let (a, b) = (from.max(at), to.min(at + n));
+        if a < b {
+            let byte = |c: usize| {
+                s.text
+                    .char_indices()
+                    .nth(c - at)
+                    .map(|(k, _)| k)
+                    .unwrap_or(s.text.len())
+            };
+            parts.push((i, byte(a), byte(b)));
+        }
+        at += n;
+    }
+    let runs: Vec<&str> = parts
+        .iter()
+        .map(|&(i, a, b)| &spans[i].text[a..b])
+        .collect();
+    let changed = crate::ops2::apply_case_runs(&runs, mode);
+    for (&(i, a, b), new) in parts.iter().zip(changed).rev() {
+        spans[i].text.replace_range(a..b, &new);
+    }
+}
+
+/// [`edit_text_job`] at the box's zoom (#3270), with spaces drawn as
+/// middle dots and tabs as arrows when the marks are on: one character
+/// for one, so the cursor keeps its place.
+fn edit_text_job_zoomed(
+    spans: &[tracedraw_core::TextSpan],
+    ink: Option<tracedraw_core::Color>,
+    zoom: f32,
+    marks: bool,
+) -> egui::text::LayoutJob {
+    let mut job = edit_text_job(spans, ink);
+    if (zoom - 1.0).abs() > 1e-3 {
+        for s in &mut job.sections {
+            s.format.font_id.size *= zoom;
+        }
+    }
+    if marks {
+        let grey = egui::Color32::from_gray(150);
+        let mut text = String::with_capacity(job.text.len());
+        let mut sections = Vec::new();
+        for s in &job.sections {
+            let part = &job.text[s.byte_range.start.0..s.byte_range.end.0];
+            let mut run = String::new();
+            let flush = |run: &mut String, text: &mut String, fmt: &egui::TextFormat, sections: &mut Vec<egui::text::LayoutSection>| {
+                if run.is_empty() {
+                    return;
+                }
+                let start = text.len();
+                text.push_str(run);
+                sections.push(egui::text::LayoutSection {
+                    leading_space: 0.0,
+                    byte_range: egui::text::ByteIndex(start)..egui::text::ByteIndex(text.len()),
+                    format: fmt.clone(),
+                });
+                run.clear();
+            };
+            for c in part.chars() {
+                let mark = match c {
+                    ' ' => Some('\u{00B7}'),
+                    '\t' => Some('\u{2192}'),
+                    _ => None,
+                };
+                match mark {
+                    Some(m) => {
+                        flush(&mut run, &mut text, &s.format, &mut sections);
+                        run.push(m);
+                        let fmt = egui::TextFormat {
+                            color: grey,
+                            ..s.format.clone()
+                        };
+                        flush(&mut run, &mut text, &fmt, &mut sections);
+                    }
+                    None => run.push(c),
+                }
+            }
+            flush(&mut run, &mut text, &s.format, &mut sections);
+        }
+        job.text = text;
+        job.sections = sections;
+    }
+    job
 }
 
 /// The span holding character `at` (the last one at the end).
@@ -10522,5 +11053,208 @@ fn resample_file_section(
         .clicked()
     {
         app.resample_save_as(st);
+    }
+}
+
+/// How the page's shadow and border look (#3078): the shadow's colour
+/// and opacity, offset and softness, the border's colour and width, and
+/// a button back to the theme's look. Only the screen changes.
+pub(crate) fn page_look_editor(ui: &mut egui::Ui, look: &mut crate::settings::PageLook) {
+    use crate::settings::PageLook;
+    let tip = |key: &str| crate::ui::tips::pair(key, "options.page_look_tip");
+    egui::CollapsingHeader::new(tr("options.page_look"))
+        .id_salt("options_page_look")
+        .show(ui, |ui| {
+            ui.label(egui::RichText::new(tr("options.page_look_tip")).weak());
+            let theme = |c: egui::Color32| c.to_srgba_unmultiplied();
+            egui::Grid::new("options_page_look_grid")
+                .num_columns(2)
+                .spacing([12.0, 6.0])
+                .show(ui, |ui| {
+                    ui.label(tr("options.page_shadow_color"));
+                    let mut c = look
+                        .shadow_color
+                        .unwrap_or_else(|| theme(crate::theme::Tokens::page_shadow()));
+                    if ui
+                        .color_edit_button_srgba_unmultiplied(&mut c)
+                        .rich_tip(tip("options.page_shadow_color"))
+                        .changed()
+                    {
+                        look.shadow_color = Some(c);
+                    }
+                    ui.end_row();
+                    ui.label(tr("options.page_shadow_offset"));
+                    ui.horizontal(|ui| {
+                        for v in look.shadow_offset.iter_mut() {
+                            ui.add(
+                                egui::DragValue::new(v)
+                                    .range(-PageLook::MAX_OFFSET..=PageLook::MAX_OFFSET)
+                                    .speed(0.25)
+                                    .suffix(" px"),
+                            )
+                            .rich_tip(tip("options.page_shadow_offset"));
+                        }
+                    });
+                    ui.end_row();
+                    ui.label(tr("options.page_shadow_softness"));
+                    ui.add(
+                        egui::Slider::new(&mut look.shadow_softness, 0.0..=PageLook::MAX_SOFTNESS)
+                            .suffix(" px"),
+                    )
+                    .rich_tip(tip("options.page_shadow_softness"));
+                    ui.end_row();
+                    ui.label(tr("options.page_border_color"));
+                    let mut c = look
+                        .border_color
+                        .unwrap_or_else(|| theme(crate::theme::Tokens::page_border()));
+                    if ui
+                        .color_edit_button_srgba_unmultiplied(&mut c)
+                        .rich_tip(tip("options.page_border_color"))
+                        .changed()
+                    {
+                        look.border_color = Some(c);
+                    }
+                    ui.end_row();
+                    ui.label(tr("options.page_border_width"));
+                    ui.add(
+                        egui::DragValue::new(&mut look.border_width)
+                            .range(0.5..=PageLook::MAX_BORDER)
+                            .speed(0.1)
+                            .suffix(" px"),
+                    )
+                    .rich_tip(tip("options.page_border_width"));
+                    ui.end_row();
+                });
+            if ui
+                .add_enabled(
+                    !look.is_default(),
+                    egui::Button::new(tr("options.page_look_reset")),
+                )
+                .rich_tip(tip("options.page_look_reset"))
+                .clicked()
+            {
+                *look = PageLook::default();
+            }
+        })
+        .header_response
+        .rich_tip(tip("options.page_look"));
+    *look = look.sanitized();
+}
+
+#[cfg(test)]
+mod edit_text_tests {
+    use super::*;
+    use tracedraw_core::{Point, ShapeKind, TextAlign, TextSpan};
+
+    fn text_app(spans: Vec<TextSpan>) -> (App, tracedraw_core::ShapeId) {
+        let mut app = App::headless();
+        let id = app
+            .new_shape(ShapeKind::Text {
+                spans,
+                origin: Point::new(10.0, 10.0),
+                frame: None,
+                align: TextAlign::Left,
+                para: Default::default(),
+                on_path: None,
+            })
+            .expect("text");
+        (app, id)
+    }
+
+    /// OK with a new alignment sets it with the characters, as one undo
+    /// step "Edit Text" (#3270).
+    #[test]
+    fn ok_keeps_the_alignment_set_in_the_box() {
+        let (mut app, id) = text_app(vec![TextSpan::new("Hello", "Sans", 12.0)]);
+        app.select(vec![id]);
+        app.open_edit_text_dialog();
+        let Dialog::EditText { align, .. } = &app.dialog else {
+            panic!("no dialog");
+        };
+        assert_eq!(*align, TextAlign::Left);
+        let depth = app.engine.history_labels().0.len();
+        app.set_edit_text(id, vec![TextSpan::new("Hello!", "Sans", 12.0)], TextAlign::Center);
+        assert_eq!(app.engine.history_labels().0.len(), depth + 1);
+        assert_eq!(app.engine.undo_label(), Some("Edit Text"));
+        let ShapeKind::Text { spans, align, .. } = app.doc().find_shape(id).expect("text").kind.clone()
+        else {
+            panic!("text");
+        };
+        assert_eq!((tracedraw_core::spans_text(&spans), align), ("Hello!".to_string(), TextAlign::Center));
+        app.undo();
+        let ShapeKind::Text { spans, align, .. } = app.doc().find_shape(id).expect("text").kind.clone()
+        else {
+            panic!("text");
+        };
+        assert_eq!((tracedraw_core::spans_text(&spans), align), ("Hello".to_string(), TextAlign::Left));
+    }
+
+    /// Change Case in the box changes only the selected characters, each
+    /// keeping its look, across spans (#3270).
+    #[test]
+    fn change_case_in_the_box_keeps_each_look() {
+        let mut bold = TextSpan::new("hello ", "Sans", 20.0);
+        bold.bold = true;
+        let mut spans = vec![bold, TextSpan::new("world", "Sans", 12.0)];
+        edit_text_change_case(&mut spans, 3, 8, crate::ops2::CaseMode::Upper);
+        let got: Vec<(&str, bool)> = spans.iter().map(|s| (s.text.as_str(), s.bold)).collect();
+        assert_eq!(got, vec![("helLO ", true), ("WOrld", false)]);
+    }
+
+    /// The zoom scales the box's characters only; the marks draw spaces
+    /// and tabs one character for one, so the cursor keeps its place
+    /// (#3270).
+    #[test]
+    fn zoom_and_marks_keep_the_characters_in_place() {
+        let spans = vec![
+            TextSpan::new("a b", "Sans", 10.0),
+            TextSpan::new("\tc", "Sans", 20.0),
+        ];
+        let plain = edit_text_job_zoomed(&spans, None, 1.0, false);
+        let big = edit_text_job_zoomed(&spans, None, 2.0, false);
+        let size = |j: &egui::text::LayoutJob| -> Vec<f32> {
+            j.sections.iter().map(|s| s.format.font_id.size).collect()
+        };
+        let doubled: Vec<f32> = size(&plain).iter().map(|s| s * 2.0).collect();
+        assert_eq!(size(&big), doubled);
+        let marked = edit_text_job_zoomed(&spans, None, 1.0, true);
+        assert_eq!(marked.text, "a\u{00B7}b\u{2192}c");
+        assert_eq!(marked.text.chars().count(), plain.text.chars().count());
+        for s in &marked.sections {
+            assert!(marked.text.is_char_boundary(s.byte_range.start.0));
+            assert!(marked.text.is_char_boundary(s.byte_range.end.0));
+        }
+        assert_eq!(marked.sections.last().map(|s| s.byte_range.end.0), Some(marked.text.len()));
+    }
+
+    /// The box draws with its second row at any zoom and with the marks
+    /// on (#3270).
+    #[test]
+    fn the_box_draws_with_zoom_and_marks() {
+        let (mut app, id) = text_app(vec![TextSpan::new("One two\tthree", "Sans", 12.0)]);
+        app.select(vec![id]);
+        app.open_edit_text_dialog();
+        app.show_welcome = false;
+        let ctx = crate::theme::ui_context();
+        ctx.data_mut(|d| {
+            d.insert_temp(egui::Id::new("edit_text_dialog_zoom"), 2.0f32);
+            d.insert_temp(egui::Id::new("edit_text_dialog_marks"), true);
+        });
+        for _ in 0..2 {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1400.0, 900.0),
+                )),
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(input, |ui| crate::ui::root(&mut app, ui));
+            out.textures_delta.clear();
+        }
+        let Dialog::EditText { text, .. } = &app.dialog else {
+            panic!("no dialog");
+        };
+        // The marks are drawn, never typed into the text.
+        assert_eq!(text, "One two\tthree");
     }
 }

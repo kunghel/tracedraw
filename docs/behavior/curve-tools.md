@@ -42,8 +42,15 @@ delete the selection as everywhere (#1527,
   it is and only the outgoing one follows. C acts while it is held (also
   when it went down before the press) and the node stays a cusp after C
   is let go; pressing it again in the same pull changes nothing more.
-  While a curve is being drawn C never aligns the selection. Alt while
-  pulling moves the node itself, its handles with it.
+  While a curve is being drawn C never aligns the selection. S and Y,
+  pressed while pulling or before the next node, set the last node's
+  type as with the Shape tool: S smooth (the incoming handle keeps its
+  length, opposite the outgoing one), Y symmetrical (it mirrors the
+  outgoing one), and C makes it a cusp the same way. None of the three
+  picks a tool then: S and Y switched to the Sketch and Polygon tools
+  and dropped the curve (#2876,
+  `pick_drag_tests::s_and_y_set_the_node_while_drawing_and_pick_no_tool`).
+  Alt while pulling moves the node itself, its handles with it.
   A pull carried out of the drawing window (over a docker or a toolbar)
   goes on following the pointer and ends where the button goes up, and a
   closing drag from the first node closes the curve there; the preview
@@ -170,6 +177,22 @@ delete the selection as everywhere (#1527,
   every curve tool and the Freehand tool's two-click lines
   (`pick_drag_tests::the_constrain_key_can_be_shift_or_alt`).
 
+## Freehand by clicks
+
+- Each click adds a node and the line goes on with a straight segment to
+  it, however long the wait between clicks; a double-click on the last
+  node ends the line there (the first click of the pair placed it), so a
+  single straight line is a click and a double-click (#2339). A quick
+  click somewhere else is the next node, not the end: egui pairs clicks
+  by time alone. Enter and Esc end the line at its last node; Esc
+  drops a lone first click. Space ends it at the pointer: a last node is
+  placed there (snapped, and constrained while the constrain key is held) unless the
+  pointer is within 2 screen pixels of the last node, so a line can be
+  finished without a double-click (#3192,
+  `pick_drag_tests::space_ends_a_freehand_line_at_the_pointer`). A drag ends a line of clicks first, then
+  draws freehand
+  (`pick_drag_tests::freehand_clicks_add_nodes_and_a_double_click_ends_the_line`).
+
 ## B-spline
 
 - Each click (or the start of a drag) places a control point; there are
@@ -221,8 +244,12 @@ delete the selection as everywhere (#1527,
 
 - Polyline: clicks add straight segments (no smooth handles);
   double-click or Enter finishes. 2-point line: the second click
-  finishes the segment at once. Ctrl keeps each segment to steps of the
-  constrain angle.
+  finishes the segment at once; dragged from the first node, the second
+  node follows the pen, finger or pointer while the button is down (on a
+  touch screen there is nothing else to show where it goes) and lands
+  where it is let go (#2594,
+  `pick_drag_tests::a_two_point_line_follows_the_drag_before_the_release`).
+  Ctrl keeps each segment to steps of the constrain angle.
 - While drawing, the polyline, line or B-spline (as with the 3-point
   curve) shows as a black hairline on a white line twice as wide, the
   segment to the pointer included, and its node squares have a white
@@ -231,7 +258,7 @@ delete the selection as everywhere (#1527,
 ## Continuing the selected curve
 
 With one open curve selected (lying on a layer), a line drawn with
-Freehand (dragged, or click and click), Bezier, Pen, B-spline, Polyline
+Freehand (dragged, or by clicks), Bezier, Pen, B-spline, Polyline
 or 2-point line that starts or ends within the join distance (Options >
 Tools > Curve tools, 5 screen pixels by default) of one of the curve's
 end nodes becomes part of that curve (code: `curve_join.rs`):

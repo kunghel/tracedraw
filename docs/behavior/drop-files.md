@@ -85,6 +85,19 @@ the window, as any drop there; outside it nothing happens), and the frame
 stays away until the next drag. Should the drop come in after all, it is
 not taken twice (`drop_files::FileDrag`,
 `a_file_drag_whose_drop_is_lost_ends_once_the_buttons_are_up`).
+The files of such a lost drop stay listed, ahead of the next drag's own,
+until a drop or a leave does reach the program; they belong to a drag
+that is over and are not let go again, nor do they count for the hint.
+Before, a file dropped and then deleted came back with every later drop
+until TraceDraw was restarted (#2940, `FileDrag::fresh`,
+`a_lost_drops_files_still_listed_do_not_come_back_with_the_next`).
+Minimizing the window and bringing it back does not let them go again
+either. The input kept while the window was minimized appended the list
+of hovered files to itself at every frame, so on restore each file was
+listed many times, the copies counted as a new drag, and a file dropped
+once was imported again at every restore until TraceDraw was restarted.
+The kept input now takes the latest list whole (#3058, patched eframe,
+`eframe_pending_input::tests`).
 
 ## Browser build
 

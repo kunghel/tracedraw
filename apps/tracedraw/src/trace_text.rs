@@ -534,6 +534,59 @@ fn blur(a: &[f32], w: usize, h: usize, sigma: f64) -> Vec<f32> {
     out
 }
 
+/// The squared difference between `a` (`w` columns from column `lo` of
+/// `cov`, every row) blurred as [`blur`] blurs it and the coverage,
+/// summed row by row; the sum stops at the first row that takes it to
+/// `limit` or over (that glyph is not taken), so only the rows needed
+/// are blurred. Below `limit` it is the same number, to the last bit, as
+/// summing the whole [`blur`] picture.
+fn blurred_error(a: &[f32], w: usize, cov: &Coverage, lo: usize, sigma: f64, limit: f64) -> f64 {
+    let h = cov.h;
+    let r = (sigma * 3.0).ceil() as i64;
+    let k: Vec<f32> = (-r..=r)
+        .map(|i| (-(i * i) as f64 / (2.0 * sigma * sigma)).exp() as f32)
+        .collect();
+    let ksum: f32 = k.iter().sum();
+    let ru = r as usize;
+    // The rows blurred across, made as the rows below need them.
+    let mut tmp = vec![0f32; w * h];
+    let mut made = 0usize;
+    let mut across = |upto: usize, tmp: &mut [f32]| {
+        while made < upto.min(h) {
+            let y = made;
+            let row = &a[y * w..(y + 1) * w];
+            for x in 0..w {
+                let j0 = ru.saturating_sub(x);
+                let j1 = (w + ru - x).min(k.len());
+                let mut v = 0.0;
+                for j in j0..j1 {
+                    v += row[x + j - ru] * k[j];
+                }
+                tmp[y * w + x] = v / ksum;
+            }
+            made += 1;
+        }
+    };
+    let mut e = 0.0;
+    for y in 0..h {
+        across(y + ru + 1, &mut tmp);
+        let j0 = ru.saturating_sub(y);
+        let j1 = (h + ru - y).min(k.len());
+        for x in 0..w {
+            let mut v = 0.0;
+            for j in j0..j1 {
+                v += tmp[(y + j - ru) * w + x] * k[j];
+            }
+            let dv = v / ksum - cov.at(lo + x, y);
+            e += (dv * dv) as f64;
+        }
+        if e >= limit {
+            break;
+        }
+    }
+    e
+}
+
 /// The centre of the coverage in the columns `lo..hi` (pixel centres at
 /// +0.5).
 fn centre(cov: &Coverage, lo: usize, hi: usize) -> (f64, f64) {
@@ -576,6 +629,9 @@ fn place(cov: &Coverage, run: &Run, d: &Drawn, sigma: f64) -> (f64, f64, f64) {
 
 /// For each blur of `sigmas`: the summed error of the best glyph of
 /// `face` (drawn at `s` pixels per unit) on each run, and those glyphs.
+/// `None` once every blur's sum, after some runs, is over `bound()`:
+/// the face can no longer be among those looked for, so the rest of the
+/// row is not compared (the choice comes out as without the bound).
 fn score(
     cov: &Coverage,
     runs: &[Run],
@@ -583,7 +639,8 @@ fn score(
     s: f64,
     ss: usize,
     sigmas: &[f64],
-) -> Vec<(f64, Vec<usize>)> {
+    bound: &dyn Fn() -> f64,
+) -> Option<Vec<(f64, Vec<usize>)>> {
     let drawn: Vec<Option<Drawn>> = face.glyphs.iter().map(|g| draw_glyph(g, s, ss)).collect();
     let mut out: Vec<(f64, Vec<usize>)> = sigmas
         .iter()
@@ -599,14 +656,7 @@ fn score(
             };
             let sharp = d.render(px - d.cx, py - d.cy, run.lo, run.hi, cov.h);
             for (si, &sigma) in sigmas.iter().enumerate() {
-                let r = blur(&sharp, w, cov.h, sigma);
-                let mut e = 0.0;
-                for y in 0..cov.h {
-                    for x in 0..w {
-                        let dv = r[y * w + x] - cov.at(run.lo + x, y);
-                        e += (dv * dv) as f64;
-                    }
-                }
+                let e = blurred_error(&sharp, w, cov, run.lo, sigma, best[si].0);
                 if e < best[si].0 {
                     best[si] = (e, gi);
                 }
@@ -616,8 +666,12 @@ fn score(
             o.0 += b.0;
             o.1.push(b.1);
         }
+        let least = out.iter().map(|o| o.0).fold(f64::INFINITY, f64::min);
+        if least > bound() {
+            return None;
+        }
     }
-    out
+    Some(out)
 }
 
 /// `f(0..n)` on the computer's cores; `None` once `cancel` is set.
@@ -712,14 +766,26 @@ fn read_row(
         return None;
     }
     let ss = supersampling(cap);
-    // 1. Every face at the measured height.
+    // 1. Every face at the measured height. A face whose error is
+    // already over the TOP_FACES-th best of the faces done stops early.
+    let done: Mutex<Vec<f64>> = Mutex::new(Vec::new());
+    let top_bound = || {
+        let d = done.lock().unwrap_or_else(|e| e.into_inner());
+        d.get(TOP_FACES - 1).copied().unwrap_or(f64::INFINITY)
+    };
     let firsts = par_map(faces.len(), cancel, |fi| {
         let f = faces[fi];
-        let r = score(&cov, &runs, f, cap / f.cap, ss, &[0.55]);
-        r.into_iter()
-            .next()
+        let total = score(&cov, &runs, f, cap / f.cap, ss, &[0.55], &top_bound)
+            .and_then(|r| r.into_iter().next())
             .map(|(t, _)| t)
-            .unwrap_or(f64::INFINITY)
+            .unwrap_or(f64::INFINITY);
+        if total.is_finite() {
+            let mut d = done.lock().unwrap_or_else(|e| e.into_inner());
+            let at = d.partition_point(|v| *v <= total);
+            d.insert(at, total);
+            d.truncate(TOP_FACES);
+        }
+        total
     })?;
     let mut first: Vec<(f64, usize)> = firsts.into_iter().zip(0..).collect();
     first.sort_by(|a, b| a.0.total_cmp(&b.0));
@@ -732,10 +798,30 @@ fn read_row(
             SCALES.iter().map(move |k| (fi, cap * k / fc))
         })
         .collect();
-    let scored = par_map(jobs.len(), cancel, |j| {
+    // The heights nearest the measured one first, best faces first: the
+    // best error found soon lets the other jobs stop early.
+    let mut order: Vec<usize> = (0..jobs.len()).collect();
+    order.sort_by_key(|&j| {
+        (j % SCALES.len()).abs_diff(SCALES.len() / 2) * TOP_FACES + j / SCALES.len()
+    });
+    let best_bits = std::sync::atomic::AtomicU64::new(f64::INFINITY.to_bits());
+    let best_bound = || f64::from_bits(best_bits.load(std::sync::atomic::Ordering::Relaxed));
+    let scored = par_map(jobs.len(), cancel, |k| {
+        let j = order[k];
         let (fi, s) = jobs[j];
-        score(&cov, &runs, faces[fi], s, ss, &BLURS)
+        let r = score(&cov, &runs, faces[fi], s, ss, &BLURS, &best_bound)
+            .unwrap_or_else(|| vec![(f64::INFINITY, Vec::new()); BLURS.len()]);
+        let least = r.iter().map(|o| o.0).fold(f64::INFINITY, f64::min);
+        let _ = best_bits.fetch_update(
+            std::sync::atomic::Ordering::Relaxed,
+            std::sync::atomic::Ordering::Relaxed,
+            |b| (least < f64::from_bits(b)).then_some(least.to_bits()),
+        );
+        (j, r)
     })?;
+    let mut scored: Vec<(usize, Vec<(f64, Vec<usize>)>)> = scored;
+    scored.sort_by_key(|(j, _)| *j);
+    let scored: Vec<Vec<(f64, Vec<usize>)>> = scored.into_iter().map(|(_, r)| r).collect();
     let mut best: Option<(f64, usize, f64, f64, Vec<usize>)> = None;
     for (&(fi, s), per_blur) in jobs.iter().zip(scored) {
         for (sigma, (total, letters)) in BLURS.iter().zip(per_blur) {
@@ -1079,10 +1165,16 @@ pub(crate) fn redraw_text(
     let mut found = rows(traced, scale, w, h);
     // Longer rows first.
     found.sort_by_key(|b| std::cmp::Reverse(b.2 - b.0));
-    for b in found {
+    let rows_found = found.len().max(1);
+    for (k, b) in found.into_iter().enumerate() {
         if crate::trace::cancelled(cancel) {
             return None;
         }
+        crate::trace_progress::report(
+            cancel,
+            crate::trace_progress::Step::Letters,
+            k as f64 / rows_found as f64,
+        );
         // A row inside one already redrawn (a word of it) is skipped.
         if taken.iter().any(|t: &(usize, usize, usize, usize)| {
             b.0 < t.2 && t.0 < b.2 && b.1 < t.3 && t.1 < b.3

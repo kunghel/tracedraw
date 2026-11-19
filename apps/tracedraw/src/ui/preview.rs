@@ -22,6 +22,116 @@ pub fn preview_bounds(app: &App) -> tracedraw_core::geometry::Rect {
     }
 }
 
+/// A page's miniature as it is cached for the Pages docker and the page
+/// tabs (#2932).
+#[derive(Clone)]
+struct PageThumb {
+    /// The drawing's revision it was drawn at.
+    revision: u64,
+    texture: Option<egui::TextureHandle>,
+    /// Its size, interface points.
+    size: egui::Vec2,
+}
+
+/// The miniature of `page`, `long` points on its longer side, with its
+/// size in points (#2932). It is cached by page and size and drawn again
+/// once the drawing changed; at most one page is drawn in a frame, the
+/// others keep their old picture (or none yet) until the next frames, so
+/// a drawing of many pages neither lags nor stops while the docker or a
+/// tab's tip shows them.
+pub fn page_thumb(
+    ui: &Ui,
+    doc: &tracedraw_core::Document,
+    revision: u64,
+    page: tracedraw_core::PageId,
+    long: f32,
+) -> Option<(egui::TextureId, egui::Vec2)> {
+    let ctx = ui.ctx();
+    let ppp = ctx.pixels_per_point();
+    let px = (long * ppp).round().clamp(8.0, 1024.0) as u32;
+    let id = egui::Id::new(("page_thumb", page.raw(), px));
+    let cached: Option<PageThumb> = ctx.data(|d| d.get_temp(id));
+    let current = cached.as_ref().is_some_and(|c| c.revision == revision);
+    if !current {
+        let frame = ctx.cumulative_frame_nr();
+        let turn = egui::Id::new("page_thumb_frame");
+        if ctx.data(|d| d.get_temp::<u64>(turn)) == Some(frame) {
+            // Another page was drawn this frame: this one comes next.
+            ctx.request_repaint();
+        } else {
+            ctx.data_mut(|d| d.insert_temp(turn, frame));
+            let drawn = doc.page(page).ok().and_then(|p| {
+                let longer = p.size.width.max(p.size.height);
+                if longer <= 0.0 || !longer.is_finite() {
+                    return None;
+                }
+                let dpi = (px as f64 / longer * 25.4).max(1.0);
+                tracedraw_render::render_page_image(doc, page, dpi)
+            });
+            let thumb = match drawn {
+                Some(pm) => {
+                    let image = egui::ColorImage::from_rgba_premultiplied(
+                        [pm.width() as usize, pm.height() as usize],
+                        pm.data(),
+                    );
+                    let texture = ctx.load_texture(
+                        format!("page_thumb_{}_{px}", page.raw()),
+                        image,
+                        egui::TextureOptions::LINEAR,
+                    );
+                    PageThumb {
+                        revision,
+                        texture: Some(texture),
+                        size: egui::vec2(pm.width() as f32, pm.height() as f32) / ppp,
+                    }
+                }
+                None => PageThumb {
+                    revision,
+                    texture: None,
+                    size: egui::Vec2::ZERO,
+                },
+            };
+            ctx.data_mut(|d| d.insert_temp(id, thumb.clone()));
+            return thumb.texture.map(|t| (t.id(), thumb.size));
+        }
+    }
+    cached.and_then(|c| c.texture.map(|t| (t.id(), c.size)))
+}
+
+/// Paint a page's miniature fitted in `rect`, on a white sheet with a thin
+/// edge; the sheet alone while the picture is still to come.
+pub fn paint_page_thumb(
+    ui: &Ui,
+    rect: egui::Rect,
+    thumb: Option<(egui::TextureId, egui::Vec2)>,
+    page_size: tracedraw_core::Size,
+) {
+    let aspect = (page_size.width / page_size.height.max(1e-6)) as f32;
+    let aspect = if aspect.is_finite() && aspect > 0.0 { aspect } else { 1.0 };
+    let fit = if aspect >= rect.width() / rect.height().max(1.0) {
+        egui::vec2(rect.width(), rect.width() / aspect)
+    } else {
+        egui::vec2(rect.height() * aspect, rect.height())
+    };
+    let sheet = egui::Rect::from_center_size(rect.center(), fit);
+    let p = ui.painter();
+    p.rect_filled(sheet, 0.0, egui::Color32::WHITE);
+    if let Some((tex, _)) = thumb {
+        p.image(
+            tex,
+            sheet,
+            egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+            egui::Color32::WHITE,
+        );
+    }
+    p.rect_stroke(
+        sheet,
+        0.0,
+        egui::Stroke::new(1.0, Tokens::text_dim()),
+        egui::StrokeKind::Outside,
+    );
+}
+
 pub fn fullscreen(app: &mut App, ui: &mut Ui) {
     let ctx = ui.ctx().clone();
     egui::CentralPanel::default()
@@ -43,6 +153,7 @@ pub fn fullscreen(app: &mut App, ui: &mut Ui) {
                 zoom,
                 origin_x: -bounds.x0 * zoom,
                 origin_y: bounds.y1 * zoom,
+                stretch_y: 1.0,
             };
             let opts = tracedraw_render::RenderOptions {
                 width: w.max(1),
@@ -223,6 +334,43 @@ mod tests {
     use super::*;
     use tracedraw_core::geometry::Rect;
 
+    /// Page miniatures (#2932): one page drawn a frame, the next one the
+    /// frame after, a drawn page kept while the drawing stays the same and
+    /// drawn again once it changed.
+    #[test]
+    fn page_thumbs_are_drawn_one_a_frame_and_follow_changes() {
+        let mut app = App::headless();
+        app.show_welcome = false;
+        app.add_page();
+        let ctx = crate::theme::ui_context();
+        let ids: Vec<_> = app.doc().pages.iter().map(|p| p.id).collect();
+        let mut frame = |doc: &tracedraw_core::Document, rev: u64| {
+            let mut got = Vec::new();
+            let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+                got = ids.iter().map(|id| page_thumb(ui, doc, rev, *id, 40.0)).collect();
+            });
+            out.textures_delta.clear();
+            got
+        };
+        let doc = app.doc().clone();
+        let rev = app.engine.revision();
+        let first = frame(&doc, rev);
+        let (tex0, size) = first[0].expect("the first page is drawn");
+        assert!(first[1].is_none(), "the second waits for the next frame");
+        let longer = size.x.max(size.y);
+        assert!((longer - 40.0).abs() <= 1.5, "{size:?}");
+        let second = frame(&doc, rev);
+        assert_eq!(second[0].map(|t| t.0), Some(tex0), "kept, not drawn again");
+        let tex1 = second[1].expect("the second page now").0;
+        let third = frame(&doc, rev);
+        assert_eq!(third[1].map(|t| t.0), Some(tex1));
+        // The drawing changed: the first page is drawn again.
+        let changed = frame(&doc, rev + 1);
+        let again = changed[0].expect("drawn again").0;
+        assert_ne!(again, tex0);
+        assert_eq!(changed[1].map(|t| t.0), Some(tex1), "the old picture meanwhile");
+    }
+
     /// A drawing lying off its page is previewed with the page, not cut
     /// away to an empty sheet; Preview Selected Only shows the selection
     /// alone (#2317).
@@ -261,6 +409,7 @@ mod tests {
                 zoom,
                 origin_x: -b.x0 * zoom,
                 origin_y: b.y1 * zoom,
+                stretch_y: 1.0,
             },
             preview: None,
             wireframe: false,

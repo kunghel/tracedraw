@@ -70,6 +70,7 @@ pub fn nodes(s: &Shape) -> Vec<(KindNode, Point)> {
             sharpness,
             complex,
             twist,
+            bend: _,
         } => {
             let n = (*points).max(3) as usize;
             let inner = inner_ratio(n, *sharpness);
@@ -177,15 +178,58 @@ pub fn edge_handles(s: &Shape) -> Vec<(KindNode, Point)> {
         .collect()
 }
 
-/// The node of `s` within `tol` (page mm) of `p`.
+/// How far outside its edge a rectangle's edge handle shows, as a share
+/// of the pick distance (#2978): its arc sits beside the edge, where it
+/// is seen and pressed, not on the outline.
+pub const EDGE_HANDLE_OUT: f64 = 1.8;
+
+/// The outward direction, in page space, of edge `edge` of `s` at its
+/// middle (a unit vector); `None` for an object with no edge handles.
+pub fn edge_out(s: &Shape, edge: usize) -> Option<tracedraw_core::geometry::Vec2> {
+    if s.spline.is_some() || !matches!(s.kind, ShapeKind::Rect { .. }) {
+        return None;
+    }
+    let (rect, c) = s.kind.rect_corners()?;
+    let (mid, n) = c.edge_middle(edge, rect);
+    let d = s.transform * (mid + n) - s.transform * mid;
+    let len = d.hypot();
+    (len > 1e-12).then(|| d / len)
+}
+
+/// The node of `s` within `tol` (page mm) of `p`. An edge handle takes a
+/// press on the edge's middle and on its arc outside the edge (#2978).
 pub fn node_at(s: &Shape, p: Point, tol: f64) -> Option<KindNode> {
     handles(s)
         .into_iter()
-        .map(|(n, q)| (n, (q - p).hypot()))
-        .filter(|(_, d)| *d <= tol)
+        .map(|(n, q)| {
+            let mut d = (q - p).hypot();
+            if let KindNode::Edge { edge } = n {
+                if let Some(out) = edge_out(s, edge) {
+                    d = d.min((q + out * (tol * EDGE_HANDLE_OUT) - p).hypot());
+                }
+            }
+            (n, d)
+        })
+        .filter(|(n, d)| *d <= tol * reach(*n))
         .min_by(|a, b| a.1.total_cmp(&b.1))
         .map(|(n, _)| n)
 }
+
+/// How far past the pick distance a node takes a press, as a share of
+/// it. A rectangle's corner and edge nodes sit on its outline with
+/// nothing else to press near them, and a press beside one missed it
+/// (#3354): they reach half as far again. The nearest node still wins,
+/// so two close corner nodes keep apart.
+fn reach(n: KindNode) -> f64 {
+    match n {
+        KindNode::Corner { .. } | KindNode::Edge { .. } => CORNER_REACH,
+        _ => 1.0,
+    }
+}
+
+/// The share of the pick distance a rectangle's corner or edge node
+/// reaches (#3354).
+pub const CORNER_REACH: f64 = 1.5;
 
 /// Point of the ellipse inscribed in `rect` at a parametric angle.
 fn on_ellipse(rect: Rect, deg: f64) -> Point {
@@ -419,6 +463,7 @@ pub fn drag_constrained(
                 sharpness,
                 complex,
                 twist,
+                bend,
             },
             KindNode::Polygon { outer, index },
         ) => {
@@ -450,6 +495,7 @@ pub fn drag_constrained(
                         sharpness: *sharpness,
                         complex: *complex,
                         twist: *twist,
+                        bend: *bend,
                     });
                 }
                 // The vertices move, the points between them stay (and
@@ -461,6 +507,7 @@ pub fn drag_constrained(
                     sharpness: geometry::star_sharpness_for_ratio(k),
                     complex: None,
                     twist: *twist,
+                    bend: *bend,
                 })
             } else if complex.is_some() {
                 None
@@ -504,11 +551,84 @@ pub fn drag_constrained(
                     sharpness: geometry::star_sharpness_for_ratio(ratio),
                     complex: None,
                     twist,
+                    bend: *bend,
                 })
             }
         }
         _ => None,
     }
+}
+
+/// A polygon or star (`start`, not a complex star) with every side bent
+/// alike (#2451) by a drag across one of them from `from` to `to`, both
+/// in the shape's own space: the side nearest `from` bows out or in with
+/// the pointer, its middle following it, and every other side takes the
+/// same curve, so the shape keeps its symmetry. `None` for other shapes.
+pub fn polygon_bent(start: &ShapeKind, from: Point, to: Point) -> Option<ShapeKind> {
+    let ShapeKind::Polygon {
+        rect,
+        points,
+        sharpness,
+        complex: None,
+        twist,
+        bend,
+    } = start
+    else {
+        return None;
+    };
+    let c = rect.center();
+    let (rx, ry) = (rect.width() / 2.0, rect.height() / 2.0);
+    if rx.abs() < 1e-9 || ry.abs() < 1e-9 {
+        return None;
+    }
+    let unit = |p: Point| ((p.x - c.x) / rx, (p.y - c.y) / ry);
+    let pts = geometry::polygon_unit_points(*points, *sharpness, *twist);
+    let n = pts.len();
+    if n < 3 {
+        return None;
+    }
+    let (ax, ay) = unit(from);
+    let (bx, by) = unit(to);
+    // The side nearest the press.
+    let side = (0..n)
+        .min_by(|&i, &j| {
+            let d = |k: usize| {
+                let (p, q) = (pts[k], pts[(k + 1) % n]);
+                let l = kurbo::Line::new((p.0, p.1), (q.0, q.1));
+                kurbo::ParamCurveNearest::nearest(&l, (ax, ay).into(), 1e-9).distance_sq
+            };
+            d(i).total_cmp(&d(j))
+        })
+        .unwrap_or(0);
+    let (p, q) = (pts[side], pts[(side + 1) % n]);
+    let (dx, dy) = (q.0 - p.0, q.1 - p.1);
+    let len = dx.hypot(dy);
+    if len < 1e-9 {
+        return None;
+    }
+    // Out of the outline, the way geometry::bent_polygon_path bends.
+    let area: f64 = (0..n)
+        .map(|i| {
+            let (a, b) = (pts[i], pts[(i + 1) % n]);
+            a.0 * b.1 - b.0 * a.1
+        })
+        .sum();
+    let s = if area < 0.0 { -1.0 } else { 1.0 };
+    let (nx, ny) = (s * dy / len, -s * dx / len);
+    let across = (bx - ax) * nx + (by - ay) * ny;
+    // A cubic's middle stands off its chord by 3/4 of its control points.
+    let bend = (bend + across / (0.75 * len))
+        .clamp(-geometry::MAX_POLYGON_BEND, geometry::MAX_POLYGON_BEND);
+    // Near straight it is straight again.
+    let bend = if bend.abs() < 0.005 { 0.0 } else { bend };
+    Some(ShapeKind::Polygon {
+        rect: *rect,
+        points: *points,
+        sharpness: *sharpness,
+        complex: None,
+        twist: *twist,
+        bend,
+    })
 }
 
 /// The undo step's name for dragging a node of `s`.
@@ -718,6 +838,31 @@ mod tests {
             ShapeId(1),
             ShapeKind::rect_with_corners(Rect::new(0.0, 0.0, 40.0, 20.0), corners),
         )
+    }
+
+    /// An edge handle also takes a press on its arc just outside the
+    /// edge, which points outward on every side, turned objects too
+    /// (#2978).
+    #[test]
+    fn an_edge_handle_takes_a_press_outside_its_edge() {
+        let s = rect(Corners::default());
+        let tol = 0.5;
+        let out = tol * EDGE_HANDLE_OUT;
+        for (edge, p) in [
+            (Corners::EDGE_TOP, Point::new(20.0, 20.0 + out)),
+            (Corners::EDGE_BOTTOM, Point::new(20.0, -out)),
+            (Corners::EDGE_RIGHT, Point::new(40.0 + out, 10.0)),
+            (Corners::EDGE_LEFT, Point::new(-out, 10.0)),
+        ] {
+            assert_eq!(node_at(&s, p, tol), Some(KindNode::Edge { edge }), "{edge}");
+        }
+        // Inside the rectangle, as far from the edge, is not the handle.
+        assert_eq!(node_at(&s, Point::new(20.0, 20.0 - 2.5 * out), tol), None);
+        // Turned a quarter: the top edge's arc points left.
+        let mut turned = s.clone();
+        turned.transform = Affine::rotate(std::f64::consts::FRAC_PI_2);
+        let d = edge_out(&turned, Corners::EDGE_TOP).expect("out");
+        assert!((d.x + 1.0).abs() < 1e-9 && d.y.abs() < 1e-9, "{d:?}");
     }
 
     /// The handle in the middle of an edge bows every edge by the same
@@ -1180,6 +1325,7 @@ mod tests {
                 sharpness: 0.0,
                 complex: None,
                 twist: 0.0,
+                bend: 0.0,
             },
         );
         let n = nodes(&s);
@@ -1237,6 +1383,7 @@ mod tests {
                 sharpness: 0.5,
                 complex: None,
                 twist: 0.0,
+                bend: 0.0,
             },
         );
         let mut turn = 0.0;
@@ -1317,6 +1464,7 @@ mod tests {
                 sharpness: 0.5,
                 complex: None,
                 twist: 0.0,
+                bend: 0.0,
             },
         );
         let between = KindNode::Polygon {
@@ -1384,6 +1532,7 @@ mod tests {
                 sharpness: -0.7,
                 complex: None,
                 twist: 0.0,
+                bend: 0.0,
             },
             ..s.clone()
         };

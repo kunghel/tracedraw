@@ -3,7 +3,9 @@
 //! the screen angle, sampled from the selected objects. The tiles can be
 //! uniform (flattened on white), sized by opacity or by darkness, limited
 //! to a number of colours, merged into bigger tiles where neighbours match,
-//! and welded into one curve per colour.
+//! and welded into one curve per colour. Glyph tiles pick a built-in symbol
+//! by darkness (or at random) and Characters tiles a letter of a character
+//! set, so the mosaic turns into a glyph mosaic or a text-art picture.
 
 use tracedraw_core::document::{Shape, ShapeKind};
 use tracedraw_core::geometry::{Affine, BezPath, Point, Rect, Shape as _};
@@ -46,19 +48,42 @@ pub enum TileShape {
     Square,
     /// A closed curve picked from the drawing.
     Custom,
+    /// Built-in symbols, the light tiles taking those with the least ink.
+    Glyphs,
+    /// Letters of a character set, the light tiles taking the first ones.
+    Characters,
 }
 
 impl TileShape {
-    pub const ALL: [TileShape; 3] = [TileShape::Circle, TileShape::Square, TileShape::Custom];
+    pub const ALL: [TileShape; 5] = [
+        TileShape::Circle,
+        TileShape::Square,
+        TileShape::Custom,
+        TileShape::Glyphs,
+        TileShape::Characters,
+    ];
 
     pub fn key(self) -> &'static str {
         match self {
             TileShape::Circle => "docker.vector_mosaic_circle",
             TileShape::Square => "docker.vector_mosaic_square",
             TileShape::Custom => "docker.vector_mosaic_custom",
+            TileShape::Glyphs => "docker.vector_mosaic_glyphs",
+            TileShape::Characters => "docker.vector_mosaic_characters",
         }
     }
+
+    /// Glyphs and Characters pick each tile's outline by its tone.
+    pub fn picks_by_tone(self) -> bool {
+        matches!(self, TileShape::Glyphs | TileShape::Characters)
+    }
 }
+
+/// The character set Characters starts with, light to dark.
+pub const DEFAULT_CHARS: &str = " .:-=+*#%@";
+
+/// The font Characters draws with (a fixed-width face or its stand-in).
+pub const CHAR_FONT: &str = "Courier New";
 
 /// The Vector Mosaic docker's settings.
 #[derive(Debug, Clone, PartialEq)]
@@ -81,6 +106,18 @@ pub struct VectorMosaicSettings {
     pub shape: TileShape,
     /// The custom tile, fitted to the unit square around the origin.
     pub custom: Option<BezPath>,
+    /// Glyphs: pick each tile's symbol at random instead of by tone.
+    pub random_glyphs: bool,
+    /// The seed of the random symbols.
+    pub seed: u32,
+    /// Characters: the set, light to dark (a space leaves a cell empty).
+    pub chars: String,
+    /// Glyphs and Characters: dark tiles take the light end instead (for a
+    /// light mosaic on a dark ground).
+    pub invert_tone: bool,
+    /// Every tile in one colour instead of the picture's.
+    pub mono: bool,
+    pub mono_color: [u8; 3],
 }
 
 impl Default for VectorMosaicSettings {
@@ -97,6 +134,12 @@ impl Default for VectorMosaicSettings {
             weld: true,
             shape: TileShape::Circle,
             custom: None,
+            random_glyphs: false,
+            seed: 1,
+            chars: DEFAULT_CHARS.to_string(),
+            invert_tone: false,
+            mono: false,
+            mono_color: [0, 0, 0],
         }
     }
 }
@@ -109,6 +152,8 @@ pub struct Tile {
     pub color: [u8; 3],
     /// Row and column on the screen.
     pub cell: (i64, i64),
+    /// Darkness of the flattened colour, 0 (white) to 1 (black).
+    pub tone: f64,
 }
 
 /// The most tiles one mosaic makes.
@@ -210,21 +255,28 @@ pub fn tiles(
                 TrackMethod::Opacity => c,
                 _ => flat,
             };
+            let l = 0.299 * flat[0] + 0.587 * flat[1] + 0.114 * flat[2];
             out.push(Tile {
                 centre: p,
                 size: pitch * scale * factor,
                 color: color.map(|v| v.round().clamp(0.0, 255.0) as u8),
                 cell: (i, j),
+                tone: (1.0 - l / 255.0).clamp(0.0, 1.0),
             });
             if out.len() > MAX_TILES {
                 return Err(out.len());
             }
         }
     }
-    if s.limit_colors {
+    if s.mono {
+        for t in &mut out {
+            t.color = s.mono_color;
+        }
+    } else if s.limit_colors {
         limit_colors(&mut out, s.colors.clamp(2, 256));
     }
-    if s.merge >= 4 {
+    // Picked tiles keep their own symbol, so they are never merged.
+    if s.merge >= 4 && !s.shape.picks_by_tone() {
         out = merge(out, s.merge);
     }
     Ok(out)
@@ -303,6 +355,7 @@ fn merge(tiles: Vec<Tile>, most: u32) -> Vec<Tile> {
                     size: tiles[i].size * k as f64,
                     color: tiles[i].color,
                     cell: tiles[i].cell,
+                    tone: tiles[i].tone,
                 });
             }
         }
@@ -317,9 +370,211 @@ fn merge(tiles: Vec<Tile>, most: u32) -> Vec<Tile> {
     out
 }
 
-/// A tile's outline in page space.
-fn tile_path(t: &Tile, s: &VectorMosaicSettings) -> BezPath {
+/// The built-in symbols of Glyphs, each fitted to the unit square centred
+/// on the origin, ordered from the least ink to the most.
+pub fn glyph_library() -> &'static [BezPath] {
+    static LIB: std::sync::OnceLock<Vec<BezPath>> = std::sync::OnceLock::new();
+    LIB.get_or_init(build_library)
+}
+
+fn polygon(points: &[(f64, f64)]) -> BezPath {
+    let mut p = BezPath::new();
+    for (i, (x, y)) in points.iter().enumerate() {
+        if i == 0 {
+            p.move_to((*x, *y));
+        } else {
+            p.line_to((*x, *y));
+        }
+    }
+    p.close_path();
+    p
+}
+
+/// A star of `n` points between radii `outer` and `inner`, the first
+/// point straight up.
+fn star(n: usize, outer: f64, inner: f64) -> BezPath {
+    let pts: Vec<(f64, f64)> = (0..n * 2)
+        .map(|k| {
+            let r = if k % 2 == 0 { outer } else { inner };
+            let a = std::f64::consts::FRAC_PI_2 + k as f64 * std::f64::consts::PI / n as f64;
+            (r * a.cos(), r * a.sin())
+        })
+        .collect();
+    polygon(&pts)
+}
+
+fn weld_all(parts: &[BezPath]) -> BezPath {
+    use tracedraw_core::shaping::{overlay, Op};
+    let mut it = parts.iter();
+    let Some(first) = it.next() else {
+        return BezPath::new();
+    };
+    it.fold(first.clone(), |acc, p| overlay(&acc, p, Op::Weld))
+}
+
+fn circle(c: (f64, f64), r: f64) -> BezPath {
+    tracedraw_core::geometry::Circle::new(c, r).to_path(0.001)
+}
+
+/// The ink a unit symbol covers, counting holes as empty.
+fn ink(p: &BezPath) -> f64 {
+    tracedraw_core::geometry::Shape::area(p).abs()
+}
+
+fn build_library() -> Vec<BezPath> {
+    let bar = |w: f64, h: f64, deg: f64| {
+        Affine::rotate(deg.to_radians())
+            * Rect::new(-w / 2.0, -h / 2.0, w / 2.0, h / 2.0).to_path(0.001)
+    };
+    // A ring: the inner circle runs the other way, so it stays a hole under
+    // either fill rule.
+    let mut ring = circle((0.0, 0.0), 0.45);
+    ring.extend(circle((0.0, 0.0), 0.3).reverse_subpaths());
+    let plus = weld_all(&[bar(0.9, 0.24, 0.0), bar(0.9, 0.24, 90.0)]);
+    let cross = Affine::rotate(std::f64::consts::FRAC_PI_4) * plus.clone();
+    let asterisk = weld_all(&[
+        bar(0.9, 0.16, 90.0),
+        bar(0.9, 0.16, 30.0),
+        bar(0.9, 0.16, -30.0),
+    ]);
+    let flower = weld_all(&[
+        circle((0.0, 0.22), 0.22),
+        circle((0.22, 0.0), 0.22),
+        circle((0.0, -0.22), 0.22),
+        circle((-0.22, 0.0), 0.22),
+        circle((0.0, 0.0), 0.15),
+    ]);
+    let arrow = polygon(&[
+        (-0.45, 0.1),
+        (0.05, 0.1),
+        (0.05, 0.35),
+        (0.45, 0.0),
+        (0.05, -0.35),
+        (0.05, -0.1),
+        (-0.45, -0.1),
+    ]);
+    let bolt = polygon(&[
+        (0.1, 0.5),
+        (-0.3, -0.05),
+        (-0.02, -0.05),
+        (-0.12, -0.5),
+        (0.3, 0.08),
+        (0.02, 0.08),
+    ]);
+    let triangle = polygon(&[(0.0, 0.45), (0.45, -0.38), (-0.45, -0.38)]);
+    let diamond = polygon(&[(0.0, 0.5), (0.5, 0.0), (0.0, -0.5), (-0.5, 0.0)]);
+    let mut all = vec![
+        circle((0.0, 0.0), 0.12),
+        ring,
+        cross,
+        plus,
+        asterisk,
+        arrow,
+        bolt,
+        star(5, 0.5, 0.2),
+        triangle,
+        flower,
+        diamond,
+        circle((0.0, 0.0), 0.45),
+        Rect::new(-0.45, -0.45, 0.45, 0.45).to_path(0.001),
+    ];
+    all.sort_by(|a, b| ink(a).total_cmp(&ink(b)));
+    all
+}
+
+/// The letters of a character set as unit tiles: a fixed-width letter
+/// about as wide as the unit square (an em of 1.4), in its middle. A space
+/// (or a letter the font draws nothing for) gives an empty path.
+pub fn char_tiles(chars: &str) -> Vec<BezPath> {
+    use tracedraw_core::ShapeId;
+    let em_pt = 72.0;
+    let em = em_pt * 25.4 / 72.0;
+    chars
+        .chars()
+        .filter(|c| !c.is_control())
+        .take(256)
+        .map(|c| {
+            if c.is_whitespace() {
+                return BezPath::new();
+            }
+            let sh = Shape::new(
+                ShapeId(0),
+                ShapeKind::Text {
+                    spans: vec![tracedraw_core::TextSpan::new(
+                        &c.to_string(),
+                        CHAR_FONT,
+                        em_pt,
+                    )],
+                    origin: Point::ZERO,
+                    frame: None,
+                    align: Default::default(),
+                    para: Default::default(),
+                    on_path: None,
+                },
+            );
+            let path = sh.local_path();
+            let b = path.bounding_box();
+            if path.elements().is_empty() || b.area() <= 1e-9 || b.area().is_nan() {
+                return BezPath::new();
+            }
+            // A fixed-width cell is 0.6 em wide; the line's middle sits at
+            // about 0.35 em above the baseline.
+            Affine::scale(1.4 / em) * Affine::translate((-0.3 * em, -0.35 * em)) * path
+        })
+        .collect()
+}
+
+/// The outlines a tone picks from for these settings.
+pub fn tone_set(s: &VectorMosaicSettings) -> Vec<BezPath> {
+    match s.shape {
+        TileShape::Glyphs => glyph_library().to_vec(),
+        TileShape::Characters => {
+            let chars = if s.chars.chars().any(|c| !c.is_control()) {
+                s.chars.as_str()
+            } else {
+                DEFAULT_CHARS
+            };
+            char_tiles(chars)
+        }
+        _ => Vec::new(),
+    }
+}
+
+/// The outline a tile takes from the set: by its tone (light first, or
+/// dark first when inverted) or, for random glyphs, from the seed.
+fn pick<'a>(t: &Tile, s: &VectorMosaicSettings, set: &'a [BezPath]) -> Option<&'a BezPath> {
+    if set.is_empty() {
+        return None;
+    }
+    let n = set.len();
+    let k = if s.random_glyphs && s.shape == TileShape::Glyphs {
+        let mut h = (t.cell.0 as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15)
+            ^ (t.cell.1 as u64).wrapping_mul(0xC2B2_AE3D_27D4_EB4F)
+            ^ (s.seed as u64).wrapping_mul(0x1656_67B1_9E37_79F9);
+        h ^= h >> 31;
+        h = h.wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        h ^= h >> 29;
+        (h % n as u64) as usize
+    } else {
+        let tone = if s.invert_tone { 1.0 - t.tone } else { t.tone };
+        ((tone * n as f64).floor() as usize).min(n - 1)
+    };
+    let p = &set[k];
+    (!p.elements().is_empty()).then_some(p)
+}
+
+/// A tile's outline in page space (empty for a blank character).
+fn tile_path(t: &Tile, s: &VectorMosaicSettings, set: &[BezPath]) -> BezPath {
     let half = t.size / 2.0;
+    if s.shape.picks_by_tone() {
+        let Some(unit) = pick(t, s, set) else {
+            return BezPath::new();
+        };
+        return Affine::translate(t.centre.to_vec2())
+            * Affine::rotate(s.angle.to_radians())
+            * Affine::scale(t.size)
+            * unit.clone();
+    }
     match (s.shape, &s.custom) {
         (TileShape::Square, _) => {
             let r = Rect::new(
@@ -353,10 +608,14 @@ pub fn mosaic_shapes(
         sh.stroke = None;
         sh
     };
+    let set = tone_set(s);
     if s.weld {
         let mut by_color: Vec<([u8; 3], BezPath)> = Vec::new();
         for t in tiles {
-            let p = tile_path(t, s);
+            let p = tile_path(t, s, &set);
+            if p.elements().is_empty() {
+                continue;
+            }
             match by_color.iter_mut().find(|(c, _)| *c == t.color) {
                 Some((_, path)) => path.extend(p),
                 None => by_color.push((t.color, p)),
@@ -369,7 +628,7 @@ pub fn mosaic_shapes(
     }
     tiles
         .iter()
-        .map(|t| {
+        .filter_map(|t| {
             let half = t.size / 2.0;
             let r = Rect::new(
                 t.centre.x - half,
@@ -378,19 +637,16 @@ pub fn mosaic_shapes(
                 t.centre.y + half,
             );
             match s.shape {
-                TileShape::Circle => make(
+                TileShape::Circle => Some(make(
                     next_id(),
                     ShapeKind::Ellipse { rect: r, arc: None },
                     t.color,
-                ),
-                _ => make(
-                    next_id(),
-                    ShapeKind::Path {
-                        path: tile_path(t, s),
-                        closed: true,
-                    },
-                    t.color,
-                ),
+                )),
+                _ => {
+                    let path = tile_path(t, s, &set);
+                    (!path.elements().is_empty())
+                        .then(|| make(next_id(), ShapeKind::Path { path, closed: true }, t.color))
+                }
             }
         })
         .collect()
@@ -429,6 +685,10 @@ impl crate::app::App {
         }
         let engine = &mut self.engine;
         let children = mosaic_shapes(&tiles, s, || engine.new_shape_id());
+        if children.is_empty() {
+            self.status = crate::i18n::tr("status.vector_mosaic_empty");
+            return false;
+        }
         let group_id = self.engine.new_shape_id();
         let group = Shape::new(group_id, ShapeKind::Group { children });
         let mut cmds = Vec::new();
@@ -611,6 +871,139 @@ mod tests {
         )
         .is_err());
         assert!(unit_tile(&BezPath::new()).is_none());
+    }
+
+    #[test]
+    fn the_glyph_library_runs_from_light_to_dark() {
+        let lib = glyph_library();
+        assert!(lib.len() >= 12);
+        for w in lib.windows(2) {
+            assert!(ink(&w[0]) <= ink(&w[1]) + 1e-9);
+        }
+        // Every symbol fits the unit square around the origin.
+        for g in lib {
+            let b = g.bounding_box();
+            assert!(
+                b.x0 >= -0.51 && b.x1 <= 0.51 && b.y0 >= -0.51 && b.y1 <= 0.51,
+                "{b:?}"
+            );
+        }
+        // The ring keeps its hole.
+        assert!(lib.iter().any(|g| {
+            let a = ink(g);
+            (a - std::f64::consts::PI * (0.45f64.powi(2) - 0.3f64.powi(2))).abs() < 0.01
+        }));
+    }
+
+    /// A grey ramp, light at the left, dark at the right.
+    fn ramp() -> (image::RgbaImage, Rect) {
+        let img = ImageBuffer::from_fn(160, 40, |x, _| {
+            let v = 255 - (x * 255 / 159) as u8;
+            Rgba([v, v, v, 255])
+        });
+        (img, Rect::new(0.0, 0.0, 40.0, 10.0))
+    }
+
+    #[test]
+    fn glyph_tiles_pick_more_ink_where_it_is_darker() {
+        let (img, b) = ramp();
+        let s = VectorMosaicSettings {
+            shape: TileShape::Glyphs,
+            ..uniform()
+        };
+        let t = tiles(&img, b, 4.0, &s).expect("tiles");
+        let set = tone_set(&s);
+        let ink_at = |pred: &dyn Fn(f64) -> bool| -> f64 {
+            let picked: Vec<f64> = t
+                .iter()
+                .filter(|t| pred(t.centre.x))
+                .filter_map(|t| pick(t, &s, &set))
+                .map(ink)
+                .collect();
+            picked.iter().sum::<f64>() / picked.len().max(1) as f64
+        };
+        let light = ink_at(&|x| x < 8.0);
+        let dark = ink_at(&|x| x > 32.0);
+        assert!(dark > light * 2.0, "{light} {dark}");
+        // Inverted, the light side takes the heavy symbols.
+        let inv = VectorMosaicSettings {
+            invert_tone: true,
+            ..s.clone()
+        };
+        let light_inv: f64 = t
+            .iter()
+            .filter(|t| t.centre.x < 8.0)
+            .filter_map(|t| pick(t, &inv, &set))
+            .map(ink)
+            .sum();
+        assert!(light_inv > 0.0);
+        // Random symbols follow the seed.
+        let rnd = |seed| {
+            let s = VectorMosaicSettings {
+                random_glyphs: true,
+                seed,
+                ..s.clone()
+            };
+            t.iter()
+                .map(|t| pick(t, &s, &set).map(ink).unwrap_or(0.0))
+                .collect::<Vec<f64>>()
+        };
+        assert_eq!(rnd(3), rnd(3));
+        assert_ne!(rnd(3), rnd(4));
+        // Glyph tiles are never merged, and one colour paints them all.
+        let mono = VectorMosaicSettings {
+            merge: 9,
+            mono: true,
+            mono_color: [10, 20, 30],
+            limit_colors: true,
+            ..s.clone()
+        };
+        let m = tiles(&img, b, 4.0, &mono).expect("tiles");
+        assert_eq!(m.len(), t.len());
+        assert!(m.iter().all(|t| t.color == [10, 20, 30]));
+    }
+
+    #[test]
+    fn character_tiles_draw_letters_and_leave_blanks_empty() {
+        tracedraw_text::install();
+        let set = char_tiles(" .@");
+        assert_eq!(set.len(), 3);
+        assert!(set[0].elements().is_empty());
+        assert!(!set[2].elements().is_empty());
+        // The dot is small and low, the at sign fills much more of its cell.
+        assert!(
+            ink(&set[1]) < ink(&set[2]) / 3.0,
+            "{} {}",
+            ink(&set[1]),
+            ink(&set[2])
+        );
+        let b = set[2].bounding_box();
+        assert!(b.width() < 1.1 && b.height() < 1.5, "{b:?}");
+        assert!(
+            b.center().x.abs() < 0.2 && b.center().y.abs() < 0.3,
+            "{b:?}"
+        );
+
+        let (img, bounds) = ramp();
+        let s = VectorMosaicSettings {
+            shape: TileShape::Characters,
+            chars: " .@".into(),
+            ..uniform()
+        };
+        let t = tiles(&img, bounds, 4.0, &s).expect("tiles");
+        let mut n = 0;
+        let shapes = mosaic_shapes(&t, &s, || {
+            n += 1;
+            tracedraw_core::ShapeId(n)
+        });
+        // The light third is blank: fewer objects than tiles.
+        assert!(!shapes.is_empty() && shapes.len() < t.len());
+        // An empty set falls back to the default characters.
+        let none = VectorMosaicSettings {
+            chars: String::new(),
+            ..s
+        };
+        assert_eq!(tone_set(&none).len(), DEFAULT_CHARS.chars().count());
     }
 
     #[test]

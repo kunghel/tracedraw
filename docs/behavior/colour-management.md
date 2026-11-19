@@ -40,12 +40,15 @@ Color engine (the ICC engine or the built-in formulas), Preserve pure
 black (CMYK colours of black ink only stay so when converted between
 profiles), Map gray to CMYK black (neutral greys converted to CMYK use
 black ink only; on at first), Black point compensation; Open policy for
-RGB, CMYK and grayscale (use the embedded profile, assign the default
-one, convert to the default one) with warnings on a different or missing
-profile (shown in the status bar when a `.cdr` file opens); Import and
-Paste policy (convert to the drawing's profile, or assign it: CMYK
-colours of shapes imported from a `.cdr` file that carries a profile are
-converted with Convert); Spot color definition (Lab, CMYK or RGB values).
+CMYK (use the embedded profile, assign the default one, convert to the
+default one) with warnings on a different or missing profile (shown in
+the status bar when a `.cdr` file opens); Import and Paste policy for
+CMYK (convert to the drawing's profile, or assign it: CMYK colours of
+shapes imported from a `.cdr` file that carries a profile are converted
+with Convert) with the same two warnings, shown when a `.cdr` file is
+imported. A drawing carries a CMYK profile only, so the policies have no
+RGB or grayscale row, and a spot ink is defined by its CMYK values only,
+so there is no Spot color definition choice.
 
 ## Conversions without a loaded profile
 

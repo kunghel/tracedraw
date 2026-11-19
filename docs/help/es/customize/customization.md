@@ -13,6 +13,7 @@ muestran y cómo se comporta la paleta de colores.
 - [[options.center_dialogs]]: los cuadros de diálogo se abren en el centro de
   la ventana; desactivado, se abren donde los dejó.
 - [[options.ui_shadows]] (menos sombras ayudan con gráficos más lentos).
+- [[options.translucent_menus]]: los menús abiertos dejan ver el dibujo detrás, con la [[options.menu_opacity]] junto a la casilla (desactivado por defecto).
 - [[options.colored_icons]]: cada grupo de herramientas recibe un color
   propio.
 - [[options.docker_tabs_icons_only]]: las pestañas de los paneles a los

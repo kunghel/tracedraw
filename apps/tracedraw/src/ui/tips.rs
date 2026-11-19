@@ -112,6 +112,22 @@ impl RichTip for Response {
     }
 }
 
+/// A rich tip with a picture above it, drawn by `picture` only while the
+/// tip shows (a page tab's miniature, #2932).
+pub fn rich_tip_with_picture(
+    resp: Response,
+    tip: impl AsRef<str>,
+    picture: impl FnOnce(&mut Ui),
+) -> Response {
+    let tip = tip.as_ref().to_string();
+    #[cfg(test)]
+    record(&tip);
+    resp.on_hover_ui(|ui| {
+        picture(ui);
+        show(ui, &tip);
+    })
+}
+
 /// A button named `name` gets its tip when a description goes by that
 /// name (OK, Cancel, Close and the like in the dialogs' button rows).
 pub fn named(resp: Response, name: &str) -> Response {

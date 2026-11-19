@@ -13,6 +13,7 @@ affichées et le comportement de la palette de couleurs.
 - [[options.center_dialogs]] : les boîtes de dialogue s'ouvrent au milieu de
   la fenêtre ; désactivé, elles s'ouvrent là où vous les avez laissées.
 - [[options.ui_shadows]] (moins d'ombres aide les cartes graphiques lentes).
+- [[options.translucent_menus]]: open menus let the drawing show through them, at the [[options.menu_opacity]] beside the box (off by default).
 - [[options.colored_icons]] : chaque groupe d'outils reçoit sa propre
   couleur.
 - [[options.docker_tabs_icons_only]] : les onglets des panneaux sur les

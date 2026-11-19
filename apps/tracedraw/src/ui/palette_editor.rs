@@ -354,7 +354,11 @@ impl App {
             return false;
         };
         let id = crate::settings::palette_id(p);
+        let before: Vec<Color> = p.colors.iter().map(|(_, c)| *c).collect();
         let mut changed = self.set_palette_colors(d.of, d.colors.clone());
+        if changed {
+            self.paint_objects_spot(&made_spot(&before, &d.colors));
+        }
         let name = d.name.trim();
         if !name.is_empty() && name != self.palette_name(d.of) && self.palette_takes_colors(d.of) {
             self.rename_palette(&id, name);
@@ -436,6 +440,10 @@ impl App {
         if names != self.doc().palette_names {
             cmds.push(Command::SetDocumentPaletteNames { names });
         }
+        let pairs = made_spot(&self.doc().palette, &d.colors);
+        if self.objects_use_any(&pairs) {
+            cmds.push(Command::ReplaceColors { pairs });
+        }
         if !cmds.is_empty() {
             if let Err(e) = self.engine.run_batch("Document Palette", &cmds) {
                 self.status = e.to_string();
@@ -450,6 +458,37 @@ impl App {
             changed = true;
         }
         changed
+    }
+
+    /// Whether an object of the drawing (at any depth, or a symbol) is
+    /// painted with the first colour of one of `pairs`.
+    fn objects_use_any(&self, pairs: &[(Color, Color)]) -> bool {
+        if pairs.is_empty() || !self.has_document() {
+            return false;
+        }
+        let mut probe = self.doc().clone();
+        tracedraw_core::color_convert::replace_colors(&mut probe, pairs) > 0
+    }
+
+    /// The objects painted with a colour that a palette made a spot
+    /// colour take that spot colour, and its ink joins the drawing, as
+    /// one undo step (#2580): ticking Spot color for a colour already
+    /// used left the objects in process inks, so separations, PDF and
+    /// the printer's RIP saw no spot ink.
+    fn paint_objects_spot(&mut self, pairs: &[(Color, Color)]) {
+        if !self.objects_use_any(pairs) {
+            return;
+        }
+        let cmds = [tracedraw_core::Command::ReplaceColors {
+            pairs: pairs.to_vec(),
+        }];
+        if let Err(e) = self.engine.run_batch("Spot Color", &cmds) {
+            self.status = e.to_string();
+            return;
+        }
+        for (_, spot) in pairs {
+            self.add_ink_for(*spot);
+        }
     }
 
     /// Whether the editor may change palette `i`: the document palette of
@@ -495,6 +534,50 @@ impl App {
             colors: p.colors.clone(),
         })
     }
+}
+
+/// The colours a palette edit made spot colours (#2580): each process
+/// colour of `before` that the edited palette no longer holds, paired
+/// with the new spot colour standing for it (its stand-in that colour in
+/// process inks, as the Spot color box makes it). A spot colour whose
+/// ink `before` had already is not new, nor is one whose value was
+/// changed too.
+pub(crate) fn made_spot(before: &[Color], after: &[(String, Color)]) -> Vec<(Color, Color)> {
+    let near = |a: [f32; 4], b: [f32; 4]| a.iter().zip(b).all(|(x, y)| (x - y).abs() < 1e-4);
+    let stand_in = |c: Color| match c {
+        Color::Spot { c, m, y, k, .. } => Some([c, m, y, k]),
+        _ => None,
+    };
+    let mut pairs: Vec<(Color, Color)> = Vec::new();
+    for (at, (_, new)) in after.iter().enumerate() {
+        let Color::Spot { ink, .. } = *new else {
+            continue;
+        };
+        if before
+            .iter()
+            .any(|c| matches!(c, Color::Spot { ink: i, .. } if *i == ink))
+        {
+            continue;
+        }
+        let Some(want) = stand_in(*new) else {
+            continue;
+        };
+        let fits = |c: &Color| {
+            !matches!(c, Color::Spot { .. })
+                && !after.iter().any(|(_, a)| a == c)
+                && !pairs.iter().any(|(o, _)| o == c)
+                && stand_in(crate::palette::spot_color("", *c)).is_some_and(|s| near(s, want))
+        };
+        // The entry in the same place first, then any other.
+        let old = before
+            .get(at)
+            .filter(|c| fits(c))
+            .or_else(|| before.iter().find(|c| fits(c)));
+        if let Some(old) = old {
+            pairs.push((*old, *new));
+        }
+    }
+    pairs
 }
 
 /// Swatches across a row of the editor.
@@ -1209,6 +1292,125 @@ mod tests {
         assert!(app.doc().ink(leaf).is_none());
         assert_eq!(app.doc().ink(ink).map(|i| i.name.as_str()), Some("Gold"));
         assert_eq!(app.doc().palette[2], green);
+    }
+
+    /// A rectangle filled with `fill` and outlined with `line`, selected.
+    fn painted(app: &mut App, fill: Color, line: Color) -> tracedraw_core::ShapeId {
+        let id = app
+            .new_shape(tracedraw_core::ShapeKind::Rect {
+                rect: tracedraw_core::Rect::new(0.0, 0.0, 10.0, 10.0),
+                radius: 0.0,
+                corners: None,
+            })
+            .expect("shape");
+        app.select(vec![id]);
+        app.apply_fill(tracedraw_core::Fill::Solid(fill));
+        app.apply_outline_color(Some(line));
+        id
+    }
+
+    fn paint_of(app: &App, id: tracedraw_core::ShapeId) -> (tracedraw_core::Fill, Option<Color>) {
+        let (_, s) = app.doc().shape(id).expect("shape");
+        (s.fill.clone(), s.stroke.as_ref().map(|st| st.color))
+    }
+
+    /// #2580: a colour of the user's palette that objects already use,
+    /// made a spot colour in the editor, paints them with the spot colour
+    /// (fill and outline), its ink joins the drawing and PDF output has
+    /// its separation; one undo puts them back in process inks.
+    #[test]
+    fn a_colour_made_spot_paints_the_objects_that_use_it() {
+        let (mut app, i) = app_with_palette();
+        let white = app.palettes[i].colors[2].1;
+        let other = app.palettes[i].colors[3].1;
+        let id = painted(&mut app, white, other);
+        let lined = painted(&mut app, other, white);
+        let mut d = app.palette_draft(i).expect("draft");
+        let spot = crate::ui::dialogs::palette_entry_color("UV White", white, true);
+        d.colors[2] = ("UV White".into(), spot);
+        let steps = app.engine.history_labels().0.len();
+        assert!(app.apply_palette_draft(&d));
+        assert_eq!(app.engine.history_labels().0.len(), steps + 1);
+        assert_eq!(
+            paint_of(&app, id),
+            (tracedraw_core::Fill::Solid(spot), Some(other))
+        );
+        assert_eq!(
+            paint_of(&app, lined),
+            (tracedraw_core::Fill::Solid(other), Some(spot))
+        );
+        let Color::Spot { ink, .. } = spot else {
+            panic!("{spot:?}");
+        };
+        assert_eq!(
+            app.doc().ink(ink).map(|i| i.name.as_str()),
+            Some("UV White")
+        );
+        let pdf = tracedraw_io::pdf::document_to_pdf(app.doc());
+        assert!(String::from_utf8_lossy(&pdf).contains("/Separation /UV#20White"));
+        app.undo();
+        assert_eq!(
+            paint_of(&app, id),
+            (tracedraw_core::Fill::Solid(white), Some(other))
+        );
+        assert!(app.doc().ink(ink).is_none());
+        // Applied again with nothing new, the objects are left alone.
+        app.redo();
+        let again = app.palette_draft(i).expect("draft");
+        assert!(made_spot(
+            &app.palettes[i]
+                .colors
+                .iter()
+                .map(|(_, c)| *c)
+                .collect::<Vec<_>>(),
+            &again.colors
+        )
+        .is_empty());
+    }
+
+    /// #2580 in the document palette: the objects take the spot colour in
+    /// the same undo step as the palette and the ink.
+    #[test]
+    fn a_document_colour_made_spot_paints_the_objects_that_use_it() {
+        let mut app = App::headless();
+        app.show_welcome = false;
+        let green = Color::rgb8(0, 160, 0);
+        let id = painted(&mut app, green, red());
+        assert!(app.doc().palette.contains(&green));
+        let at = app
+            .doc()
+            .palette
+            .iter()
+            .position(|c| *c == green)
+            .expect("in the palette");
+        let mut d = app.palette_draft(DOCUMENT).expect("draft");
+        let spot = crate::ui::dialogs::palette_entry_color("Varnish", green, true);
+        d.colors[at] = ("Varnish".into(), spot);
+        let steps = app.engine.history_labels().0.len();
+        assert!(app.apply_palette_draft(&d));
+        assert_eq!(app.engine.history_labels().0.len(), steps + 1);
+        assert_eq!(paint_of(&app, id).0, tracedraw_core::Fill::Solid(spot));
+        app.undo();
+        assert_eq!(paint_of(&app, id).0, tracedraw_core::Fill::Solid(green));
+        assert!(app.doc().palette.contains(&green));
+    }
+
+    /// Only colours made spot colours as they are: an entry whose value
+    /// changed too, or a spot colour the palette had, pairs with nothing.
+    #[test]
+    fn made_spot_pairs_only_colours_ticked_as_they_are() {
+        let a = Color::rgb8(10, 20, 30);
+        let b = Color::rgb8(200, 0, 0);
+        let gold = crate::palette::spot_color("Gold", b);
+        let before = [a, b, gold];
+        let spot_a = crate::ui::dialogs::palette_entry_color("A", a, true);
+        let moved = crate::ui::dialogs::palette_entry_color("B", Color::rgb8(0, 0, 200), true);
+        let after = vec![
+            ("Gold".to_string(), gold),
+            ("B".to_string(), moved),
+            ("A".to_string(), spot_a),
+        ];
+        assert_eq!(made_spot(&before, &after), vec![(a, spot_a)]);
     }
 
     /// The editor's own buttons: Move Up and Down, a drag, a rename, and

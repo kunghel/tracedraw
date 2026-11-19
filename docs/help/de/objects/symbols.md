@@ -21,8 +21,8 @@ Die Auswahl wird zur ersten Instanz des neuen Symbols.
 
 ## Instanzen platzieren {#insert}
 
-Das Andockfenster listet die Symbole der Zeichnung auf, jedes mit der Anzahl
-seiner Instanzen. Klicken Sie neben einem Symbol auf [[docker.insert]], um eine
+Das Andockfenster listet die Symbole der Zeichnung auf, jedes mit einem kleinen
+Bild seiner Objekte und der Anzahl seiner Instanzen. Klicken Sie neben einem Symbol auf [[docker.insert]], um eine
 neue Instanz zu platzieren, oder wählen Sie
 [[menu.object > menu.object.symbol > menu.object.symbol_insert]]. Instanzen
 lassen sich wie jedes Objekt verschieben, skalieren und drehen.
@@ -45,10 +45,21 @@ links im Zeichenfenster, wählen Sie
 [[menu.object > menu.object.symbol > menu.object.symbol_finish]] oder drücken
 Sie <kbd>Esc</kbd>, wenn nichts ausgewählt ist: Jede Instanz zeigt die
 Änderung. Rückgängig geht schrittweise durch die Bearbeitung wie durch jede
-andere.
+andere. Klicken Sie im Andockfenster neben [[clip.finish]] auf
+[[docker.cancel_symbol_edit]], um die Änderungen zu verwerfen und das Symbol
+zu lassen, wie es war.
+
+Ausgewählte Instanzen und Gruppen, die sie enthalten, werden entlang der
+Objekte umrandet, die sie zeigen, nicht mit einem Quadrat.
 
 Ein Symbol kann keine Instanz von sich selbst enthalten; Beenden meldet das,
 und die Bearbeitung geht weiter, bis diese Instanz entfernt ist.
+
+## Ein Symbol kopieren {#duplicate}
+
+Klicken Sie im Andockfenster neben einem Symbol auf [[docker.duplicate_symbol]],
+um ein neues Symbol mit denselben Objekten zu erstellen, benannt nach dem
+ersten. Bearbeiten Sie die Kopie, ohne die Instanzen des ersten zu ändern.
 
 ## Instanzen wieder in Objekte umwandeln {#revert}
 

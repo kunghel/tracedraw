@@ -50,7 +50,27 @@ in any drawing (kept in the settings, `style_presets`, at most 200):
   own kind that stay (an envelope stays, a block shadow is replaced, not
   doubled). It is one undo step ("Apply Preset").
 
+## Built-in looks
+
+Above the saved presets, Built-in looks shows five looks made by the
+program (`builtin_looks.rs`), a 40-point picture each in a wrapping row,
+drawn like the presets' pictures. A click on one (with a selection) gives
+the selected objects the look exactly as Apply gives a preset, in one undo
+step ("Apply Preset"); they cannot be deleted and are not in the settings.
+
+| Look | Fill | Outline | Effects |
+|---|---|---|---|
+| Chrome | linear gradient at 90°: ground, a dark horizon, a pale sky | 0.2 mm dark grey | bevel (emboss, 0.8 mm, light at 135°, 4 levels, by direction) |
+| Liquid metal | silver linear gradient at 70°, mirrored twice, smooth | none | soft-edge bevel 1.6 mm (10 levels, by direction), white inner glow, soft outer shadow |
+| Gold | gold linear gradient at 80° | 0.2 mm dark gold | bevel (emboss, 1 mm, 6 levels, by direction) |
+| Liquid glass | white | 0.25 mm white | bitmap effects lens (Gaussian blur 6 of what lies beneath), fill opacity 18 %, white inner glow, soft outer shadow |
+| Clear glass | pale blue | 0.25 mm white | fill opacity 12 %, white inner glow, soft outer shadow |
+
 ## Checks
+
+- `builtin_looks::tests::every_look_is_portable_and_has_its_own_number`
+- `builtin_looks::tests::every_look_draws_a_picture`
+- `builtin_looks::tests::applying_a_look_is_one_step`
 
 - `style_presets::tests::a_preset_keeps_the_look_and_leaves_the_shape_bound_effects`
 - `style_presets::tests::presets_apply_to_the_selection_as_one_step_and_undo`

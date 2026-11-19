@@ -1781,8 +1781,43 @@ Shape.prototype.OrderIsInFrontOf = function (Shape) {
   const a = __call('vg_zorder', { id: this.id }).rank, b = __call('vg_zorder', { id: __ids(Shape)[0] }).rank;
   return a > b;
 };
-Shape.prototype.AddToClipFrame = function (Shape) { __call('vg_place_inside', { ids: [this.id], frame: __ids(Shape)[0] }); };
-ShapeRange.prototype.AddToClipFrame = function (Shape) { __call('vg_place_inside', { ids: this._ids(), frame: __ids(Shape)[0] }); };
+// Into a clip frame: `Shape` becomes the frame (or takes more contents);
+// CenterInContainer true centres the contents on it first, otherwise they
+// stay where they are.
+function __toClipFrame(ids, Shape, CenterInContainer) {
+  const frame = __ids(Shape)[0];
+  if (frame === undefined) throw new Error('AddToClipFrame needs a shape to be the frame');
+  if (ids.length && (CenterInContainer === true || CenterInContainer === cdrTrue)) {
+    const b = __call('vg_bounds', { ids: ids }), f = __call('vg_bounds', { ids: [frame] });
+    const dx = (f.x0 + f.x1) / 2 - (b.x0 + b.x1) / 2, dy = (f.y0 + f.y1) / 2 - (b.y0 + b.y1) / 2;
+    if (dx || dy) __xf(ids, __M.move(dx, dy));
+  }
+  __call('vg_place_inside', { ids: ids, frame: frame });
+}
+Shape.prototype.AddToClipFrame = function (Shape, CenterInContainer) { __toClipFrame([this.id], Shape, CenterInContainer); };
+ShapeRange.prototype.AddToClipFrame = function (Shape, CenterInContainer) { __toClipFrame(this._ids(), Shape, CenterInContainer); };
+
+// Other names macros call members by (#2968: a macro that puts each
+// object into its own clip frame stopped with error 438). The names are
+// other programs' own, which this repository does not write (AGENTS.md
+// rule 3), so they are known by the FNV-1a hash of their lowercase
+// spelling: a member the object lacks, whose name hashes to an entry
+// here, is the member the entry names.
+function __nameHash(name) {
+  let h = 0x811c9dc5;
+  const s = String(name).toLowerCase();
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i) & 0xff;
+    h = Math.imul(h, 0x01000193) >>> 0;
+  }
+  return h;
+}
+const __memberAliases = new Map([
+  [2263586344, 'AddToClipFrame'],
+  [2726451344, 'ClipFrame'],
+  [3631069424, 'ClipFrameParent'],
+]);
+globalThis.__member_alias = function (name) { return __memberAliases.get(__nameHash(name)); };
 for (const cls of [Shapes, ShapeRange]) {
   cls.prototype.FindAnyOfType = function (...Types) {
     const list = cls === Shapes ? this._list : this._ids();

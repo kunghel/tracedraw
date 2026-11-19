@@ -9,7 +9,9 @@
 //! key is held, while another finger draws, and the key is let go with
 //! the finger (#2362); a tap of a finger on one is a key pressed and let
 //! go, so it no longer stays on as a switch (#2362, 14/11: keys, not
-//! switches). A click of a mouse on one, which cannot hold it while it
+//! switches), and two quick taps lock it down until the next tap, as a
+//! phone keyboard's Shift does (#3101, #3102). A click of a mouse on
+//! one, which cannot hold it while it
 //! draws, holds it down until the next click, the key drawn pressed
 //! meanwhile, and a finger's tap lets such a key go. Delete deletes as
 //! the Delete key does. The keys held this way join
@@ -173,7 +175,13 @@ struct KeyFinger {
     /// It came down with no other finger on the screen, so the frame's
     /// pointer follows it: its pointer events are left out.
     pointer: bool,
+    /// Another finger touched the screen while it was held: not a tap.
+    used: bool,
 }
+
+/// The longest time between a tap on a key and the next one that makes
+/// them a double tap, which locks the key down (#3101), in seconds.
+const DOUBLE_TAP: f64 = 0.4;
 
 /// The fingers on the screen as the keys on the drawing see them: a
 /// finger held on Shift, Ctrl or Alt holds the key down while it stays,
@@ -189,6 +197,8 @@ pub struct KeyFingers {
     key: Option<KeyFinger>,
     /// The finger drawing while the key's finger has the pointer.
     other: Option<u64>,
+    /// The last tap on a key, and when the finger lifted from it.
+    last_tap: Option<(ModKey, f64)>,
 }
 
 /// Take a finger held on Shift, Ctrl or Alt on the drawing out of the
@@ -207,6 +217,7 @@ pub fn fingers_on_keys(app: &mut App, raw: &mut egui::RawInput) {
         .collect();
     let f = &mut app.key_fingers;
     let mods = &mut app.touch_mods;
+    let now = raw.time;
     // The pointer events that follow a touch event belong to that
     // finger, when it has the pointer.
     let mut swallow = false;
@@ -245,12 +256,16 @@ pub fn fingers_on_keys(app: &mut App, raw: &mut egui::RawInput) {
                         id,
                         key,
                         pointer: first,
+                        used: false,
                     });
                     mods.pressed = Some(key);
                     swallow = first;
                     continue;
                 }
                 out.push(e);
+                if let Some(k) = f.key.as_mut() {
+                    k.used = true;
+                }
                 if let Some(k) = f.key {
                     if k.pointer && f.other.is_none() {
                         f.other = Some(id);
@@ -272,7 +287,24 @@ pub fn fingers_on_keys(app: &mut App, raw: &mut egui::RawInput) {
                 if let Some(k) = on_key {
                     f.key = None;
                     mods.pressed = None;
+                    let locked = mods.held(k.key);
                     mods.release(k.key);
+                    // A second quick tap locks the key down until the
+                    // next tap (#3101, #3102); a tap on a locked key, or
+                    // a key held while another finger drew, lets go.
+                    let tap = !k.used;
+                    let double = tap
+                        && !locked
+                        && matches!(
+                            (f.last_tap, now),
+                            (Some((key, at)), Some(t)) if key == k.key && t - at <= DOUBLE_TAP
+                        );
+                    if double {
+                        mods.toggle(k.key);
+                        f.last_tap = None;
+                    } else {
+                        f.last_tap = now.filter(|_| tap && !locked).map(|t| (k.key, t));
+                    }
                     continue;
                 }
                 out.push(e);

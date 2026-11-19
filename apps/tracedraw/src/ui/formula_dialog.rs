@@ -55,18 +55,20 @@ impl App {
             return None;
         }
         self.last_formula = Some(st.spec.clone());
+        let laid_path = page_curve(&laid.path);
         let data = vec![(formula::DATA_KEY.to_string(), st.spec.to_data())];
         if let Some(id) = st.editing {
             let old = self.doc().find_shape(id)?.clone();
-            // The new curve where the old one's box began.
+            // The new curve with its top left where the old one's was.
             let at = match &old.kind {
                 ShapeKind::Path { path, .. } => {
                     let b = tracedraw_core::geometry::Shape::bounding_box(path);
-                    Point::new(b.x0, b.y0)
+                    Point::new(b.x0, b.y1)
                 }
                 _ => Point::ZERO,
             };
-            let path = Affine::translate((at.x, at.y)) * laid.path;
+            let h = tracedraw_core::geometry::Shape::bounding_box(&laid_path).height();
+            let path = Affine::translate((at.x, at.y - h)) * laid_path;
             let cmds = [
                 Command::SetShapeKind {
                     shape: id,
@@ -82,9 +84,9 @@ impl App {
             return Some(id);
         }
         let layer = self.active_layer()?;
-        let b = tracedraw_core::geometry::Shape::bounding_box(&laid.path);
+        let b = tracedraw_core::geometry::Shape::bounding_box(&laid_path);
         let c = self.page_rect().center();
-        let path = Affine::translate((c.x - b.width() / 2.0, c.y - b.height() / 2.0)) * laid.path;
+        let path = Affine::translate((c.x - b.width() / 2.0, c.y - b.height() / 2.0)) * laid_path;
         let id = self.engine.new_shape_id();
         let mut shape = Shape::new(id, ShapeKind::Path { path, closed: true });
         shape.fill = Fill::Solid(tracedraw_core::Color::BLACK);
@@ -101,6 +103,14 @@ impl App {
         self.select(vec![id]);
         Some(id)
     }
+}
+
+/// The laid-out curve for the page, which has Y up. The layout is Y down,
+/// as the preview draws it, and went onto the page as it was: every
+/// formula came in upside down (#3155). The box stays where it was.
+fn page_curve(laid: &tracedraw_core::BezPath) -> tracedraw_core::BezPath {
+    let h = tracedraw_core::geometry::Shape::bounding_box(laid).height();
+    Affine::new([1.0, 0.0, 0.0, -1.0, 0.0, h]) * laid.clone()
 }
 
 /// The preview: the formula drawn black on white, fitted to the room.
@@ -309,6 +319,56 @@ mod tests {
             panic!();
         };
         assert_eq!(st.spec.source, r"\frac{a}{b} + \sqrt{c}");
+    }
+
+    /// A formula comes in upright: the page has Y up, the layout Y down,
+    /// and every formula came in upside down. The exponent of `a^{2}` is
+    /// the highest ink of the object, and an edited formula keeps its top
+    /// left corner.
+    #[test]
+    fn a_formula_comes_in_upright() {
+        let mut app = App::headless();
+        app.open_formula_dialog();
+        let Dialog::Formula(mut st) = app.dialog.clone() else {
+            panic!("{:?}", app.dialog);
+        };
+        st.spec.source = "a^{2}".into();
+        let id = app.apply_formula(&st).expect("inserted");
+        let s = app.doc().find_shape(id).unwrap().clone();
+        let ShapeKind::Path { path, .. } = &s.kind else {
+            panic!("{:?}", s.kind);
+        };
+        let b = tracedraw_core::geometry::Shape::bounding_box(path);
+        let mid = b.x0 + 0.6 * b.width();
+        let top = |right: bool| {
+            path.elements()
+                .iter()
+                .filter_map(|e| e.end_point())
+                .filter(|p| (p.x > mid) == right)
+                .map(|p| p.y)
+                .fold(f64::MIN, f64::max)
+        };
+        assert!(
+            top(true) > top(false) + 0.2,
+            "{} {} {b:?}",
+            top(true),
+            top(false)
+        );
+        assert!((top(true) - b.y1).abs() < 0.2, "{} {b:?}", top(true));
+        // A taller formula in its place keeps the top left corner.
+        app.open_formula_dialog();
+        let Dialog::Formula(mut st) = app.dialog.clone() else {
+            panic!();
+        };
+        st.spec.source = r"\frac{a^{2}}{b}".into();
+        app.apply_formula(&st).expect("edited");
+        let s = app.doc().find_shape(id).unwrap();
+        let after = s.bounds();
+        assert!(
+            (after.x0 - b.x0).abs() < 1e-6 && (after.y1 - b.y1).abs() < 1e-6,
+            "{b:?} {after:?}"
+        );
+        assert!(after.height() > b.height());
     }
 
     #[test]

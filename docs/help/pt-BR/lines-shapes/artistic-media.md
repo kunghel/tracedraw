@@ -13,7 +13,9 @@ A ferramenta [[tool.brush_strokes]] (<kbd>I</kbd>) desenha traços em um de
 cinco modos. Um traço Predefinido, Pincel, Caligráfico ou Expressão continua
 sendo o caminho que você desenhou, uma curva aberta de poucos nós, com o
 pincel como contorno vivo: edite os nós com a ferramenta Forma depois e o
-pincel acompanha. O Pulverizador cria objetos.
+pincel acompanha. O Pulverizador espalha objetos ao longo do caminho que você
+desenhou, que continua: edite os nós e os objetos acompanham. Separar
+(<kbd>Ctrl</kbd>+<kbd>K</kbd>) os transforma num grupo de objetos comuns.
 
 Para desenhar uma pincelada:
 

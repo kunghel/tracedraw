@@ -6,8 +6,9 @@
 //!
 //! Each glyph's place is its transform from the font's em space; glyphs
 //! that share a direction and slant go into one `<text>` (one line, or
-//! several lines of a paragraph), each run of one span and font a
-//! `<tspan>` with an `x` and `y` for every character, so the spacing,
+//! several lines of a paragraph), each run of one span and font on one
+//! line a `<tspan>` with an `x` and `y` for every character, in the
+//! order the characters are typed, so the spacing,
 //! kerning and justification stay exactly as laid out. What has no
 //! characters to show (underlines, strike lines, added hyphens, synthetic
 //! bold, letters no font has, fonts that may not be embedded) is written
@@ -128,6 +129,8 @@ fn family_for(span: &TextSpan, font: &GlyphFont, ctx: &mut SvgCtx) -> Option<Str
 /// `size`), a size and an origin.
 struct Placed {
     text: String,
+    /// The number of its first character in the text (typed order).
+    char_idx: usize,
     span: usize,
     family: String,
     dir: [f64; 4],
@@ -197,6 +200,7 @@ pub(super) fn write_text(
             .collect();
         placed.push(Placed {
             text,
+            char_idx: g.char_idx,
             span: g.span,
             family,
             dir: [m[0] / size, m[1] / size, m[2] / size, m[3] / size],
@@ -252,7 +256,12 @@ fn write_text_element(
     out: &mut String,
     pad: &str,
 ) {
-    let Some(first) = group.first() else {
+    // The characters in the order they are typed, each at its place: the
+    // glyphs come in the order they are drawn, so Hebrew and Arabic went
+    // in backwards ("שלום" as "םולש") for anything that reads the words.
+    let mut group: Vec<&Placed> = group.iter().collect();
+    group.sort_by_key(|p| p.char_idx);
+    let Some(first) = group.first().copied() else {
         return;
     };
     let d = first.dir;
@@ -265,7 +274,9 @@ fn write_text_element(
         let (x, y) = (p.x - first.at.x, p.y - first.at.y);
         ((d[3] * x - d[2] * y) / det, (-d[1] * x + d[0] * y) / det)
     };
-    let _ = writeln!(
+    // No white space between the tags: with `xml:space="preserve"` it
+    // is text, spaces before the first character.
+    let _ = write!(
         out,
         "{pad}  <text transform=\"matrix({} {} {} {} {} {})\" xml:space=\"preserve\" {paint}>",
         fmt(d[0]),
@@ -275,15 +286,22 @@ fn write_text_element(
         fmt(first.at.x),
         fmt(first.at.y)
     );
+    // A character on another line than the one before it (half its size
+    // or more above or below) starts a `<tspan>` of its own: a reader
+    // that places only the first character of each sees the lines.
+    let new_line = |a: &Placed, b: &Placed| (local(b.at).1 - local(a.at).1).abs() >= b.size / 2.0;
     let mut i = 0;
     while i < group.len() {
-        let p = &group[i];
-        let end = group[i..]
-            .iter()
-            .position(|q| {
-                q.span != p.span || q.family != p.family || (q.size - p.size).abs() > 1e-9
+        let p = group[i];
+        let end = (i + 1..group.len())
+            .find(|&k| {
+                let q = group[k];
+                q.span != p.span
+                    || q.family != p.family
+                    || (q.size - p.size).abs() > 1e-9
+                    || new_line(group[k - 1], q)
             })
-            .map_or(group.len(), |k| i + k);
+            .unwrap_or(group.len());
         let mut xs = Vec::new();
         let mut ys = Vec::new();
         let mut text = String::new();
@@ -308,9 +326,9 @@ fn write_text_element(
         } else {
             ""
         };
-        let _ = writeln!(
+        let _ = write!(
             out,
-            "{pad}    <tspan x=\"{}\" y=\"{}\" font-family=\"&quot;{}&quot;\" font-size=\"{}\"{weight}{italic}>{}</tspan>",
+            "<tspan x=\"{}\" y=\"{}\" font-family=\"&quot;{}&quot;\" font-size=\"{}\"{weight}{italic}>{}</tspan>",
             xs.join(" "),
             ys.join(" "),
             css_string(&p.family),
@@ -319,7 +337,7 @@ fn write_text_element(
         );
         i = end;
     }
-    let _ = writeln!(out, "{pad}  </text>");
+    let _ = writeln!(out, "</text>");
 }
 
 #[cfg(test)]

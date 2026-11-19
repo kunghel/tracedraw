@@ -11,6 +11,7 @@ the color palette behaves.
 - [[options.center_dialogs]]: dialog boxes open in the middle of the window;
   off, they open where you left them.
 - [[options.ui_shadows]] (fewer shadows help slower graphics).
+- [[options.translucent_menus]]: open menus let the drawing show through them, at the [[options.menu_opacity]] beside the box (off by default).
 - [[options.colored_icons]]: each group of tools gets a color of its own.
 - [[options.docker_tabs_icons_only]]: the panel tabs at the window's sides
   show their pictures alone, the name in the tip. Off, each tab shows its

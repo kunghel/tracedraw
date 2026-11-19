@@ -1,7 +1,8 @@
-//! Thumbnails of `.tdraw` drawings in the Windows Explorer: a thumbnail
-//! provider (`IThumbnailProvider` with `IInitializeWithStream`) the
-//! installer registers for the `.tdraw` extension. Explorer hands it the
-//! file as a stream; it draws the drawing's first page on white paper,
+//! Thumbnails of `.tdraw` and `.cdr` drawings in the Windows Explorer: a
+//! thumbnail provider (`IThumbnailProvider` with `IInitializeWithStream`)
+//! the installer registers for the `.tdraw` extension, and for `.cdr`
+//! where no other program gives those files thumbnails (#3239). Explorer
+//! hands it the file as a stream; it draws the drawing's first page on white paper,
 //! with what lies beside it on the desktop (#2357), at the size asked and returns it as a 32-bit bitmap with alpha.
 //!
 //! The picture itself is made by [`thumbnail_rgba`], which every platform
@@ -18,8 +19,7 @@ pub const CLSID_TEXT: &str = "{6B1E5D3A-2F41-4C8E-9B7A-1D2C3E4F5A60}";
 /// pixels (straight, not premultiplied). `None` when the file cannot be
 /// read or has no page; never panics on what the file holds.
 pub fn thumbnail_rgba(bytes: &[u8], size: u32) -> Option<(u32, u32, Vec<u8>)> {
-    // Packed (gzip) or plain JSON, as every version saved it (#2849).
-    let doc = Document::from_tdraw_bytes(bytes).ok()?;
+    let doc = read_drawing(bytes)?;
     let page = doc.pages.first()?;
     let size = f64::from(size.clamp(16, 2048));
     let pm = tracedraw_render::render_whole_page_image(&doc, page.id, size)?;
@@ -29,6 +29,18 @@ pub fn thumbnail_rgba(bytes: &[u8], size: u32) -> Option<(u32, u32, Vec<u8>)> {
         rgba.extend_from_slice(&[c.red(), c.green(), c.blue(), c.alpha()]);
     }
     Some((pm.width(), pm.height(), rgba))
+}
+
+/// The drawing in `bytes`: a `.tdraw` file, packed (gzip) or plain JSON
+/// as every version saved it (#2849), or a `.cdr` (or CMX) file, the RIFF
+/// or zip container of any version the reader takes (#3239).
+fn read_drawing(bytes: &[u8]) -> Option<Document> {
+    if bytes.starts_with(b"RIFF") || bytes.starts_with(b"PK") || bytes.starts_with(b"WL") {
+        return tracedraw_cdr::open_bytes(bytes, "")
+            .ok()
+            .map(|(doc, _)| doc);
+    }
+    Document::from_tdraw_bytes(bytes).ok()
 }
 
 #[cfg(windows)]
@@ -252,6 +264,24 @@ mod tests {
         assert!(thumbnail_rgba(&[0xff, 0xfe, 0x00], 256).is_none());
     }
 
+    /// A `.cdr` file gets its first page drawn too; a broken one never
+    /// panics (#3239).
+    #[test]
+    fn a_cdr_file_gets_its_first_page_drawn() {
+        let bytes = std::fs::read(
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../crates/cdr/tests/fixtures/gaussian-blur.cdr"),
+        )
+        .expect("fixture");
+        let (w, h, rgba) = thumbnail_rgba(&bytes, 128).expect("a picture");
+        assert_eq!(w.max(h), 128, "{w}x{h}");
+        assert_eq!(rgba.len(), (w * h * 4) as usize);
+        // Cut short or not a drawing at all: no panic, whatever comes.
+        let _ = thumbnail_rgba(&bytes[..bytes.len() / 3], 128);
+        let _ = thumbnail_rgba(b"RIFF\0\0\0\0junk", 128);
+        assert!(thumbnail_rgba(b"PK\x03\x04", 128).is_none());
+    }
+
     fn repo_file(path: &str) -> String {
         let full = format!("{}/../../{path}", env!("CARGO_MANIFEST_DIR"));
         std::fs::read_to_string(&full).unwrap_or_else(|e| panic!("{full}: {e}"))
@@ -297,6 +327,7 @@ mod tests {
             "Software\\Classes\\.tdraw",
             "Software\\Classes\\TraceDraw.Document",
             "Software\\Classes\\SystemFileAssociations\\.tdraw",
+            "Software\\Classes\\SystemFileAssociations\\.cdr",
         ] {
             assert!(
                 has(&[

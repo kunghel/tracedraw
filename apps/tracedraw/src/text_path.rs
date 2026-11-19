@@ -298,6 +298,70 @@ impl App {
         });
     }
 
+    /// The commands that mirror, by the page transform `m` (a reflection,
+    /// left to right when `horizontal`), the selected texts fitted to a
+    /// path (not ones inside groups), each text's path mirrored instead
+    /// of its letters, so they still read (#3255): mirrored top to bottom
+    /// a text on the outside of a circle's top comes to the inside of its
+    /// bottom, reading left to right; mirrored left to right it keeps its
+    /// side and moves to the mirrored place along the path (its path
+    /// followed the other way, measured from the other end). The ids of
+    /// the texts so mirrored come with them.
+    pub(crate) fn mirror_fitted_texts(
+        &self,
+        m: Affine,
+        horizontal: bool,
+    ) -> (Vec<Command>, Vec<ShapeId>) {
+        let mut cmds = Vec::new();
+        let mut ids = Vec::new();
+        for id in &self.selection {
+            let Ok((_, s)) = self.doc().shape(*id) else {
+                continue;
+            };
+            let ShapeKind::Text {
+                spans,
+                origin,
+                frame,
+                align,
+                para,
+                on_path: Some(tp),
+            } = s.kind.clone()
+            else {
+                continue;
+            };
+            let to_page = s.transform * Affine::translate(origin.to_vec2());
+            if to_page.determinant().abs() < 1e-12 {
+                continue;
+            }
+            let local = to_page.inverse() * m * to_page;
+            let mut tp = tp;
+            tp.path = local * tp.path.clone();
+            let mut align = align;
+            if horizontal {
+                tp.path = tp.path.reverse_subpaths();
+                tp.offset = -tp.offset;
+                align = match align {
+                    TextAlign::Center => TextAlign::Center,
+                    TextAlign::Right => TextAlign::Left,
+                    _ => TextAlign::Right,
+                };
+            }
+            ids.push(*id);
+            cmds.push(Command::SetShapeKind {
+                shape: *id,
+                kind: ShapeKind::Text {
+                    spans,
+                    origin,
+                    frame,
+                    align,
+                    para,
+                    on_path: Some(tp),
+                },
+            });
+        }
+        (cmds, ids)
+    }
+
     /// Whether the selected fitted text follows a closed path.
     pub fn fitted_text_closed(&self) -> bool {
         self.fitted_text().is_some_and(|ft| {
@@ -937,5 +1001,75 @@ mod tests {
             let b = app.visual_bounds(&sh);
             assert!((b.center().x - 90.0).abs() < 1.0, "{bottom} {b:?}");
         }
+    }
+
+    /// #2962: scaling a text fitted to a path with the handles scales its
+    /// letters, and the text stays on the path; the path was scaled with
+    /// it, so the letters left the curve they were fitted to. With the
+    /// curve selected too, both scale as before.
+    #[test]
+    fn scaling_a_text_on_a_path_scales_its_letters_not_the_path() {
+        let mut app = App::headless();
+        app.settings.autocorrect.enabled = false;
+        let t = fitted_on_line(&mut app);
+        let line = app.doc().pages[0]
+            .layers
+            .iter()
+            .flat_map(|l| l.shapes.iter())
+            .map(|s| s.id)
+            .find(|id| *id != t)
+            .expect("line");
+        let before = app.doc().shape(t).expect("text").1.clone();
+        let (size, page_path) = match &before.kind {
+            ShapeKind::Text {
+                spans,
+                on_path: Some(p),
+                ..
+            } => (spans[0].size_pt, before.transform * p.path.clone()),
+            _ => panic!("a fitted text"),
+        };
+        app.select(vec![t]);
+        let corner = Affine::translate((10.0, 50.0))
+            * Affine::scale(2.0)
+            * Affine::translate((-10.0, -50.0));
+        assert!(app.resizes_fitted_text(t, corner, &[t]));
+        app.transform_selection(corner);
+        let after = app.doc().shape(t).expect("text").1.clone();
+        assert_eq!(after.transform, before.transform);
+        match &after.kind {
+            ShapeKind::Text {
+                spans,
+                on_path: Some(p),
+                ..
+            } => {
+                assert!(
+                    (spans[0].size_pt - 2.0 * size).abs() < 1e-9,
+                    "{}",
+                    spans[0].size_pt
+                );
+                assert_eq!(after.transform * p.path.clone(), page_path);
+            }
+            _ => panic!("still fitted"),
+        }
+        // One undo step; a side handle scales by its own side.
+        app.undo();
+        let side = Affine::scale_non_uniform(1.5, 1.0);
+        app.select(vec![t]);
+        app.transform_selection(side);
+        match &app.doc().shape(t).expect("text").1.kind {
+            ShapeKind::Text { spans, .. } => assert!((spans[0].size_pt - 1.5 * size).abs() < 1e-9),
+            _ => panic!("text"),
+        }
+        app.undo();
+        // A mirror, a turn, or the curve scaled along: as before.
+        assert!(!app.resizes_fitted_text(t, Affine::scale_non_uniform(-1.0, 1.0), &[t]));
+        assert!(!app.resizes_fitted_text(t, Affine::rotate(0.3), &[t]));
+        assert!(!app.resizes_fitted_text(t, corner, &[t, line]));
+        app.select(vec![t, line]);
+        app.transform_selection(corner);
+        assert_eq!(
+            app.doc().shape(t).expect("text").1.transform,
+            corner * before.transform
+        );
     }
 }

@@ -26,10 +26,13 @@ which it shares with Wayland programs.
 
 On Windows (#1539) the copy goes there as an enhanced metafile
 (`CF_ENHMETAFILE`), a PDF (`Portable Document Format`), an SVG image
-(`image/svg+xml`) and the SVG text, all at once (`win_clipboard::write`):
-CorelDRAW pastes the metafile or the PDF as objects with their fills,
-outlines and text, and so do office programs, where the SVG text alone
-came in as text before. The metafile and the PDF are the size of the
+(`image/svg+xml`), all at once (`win_clipboard::write`): CorelDRAW
+pastes the metafile or the PDF as objects with their fills, outlines and
+text, and so do office programs, where the SVG text alone came in as
+text before. The SVG text goes too only when the metafile cannot be
+made: a spreadsheet takes text first, so a copy pasted in a sheet came in
+as SVG source in its cells (#3461,
+`clipboard::tests::svg_text_goes_only_without_a_picture`). The metafile and the PDF are the size of the
 selection (`App::selection_alone`); the SVG keeps the page, so positions
 survive a copy between two TraceDraw windows. Elsewhere (macOS) the text
 alone goes there.
@@ -69,7 +72,8 @@ alone goes there.
      (`clipboard::tests::vectors_another_program_copied_paste_as_objects`);
   3. SVG text: its objects;
   4. an image: a bitmap object;
-  5. other text: artistic text in the middle of the page.
+  5. other text: artistic text in the middle of the page, one step to
+     undo with its fill and outline (`clipboard::tests::pasted_text_is_one_step`).
 
 Ctrl+Shift+V pastes the objects copied here in the middle of the view.
 Paste on the page's context menu centres what it pastes where the menu

@@ -1,20 +1,19 @@
 //! Image > Remove Background: makes the background of a picture
 //! transparent on this computer, without an AI service.
 //!
-//! 1. The background colours are a list: each entry is Automatic (the
-//!    colours learnt from the picture's border, a small k-means in Lab,
-//!    so a gradient or a two-tone backdrop gives several colours) or a
-//!    colour the user picked, with its own tolerance.
-//! 2. Every pixel gets its colour distance (CIE76 Delta E) to the
-//!    background colour it is closest to within that colour's
+//! 1. What to remove is a list: each entry is Automatic (everything but
+//!    the subject of the picture, found by `bg_subject`, whatever its
+//!    colours) or a colour the user picked, with its own tolerance.
+//! 2. For the picked colours, every pixel gets its colour distance
+//!    (CIE76 Delta E) to the one it is closest to within that colour's
 //!    tolerance; it is background when it is within the tolerance of any
-//!    listed colour.
-//! 3. With Contiguous on, the background is what a flood fill from the
-//!    border (and from the points where colours were picked) reaches
-//!    through such pixels; it may cross a few edge pixels (the
-//!    anti-aliased rim) but never the subject, so background-coloured
-//!    parts inside the subject stay. Off, every pixel near a background
-//!    colour goes.
+//!    of them.
+//! 3. With Contiguous on, such background is what a flood fill from the
+//!    border (from the points where colours were picked, and from what
+//!    Automatic took) reaches through such pixels; it may cross a few
+//!    edge pixels (the anti-aliased rim) but never the subject, so
+//!    background-coloured parts inside the subject stay. Off, every
+//!    pixel near a picked colour goes.
 //! 4. Opacity ramps over a band past the tolerance (soft, anti-aliased
 //!    edges), small loose specks are removed, and Edge softness feathers
 //!    the edge.
@@ -273,9 +272,11 @@ fn border(img: &RgbaImage) -> Vec<[u8; 3]> {
     out
 }
 
-/// The background colours learnt from the border: up to four k-means
-/// clusters in Lab, each kept when it covers at least a tenth of the
-/// border. None when the border is mostly transparent already.
+/// The colours of the picture's border: up to six k-means clusters in
+/// Lab, each kept when it covers at least a fifteenth of the border.
+/// None when the border is mostly transparent already. Automatic does
+/// not remove by them (it finds the subject, `bg_subject`); they say
+/// which listed entry a colour clicked with Alt is nearest to.
 pub fn learn_background(img: &RgbaImage) -> Vec<BgColor> {
     let (w, h) = img.dimensions();
     if w == 0 || h == 0 {
@@ -379,16 +380,16 @@ pub fn remove_background(img: &RgbaImage, s: &BgSettings, scale: f32) -> RgbaIma
     out
 }
 
-/// The picture with its background colours (and the brushes' strokes)
-/// made transparent.
+/// The picture with its background (and the brushes' strokes) made
+/// transparent: an Automatic entry takes everything but the subject
+/// (`bg_subject`), a picked colour what is near it.
 fn remove_by_colour(img: &RgbaImage, s: &BgSettings, scale: f32) -> RgbaImage {
     let (w, h) = img.dimensions();
-    // Every background colour with its tolerance: an Automatic entry
-    // brings the colours learnt from the border, a picked one its own.
     let entries = s.entries();
+    // The picked colours with their tolerances, and Automatic's.
     let mut bg: Vec<BgColor> = Vec::new();
     let mut tols: Vec<f32> = Vec::new();
-    let mut learnt: Option<Vec<BgColor>> = None;
+    let mut auto: Option<f32> = None;
     for p in &entries {
         let t = p.tolerance_or(s.tolerance);
         match p.color {
@@ -396,27 +397,144 @@ fn remove_by_colour(img: &RgbaImage, s: &BgSettings, scale: f32) -> RgbaImage {
                 bg.push(BgColor::of(c));
                 tols.push(t);
             }
-            None => {
-                for b in learnt.get_or_insert_with(|| learn_background(img)).iter() {
-                    bg.push(*b);
-                    tols.push(t);
-                }
-            }
+            None => auto = Some(auto.map_or(t, |a: f32| a.max(t))),
         }
     }
-    if bg.is_empty() {
-        // Nothing to take by colour (a picture already transparent all
-        // round): only the brushes change it.
+    let subject = auto.and_then(|t| crate::bg_subject::subject(img, t, s.contiguous));
+    let (wu, hu) = (w as usize, h as usize);
+    let n = wu * hu;
+    if bg.is_empty() && subject.is_none() {
+        // Nothing to take (a picture already transparent all round):
+        // only the brushes change it.
         let mut out = img.clone();
         if !s.strokes.is_empty() {
-            let mut keep = vec![1.0f32; (w as usize) * (h as usize)];
-            paint_strokes(&mut keep, w as usize, h as usize, &s.strokes);
+            let mut keep = vec![1.0f32; n];
+            paint_strokes(&mut keep, wu, hu, &s.strokes);
             for (p, a) in out.pixels_mut().zip(&keep) {
                 p.0[3] = (p.0[3] as f32 * a).round().clamp(0.0, 255.0) as u8;
             }
         }
         return out;
     }
+    // Opacity of the subject, 1 where it stays.
+    let mut keep = match &subject {
+        Some(sub) => sub.keep.clone(),
+        None => vec![1.0f32; n],
+    };
+    // The picked colour that took each pixel; none: Automatic did.
+    const AUTO: u16 = u16::MAX;
+    let mut which = vec![AUTO; if bg.is_empty() { 0 } else { n }];
+    if !bg.is_empty() {
+        by_picked_colours(img, s, &entries, &bg, &tols, &mut keep, &mut which);
+    }
+    if s.despeckle {
+        despeckle(&mut keep, wu, hu);
+    }
+    // The brushes have the last word, before the edge is feathered.
+    paint_strokes(&mut keep, wu, hu, &s.strokes);
+    let radius = s.softness.max(0.0) * scale;
+    // The opacity before the feather: what Automatic's edge colours are
+    // cleaned by (how much of each pixel is backdrop).
+    let mut matte: Option<Vec<f32>> = None;
+    if radius >= 0.5 {
+        if s.clean_edges && subject.is_some() {
+            matte = Some(keep.clone());
+        }
+        let r = radius.round() as usize;
+        // Two box passes approach a Gaussian; only the edge changes,
+        // since flat areas stay flat.
+        box_blur(&mut keep, wu, hu, r);
+        box_blur(&mut keep, wu, hu, r);
+    }
+    let mut out = img.clone();
+    for (i, p) in out.pixels_mut().enumerate() {
+        let a = keep[i];
+        if a <= 0.0 {
+            p.0[3] = 0;
+            continue;
+        }
+        if s.clean_edges {
+            match (which.get(i).and_then(|k| bg.get(*k as usize)), &subject) {
+                (Some(c), _) => {
+                    if a > 0.05 && a < 0.999 {
+                        // The pixel was a * subject + (1 - a) * backdrop:
+                        // solve for the subject's colour.
+                        for (ch, back) in p.0.iter_mut().zip(c.rgb) {
+                            let v = *ch as f32;
+                            *ch = ((v - (1.0 - a) * back) / a).round().clamp(0.0, 255.0) as u8;
+                        }
+                    }
+                }
+                (None, Some(sub)) => {
+                    // The same, by the opacity before the feather.
+                    let m = matte.as_ref().map_or(a, |v| v[i]);
+                    let c = [p.0[0], p.0[1], p.0[2]];
+                    if let Some(c) = sub.cleaned(i % wu, i / wu, c, m) {
+                        p.0[..3].copy_from_slice(&c);
+                    }
+                }
+                (None, None) => {}
+            }
+        }
+        if a < 0.999 {
+            p.0[3] = (p.0[3] as f32 * a).round().clamp(0.0, 255.0) as u8;
+        }
+    }
+    out
+}
+
+/// `img` shrunk to `w` x `h` with its colours weighted by their opacity,
+/// so the colour a removed pixel kept does not bleed into the edge (the
+/// preview of the result, see `bitmap_dialogs::bg_preview_result`).
+pub fn shrink_result(img: &RgbaImage, w: u32, h: u32) -> RgbaImage {
+    let (w, h) = (w.max(1), h.max(1));
+    if img.dimensions() == (w, h) {
+        return img.clone();
+    }
+    // (The resize keeps float channels within 0 to 1.)
+    let mut pre = image::Rgba32FImage::new(img.width(), img.height());
+    for (to, from) in pre.pixels_mut().zip(img.pixels()) {
+        let a = from.0[3] as f32 / 255.0;
+        to.0 = [
+            from.0[0] as f32 / 255.0 * a,
+            from.0[1] as f32 / 255.0 * a,
+            from.0[2] as f32 / 255.0 * a,
+            a,
+        ];
+    }
+    let small = image::imageops::resize(&pre, w, h, image::imageops::FilterType::Triangle);
+    let mut out = RgbaImage::new(w, h);
+    for (to, from) in out.pixels_mut().zip(small.pixels()) {
+        let a = from.0[3].clamp(0.0, 1.0);
+        if a <= 1.0 / 512.0 {
+            to.0 = [0, 0, 0, 0];
+            continue;
+        }
+        let ch = |v: f32| (v / a * 255.0).round().clamp(0.0, 255.0) as u8;
+        to.0 = [
+            ch(from.0[0]),
+            ch(from.0[1]),
+            ch(from.0[2]),
+            (a * 255.0).round() as u8,
+        ];
+    }
+    out
+}
+
+/// Take what is near a picked colour out of `keep` (which holds what
+/// Automatic left, or 1 everywhere): `which` gets the colour that took
+/// each pixel. What Automatic took counts as background here, so with
+/// Contiguous a picked colour next to it goes too.
+fn by_picked_colours(
+    img: &RgbaImage,
+    s: &BgSettings,
+    entries: &[BgPick],
+    bg: &[BgColor],
+    tols: &[f32],
+    keep: &mut [f32],
+    which: &mut [u16],
+) {
+    let (w, h) = img.dimensions();
     let (wu, hu) = (w as usize, h as usize);
     let n = wu * hu;
     // Each pixel in Lab, its distance to the background colour it is
@@ -425,8 +543,10 @@ fn remove_by_colour(img: &RgbaImage, s: &BgSettings, scale: f32) -> RgbaImage {
     // tolerance of any listed colour.
     let mut labs = vec![[0.0f32; 3]; n];
     let mut dist = vec![0.0f32; n];
-    let mut which = vec![0u16; n];
+    let mut near = vec![0u16; n];
     let mut tolp = vec![tols[0]; n];
+    // Taken by Automatic already.
+    let taken: Vec<bool> = keep.iter().map(|k| *k < 0.5).collect();
     for (i, p) in img.pixels().enumerate() {
         if p.0[3] == 0 {
             continue;
@@ -438,7 +558,7 @@ fn remove_by_colour(img: &RgbaImage, s: &BgSettings, scale: f32) -> RgbaImage {
             // The colour it is deepest inside (least distance past, or
             // most within, that colour's tolerance).
             let mut best = (0, f32::MAX, f32::MAX);
-            for (k, (b, t)) in bg.iter().zip(&tols).enumerate() {
+            for (k, (b, t)) in bg.iter().zip(tols).enumerate() {
                 let d = dist2(&b.lab, &l).sqrt();
                 if d - t < best.2 {
                     best = (k, d, d - t);
@@ -448,24 +568,29 @@ fn remove_by_colour(img: &RgbaImage, s: &BgSettings, scale: f32) -> RgbaImage {
         };
         labs[i] = l;
         dist[i] = d;
-        which[i] = k as u16;
+        near[i] = k as u16;
         tolp[i] = tols[k];
     }
     // The ramp past the tolerance where edge pixels are partly opaque.
     let band = |tol: f32| (tol * 0.6).max(4.0);
     let ramp = |d: f32, tol: f32| smoothstep(tol, tol + band(tol), d);
-    // Opacity of the subject, 1 where it stays.
-    let mut keep = vec![1.0f32; n];
+    let mut take = |i: usize, a: f32| {
+        if a < keep[i] {
+            keep[i] = a;
+            which[i] = near[i];
+        }
+    };
     if s.contiguous {
         // Flood fill from the border (and the points where colours were
-        // picked): through background pixels freely, and at most `rim`
-        // pixels into the ramp, so the fill takes the anti-aliased rim
-        // and stops at the subject. It also walks on from a background
-        // pixel to a neighbour of nearly the same colour (a step under
-        // `step`), while that neighbour is within `reach` of a
-        // background colour: so a backdrop that drifts (texture, a
-        // gradient the border did not show, a soft shadow) goes whole,
-        // while the subject's edge, a sharp step, stops it.
+        // picked, and what Automatic took): through background pixels
+        // freely, and at most `rim` pixels into the ramp, so the fill
+        // takes the anti-aliased rim and stops at the subject. It also
+        // walks on from a background pixel to a neighbour of nearly the
+        // same colour (a step under `step`), while that neighbour is
+        // within `reach` of a background colour: so a backdrop that
+        // drifts (texture, a gradient the border did not show, a soft
+        // shadow) goes whole, while the subject's edge, a sharp step,
+        // stops it.
         let rim = 2 + s.softness.max(0.0).ceil() as u8;
         let step2 = |tol: f32| (tol / 3.0).max(3.0).powi(2);
         let reach = |tol: f32| (tol * 3.0).max(tol + band(tol));
@@ -504,6 +629,13 @@ fn remove_by_colour(img: &RgbaImage, s: &BgSettings, scale: f32) -> RgbaImage {
                 }
             }
         }
+        // What Automatic took is background the fill passes through.
+        for i in 0..n {
+            if taken[i] && depth[i] == u8::MAX {
+                depth[i] = 0;
+                queue.push_back(i);
+            }
+        }
         while let Some(i) = queue.pop_front() {
             let (x, y) = (i % wu, i / wu);
             let here = depth[i];
@@ -513,13 +645,15 @@ fn remove_by_colour(img: &RgbaImage, s: &BgSettings, scale: f32) -> RgbaImage {
                     return;
                 }
                 let t = tolp[j];
-                let near = dist[j] < t + band(t);
-                // A step from solid background only, never from the rim.
+                let near_j = dist[j] < t + band(t);
+                // A step from solid background of a picked colour only,
+                // never from the rim or from what Automatic took.
                 let drift = here == 0
+                    && !taken[i]
                     && dist[j] < reach(t)
                     && img.get_pixel((j % wu) as u32, (j / wu) as u32).0[3] > 0
                     && dist2(&labs[i], &labs[j]) <= step_i;
-                if !near && !drift {
+                if !near_j && !drift {
                     return;
                 }
                 let d = if dist[j] <= t || drift { 0 } else { here + 1 };
@@ -544,49 +678,20 @@ fn remove_by_colour(img: &RgbaImage, s: &BgSettings, scale: f32) -> RgbaImage {
             }
         }
         for i in 0..n {
+            if taken[i] {
+                continue;
+            }
             if drifted[i] {
-                keep[i] = 0.0;
+                take(i, 0.0);
             } else if depth[i] != u8::MAX {
-                keep[i] = ramp(dist[i], tolp[i]);
+                take(i, ramp(dist[i], tolp[i]));
             }
         }
     } else {
         for i in 0..n {
-            keep[i] = ramp(dist[i], tolp[i]);
+            take(i, ramp(dist[i], tolp[i]));
         }
     }
-    if s.despeckle {
-        despeckle(&mut keep, wu, hu);
-    }
-    // The brushes have the last word, before the edge is feathered.
-    paint_strokes(&mut keep, wu, hu, &s.strokes);
-    let radius = s.softness.max(0.0) * scale;
-    if radius >= 0.5 {
-        let r = radius.round() as usize;
-        // Two box passes approach a Gaussian; only the edge changes,
-        // since flat areas stay flat.
-        box_blur(&mut keep, wu, hu, r);
-        box_blur(&mut keep, wu, hu, r);
-    }
-    let mut out = img.clone();
-    for (i, p) in out.pixels_mut().enumerate() {
-        let a = keep[i];
-        let orig = p.0[3] as f32;
-        if a >= 0.999 {
-            continue;
-        }
-        if s.clean_edges && a > 0.05 {
-            // The pixel was a * subject + (1 - a) * backdrop: solve for
-            // the subject's colour.
-            let b = bg[which[i] as usize].rgb;
-            for (ch, back) in p.0.iter_mut().zip(b) {
-                let c = *ch as f32;
-                *ch = ((c - (1.0 - a) * back) / a).round().clamp(0.0, 255.0) as u8;
-            }
-        }
-        p.0[3] = (orig * a).round().clamp(0.0, 255.0) as u8;
-    }
-    out
 }
 
 /// The brushes' strokes on the opacity map: within a stroke's radius of
@@ -704,34 +809,43 @@ fn despeckle(keep: &mut [f32], w: usize, h: usize) {
     }
 }
 
-/// A box blur of radius `r` across rows and then columns.
-fn box_blur(v: &mut [f32], w: usize, h: usize, r: usize) {
-    if r == 0 {
+/// A box blur of radius `r` across rows and then columns (edges
+/// repeated), by running sums.
+pub(crate) fn box_blur(v: &mut [f32], w: usize, h: usize, r: usize) {
+    if r == 0 || w == 0 || h == 0 || v.len() < w * h {
         return;
     }
-    let mut tmp = vec![0.0f32; v.len()];
-    let pass = |src: &[f32],
-                dst: &mut [f32],
-                len: usize,
-                count: usize,
-                at: &dyn Fn(usize, usize) -> usize| {
-        for line in 0..count {
-            let mut sum = 0.0f32;
-            let mut k = 0usize;
-            // Running sum over the window, edges clamped.
-            let get = |i: isize| src[at(line, i.clamp(0, len as isize - 1) as usize)];
-            for i in -(r as isize)..=(r as isize) {
-                sum += get(i);
-                k += 1;
-            }
-            for i in 0..len {
-                dst[at(line, i)] = sum / k as f32;
-                sum += get(i as isize + r as isize + 1) - get(i as isize - r as isize);
-            }
+    let inv = 1.0 / (2 * r + 1) as f32;
+    // Rows.
+    let mut line = vec![0.0f32; w];
+    for row in v.chunks_exact_mut(w).take(h) {
+        line.copy_from_slice(row);
+        let mut sum = line[0] * (r + 1) as f32;
+        for i in 1..=r {
+            sum += line[i.min(w - 1)];
         }
-    };
-    pass(v, &mut tmp, w, h, &|line, i| line * w + i);
-    pass(&tmp, v, h, w, &|line, i| i * w + line);
+        for x in 0..w {
+            row[x] = sum * inv;
+            sum += line[(x + r + 1).min(w - 1)] - line[x.saturating_sub(r)];
+        }
+    }
+    // Columns: one running sum per column, row after row.
+    let src = v[..w * h].to_vec();
+    let at = |y: usize| &src[y * w..(y + 1) * w];
+    let mut sums: Vec<f32> = at(0).iter().map(|a| a * (r + 1) as f32).collect();
+    for i in 1..=r {
+        for (s, a) in sums.iter_mut().zip(at(i.min(h - 1))) {
+            *s += a;
+        }
+    }
+    for y in 0..h {
+        let (add, sub) = (at((y + r + 1).min(h - 1)), at(y.saturating_sub(r)));
+        let row = &mut v[y * w..(y + 1) * w];
+        for x in 0..w {
+            row[x] = sums[x] * inv;
+            sums[x] += add[x] - sub[x];
+        }
+    }
 }
 
 #[cfg(test)]
@@ -848,20 +962,36 @@ mod tests {
         };
         let out = remove_background(&img, &s, 1.0);
         assert!(out.pixels().all(|p| p.0[3] == 255));
-        // Tolerance 0 on a gradient keeps most of it.
-        let s = BgSettings {
-            tolerance: 0.0,
+        // Tolerance 0 on a gradient keeps most of it: a picked colour
+        // takes what is within its tolerance.
+        let grey = |tolerance: f32| BgSettings {
+            tolerance,
             despeckle: false,
             softness: 0.0,
+            colors: vec![BgPick::color([240, 240, 240])],
             ..BgSettings::default()
         };
-        let out = remove_background(&img, &s, 1.0);
-        let gone = out.pixels().filter(|p| p.0[3] == 0).count();
-        let loose = remove_background(&img, &BgSettings::default(), 1.0)
-            .pixels()
-            .filter(|p| p.0[3] == 0)
-            .count();
+        let count = |s: &BgSettings| {
+            remove_background(&img, s, 1.0)
+                .pixels()
+                .filter(|p| p.0[3] == 0)
+                .count()
+        };
+        let (gone, loose) = (count(&grey(0.0)), count(&grey(14.0)));
         assert!(gone < loose, "{gone} {loose}");
+        // Automatic does not go by colour: at any tolerance the whole
+        // backdrop goes and the subject stays.
+        for tolerance in [0.0, 14.0, 45.0] {
+            let s = BgSettings {
+                tolerance,
+                softness: 0.0,
+                ..BgSettings::default()
+            };
+            let out = remove_background(&img, &s, 1.0);
+            assert_eq!(out.get_pixel(2, 50).0[3], 0, "{tolerance}");
+            assert_eq!(out.get_pixel(77, 2).0[3], 0, "{tolerance}");
+            assert_eq!(out.get_pixel(40, 40).0, [200, 30, 30, 255], "{tolerance}");
+        }
     }
 
     #[test]
@@ -935,13 +1065,163 @@ mod tests {
             kept >= disc * 9 / 10 && kept <= disc * 11 / 10,
             "{kept} vs {disc}"
         );
-        // Everywhere mode (no fill) still goes by colour alone: the
+        // A picked colour does the same with Contiguous: the fill walks
+        // on through the shadow.
+        let white = BgSettings {
+            colors: vec![BgPick::color([250, 250, 246])],
+            ..BgSettings::default()
+        };
+        let out = remove_background(&img, &white, 1.0);
+        assert_eq!(out.get_pixel(60, 68).0[3], 0);
+        assert_eq!(out.get_pixel(60, 40).0, [200, 30, 30, 255]);
+        // Everywhere mode (no fill) goes by the picked colour alone: the
         // shadow's dark middle stays.
         let s = BgSettings {
             contiguous: false,
-            ..BgSettings::default()
+            ..white
         };
         assert_eq!(remove_background(&img, &s, 1.0).get_pixel(60, 68).0[3], 255);
+    }
+
+    /// A photo of a person, drawn: a backdrop that shades from one blue
+    /// to another with noise, a head with dark hair whose rim is hair
+    /// and backdrop by turns, shoulders that leave the picture at the
+    /// bottom and at both sides, a shirt, and an arm raised in a loop
+    /// the backdrop shows through.
+    fn portrait() -> RgbaImage {
+        RgbaImage::from_fn(160, 200, |x, y| {
+            let n = ((x * 31 + y * 17) % 7) as i32 - 3;
+            let px = |c: [i32; 3]| {
+                Rgba([
+                    (c[0] + n).clamp(0, 255) as u8,
+                    (c[1] + n).clamp(0, 255) as u8,
+                    (c[2] + n).clamp(0, 255) as u8,
+                    255,
+                ])
+            };
+            let (fx, fy) = (x as f32, y as f32);
+            let back = [80 + x as i32 / 6, 185 + y as i32 / 12, 232 - y as i32 / 10];
+            let (skin, hair, shirt) = ([150, 90, 60], [25, 18, 15], [235, 190, 190]);
+            let face = ((fx - 80.0) / 34.0).powi(2) + ((fy - 80.0) / 44.0).powi(2);
+            let hairs = ((fx - 80.0) / 40.0).powi(2) + ((fy - 62.0) / 36.0).powi(2);
+            let arm = ((fx - 38.0).powi(2) + (fy - 70.0).powi(2)).sqrt();
+            let torso = fy >= 125.0 && (fx - 80.0).abs() <= 40.0 + (fy - 125.0) * 0.9;
+            if face < 1.0 && fy > 58.0 {
+                px(skin)
+            } else if hairs < 1.0 {
+                px(hair)
+            } else if hairs < 1.25 && fy < 62.0 {
+                // The rim: hair, and hair with the backdrop through it.
+                if (x + y) % 2 == 0 {
+                    px(hair)
+                } else {
+                    px([
+                        (hair[0] + back[0]) / 2,
+                        (hair[1] + back[1]) / 2,
+                        (hair[2] + back[2]) / 2,
+                    ])
+                }
+            } else if torso {
+                if fy > 170.0 && (fx - 80.0).abs() < 30.0 {
+                    px(shirt)
+                } else {
+                    px(skin)
+                }
+            } else if (12.0..22.0).contains(&arm) {
+                px(skin)
+            } else {
+                px(back)
+            }
+        })
+    }
+
+    /// Automatic keeps the subject whole where it leaves the picture
+    /// (its colours on the border are not backdrop), takes the whole
+    /// backdrop, the part seen through a gap too, and leaves no tint of
+    /// the backdrop in the hair (#3422).
+    #[test]
+    fn automatic_keeps_a_subject_that_leaves_the_picture() {
+        let img = portrait();
+        for softness in [0.0, 1.0] {
+            let s = BgSettings {
+                softness,
+                ..BgSettings::default()
+            };
+            let out = remove_background(&img, &s, 1.0);
+            // The backdrop, at every side.
+            for (x, y) in [(5, 5), (155, 5), (5, 110), (155, 110), (80, 8)] {
+                assert_eq!(out.get_pixel(x, y).0[3], 0, "backdrop at {x},{y}");
+            }
+            // Shoulders at the bottom corners, the shirt on the bottom
+            // edge, the face, the hair, the arm: all there, unchanged.
+            for (x, y) in [
+                (3, 196),
+                (156, 196),
+                (80, 197),
+                (80, 100),
+                (80, 40),
+                (38, 87),
+                (21, 70),
+            ] {
+                assert_eq!(
+                    out.get_pixel(x, y),
+                    img.get_pixel(x, y),
+                    "subject at {x},{y}"
+                );
+            }
+            // The backdrop inside the arm's loop.
+            assert_eq!(out.get_pixel(38, 70).0[3], 0, "the gap");
+            // What is left of the hair's rim is hair-coloured, not blue.
+            for y in 20..62 {
+                for x in 30..130 {
+                    let p = out.get_pixel(x, y).0;
+                    assert!(
+                        p[3] < 100 || p[2] as i32 <= p[0] as i32 + 40,
+                        "tint at {x},{y}: {p:?}"
+                    );
+                }
+            }
+        }
+        // Fill background fills what was removed only.
+        let filled = BgSettings {
+            backdrop: Some(BgBackdrop::WHITE),
+            ..BgSettings::default()
+        };
+        let out = remove_background(&img, &filled, 1.0);
+        assert_eq!(out.get_pixel(5, 5).0, [255, 255, 255, 255]);
+        assert_eq!(out.get_pixel(38, 70).0, [255, 255, 255, 255]);
+        assert_eq!(out.get_pixel(3, 196), img.get_pixel(3, 196));
+        assert_eq!(out.get_pixel(80, 100), img.get_pixel(80, 100));
+    }
+
+    /// On a flat backdrop (a drawing), a part of the backdrop's colour
+    /// inside the subject may be drawn that way: it stays with
+    /// Contiguous and goes without.
+    #[test]
+    fn a_flat_part_inside_the_subject_stays_with_contiguous() {
+        let img = RgbaImage::from_fn(100, 80, |x, y| {
+            let (dx, dy) = (x as f32 - 50.0, y as f32 - 40.0);
+            let r = (dx * dx + dy * dy).sqrt();
+            if (8.0..24.0).contains(&r) {
+                Rgba([200, 30, 30, 255])
+            } else {
+                Rgba([250, 250, 250, 255])
+            }
+        });
+        let out = remove_background(&img, &sharp(vec![BgPick::AUTO]), 1.0);
+        assert_eq!(out.get_pixel(2, 2).0[3], 0);
+        assert_eq!(out.get_pixel(50, 40).0[3], 255, "inside stays");
+        // Whole, to its rim, though it has the backdrop's colour there.
+        assert_eq!(out.get_pixel(56, 40).0, [250, 250, 250, 255]);
+        assert_eq!(out.get_pixel(50, 46).0, [250, 250, 250, 255]);
+        assert_eq!(out.get_pixel(50, 24).0, [200, 30, 30, 255]);
+        let everywhere = BgSettings {
+            contiguous: false,
+            ..sharp(vec![BgPick::AUTO])
+        };
+        let out = remove_background(&img, &everywhere, 1.0);
+        assert_eq!(out.get_pixel(50, 40).0[3], 0, "inside goes");
+        assert_eq!(out.get_pixel(50, 24).0, [200, 30, 30, 255]);
     }
 
     /// A white backdrop with a red disc; a green patch on the backdrop
@@ -1234,5 +1514,27 @@ mod tests {
         let out = remove_background(&img, &s, 1.0);
         assert_eq!(out.get_pixel(10, 10).0[3], 0);
         assert_eq!(out.get_pixel(6, 6).0[3], 255);
+    }
+
+    /// A result shrunk for the preview: a removed pixel keeps its old
+    /// colour with no opacity, and that colour does not tint the edge;
+    /// an opaque area keeps its colour and a removed one stays clear.
+    #[test]
+    fn a_shrunk_result_keeps_removed_colours_out() {
+        let img = RgbaImage::from_fn(40, 20, |x, _| {
+            if x < 20 {
+                Rgba([0, 255, 0, 0])
+            } else {
+                Rgba([200, 30, 30, 255])
+            }
+        });
+        let small = shrink_result(&img, 20, 10);
+        assert_eq!(small.dimensions(), (20, 10));
+        assert_eq!(small.get_pixel(2, 5).0[3], 0);
+        assert_eq!(small.get_pixel(17, 5).0, [200, 30, 30, 255]);
+        for p in small.pixels().filter(|p| p.0[3] > 0) {
+            assert!(p.0[1] <= 31, "green bled into the edge: {:?}", p.0);
+        }
+        assert_eq!(shrink_result(&img, 40, 20), img);
     }
 }

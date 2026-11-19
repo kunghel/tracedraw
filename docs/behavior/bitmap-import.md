@@ -1,8 +1,10 @@
 # Bitmap import
 
-File > Import (Ctrl+I) of a PNG, JPEG, BMP, GIF, TIFF or WebP file
+File > Import (Ctrl+I) of a PNG, JPEG, BMP, GIF, TIFF, WebP or JPEG XL file
 embeds the image as a bitmap object centred on the page and remembers
-the file (Image > Update from Link reads it again). PNG files of 8 or
+the file (Image > Update from Link reads it again; Options > Global >
+File Formats > Link imported pictures to their files, on by default,
+can embed it only, #3089). PNG files of 8 or
 16 bits, grey or colour, with or without alpha or with a palette, and
 baseline or progressive JPEG files all come in
 (`bitmap_file::tests::every_common_png_and_jpeg_imports`, #2167).
@@ -19,17 +21,45 @@ management as the drawing's CMYK colours show, so exporting an object
 as a CMYK JPEG and importing the file gives the colour the object had.
 The channels are read as stored: inverted (255 is no ink) under an
 Adobe `APP14` marker with transform 0, as the CMYK export and most
-programs write them; Y, Cb, Cr of the inverted C, M, Y and an inverted
-K under transform 2 (YCCK); as they are without the marker. Before,
-the image library turned the file into RGB by itself, taking every
-file as inverted and leaving the colour management out, so the picture
-came in brighter than the same inks in the drawing (#2163,
+programs write them; Y, Cb, Cr of C, M, Y as they are and an inverted
+K under transform 2 (YCCK, Photoshop's usual CMYK JPEG: the writer
+turns the inverted values it is given into "RGB" as 255 less each, so
+the colour transform taken back gives the inks); as they are without
+the marker. Before, the image library turned the file into RGB by
+itself, taking every file as inverted and leaving the colour management
+out, so the picture came in brighter than the same inks in the drawing
+(#2163,
 `bitmap_file::tests::a_cmyk_jpeg_imports_with_its_inks_as_the_drawing_shows_them`).
+A YCCK file then came in with its cyan, magenta and yellow inverted (a
+cyan square as red, white as dark grey) (#3025,
+`bitmap_file::tests::cmyk_jpegs_of_other_programs_keep_their_inks`,
+squares written by libjpeg through ImageMagick and Pillow).
+
+A picture keeps the colour mode its file stores (Image > Mode and the
+status bar show it): a 1-bit file (PNG, BMP, TIFF) comes in Black and
+White (1-bit), a grey one (PNG, TIFF, a one-component JPEG) Grayscale,
+one with a palette (PNG, BMP of 4 or 8 bits, GIF, TIFF) Indexed (8-bit);
+a 1-bit file of two colours other than black and white is Indexed.
+Before, every picture came in as RGB. A palette TIFF, which did not
+open at all, opens with its colours: it is read as the grey levels that
+are its indices, looked up in its colour map (TIFF 6.0, section 5)
+(#3025, `bitmap_file::tests::imported_pictures_keep_their_colour_mode`).
+
+## JPEG XL (#3210)
+
+`.jxl` files, the bare codestream or the ISO container, are read by
+`jxl-oxide` (pure Rust, MIT OR Apache-2.0) through the image crate's
+decoder interface, under the same memory limit as the other pictures
+(`files::decode_picture`): 8 and 16 bits and float, grey or colour,
+with or without alpha, lossless or lossy; a CMYK file comes in as RGB
+pixels. The codestream's own orientation is applied by the decoder and
+an Exif orientation in the file is not applied again
+(`bitmap_file::tests::jpeg_xl_files_export_and_import_losslessly`).
 
 ## Opening a picture (#2600)
 
 A picture file opened (Open With TraceDraw in the file manager, the
-command line, a recent file: PNG, JPG, BMP, GIF, WebP, TIFF) becomes a
+command line, a recent file: PNG, JPG, BMP, GIF, WebP, TIFF, JPEG XL) becomes a
 new, untitled drawing named after the file, whose page is the picture's
 size at the resolution the file records; the picture fills the page.
 There is nothing to undo or save yet, and Save asks where. A file that

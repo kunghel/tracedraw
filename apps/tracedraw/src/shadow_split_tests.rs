@@ -209,3 +209,90 @@ fn a_shadow_breaks_off_an_object_inside_a_group() {
     assert!(!made.is_empty());
     assert_eq!(app.doc().ancestors(made[0]), vec![group], "in the group");
 }
+
+/// #2954 (the reporter's two videos, 0.46.0): a block shadow on a curve
+/// of several pieces (letters converted to curves), and on a contour
+/// broken off its object, vanished when the object was broken apart, and
+/// on a single curve it stayed attached. Break Apart now takes the block
+/// shadow off as curves behind the object first; a second Break Apart
+/// splits the object's pieces, and the shadow curves stay.
+#[test]
+fn a_block_shadow_survives_break_apart_of_a_curve_of_pieces() {
+    use tracedraw_core::geometry::{BezPath, Rect};
+    let mut app = App::headless();
+    let mut path = BezPath::new();
+    for x in [20.0, 60.0] {
+        path.move_to((x, 20.0));
+        path.line_to((x + 30.0, 20.0));
+        path.line_to((x + 30.0, 50.0));
+        path.line_to((x, 50.0));
+        path.close_path();
+    }
+    let letters = app
+        .new_shape(ShapeKind::Path { path, closed: true })
+        .expect("curve");
+    let r = app
+        .new_shape(ShapeKind::Rect {
+            rect: Rect::new(20.0, 100.0, 60.0, 140.0),
+            radius: 0.0,
+            corners: None,
+        })
+        .expect("rect");
+    app.run(Command::SetFill {
+        shapes: vec![letters, r],
+        fill: Fill::Solid(Color::rgb8(250, 200, 0)),
+    });
+    // The rectangle's contour broken off it: a group of its steps.
+    app.select(vec![r]);
+    app.push_effect(
+        Effect::Contour {
+            steps: 2,
+            offset: 3.0,
+            outside: true,
+            to_center: false,
+            both: false,
+            fill_to: Color::BLACK,
+            outline_to: None,
+            fill_end_to: None,
+            color_blend: 0,
+            corners: Some(tracedraw_core::shaping::Join::Miter),
+            accel_objects: 0.0,
+            accel_colors: 0.0,
+        },
+        true,
+    );
+    app.break_apart();
+    let mut chosen = app.selection.clone();
+    chosen.push(letters);
+    app.select(chosen.clone());
+    app.push_effect(
+        Effect::BlockShadow {
+            offset: Vec2::new(4.0, -4.0),
+            color: Color::rgb8(120, 120, 120),
+            gap: 0.0,
+        },
+        true,
+    );
+    let before = count(&app);
+    assert_eq!(app.break_apart_label(), "menu.object.break_shadows_apart");
+    app.break_apart();
+    let shadows = app.selection.clone();
+    assert_eq!(shadows.len(), chosen.len(), "one shadow each: {shadows:?}");
+    assert_eq!(count(&app), before + shadows.len());
+    for id in &chosen {
+        let s = app.doc().find_shape(*id).expect("object kept");
+        assert!(s.effects.is_empty() && s.visible);
+    }
+    for id in &shadows {
+        let s = app.doc().find_shape(*id).expect("shadow");
+        assert!(matches!(s.kind, ShapeKind::Path { .. }), "curves");
+        assert!(!s.local_path().bounding_box().is_zero_area());
+    }
+    // Break Apart again splits the letters; the shadows stay.
+    app.select(vec![letters]);
+    app.break_apart();
+    assert_eq!(app.selection.len(), 2, "the two pieces");
+    for id in &shadows {
+        assert!(app.doc().find_shape(*id).is_some());
+    }
+}

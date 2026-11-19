@@ -94,6 +94,7 @@ soluk görünür. Menüler kendi kısayollarınızı gösterebilir; bkz.
 | [[menu.view.zoom_in]] | [Undoing, zooming and panning](../get-started/undo-and-views.md#views) |
 | [[menu.view.zoom_out]] | [Undoing, zooming and panning](../get-started/undo-and-views.md#views) |
 | [[menu.view.zoom_to_fit]] | [Undoing, zooming and panning](../get-started/undo-and-views.md#views) |
+| [[menu.view.zoom_1to1]] | [Undoing, zooming and panning](../get-started/undo-and-views.md#views) |
 | [[menu.view.navigator]] | [Undoing, zooming and panning](../get-started/undo-and-views.md#views) |
 | [[menu.view.proof_colors]] | [Color management](../color/color-management.md#proof) |
 | [[menu.view.simulate_overprints]] | [Color management](../color/color-management.md#proof) |
@@ -319,6 +320,7 @@ soluk görünür. Menüler kendi kısayollarınızı gösterebilir; bkz.
 | [[menu.bitmaps.convert_to_bitmap]] | [Converting objects to bitmaps](../bitmaps/convert-to-bitmap.md) |
 | [[menu.bitmaps.straighten_image]] | [Resampling, straightening and inflating bitmaps](../bitmaps/resample-and-straighten.md) |
 | [[menu.bitmaps.edit_bitmap]] | [Resampling, straightening and inflating bitmaps](../bitmaps/resample-and-straighten.md) |
+| [[menu.bitmaps.edit_inside]] | [Resampling, straightening and inflating bitmaps](../bitmaps/resample-and-straighten.md) |
 | [[menu.bitmaps.crop_bitmap]] | [Resampling, straightening and inflating bitmaps](../bitmaps/resample-and-straighten.md) |
 | [[menu.bitmaps.resample]] | [Resampling, straightening and inflating bitmaps](../bitmaps/resample-and-straighten.md) |
 | [[menu.bitmaps.remove_background_local]] | [Arka Planı Kaldır](../bitmaps/remove-background.md) |

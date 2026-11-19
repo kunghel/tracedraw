@@ -17,7 +17,11 @@ top of the selection, in one undo step ("Vector Mosaic"), and selects it.
 | Method | Size modulation 1 (opacity) | | How tiles follow the source, below |
 | Merge adjacent | 1 | 1 to 36 | The most tiles of one colour combined into one |
 | Weld adjacent overlap | on | | One curve per colour instead of one object per tile |
-| Shape | Circle | Circle, Square, Custom | The tile; squares and custom tiles turn with the screen |
+| Shape | Circle | Circle, Square, Custom, Glyphs, Characters | The tile; squares, custom tiles, glyphs and characters turn with the screen |
+| One color | off, black | | Every tile in that colour (Limit colors is then ignored) |
+| Random symbols | off, seed 1 | seed 0 to 9999 | Glyphs: each tile's symbol from the seed instead of its tone |
+| Character set | ` .:-=+*#%@` | up to 256 characters | Characters: the letters, lightest first; a space leaves the cell empty |
+| Invert tones | off | | Glyphs and Characters: dark cells take the light end of the set |
 
 The defaults are checked by `vector_mosaic::tests::the_defaults_match_the_panel`.
 
@@ -26,7 +30,17 @@ and Keep original, then Limit colors with its number, then the Tracking
 section (Method, Merge adjacent, Weld adjacent overlap), then Shape with
 Select beside it, the preview under them, and a full-width Apply.
 
-The preview under Shape shows the tile. For Custom, select a closed curve
+Glyphs picks each tile's outline from thirteen built-in symbols (a dot,
+a ring, a cross, a plus, an asterisk, an arrow, a bolt, a star, a
+triangle, a flower, a diamond, a disc and a square) ordered by the ink they
+cover: the tile's tone (darkness of its colour flattened on white, 0 to 1)
+times the number of symbols gives the index, so light cells take the
+light symbols. Characters does the same with the letters of the character
+set, drawn in a fixed-width face (Courier New or its stand-in) with an em
+1.4 times the tile, centred in it. Their tiles are never merged.
+
+The preview under Shape shows the tile (for Glyphs and Characters the
+first twelve of the set, light to dark). For Custom, select a closed curve
 and click Select: its outline, fitted to a unit square, becomes the tile
 (the curve itself stays). Apply needs a selection, and for Custom a tile.
 

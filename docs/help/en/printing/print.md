@@ -44,6 +44,12 @@ and **Apply** keeps them for the next time.
   Print Preview you can untick inks under **Print separations**; only the
   ticked inks print.
 - **Convert spot colors to CMYK** prints spot inks as their CMYK mix.
+- **Color profile** converts the colors and pictures to the printer's ICC
+  profile (RGB or CMYK, from the profiles installed on this computer), for
+  printers whose driver does not manage color, such as sublimation printers.
+  Choose the **Intent** beside it. It works with Composite output, not with
+  Grayscale or Separations. Turn off the color management of the printer's
+  driver so the colors are not converted twice.
 
 ## Composite {#composite}
 
@@ -54,8 +60,9 @@ and **Apply** keeps them for the next time.
 ## Layout {#layout}
 
 - **As in document**, **Fit to page**, or **Scale** to a percentage. **Fit
-  to page** also shrinks objects larger than the page (or the selection, when
-  you print only that) so they print whole on it.
+  to page** scales the page to fill the paper inside its margins, larger or
+  smaller; what you put partly off the page stays cut at its edge, as on
+  screen. When you print only the selection, it shrinks to fit the page.
 - **Bleed limit**: how far beyond the page objects print (4 mm at first, or
   the drawing's own bleed).
 - **Paper margins** (left, right, top, bottom, 0 at first) keep the paper's

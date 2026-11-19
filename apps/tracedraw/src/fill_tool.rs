@@ -460,6 +460,17 @@ impl App {
     /// the pick distance, it takes the whole fill, which the drag then
     /// moves by its line. False when it is on neither.
     pub fn begin_fountain_drag(&mut self, at: Point, press: Point) -> bool {
+        // A node of a pattern fill's first tile (#3379).
+        if let Some(handle) = self
+            .pattern_handle_at(at)
+            .or_else(|| self.pattern_handle_at(press))
+        {
+            self.drag = crate::app::Drag::PatternHandle {
+                handle,
+                begun: false,
+            };
+            return true;
+        }
         let held = self
             .fountain_handle_at(at)
             .or_else(|| self.fountain_handle_at(press));
@@ -515,6 +526,15 @@ impl App {
     pub fn fountain_drag_to(&mut self, p: Point, ctrl: bool) -> bool {
         use crate::app::Drag;
         match self.drag {
+            Drag::PatternHandle { handle, begun } => {
+                let p = self.snap_point(p);
+                self.drag_pattern_handle(handle, p, begun);
+                self.drag = Drag::PatternHandle {
+                    handle,
+                    begun: true,
+                };
+                true
+            }
             Drag::FountainHandle { handle, begun } => {
                 // A node snaps as the pointer does: onto the object's own
                 // corners and centre, other objects, guidelines and the
@@ -617,6 +637,11 @@ impl App {
     /// white, #2498), the skew handle square to the axis.
     pub fn fill_from_drag(&mut self, id: ShapeId, from: Point, to: Point) {
         use tracedraw_core::geometry::Shape as _;
+        // A pattern fill (a bitmap one too) keeps its tiles and lays
+        // them along the drag, not a gradient in their place (#3379).
+        if self.pattern_from_drag(id, from, to) {
+            return;
+        }
         let Some(s) = self.doc().shape_on_page(id) else {
             return;
         };
@@ -626,7 +651,8 @@ impl App {
             other => {
                 let first = match (other, &self.default_fill()) {
                     (Fill::Solid(c), _) | (_, Fill::Solid(c)) => *c,
-                    _ => tracedraw_core::Color::cmyk_pct(0.0, 0.0, 0.0, 100.0),
+                    // Black in the drawing's colour mode (#3006).
+                    _ => self.doc().metadata.primary_color_mode.black(),
                 };
                 Fountain::two(
                     FountainKind::Linear,
@@ -691,7 +717,7 @@ impl App {
             return;
         }
         let fill = match self.default_fill() {
-            Fill::None => Fill::Solid(tracedraw_core::Color::cmyk_pct(0.0, 0.0, 0.0, 20.0)),
+            Fill::None => Fill::Solid(self.doc().metadata.primary_color_mode.gray(20.0)),
             f => f,
         };
         self.run(Command::SetFill {
@@ -1174,6 +1200,35 @@ mod tests {
         app.apply_fill(Fill::None);
         app.fill_tool_click(id);
         assert!(!matches!(fill(&app), Some(Fill::None)));
+    }
+
+    /// In an RGB drawing a gradient dragged on an object without a fill
+    /// starts at RGB black, and a click gives it an RGB grey; a CMYK
+    /// drawing keeps 100 % K and K 20 (#3006).
+    #[test]
+    fn interactive_fill_colours_follow_the_drawing_colour_mode() {
+        use tracedraw_core::document::PrimaryColorMode;
+        for (mode, model) in [
+            (PrimaryColorMode::Rgb, "RGB"),
+            (PrimaryColorMode::Cmyk, "CMYK"),
+        ] {
+            let mut app = App::headless();
+            let mut metadata = app.doc().metadata.clone();
+            metadata.primary_color_mode = mode;
+            app.run(Command::SetMetadata { metadata });
+            let id = square(&mut app);
+            app.apply_fill(Fill::None);
+            app.fill_from_drag(id, Point::new(5.0, 5.0), Point::new(35.0, 5.0));
+            let (_, f, _) = app.selected_fountain().expect("fountain");
+            assert_eq!(f.first_color(), mode.black(), "{model}");
+            assert_eq!(f.first_color().model_name(), model);
+            app.apply_fill(Fill::None);
+            app.fill_tool_click(id);
+            let fill = app.doc().find_shape(id).map(|s| s.fill.clone());
+            if let Some(Fill::Solid(c)) = fill {
+                assert_eq!(c.model_name(), model, "{c:?}");
+            }
+        }
     }
 
     #[test]

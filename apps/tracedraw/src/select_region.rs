@@ -243,6 +243,9 @@ pub fn takes_how(
         let parts: Vec<Shape> = std::iter::once(ev.main)
             .chain(ev.below)
             .chain(ev.above)
+            // An object a bevelled extrusion draws among its faces is an
+            // empty path at the origin (#3227).
+            .filter(|part| !part.is_empty_path())
             .map(|mut part| {
                 part.effects.clear();
                 part

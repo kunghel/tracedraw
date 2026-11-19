@@ -44,3 +44,23 @@ becomes an object of its own (with Alt, it goes). A click where there is
 no part, or with nothing the tool can cut selected, selects as the Pick
 tool does; with nothing usable selected after it, the status bar asks to
 select the overlapping objects first.
+
+## Property bar
+
+The tool's property bar (#3220):
+
+- **Add** and **Delete**: what a drag or a click does with the parts,
+  merge them into a new object (Add, chosen at first) or take them away
+  (Delete); Alt does the other one.
+- **Keep originals** (off at first): a merge makes the new object and
+  leaves the objects it came from as they were, nothing cut out of them
+  and nothing deleted; Delete still cuts.
+- **Accept**: the shapes built stay and the Pick tool comes back.
+- **Cancel** (once the tool made a step): every step the tool made since
+  it was chosen or since the last Accept is undone, the drawing as it
+  was; the tool stays. A step of another tool in between stops it there.
+
+While the tool is in use the objects it works on are edged in grey with
+a white halo, apart from the selection colour of the parts, so the
+objects taking part show
+(`shape_builder::tests::keep_originals_cancel_and_accept`).

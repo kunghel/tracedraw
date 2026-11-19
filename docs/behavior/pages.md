@@ -1,5 +1,14 @@
 # Pages
 
+## Undo and Redo of the page shown
+
+When Undo or Redo takes away the page shown (Undo of Insert Page or of
+Duplicate Page, Redo of Delete Page), the page now at its place becomes
+current, or the last page when it was the last one, and the selection is
+cleared. The view no longer stays on a page that is gone, where nothing
+could be drawn (
+`app::tests::undo_of_the_page_shown_moves_to_a_page_that_is_there`).
+
 ## Duplicate Page
 
 Page > Duplicate Page..., the page tab menu's Duplicate Page... and the
@@ -20,6 +29,24 @@ page with " (copy)", and becomes the current page. It is one command,
 `Command::DuplicatePage { page, before, contents }`, so one undo step
 removes it. A saved or scripted command that names only the page copies
 it with its contents after it, as before (Data Merge works that way).
+
+Copied with its contents, the page's linked text frames are a chain of
+the copies and a blend ends at the copy of its end object, in the same
+undo step: the copies named the original page's objects, so the copied
+frames ran on into the original chain and the copied blend followed the
+original end object
+(`textflow::tests::a_duplicated_page_keeps_its_copied_chain_to_itself`,
+`blend_link::tests::a_duplicated_page_blends_to_its_own_end_object`).
+
+## Deleting a page or a layer with linked text frames
+
+A page deleted (the page tab's Delete, Page > Delete Page) or a layer
+deleted in the Objects docker with a frame of a linked text chain on it
+leaves that frame's text to the frames left, as deleting the frame itself
+does (see [Text](text.md)): the frames left are relinked and the text
+flows anew over them, in the same undo step. The text the deleted frame
+showed was lost with the page or the layer
+(`textflow::tests::deleting_a_page_or_layer_holding_a_frame_of_a_chain_keeps_its_text`).
 
 Tests: `command::tests::duplicate_page_goes_before_or_after_with_or_without_contents`,
 `command::tests::a_saved_duplicate_page_without_options_copies_contents_after`,
@@ -55,6 +82,17 @@ Page Size dialog, Document Setup and Create a New Document).
 Checked by `ui::propbar::tests::the_page_size_list_offers_a_custom_size`,
 `ui::dialogs::tests::page_size_presets_are_distinct_and_keep_their_names`,
 `ui::dialogs::tests::a_page_size_finds_its_name`.
+
+## The zoom when going to another page or turning it
+
+Going to another page (its tab, Page Up and Page Down, the navigator)
+keeps the zoom: a page shown before comes back as it was left in that
+window, zoom and position; one not shown yet is centred in the window at
+the zoom in use. Portrait and Landscape on the property bar keep the
+zoom and the page's centre where it was on screen. Each fitted the page
+to the window (#3434,
+`multipage::tests::pages_keep_the_zoom_when_gone_to_and_turned`);
+Zoom to Page (Shift+F4) still does.
 
 ## Page Spacing
 
@@ -169,3 +207,14 @@ and the tallest page's height; with **Delete the emptied pages** (off at
 first) the other pages go. It is one undo step ("Gather Pages"); a
 drawing of one page has nothing to gather and says so on the status
 line (`gather_pages::tests::every_pages_objects_come_side_by_side_on_the_first`).
+
+## Page miniatures
+
+The Pages docker shows each page's miniature beside its name, and the tip
+of a page tab shows the page's miniature above its name, so a page is
+found by what it shows, not by its number alone (#2932); a click on a
+miniature goes to its page, as a click on its name does. The miniatures
+are cached and drawn again once the drawing changes, one page a frame,
+the others keeping their old picture meanwhile, so a drawing of many
+pages does not lag; View > Page Sorter still shows every page large
+(`ui::preview::tests::page_thumbs_are_drawn_one_a_frame_and_follow_changes`).

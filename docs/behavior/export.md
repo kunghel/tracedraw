@@ -119,6 +119,7 @@ Preferences saved before are brought back to off once (upgrade 7,
 | JPEG | resolution, quality (1 to 100), colour mode (RGB, CMYK, Grayscale; see Colour mode below) |
 | TIFF | resolution, colour mode |
 | BMP, PSD | resolution |
+| JPEG XL | resolution, transparent background; always lossless, so it takes no quality (#3063) |
 | PDF | Export all text as curves (off at first: every text becomes filled outlines, so the file needs no fonts and cannot be searched; #1382, `export::tests::export_pdf_text_as_curves_holds_no_font`), standard (PDF 1.4, PDF/X-1a, PDF/X-3, PDF/X-4), bleed, output condition for PDF/X; the author, subject and keywords come from the drawing's properties (File > Export as PDF has bookmarks and protection, see `publish-to-pdf.md`) |
 | AI | Compatibility: PDF-compatible (the default) or Illustrator 8 (EPS-based); see "AI files" below (#1728) |
 | PLT | Scale (100 %), Plotter origin (bottom left of page or centre of page), Plotter units per inch (1016), Curve resolution (0.02 mm), HPGL/2 pen colours and widths (on), One pen for every outline (off); see `plt.md`, "Export choices" (#2652) |
@@ -149,6 +150,19 @@ Preferences saved before are brought back to off once (upgrade 7,
   the pixels, not that resolution (#617,
   `export::tests::bitmap_exports_record_their_resolution_and_scale`,
   `export::tests::the_export_size_is_typed_in_pixels_or_lengths`).
+- Large pictures: a PNG or TIFF of more than 2^26 pixels (8192 x 8192)
+  in RGB is drawn and written a strip of about 16 million pixels at a
+  time, so the export takes about the file's size in memory (a TIFF is
+  not compressed: three bytes a pixel). It is the page drawn whole; only
+  the smoothing of some edge pixels may differ a little, as between the
+  bands drawn on several cores. Before, the page was drawn whole, which
+  took about four times the picture's size in memory and failed above a
+  billion pixels: a banner of 180 x 10 ft exported at 30 dpi but not at
+  50 or 72 dpi (#3039,
+  `export::tests::a_picture_written_a_strip_at_a_time_is_the_page_drawn_whole`).
+  A TIFF of more than 4 GB is written as a BigTIFF. Other formats, and
+  CMYK or grayscale, still draw the page whole; above a billion pixels
+  the export stops and says to use PNG or TIFF or a lower resolution.
 - File size: vector formats (SVG, EPS, PostScript, PDF, AI) are written in memory and
   measured; bitmap formats are estimated by encoding the preview the same
   way and scaling by the pixel count of the export (times the pages
@@ -247,6 +261,17 @@ choices (standard, bleed, output condition). Presets are kept in the preferences
 (`formats.export_presets`; #547,
 `prefs::tests::export_presets_save_apply_rename_and_delete`).
 
+## JPEG XL
+
+JPEG XL (`.jxl`, #3063) is written lossless by `zune-jpegxl` (pure Rust,
+MIT OR Apache-2.0 OR Zlib): 8 bits, RGB when the picture is opaque and
+RGBA otherwise, every pixel kept. There is no pure Rust lossy encoder
+with a licence the program can take, so the quality field does not
+apply. A picture of one pixel across or down is written two pixels
+across or down, the encoder's smallest
+(`export::tests::a_page_exports_as_lossless_jpeg_xl`,
+`bitmap_file::tests::jpeg_xl_files_export_and_import_losslessly`).
+
 ## WebP
 
 Lossless (off at first) and Quality (1 to 100). Off, the file is lossy
@@ -323,8 +348,12 @@ and in presets:
   and edit the words. The glyphs keep the places the text engine gave
   them: characters that share a direction and slant go into one
   `<text>` whose transform is the first one's place, each run of one
-  span, font and size a `<tspan>` with an `x` and a `y` for every
-  character (the further characters of a ligature where it starts),
+  span, font and size on one line a `<tspan>` with an `x` and a `y` for
+  every character (the further characters of a ligature where it
+  starts), the characters in the order they are typed (Hebrew and
+  Arabic went in backwards, in the order the glyphs are drawn), no
+  white space between the tags (kept, the indent before the first
+  `<tspan>` was text),
   `font-family` the span's family, `font-size` in millimetres, bold and
   italic as `font-weight` and `font-style`, `xml:space="preserve"`.
   Fill, outline, spot colour names and transparency are the object's.

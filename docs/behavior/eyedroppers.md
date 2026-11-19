@@ -189,3 +189,21 @@ ms on the test machine).
 - `pick_drag_tests::a_closed_pickers_eyedropper_stops_waiting`: Edit Fill
   closed while its eyedropper waits: no readout, no crosshair, the next
   click on the drawing is the tool's (#1246).
+
+## Colours from the window
+
+The Color Eyedropper also picks colours that no object gives (#3040):
+
+- In Select mode, a click where no object under the pointer gives a
+  colour (the desk around the page, the empty page) takes the colour
+  shown there, read back from the window, averaged over the bar's sample
+  size; it then goes where a sampled colour goes (Apply mode, onto the
+  selection).
+- Sample from Screen on its property bar: the next click anywhere in
+  the window, on the panels, toolbars and palettes too, takes the colour
+  shown there; the click presses nothing under it, and Esc or another
+  tool ends it.
+- The window is read back once a sample, so a renderer that cannot read
+  back gives nothing and says so on the status line
+  (`screen_sample::tests::a_click_off_the_objects_samples_the_window`,
+  `screen_sample::tests::the_pixel_under_the_point_is_read_at_the_screens_scale`).

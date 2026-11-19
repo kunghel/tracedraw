@@ -24,6 +24,10 @@ pub(crate) mod paste_gate;
 // desktop (see vendor/README.md, #1800).
 pub(crate) mod monitor_place;
 
+// TraceDraw: input kept while the window is minimized keeps one list of
+// hovered files (see vendor/README.md, #3058).
+mod pending_input;
+
 #[cfg(feature = "glow")]
 mod glow_integration;
 

@@ -242,7 +242,9 @@ pub fn for_key(key: &str) -> Option<Glyph> {
         "menu.effects.lens" => Lens,
         "menu.effects.bevel" => Bevel,
         "menu.effects.brush_strokes" => BrushStrokes,
-        "menu.effects.picture_mosaic" | "menu.effects.vector_mosaic" => Mosaic,
+        "menu.effects.picture_mosaic"
+        | "menu.effects.vector_mosaic"
+        | "menu.effects.symbol_scatter" => Mosaic,
         "menu.effects.flatten" => Flatten,
         "menu.table.create_new_table" | "menu.object.create_table" => TableNew,
         "menu.table.convert_text_to_table" => TextToTable,

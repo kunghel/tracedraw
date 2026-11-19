@@ -1043,6 +1043,64 @@ mod tests {
         assert!(kurbo::Shape::contains(&pp, Point::new(12.0, 10.0)));
     }
 
+    /// An open line's arrowheads come with its outline when it becomes an
+    /// object: the head beside the line is filled, as it was drawn
+    /// (#2983).
+    #[test]
+    fn convert_outline_to_object_keeps_the_arrowheads() {
+        let mut app = App::headless();
+        let mut line = BezPath::new();
+        line.move_to((10.0, 10.0));
+        line.line_to((70.0, 10.0));
+        let id = app
+            .new_shape(ShapeKind::Path {
+                path: line,
+                closed: false,
+            })
+            .expect("line");
+        let mut st = Stroke::new(tracedraw_core::Color::BLACK, 1.0);
+        st.end_arrow = tracedraw_core::style::Arrowhead::Arrow;
+        st.start_arrow = tracedraw_core::style::Arrowhead::Diamond;
+        app.select(vec![id]);
+        app.run(Command::SetStroke {
+            shapes: vec![id],
+            stroke: Some(st.clone()),
+        });
+        let shape = app.doc().find_shape(id).cloned().expect("line");
+        let heads = tracedraw_core::style::arrowhead_paths(&shape.page_path(), &st);
+        assert_eq!(heads.len(), 2);
+        // A point of each head away from the line's own band.
+        let beside: Vec<Point> = heads
+            .iter()
+            .map(|h| {
+                let b = kurbo::Shape::bounding_box(h);
+                (0..=40)
+                    .flat_map(|i| (0..=40).map(move |j| (i, j)))
+                    .map(|(i, j)| {
+                        Point::new(
+                            b.x0 + b.width() * i as f64 / 40.0,
+                            b.y0 + b.height() * j as f64 / 40.0,
+                        )
+                    })
+                    .find(|p| (p.y - 10.0).abs() > 0.8 && kurbo::Shape::contains(h, *p))
+                    .expect("a point of the head beside the line")
+            })
+            .collect();
+        app.convert_outline_to_object();
+        let out = app
+            .doc()
+            .find_shape(app.selection[0])
+            .cloned()
+            .expect("object");
+        let pp = out.page_path();
+        for p in beside {
+            assert!(kurbo::Shape::contains(&pp, p), "{p:?} filled");
+        }
+        // The line between the heads is still there, and nothing else.
+        assert!(kurbo::Shape::contains(&pp, Point::new(40.0, 10.0)));
+        assert!(!kurbo::Shape::contains(&pp, Point::new(40.0, 12.0)));
+    }
+
     /// A combined curve of two crossing open lines (an "f": a stem and a
     /// cross bar) becomes one shape covering both strokes, the crossing
     /// filled under the even-odd rule curves are filled with, as it was
@@ -1890,6 +1948,30 @@ mod tests {
 /// when the object has no outline or it draws nothing.
 pub fn outline_object_path(s: &Shape) -> Option<BezPath> {
     let st = s.stroke.as_ref()?;
+    let line = outline_band_path(s, st)?;
+    // The arrowheads of an open line are part of what its outline draws,
+    // so they come with it, welded to it; they were left out and the
+    // object came out a plain band (#2983).
+    let heads = tracedraw_core::style::arrowhead_paths(&s.page_path(), st);
+    if heads.is_empty() {
+        return Some(line);
+    }
+    use tracedraw_core::shaping::{overlay, overlay_with, FillRule, Op};
+    let mut all = BezPath::new();
+    for h in &heads {
+        all.extend(h.elements().iter().copied());
+    }
+    let heads = overlay_with(&all, &BezPath::new(), Op::Weld, FillRule::NonZero);
+    let out = overlay(&line, &heads, Op::Weld);
+    Some(if out.elements().is_empty() {
+        line
+    } else {
+        with_closing_lines(&out)
+    })
+}
+
+/// [`outline_object_path`] of the line alone, without its arrowheads.
+fn outline_band_path(s: &Shape, st: &Stroke) -> Option<BezPath> {
     let width = if st.width <= Stroke::HAIRLINE + 1e-9 {
         0.25
     } else {

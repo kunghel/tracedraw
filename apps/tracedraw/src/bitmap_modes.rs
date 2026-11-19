@@ -95,6 +95,13 @@ impl ConvertOptions {
     pub fn bytes(&self, w: u64, h: u64) -> u64 {
         (w * self.mode.bits()).div_ceil(8) * h
     }
+
+    /// Whether the bitmap keeps a see-through background. A 1-bit bitmap
+    /// has no alpha, so black and white always comes out on white: with
+    /// alpha it was stored as grayscale (#3204).
+    pub fn keeps_transparency(&self) -> bool {
+        self.transparent && self.mode != ConvertMode::BlackWhite
+    }
 }
 
 /// The rendered pixels in the chosen colour mode: black and white by a
@@ -381,6 +388,56 @@ fn hash01(x: u32, y: u32) -> f32 {
     (h & 0xFFFF) as f32 / 65535.0
 }
 
+/// The spot function of a halftone screen at `(u, v)` in its cell (-1
+/// to 1 across, the centre at 0): higher values darken first. Round
+/// dots grow from the centre as circles, touch as squares at half tone
+/// and leave round white holes beyond it; square dots grow as squares;
+/// lines grow across the cell (#2922).
+fn spot(screen: Screen, u: f32, v: f32) -> f32 {
+    let (x, y) = (u.abs().min(1.0), v.abs().min(1.0));
+    match screen {
+        Screen::Round => {
+            if x + y <= 1.0 {
+                1.0 - (x * x + y * y) / 2.0
+            } else {
+                ((1.0 - x).powi(2) + (1.0 - y).powi(2)) / 2.0
+            }
+        }
+        Screen::Square => 1.0 - x.max(y),
+        Screen::Line => 1.0 - y,
+    }
+}
+
+/// A screen's spot values sampled over a whole cell, highest first, to
+/// turn a spot value into the share of the cell that darkens before it:
+/// with that rank as the threshold a tone covers exactly its share of
+/// each cell, so 20 % black is a fifth of the paper in dots and 60 %
+/// leaves round white holes in black (#2922). The spot values alone
+/// were not even: 60 % came out as a checkerboard.
+struct ScreenRanks {
+    values: Vec<f32>,
+}
+
+impl ScreenRanks {
+    const SAMPLES: usize = 96;
+
+    fn new(screen: Screen) -> ScreenRanks {
+        let n = Self::SAMPLES;
+        let at = |i: usize| ((i as f32 + 0.5) / n as f32 - 0.5) * 2.0;
+        let mut values: Vec<f32> = (0..n * n)
+            .map(|k| spot(screen, at(k % n), at(k / n)))
+            .collect();
+        values.sort_by(|a, b| b.total_cmp(a));
+        ScreenRanks { values }
+    }
+
+    /// The share of the cell (0 to 1) whose spot value is above `value`.
+    fn rank(&self, value: f32) -> f32 {
+        let above = self.values.partition_point(|v| *v > value);
+        above as f32 / self.values.len() as f32
+    }
+}
+
 /// Convert to black and white; `dpi` is the bitmap's resolution (for the
 /// halftone screen).
 pub fn black_and_white(img: &RgbaImage, s: &BwSettings, dpi: f32) -> RgbaImage {
@@ -426,23 +483,20 @@ pub fn black_and_white(img: &RgbaImage, s: &BwSettings, dpi: f32) -> RgbaImage {
         BwMethod::Halftone => {
             let period = (dpi.max(1.0) / s.lpi.clamp(1.0, 2000.0)).max(2.0);
             let (sa, ca) = s.angle.to_radians().sin_cos();
+            let ranks = ScreenRanks::new(s.screen);
             for y in 0..h {
                 for x in 0..w {
                     let (fx, fy) = (x as f32 + 0.5, y as f32 + 0.5);
-                    let u = (fx * ca + fy * sa) / period * std::f32::consts::TAU;
-                    let v = (-fx * sa + fy * ca) / period * std::f32::consts::TAU;
-                    // The screen's threshold field: dots grow as the tone
-                    // darkens.
-                    let t = match s.screen {
-                        Screen::Round => (u.cos() + v.cos()) / 4.0 + 0.5,
-                        Screen::Line => (v.cos() + 1.0) / 2.0,
-                        Screen::Square => {
-                            let a = (u / std::f32::consts::TAU).rem_euclid(1.0);
-                            let b = (v / std::f32::consts::TAU).rem_euclid(1.0);
-                            1.0 - ((a - 0.5).abs().max((b - 0.5).abs()) * 2.0)
-                        }
-                    };
-                    bits[at(x, y)] = gray[at(x, y)] / 255.0 > 1.0 - t;
+                    // Where the pixel falls in its cell of the turned
+                    // screen, -1 to 1 across.
+                    let cell = |t: f32| ((t / period).rem_euclid(1.0) - 0.5) * 2.0;
+                    let u = cell(fx * ca + fy * sa);
+                    let v = cell(-fx * sa + fy * ca);
+                    // Black while the pixel's rank in its cell is below
+                    // the darkness: the dot covers as much of the cell as
+                    // the tone is dark (#2922).
+                    let dark = 1.0 - gray[at(x, y)] / 255.0;
+                    bits[at(x, y)] = ranks.rank(spot(s.screen, u, v)) >= dark;
                 }
             }
         }
@@ -1340,6 +1394,52 @@ mod tests {
         let out = black_and_white(&img, &s, 300.0);
         assert_eq!(out.get_pixel(99, 0)[0], 0);
         assert_eq!(out.get_pixel(100, 0)[0], 255);
+    }
+
+    #[test]
+    fn halftone_dots_cover_as_much_as_the_tone_is_dark() {
+        // #2922: at 300 dpi, 35 lpi and 45 degrees, each grey covers its
+        // share of the paper with black (60 % came out as a 50 %
+        // checkerboard), white stays white and black black.
+        for screen in [Screen::Round, Screen::Square, Screen::Line] {
+            let s = BwSettings {
+                screen,
+                lpi: 35.0,
+                ..Default::default()
+            };
+            for dark in [0.0f32, 0.2, 0.4, 0.6, 0.8, 0.9, 1.0] {
+                let v = (255.0 * (1.0 - dark)).round() as u8;
+                let img = RgbaImage::from_pixel(240, 240, Rgba([v, v, v, 255]));
+                let out = black_and_white(&img, &s, 300.0);
+                let black = out.pixels().filter(|p| p[0] == 0).count() as f32 / (240.0 * 240.0);
+                assert!((black - dark).abs() < 0.03, "{screen:?} {dark}: {black}");
+            }
+        }
+        // Round dots at 20 %: a dot is a solid round blot, as wide as it
+        // is tall, not a square with notches.
+        let s = BwSettings {
+            lpi: 35.0,
+            angle: 0.0,
+            ..Default::default()
+        };
+        let v = (255.0 * 0.8f32).round() as u8;
+        let img = RgbaImage::from_pixel(240, 240, Rgba([v, v, v, 255]));
+        let out = black_and_white(&img, &s, 300.0);
+        // The cell is 300 / 35 = 8.57 pixels; its middle is at 4.29 + k * 8.57.
+        let period = 300.0 / 35.0f32;
+        let (cx, cy) = (period * 10.5, period * 10.5);
+        let row: Vec<bool> = (0..9)
+            .map(|d| out.get_pixel((cx - 4.0 + d as f32) as u32, cy as u32)[0] == 0)
+            .collect();
+        let col: Vec<bool> = (0..9)
+            .map(|d| out.get_pixel(cx as u32, (cy - 4.0 + d as f32) as u32)[0] == 0)
+            .collect();
+        assert!(row[4] && col[4], "the dot's middle is black");
+        assert_eq!(
+            row.iter().filter(|b| **b).count(),
+            col.iter().filter(|b| **b).count(),
+            "round: {row:?} {col:?}"
+        );
     }
 
     #[test]

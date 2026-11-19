@@ -153,6 +153,7 @@ fn make(shape: &Shape, symbols: &[Symbol], dpi: f64) -> Option<RasterFx> {
                 zoom,
                 origin_x: 0.0,
                 origin_y: f64::from(height),
+                stretch_y: 1.0,
             },
             ..Default::default()
         },

@@ -21,6 +21,11 @@ Each row of the list has:
 Every change is one undo step. Each effect is still edited with its own tool
 or panel.
 
+Under the list, the built-in looks give the selected objects a finished
+look with one click: chrome, liquid metal, gold, liquid glass (which blurs
+what lies beneath it) and clear glass. Each picture shows the selected object
+wearing the look; one undo removes it. Your own saved presets come after them.
+
 ## Other effect commands {#commands}
 
 - [[menu.effects > menu.effects.flatten]] turns the effects of the selected

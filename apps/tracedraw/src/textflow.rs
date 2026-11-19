@@ -51,7 +51,10 @@ pub fn without_links(data: &mut Vec<(String, String)>) {
 /// with the same structure (groups and clip frames copied member by
 /// member, in order): a link to a frame copied along points to its copy,
 /// so a chain copied whole stays a chain of the copies; a link to any
-/// other frame stays out.
+/// other frame stays out. A blend whose end object was copied along ends
+/// at that copy: it still named the original's end, so a pasted or
+/// duplicated blend drew its steps back to the original, and in another
+/// drawing to whatever object had that number there.
 pub fn relink_copies(originals: &[Shape], copies: &mut [Shape]) {
     fn map_ids(o: &Shape, c: &Shape, map: &mut HashMap<ShapeId, ShapeId>) {
         map.insert(o.id, c.id);
@@ -83,6 +86,31 @@ pub fn relink_copies(originals: &[Shape], copies: &mut [Shape]) {
         for key in [NEXT, PREV] {
             if let Some(to) = data_id(&o.data, key).and_then(|id| map.get(&id)) {
                 c.data = with_key(std::mem::take(&mut c.data), key, Some(*to));
+            }
+        }
+        // A dimension copied with the object it measures measures the
+        // copy: its anchors named the original, so the copied dimension
+        // followed the original rectangle and not its own (#3345).
+        if let Some(mut d) = crate::dimensions::Dimension::of(o) {
+            let mut moved = false;
+            for a in &mut d.anchors {
+                if let Some(to) = map.get(&a.shape) {
+                    a.shape = *to;
+                    moved = true;
+                }
+            }
+            if moved {
+                c.data = crate::dimensions::with_data(std::mem::take(&mut c.data), &d);
+            }
+        }
+        for e in &mut c.effects {
+            if let tracedraw_core::live::Effect::Blend {
+                end_id: Some(end), ..
+            } = e
+            {
+                if let Some(to) = map.get(end) {
+                    *end = *to;
+                }
             }
         }
         match (&o.kind, &mut c.kind) {
@@ -582,7 +610,10 @@ impl App {
         };
         let cmds = self.flow_commands(&chain, all);
         if !cmds.is_empty() {
-            let _ = self.engine.run_batch("Text Flow", &cmds);
+            // The flow is part of the change that made it (a link, an
+            // edit, a resize): one Undo takes both back. It is a step of
+            // its own only when something else happened in between.
+            let _ = self.engine.amend_batch("Text Flow", &cmds);
         }
     }
 
@@ -757,7 +788,7 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tracedraw_core::geometry::{Point, Size};
+    use tracedraw_core::geometry::{Affine, Point, Size};
     use tracedraw_core::TextAlign;
 
     fn frame(app: &mut App, text: &str, w: f64, h: f64) -> ShapeId {
@@ -900,6 +931,81 @@ mod tests {
     }
 
     const LONG: &str = "one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen seventeen eighteen nineteen twenty";
+
+    /// Linking two frames, editing the text of a linked frame and
+    /// resizing one are one Undo each, the text flow with them: the flow
+    /// was a step of its own, so one Undo left the frames linked or
+    /// resized with their text flowed as before.
+    #[test]
+    fn a_change_to_linked_frames_and_its_flow_are_one_undo() {
+        tracedraw_text::install();
+        let mut app = App::headless();
+        let a = frame(&mut app, LONG, 30.0, 8.0);
+        let b = frame(&mut app, "", 60.0, 60.0);
+        let unlinked = app.doc().to_json().unwrap();
+        assert!(app.link_frames(a, b));
+        assert_eq!(app.engine.undo_label(), Some("Link Frames"));
+        let linked = app.doc().to_json().unwrap();
+        app.undo();
+        assert_eq!(app.doc().to_json().unwrap(), unlinked, "one Undo unlinks");
+        app.redo();
+        assert_eq!(app.doc().to_json().unwrap(), linked);
+
+        // Editing the text.
+        let other = LONG.replace("one", "zero");
+        app.set_text_spans(a, vec![TextSpan::new(&other, "DejaVu Sans", 12.0)]);
+        assert!(text_of(&app, b).ends_with("twenty"), "the text flowed on");
+        app.undo();
+        assert_eq!(
+            app.doc().to_json().unwrap(),
+            linked,
+            "one Undo: the old text"
+        );
+
+        // Resizing the first frame: it shows less, the second more.
+        let tb = text_of(&app, b);
+        app.select(vec![a]);
+        app.transform_selection(Affine::scale_non_uniform(0.5, 1.0));
+        assert_ne!(text_of(&app, b), tb, "the text flowed again");
+        app.undo();
+        assert_eq!(
+            app.doc().to_json().unwrap(),
+            linked,
+            "one Undo: the old size and the old flow"
+        );
+    }
+
+    /// Copies made by the Transformations docker of a whole chain are a
+    /// chain of their own, as Step and Repeat makes them: they came out
+    /// unlinked, each holding the piece of text it showed.
+    #[test]
+    fn transformation_copies_of_a_chain_are_linked() {
+        tracedraw_text::install();
+        let mut app = App::headless();
+        let a = frame(&mut app, LONG, 30.0, 8.0);
+        let b = frame(&mut app, "", 60.0, 60.0);
+        assert!(app.link_frames(a, b));
+        app.select(vec![a, b]);
+        app.transform.tab = crate::app::TransformTab::Position;
+        app.transform.position = [0.0, 80.0];
+        app.transform.copies = 2;
+        crate::ui::transform_docker::apply(&mut app);
+        let copies = app.selection.clone();
+        assert_eq!(copies.len(), 2);
+        assert_eq!(app.next_frame(copies[0]), Some(copies[1]));
+        assert_eq!(app.prev_frame(copies[1]), Some(copies[0]));
+        assert_eq!(app.chain_of(a), vec![a, b], "the original chain as it was");
+        // The first round of copies is a chain too, of its own.
+        let all: Vec<ShapeId> = app.doc().pages[0].layers[0]
+            .shapes
+            .iter()
+            .map(|s| s.id)
+            .collect();
+        assert_eq!(all.len(), 6);
+        assert_eq!(app.chain_of(all[2]), vec![all[2], all[3]]);
+        app.undo();
+        assert_eq!(app.doc().pages[0].layers[0].shapes.len(), 2);
+    }
 
     /// A chain of three frames, the first two a line high, the third
     /// large enough for the rest; with the text each shows.
@@ -1051,6 +1157,87 @@ mod tests {
         assert_eq!(text_of(&app, b), LONG);
         let shape = app.doc().find_shape(b).cloned().expect("frame");
         assert!(!app.text_overflows(&shape));
+    }
+
+    /// A page or a layer deleted with a frame of a chain on it leaves
+    /// the frame's text to the chain, as a deleted frame does: the text
+    /// the frame showed was lost with the page or the layer.
+    #[test]
+    fn deleting_a_page_or_layer_holding_a_frame_of_a_chain_keeps_its_text() {
+        use crate::ui::objects_docker::{delete_current, move_to_layer, new_layer};
+        tracedraw_text::install();
+        let mut app = App::headless();
+        let ([a, b, c], [ta, tb, tc]) = chain_of_three(&mut app);
+        app.add_page();
+        let second = app.doc().pages[1].layers[0].id;
+        move_to_layer(&mut app, &[b], second);
+        assert_eq!(app.chain_of(a), vec![a, b, c]);
+        let kept = |app: &App| {
+            assert!(app.doc().find_shape(b).is_none());
+            assert_eq!(app.chain_of(a), vec![a, c]);
+            assert_eq!(text_of(app, a), ta);
+            assert_eq!(text_of(app, c), format!("{tb}{tc}"));
+        };
+        let back = |app: &mut App| {
+            app.undo();
+            assert_eq!(app.chain_of(a), vec![a, b, c]);
+            assert_eq!(text_of(app, b), tb);
+            assert_eq!(text_of(app, c), tc);
+        };
+        // The page tab's Delete, on the second page.
+        app.goto_page(1);
+        app.delete_page();
+        kept(&app);
+        back(&mut app);
+        // Page > Delete Page.
+        app.delete_pages(1, 1);
+        kept(&app);
+        back(&mut app);
+        // The frame's layer deleted in the Objects docker.
+        app.goto_page(0);
+        new_layer(&mut app);
+        let layer = app.doc().pages[0]
+            .layers
+            .last()
+            .map(|l| l.id)
+            .expect("layer");
+        move_to_layer(&mut app, &[b], layer);
+        app.select(vec![]);
+        app.picked_layer = Some(layer);
+        delete_current(&mut app);
+        assert!(app.doc().layer(layer).is_err(), "the layer is gone");
+        kept(&app);
+        back(&mut app);
+    }
+
+    /// A page duplicated with its contents: its copied chain of frames is
+    /// a chain of the copies, the original chain as it was. The copied
+    /// frames named the original frames, so the copies ran on into the
+    /// original chain.
+    #[test]
+    fn a_duplicated_page_keeps_its_copied_chain_to_itself() {
+        tracedraw_text::install();
+        let mut app = App::headless();
+        let ([a, b, c], texts) = chain_of_three(&mut app);
+        let steps = app.engine.history_labels().0.len();
+        app.duplicate_page(false, true);
+        assert_eq!(app.engine.history_labels().0.len(), steps + 1);
+        assert_eq!(app.chain_of(a), vec![a, b, c], "the original chain");
+        let copies: Vec<ShapeId> = app.doc().pages[1].layers[0]
+            .shapes
+            .iter()
+            .map(|s| s.id)
+            .collect();
+        assert_eq!(copies.len(), 3);
+        assert_eq!(app.chain_of(copies[0]), copies, "a chain of the copies");
+        let copied: Vec<String> = copies.iter().map(|id| text_of(&app, *id)).collect();
+        assert_eq!(copied, texts.to_vec());
+        for id in &copies {
+            assert_eq!(app.chain_head(*id), copies[0]);
+        }
+        app.undo();
+        assert_eq!(app.doc().pages.len(), 1);
+        assert_eq!(app.chain_of(a), vec![a, b, c]);
     }
 
     /// Cut takes a frame of a chain out the same way: the text stays

@@ -1325,7 +1325,9 @@ pub fn sep(ui: &mut Ui) {
 
 /// A small label picture before a field.
 pub(crate) fn label_pic(ui: &mut Ui, pic: Pic, tip: &str) {
-    let (rect, resp) = ui.allocate_exact_size(Vec2::new(16.0, ROW), Sense::hover());
+    // A drag on the picture slides the field after it (#3044).
+    let (rect, resp) = ui.allocate_exact_size(Vec2::new(16.0, ROW), Sense::DRAG);
+    crate::ui::field::label_slides(ui, &resp);
     draw_pic(
         ui.painter(),
         Rect::from_center_size(rect.center(), Vec2::splat(13.0)),
@@ -1365,7 +1367,8 @@ pub(crate) fn tip_text_row<R>(
 
 /// A label picture without a tip of its own.
 fn draw_label_pic(ui: &mut Ui, pic: Pic) {
-    let (rect, _) = ui.allocate_exact_size(Vec2::new(16.0, ROW), Sense::hover());
+    let (rect, resp) = ui.allocate_exact_size(Vec2::new(16.0, ROW), Sense::DRAG);
+    crate::ui::field::label_slides(ui, &resp);
     draw_pic(
         ui.painter(),
         Rect::from_center_size(rect.center(), Vec2::splat(13.0)),
@@ -1376,10 +1379,11 @@ fn draw_label_pic(ui: &mut Ui, pic: Pic) {
 
 /// A text label before a field ("X:", "Units:").
 pub(crate) fn label_text(ui: &mut Ui, text: &str) {
-    ui.add_sized(
+    let resp = ui.add_sized(
         [16.0, ROW],
-        egui::Label::new(egui::RichText::new(text).size(12.0)),
+        egui::Label::new(egui::RichText::new(text).size(12.0)).sense(Sense::DRAG),
     );
+    crate::ui::field::label_slides(ui, &resp);
 }
 
 /// A distance field in the ruler unit, through the drawing scale (a
@@ -1719,14 +1723,12 @@ pub fn page_bar(app: &mut App, ui: &mut Ui) {
     let portrait = size.height >= size.width;
     if pic_button(ui, Pic::Portrait, &tr("dialog.portrait"), true, portrait).clicked() && !portrait
     {
-        resize_pages(app, Size::new(size.height, size.width));
-        app.fit_pending = true;
+        turn_pages(app, size);
     }
     if pic_button(ui, Pic::Landscape, &tr("dialog.landscape"), true, !portrait).clicked()
         && portrait
     {
-        resize_pages(app, Size::new(size.height, size.width));
-        app.fit_pending = true;
+        turn_pages(app, size);
     }
     sep(ui);
     if pic_button(
@@ -1766,6 +1768,7 @@ pub fn page_bar(app: &mut App, ui: &mut Ui) {
         .response
         .rich_tip(crate::ui::tips::keyed("toolbar.units"));
     app.units = u;
+    crate::ui::dimension_bar::drawing_scale_combo(app, ui, "page_drawing_scale");
     sep(ui);
     nudge_part(app, ui);
     sep(ui);
@@ -1833,6 +1836,12 @@ pub fn nudge_part(app: &mut App, ui: &mut Ui) {
 
 /// Resize the current page, or every page when "all pages" is on, as one
 /// undo step.
+/// Portrait or Landscape on the property bar: the pages turned, the zoom
+/// and the page's centre on screen kept (#3434).
+pub fn turn_pages(app: &mut App, size: Size) {
+    app.keeping_page_centre(|app| resize_pages(app, Size::new(size.height, size.width)));
+}
+
 pub fn resize_pages(app: &mut App, size: Size) {
     let pages: Vec<_> = if app.settings.page_size_all {
         app.doc().pages.iter().map(|p| p.id).collect()
@@ -2242,19 +2251,48 @@ pub(crate) fn parse_outline_width(text: &str, units: Units) -> Option<Option<f64
     })
 }
 
+/// The widest outline the wheel steps to, mm (what a typed width is
+/// held to).
+const OUTLINE_WHEEL_MAX_MM: f64 = 1000.0;
+
 /// The width the wheel steps to from `width` in the outline width list
 /// (no outline, hairline, then the widths of unit `u`): the next one up
-/// (wheel up) or down. `None` at the end of the list (#663).
+/// (wheel up) or down. Past the list's widest width the wheel goes on in
+/// steps of the list's last gap (16, 20, 24 pt and on), up to 1000 mm; it
+/// stopped at the widest (16 pt), so wider outlines had to be typed
+/// (#3050). `None` at the end (#663).
 pub(crate) fn outline_width_step(width: Option<f64>, up: bool, u: Units) -> Option<Option<f64>> {
     let hair = tracedraw_core::Stroke::HAIRLINE;
+    let presets = outline_width_presets(u);
     let list: Vec<Option<f64>> = [None, Some(hair)]
         .into_iter()
-        .chain(outline_width_presets(u).into_iter().map(Some))
+        .chain(presets.iter().copied().map(Some))
         .collect();
     // Where `width` falls among the list's widths (no outline below all).
     let key = |w: Option<f64>| w.map_or(-1.0, |w| w.max(hair));
     let at = key(width);
     let eps = 1e-9;
+    // Beyond the widest: a grid of the last gap, in the unit's own
+    // numbers so the steps read round.
+    let n = presets.len();
+    if n >= 2 {
+        let last = u.from_mm(presets[n - 1]);
+        let gap = last - u.from_mm(presets[n - 2]);
+        let v = u.from_mm(at.max(0.0));
+        let max = u.from_mm(OUTLINE_WHEEL_MAX_MM);
+        if gap > 0.0 && v > last - eps * last.max(1.0) {
+            let k = (v - last) / gap;
+            let on = (k - k.round()).abs() < 1e-6;
+            if up {
+                let next = last + gap * if on { k.round() + 1.0 } else { k.ceil() };
+                return (next <= max + 1e-9).then(|| Some(u.to_mm(next)));
+            }
+            let below = if on { k.round() - 1.0 } else { k.floor() };
+            if below >= 0.0 {
+                return Some(Some(u.to_mm(last + gap * below)));
+            }
+        }
+    }
     if up {
         list.into_iter().find(|w| key(*w) > at + eps)
     } else {
@@ -2488,7 +2526,7 @@ pub fn outline_part(app: &mut App, ui: &mut Ui) {
                 {
                     if defaults {
                         let mut st = stroke.clone().unwrap_or_default();
-                        st.dash = d.to_vec();
+                        st.set_dash(d);
                         app.request_default_change(crate::defaults::DefaultChange::Outline(Some(
                             st,
                         )));
@@ -2501,7 +2539,8 @@ pub fn outline_part(app: &mut App, ui: &mut Ui) {
                         .iter()
                         .filter_map(|s| {
                             let mut st = s.stroke.clone()?;
-                            st.dash = d.to_vec();
+                            // Round dots take round caps (#3404).
+                            st.set_dash(d);
                             Some(Command::SetStroke {
                                 shapes: vec![s.id],
                                 stroke: Some(st),
@@ -2607,6 +2646,8 @@ pub(crate) const DASHES: &[&[f64]] = &[
     &[8.0, 3.0],
     &[6.0, 2.0, 1.0, 2.0],
     &[6.0, 2.0, 1.0, 2.0, 1.0, 2.0],
+    // Round dots (#3404): dashes of no length with round caps.
+    &tracedraw_core::Stroke::ROUND_DOTS,
 ];
 
 pub(crate) fn dash_label(d: &[f64]) -> String {
@@ -2617,7 +2658,12 @@ pub(crate) fn dash_label(d: &[f64]) -> String {
     let mut s = String::new();
     for (i, v) in d.iter().cycle().take(d.len() * 3).enumerate() {
         let n = (*v / 2.0).round().clamp(1.0, 4.0) as usize;
-        let c = if i % 2 == 0 { '\u{2015}' } else { ' ' };
+        let c = match (i % 2 == 0, *v <= 0.0) {
+            // A dash of no length is a round dot (#3404).
+            (true, true) => '\u{2022}',
+            (true, false) => '\u{2015}',
+            _ => ' ',
+        };
         for _ in 0..n {
             s.push(c);
         }
@@ -2784,6 +2830,7 @@ pub fn polygon_part(app: &mut App, ui: &mut Ui, star: bool) {
         f64,
         Option<u32>,
         f64,
+        f64,
     );
     let selected: Vec<Sel> = app
         .selected_rc()
@@ -2795,7 +2842,8 @@ pub fn polygon_part(app: &mut App, ui: &mut Ui, star: bool) {
                 sharpness,
                 complex,
                 twist,
-            } => Some((s.id, *rect, *points, *sharpness, *complex, *twist)),
+                bend,
+            } => Some((s.id, *rect, *points, *sharpness, *complex, *twist, *bend)),
             _ => None,
         })
         .collect();
@@ -2854,6 +2902,7 @@ pub fn polygon_part(app: &mut App, ui: &mut Ui, star: bool) {
                         sharpness: 0.0,
                         complex: Some(k),
                         twist: 0.0,
+                        bend: 0.0,
                     },
                 })
                 .collect();
@@ -2902,7 +2951,7 @@ pub fn polygon_part(app: &mut App, ui: &mut Ui, star: bool) {
         let cmds: Vec<Command> = selected
             .iter()
             .filter(|s| s.4.is_none())
-            .map(|(id, rect, _, old, _, twist)| Command::SetShapeKind {
+            .map(|(id, rect, _, old, _, twist, bend)| Command::SetShapeKind {
                 shape: *id,
                 kind: ShapeKind::Polygon {
                     rect: *rect,
@@ -2913,8 +2962,10 @@ pub fn polygon_part(app: &mut App, ui: &mut Ui, star: bool) {
                         0.0
                     },
                     complex: None,
-                    // A twisted star keeps its turn.
+                    // A twisted star keeps its turn, and bent sides
+                    // their bend (#2451).
                     twist: *twist,
+                    bend: *bend,
                 },
             })
             .collect();
@@ -3971,6 +4022,7 @@ mod tests {
                 sharpness: 0.5,
                 complex: None,
                 twist: 0.0,
+                bend: 0.0,
             })
             .expect("star");
         app.select(vec![id]);
@@ -4096,6 +4148,43 @@ mod tests {
     /// The page bar draws with its Fit page to drawing button on a page
     /// with objects and on an empty one (where the button is pale), and
     /// the icon is on the 16-grid like the others (#236).
+    /// #3450: the page bar (nothing selected) has the drawing scale
+    /// beside Units, as the scale is the whole drawing's; it was only on
+    /// the Dimension tools' bar.
+    #[test]
+    fn the_page_bar_shows_the_drawing_scale() {
+        let ctx = crate::theme::ui_context();
+        let mut app = App::headless();
+        let p = crate::drawing_scale::PRESETS
+            .iter()
+            .find(|p| p.label == "1:100")
+            .copied()
+            .expect("1:100");
+        app.set_drawing_scale_preset(&p);
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(3000.0, 60.0),
+            )),
+            ..Default::default()
+        };
+        let mut out = ctx.run_ui(input, |ui| {
+            ui.horizontal(|ui| page_bar(&mut app, ui));
+        });
+        out.textures_delta.clear();
+        let mut texts = Vec::new();
+        fn walk(s: &egui::Shape, texts: &mut Vec<String>) {
+            match s {
+                egui::Shape::Text(t) => texts.push(t.galley.text().to_string()),
+                egui::Shape::Vec(v) => v.iter().for_each(|s| walk(s, texts)),
+                _ => {}
+            }
+        }
+        out.shapes.iter().for_each(|c| walk(&c.shape, &mut texts));
+        assert!(texts.iter().any(|t| t == "1:100"), "{texts:?}");
+        assert!(texts.contains(&tr("dimension.drawing_scale")), "{texts:?}");
+    }
+
     #[test]
     fn the_page_bar_draws_with_its_fit_page_button() {
         let ctx = crate::theme::ui_context();
@@ -4256,14 +4345,98 @@ mod tests {
             let mid = (p[1] + p[2]) / 2.0;
             assert_eq!(outline_width_step(Some(mid), true, u), Some(Some(p[2])));
             assert_eq!(outline_width_step(Some(mid), false, u), Some(Some(p[1])));
-            // At the widest it stays.
+            // Past the widest it goes on in steps of the last gap, and
+            // back down the same way to the list (#3050).
             let last = *p.last().expect("widths");
-            assert_eq!(outline_width_step(Some(last), true, u), None);
-            assert_eq!(
-                outline_width_step(Some(last * 3.0), false, u),
-                Some(Some(last))
+            let gap = u.from_mm(last) - u.from_mm(p[p.len() - 2]);
+            let up1 = outline_width_step(Some(last), true, u)
+                .flatten()
+                .expect("a step past the widest");
+            assert!(
+                (u.from_mm(up1) - (u.from_mm(last) + gap)).abs() < 1e-9,
+                "{u:?}"
             );
+            let up2 = outline_width_step(Some(up1), true, u)
+                .flatten()
+                .expect("on");
+            assert!((u.from_mm(up2) - (u.from_mm(last) + 2.0 * gap)).abs() < 1e-9);
+            assert_eq!(outline_width_step(Some(up1), false, u), Some(Some(last)));
+            // Off the grid: the grid step above or below.
+            let off = u.to_mm(u.from_mm(last) + 1.5 * gap);
+            let a = outline_width_step(Some(off), true, u)
+                .flatten()
+                .expect("up");
+            assert!((a - up2).abs() < 1e-9);
+            let b = outline_width_step(Some(off), false, u)
+                .flatten()
+                .expect("down");
+            assert!((b - up1).abs() < 1e-9);
+            // At 1000 mm it stops.
+            assert_eq!(outline_width_step(Some(1000.0), true, u), None);
         }
+        // In points: 16, then 20 and 24 pt.
+        let pt = Units::Points;
+        let p20 = outline_width_step(Some(pt.to_mm(16.0)), true, pt).flatten();
+        assert!((pt.from_mm(p20.expect("20 pt")) - 20.0).abs() < 1e-9);
+    }
+
+    /// Object > Thicker Outline and Thinner Outline step the selection's
+    /// outline through the width list as the wheel does (#2905), keep its
+    /// colour, give an object without an outline a hairline and stop at
+    /// the hairline going down.
+    #[test]
+    fn outline_width_commands_step_the_selection() {
+        let mut app = App::headless();
+        app.set_outline_units(Units::Points);
+        let id = app
+            .new_shape(tracedraw_core::document::ShapeKind::Rect {
+                rect: tracedraw_core::geometry::Rect::new(10.0, 10.0, 40.0, 30.0),
+                radius: 0.0,
+                corners: None,
+            })
+            .expect("rect");
+        app.run(tracedraw_core::Command::SetStroke {
+            shapes: vec![id],
+            stroke: None,
+        });
+        app.select(vec![id]);
+        let width = |app: &App| {
+            app.doc()
+                .find_shape(id)
+                .expect("rect")
+                .stroke
+                .as_ref()
+                .map(|s| s.width)
+        };
+        app.step_outline_width(true);
+        assert_eq!(width(&app), Some(tracedraw_core::Stroke::HAIRLINE));
+        let red = tracedraw_core::Color::rgb8(200, 0, 0);
+        let mut k = app.doc().find_shape(id).expect("rect").stroke.clone().expect("outline");
+        k.color = red;
+        app.run(tracedraw_core::Command::SetStroke {
+            shapes: vec![id],
+            stroke: Some(k),
+        });
+        let mut w = width(&app);
+        for _ in 0..4 {
+            app.step_outline_width(true);
+            let next = outline_width_step(w, true, Units::Points).expect("a step");
+            assert_eq!(width(&app), next);
+            w = next;
+        }
+        assert_eq!(
+            app.doc().find_shape(id).expect("rect").stroke.as_ref().map(|s| s.color),
+            Some(red),
+            "its colour kept"
+        );
+        for _ in 0..20 {
+            app.step_outline_width(false);
+        }
+        assert_eq!(width(&app), Some(tracedraw_core::Stroke::HAIRLINE), "down to a hairline");
+        // Nothing selected: nothing changes.
+        app.select(Vec::new());
+        app.step_outline_width(true);
+        assert_eq!(width(&app), Some(tracedraw_core::Stroke::HAIRLINE));
     }
 
     /// The outline width box in a property bar longer than the window:

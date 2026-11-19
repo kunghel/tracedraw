@@ -299,6 +299,7 @@ pub fn render(doc: &Document, shape: &Shape, px: u32) -> Option<(Vec<u8>, u32, u
                 zoom,
                 origin_x: -b.x0 * zoom,
                 origin_y: b.y1 * zoom,
+                stretch_y: 1.0,
             },
             preview: None,
             wireframe: false,

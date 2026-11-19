@@ -201,6 +201,68 @@ fn drop_links(shape: &mut Shape) {
     }
 }
 
+/// The resolution drop shadows are drawn at.
+const SHADOW_DPI: f64 = 300.0;
+
+/// The drop shadow of `shape` (placed by `parent`, which holds the page's
+/// Y flip) as the drawing window draws it: the blurred silhouette in the
+/// shadow's colour and opacity as a picture (SVG filters blur differently
+/// in each viewer, and many leave them out), merged by the shadow's merge
+/// mode. The object is written over it by the caller.
+fn write_drop_shadow(
+    shape: &Shape,
+    parent: Affine,
+    out: &mut String,
+    defs: &mut String,
+    ctx: &mut SvgCtx,
+    indent: usize,
+) {
+    let Some(sh) = shape.shadow.filter(|sh| sh.opacity > 0.0) else {
+        return;
+    };
+    if shape.opacity <= 0.0 {
+        return;
+    }
+    // Page space: the flip undone (it is its own inverse).
+    let mut placed = shape.clone();
+    placed.transform = ctx.flip * parent * shape.transform;
+    let area = sh.bounds(placed.bounds());
+    // Within 40 million pixels.
+    let area_in2 = (area.width() / 25.4) * (area.height() / 25.4);
+    let dpi = SHADOW_DPI
+        .min((40.0e6 / area_in2.max(1e-9)).sqrt())
+        .max(1.0);
+    let Some((rect, pm)) = tracedraw_render::render_shadow_image(&placed, dpi) else {
+        return;
+    };
+    let Ok(png) = pm.encode_png() else {
+        return;
+    };
+    let mut pic = Shape::new(
+        shape.id,
+        ShapeKind::Bitmap {
+            rect,
+            width_px: pm.width(),
+            height_px: pm.height(),
+            png: png.into(),
+            fx: None,
+        },
+    );
+    pic.fill = Fill::None;
+    pic.stroke = None;
+    let pad = "  ".repeat(indent);
+    let blend = svg_blend_mode(sh.merge);
+    let _ = match blend {
+        Some(b) => writeln!(
+            out,
+            "{pad}<g data-shadow=\"1\" style=\"mix-blend-mode:{b}\">"
+        ),
+        None => writeln!(out, "{pad}<g data-shadow=\"1\">"),
+    };
+    write_unlinked(&pic, &[], ctx.flip, out, defs, ctx, indent + 1);
+    let _ = writeln!(out, "{pad}</g>");
+}
+
 fn write_unlinked(
     shape: &Shape,
     symbols: &[tracedraw_core::Symbol],
@@ -212,6 +274,13 @@ fn write_unlinked(
 ) {
     if !shape.visible {
         return;
+    }
+    // The drop shadow beneath the object and all its effects draw, once.
+    if shape.shadow.is_some() {
+        write_drop_shadow(shape, parent, out, defs, ctx, indent);
+        let mut rest = shape.clone();
+        rest.shadow = None;
+        return write_unlinked(&rest, symbols, parent, out, defs, ctx, indent);
     }
     let pad = "  ".repeat(indent);
     if !shape.effects.is_empty() {
@@ -229,13 +298,15 @@ fn write_unlinked(
         }
         let mut main = ev.main.clone();
         main.effects.clear();
-        // Lens and non-uniform transparency have no SVG equivalent here;
-        // approximate with the average opacity of the mask. The merge
-        // mode goes out as the CSS blend mode when one matches it.
+        // A lens has no SVG equivalent here; a transparency that varies
+        // goes out as a luminance mask painted with the mask's own fill,
+        // a flat one as the object's opacity. The merge mode goes out as
+        // the CSS blend mode when one matches it.
         let mut blend = None;
         // The transparency's opacity and its target (the fill, the
         // outline or the whole object, live test of 0.41).
         let mut fade: Option<(f64, u8)> = None;
+        let mut mask_fill: Option<&Fill> = None;
         for e in &shape.effects {
             match e {
                 tracedraw_core::live::Effect::Transparency {
@@ -244,6 +315,7 @@ fn write_unlinked(
                     target,
                 } => {
                     fade = Some((average_luminance(mask) as f64, *target));
+                    mask_fill = Some(mask).filter(|m| crate::pdf::varies(m));
                     blend = svg_blend_mode(*merge);
                 }
                 tracedraw_core::live::Effect::Lens(tracedraw_core::live::Lens::Transparency {
@@ -267,6 +339,20 @@ fn write_unlinked(
             if !faded {
                 write_shape(&part, symbols, parent, out, defs, ctx, indent + 1);
                 continue;
+            }
+            // A mask that varies (a fountain, a pattern) as an SVG mask
+            // over the part: white keeps it, black clears it, as the
+            // drawing window applies it. The flat average stood in for it.
+            if let Some(mask) = mask_fill {
+                if let Some(id) = transparency_mask(&part, mask, symbols, parent, defs, ctx) {
+                    let style = blend
+                        .map(|b| format!(" style=\"mix-blend-mode:{b}\""))
+                        .unwrap_or_default();
+                    let _ = writeln!(out, "{pad}  <g mask=\"url(#{id})\"{style}>");
+                    write_shape(&part, symbols, parent, out, defs, ctx, indent + 2);
+                    let _ = writeln!(out, "{pad}  </g>");
+                    continue;
+                }
             }
             if let Some((opacity, _)) = fade {
                 part.opacity *= opacity;
@@ -365,7 +451,14 @@ fn write_unlinked(
         return;
     }
     if let ShapeKind::ClipFrame { frame, contents } = &shape.kind {
-        // Frame fill, then the contents clipped to the frame, then its outline.
+        // Frame fill, then the contents clipped to the frame, then its
+        // outline; an outline behind the fill goes beneath both (#3110).
+        let behind = frame.stroke.as_ref().is_some_and(|st| st.behind_fill);
+        let mut outline = (**frame).clone();
+        outline.fill = Fill::None;
+        if behind {
+            write_shape(&outline, symbols, transform, out, defs, ctx, indent);
+        }
         let mut fill_only = (**frame).clone();
         fill_only.stroke = None;
         write_shape(&fill_only, symbols, transform, out, defs, ctx, indent);
@@ -384,9 +477,7 @@ fn write_unlinked(
             write_shape(c, symbols, transform, out, defs, ctx, indent + 1);
         }
         let _ = writeln!(out, "{pad}</g>");
-        let mut outline = (**frame).clone();
-        outline.fill = Fill::None;
-        if outline.stroke.is_some() {
+        if outline.stroke.is_some() && !behind {
             write_shape(&outline, symbols, transform, out, defs, ctx, indent);
         }
         return;
@@ -440,7 +531,13 @@ fn write_unlinked(
         return;
     }
     let path = transform * shape.local_path();
-    let d = path_data(&path);
+    // An unfilled line with arrowheads ends under them, as drawn (#2981).
+    let cut = shape
+        .stroke
+        .as_ref()
+        .filter(|_| matches!(shape.fill, tracedraw_core::Fill::None))
+        .and_then(|s| tracedraw_core::arrowhead_stroke_path(&shape.page_path(), s));
+    let d = path_data(&cut.map(|c| parent * c).unwrap_or_else(|| path.clone()));
     let bounds = path.bounding_box();
 
     let fill_attr = format!(
@@ -608,6 +705,49 @@ fn write_unlinked(
     if wrapped {
         let _ = writeln!(out, "{pad}</g>");
     }
+}
+
+/// A luminance mask, in `defs`, painting `mask` as it lies over `part`:
+/// the fill's frame is the part's own box, padded out far past it so an
+/// outline is covered too. `None` for a part with no size.
+fn transparency_mask(
+    part: &Shape,
+    mask: &Fill,
+    symbols: &[tracedraw_core::Symbol],
+    parent: Affine,
+    defs: &mut String,
+    ctx: &mut SvgCtx,
+) -> Option<String> {
+    use tracedraw_core::geometry::Shape as _;
+    let transform = parent * part.transform;
+    let page_path = transform * part.local_path();
+    let bounds = if page_path.elements().is_empty() {
+        let mut placed = part.clone();
+        placed.transform = transform;
+        placed.bounds()
+    } else {
+        page_path.bounding_box()
+    };
+    if !(bounds.width() > 0.0 || bounds.height() > 0.0) || !bounds.area().is_finite() {
+        return None;
+    }
+    let grow = bounds.width().max(bounds.height()).max(1.0);
+    let area = bounds.inflate(grow, grow);
+    let paint = paint_value(mask, bounds, transform, symbols, defs, ctx);
+    let id = ctx.next("tmask");
+    let _ = writeln!(
+        defs,
+        "    <mask id=\"{id}\" maskUnits=\"userSpaceOnUse\" x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\">\n      <rect x=\"{}\" y=\"{}\" width=\"{}\" height=\"{}\" fill=\"{paint}\"/>\n    </mask>",
+        fmt(area.x0),
+        fmt(area.y0),
+        fmt(area.width()),
+        fmt(area.height()),
+        fmt(area.x0),
+        fmt(area.y0),
+        fmt(area.width()),
+        fmt(area.height()),
+    );
+    Some(id)
 }
 
 /// The outline as the drawing window draws it under `transform`, and the
@@ -1157,6 +1297,51 @@ pub(crate) mod tests {
         }
     }
 
+    /// A clip frame's outline behind its fill is written before the fill
+    /// and the contents, so it lies beneath them (#3110); another
+    /// outline after them.
+    #[test]
+    fn a_clip_frame_outline_behind_its_fill_is_written_first() {
+        for behind in [true, false] {
+            let mut doc = Document::default();
+            let layer = doc.pages[0].layers[0].id;
+            let mut contents = Shape::new(
+                doc.ids_mut().shape(),
+                ShapeKind::Rect {
+                    rect: Rect::new(0.0, 0.0, 40.0, 40.0),
+                    radius: 0.0,
+                    corners: None,
+                },
+            );
+            contents.fill = Fill::Solid(Color::rgb8(255, 0, 0));
+            let mut frame = Shape::new(
+                doc.ids_mut().shape(),
+                ShapeKind::Rect {
+                    rect: Rect::new(5.0, 5.0, 35.0, 35.0),
+                    radius: 0.0,
+                    corners: None,
+                },
+            );
+            frame.fill = Fill::Solid(Color::rgb8(0, 0, 255));
+            let mut st = Stroke::new(Color::rgb8(0, 255, 0), 4.0);
+            st.behind_fill = behind;
+            frame.stroke = Some(st);
+            let clip = Shape::new(
+                doc.ids_mut().shape(),
+                ShapeKind::ClipFrame {
+                    frame: Box::new(frame),
+                    contents: vec![contents],
+                },
+            );
+            doc.layer_mut(layer).unwrap().shapes.push(clip);
+            let svg = page_to_svg(&doc, 0);
+            let at = |s: &str| svg.find(s).unwrap_or_else(|| panic!("{s}: {svg}"));
+            let outline = at("stroke=\"#00ff00\"");
+            assert_eq!(outline < at("fill=\"#0000ff\""), behind, "{svg}");
+            assert_eq!(outline < at("fill=\"#ff0000\""), behind, "{svg}");
+        }
+    }
+
     #[test]
     fn opacity_masks_are_svg_masks() {
         let mut doc = Document::default();
@@ -1406,6 +1591,64 @@ pub(crate) mod tests {
         assert!(svg_of(false).contains("stroke-width=\"10\""));
     }
 
+    /// A drop shadow goes out as a picture beneath its object, where the
+    /// window draws it; it was left out. Read back, the picture is there,
+    /// offset down and to the right of the object, and the object over it.
+    #[test]
+    fn a_drop_shadow_goes_out_beneath_its_object() {
+        let mut doc = Document::default();
+        let layer = doc.pages[0].layers[0].id;
+        let id = doc.ids_mut().shape();
+        let mut s = Shape::new(
+            id,
+            ShapeKind::Rect {
+                rect: Rect::new(10.0, 10.0, 60.0, 40.0),
+                radius: 0.0,
+                corners: None,
+            },
+        );
+        s.fill = Fill::Solid(Color::rgb8(255, 0, 0));
+        s.stroke = None;
+        s.transform = Affine::translate((5.0, 100.0));
+        s.shadow = Some(tracedraw_core::document::Shadow {
+            offset: tracedraw_core::geometry::Vec2::new(4.0, -4.0),
+            ..Default::default()
+        });
+        let mut g = Shape::new(
+            doc.ids_mut().shape(),
+            ShapeKind::Group { children: vec![s] },
+        );
+        g.transform = Affine::translate((20.0, 0.0));
+        doc.layer_mut(layer).unwrap().shapes.push(g);
+        let svg = page_to_svg(&doc, 0);
+        let shadow = svg.find("data-shadow").expect("the shadow is written");
+        let object = svg.find("fill=\"#ff0000\"").expect("the object");
+        assert!(shadow < object, "the shadow goes beneath the object");
+        assert_eq!(svg.matches("data-shadow").count(), 1, "{svg}");
+        let mut ids = tracedraw_core::id::IdSource::default();
+        let back = crate::svg_import::parse(&svg, &mut ids).expect("reads back");
+        let mut leaves = Vec::new();
+        fn walk<'a>(s: &'a Shape, out: &mut Vec<&'a Shape>) {
+            match &s.kind {
+                ShapeKind::Group { children } => children.iter().for_each(|c| walk(c, out)),
+                _ => out.push(s),
+            }
+        }
+        back.shapes.iter().for_each(|s| walk(s, &mut leaves));
+        assert_eq!(leaves.len(), 2, "{leaves:?}");
+        assert!(matches!(leaves[0].kind, ShapeKind::Bitmap { .. }));
+        let (pic, obj) = (leaves[0].bounds(), leaves[1].bounds());
+        // The object at (35, 110)-(85, 140); the shadow 4 mm right and
+        // down, feathered round it.
+        assert!(
+            (obj.x0 - 35.0).abs() < 0.01 && (obj.y0 - 110.0).abs() < 0.01,
+            "{obj:?}"
+        );
+        assert!(pic.center().x > obj.center().x + 2.0, "{pic:?}");
+        assert!(pic.center().y < obj.center().y - 2.0, "{pic:?}");
+        assert!(pic.x1 >= obj.x1 + 4.0 && pic.y0 <= obj.y0 - 4.0, "{pic:?}");
+    }
+
     #[test]
     fn exports_a_filled_rect() {
         let mut doc = Document::default();
@@ -1443,6 +1686,7 @@ pub(crate) mod tests {
                 sharpness: 0.0,
                 complex: Some(1),
                 twist: 0.0,
+                bend: 0.0,
             },
         );
         s.fill = Fill::Solid(Color::rgb8(255, 0, 0));

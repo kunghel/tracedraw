@@ -294,9 +294,9 @@ pub fn ruler_drag(app: &mut App, ui: &Ui) -> bool {
                 // Only the guideline's own axis snaps (and is marked).
                 let q = app.view.to_page(s);
                 let p = if horizontal {
-                    tracedraw_core::geometry::Point::new(q.x, app.snap_y_without_guides(q.y))
+                    tracedraw_core::geometry::Point::new(q.x, app.snap_guide_near(q.y, false, q.x))
                 } else {
-                    tracedraw_core::geometry::Point::new(app.snap_x_without_guides(q.x), q.y)
+                    tracedraw_core::geometry::Point::new(app.snap_guide_near(q.x, true, q.y), q.y)
                 };
                 app.drag = Drag::NewGuide { horizontal, pos: p };
             }

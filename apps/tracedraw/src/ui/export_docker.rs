@@ -17,7 +17,7 @@ use egui::Ui;
 fn raster(format: usize) -> bool {
     matches!(
         EXPORT_FORMATS.get(format).map(|(_, e)| *e),
-        Some("png" | "jpg" | "bmp" | "tif" | "webp" | "gif" | "psd")
+        Some("png" | "jpg" | "bmp" | "tif" | "webp" | "gif" | "psd" | "jxl")
     )
 }
 

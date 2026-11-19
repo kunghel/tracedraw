@@ -10,6 +10,7 @@ enclose it stay as they are.
 |---|---|---|
 | Fill | Specify (the colour beside it), Use default (the default fill for new objects; a colour when that is none, so the area shows), None | Use default; the colour is yellow (C0 M0 Y100 K0) |
 | Outline | Specify (the width and colour beside it), Use default (the default outline for new objects), None | Use default; 0.2 mm black |
+| Up to outline edges | On: each outline counts as wide as it is drawn (#3321) | Off |
 
 The lists show their choices in that order: Specify first, then Use
 default, then None (`fill_tool_bars::SMART_ORDER`; the values kept in
@@ -20,7 +21,18 @@ The colour buttons open the colour palette's swatches and, under Other,
 a swatch that opens the colour picker beside the button for any other
 colour (see `contour.md`, #1262). The choices are kept in the preferences
 (`tools.smart_fill_mode`, `smart_fill_color`, `smart_outline_mode`,
-`smart_outline_width`, `smart_outline_color`).
+`smart_outline_width`, `smart_outline_color`, `smart_outline_edges`).
+
+With Up to outline edges on, every object with an outline wider than 0
+also adds the band its outline draws (as Convert Outline to Object makes
+it, arrowheads included) as an opaque object right above it: the band's
+edges are walls and the middle line under it is cut away (step 1's
+rule for opaque fills). So the area stops at the inner edge of the
+outlines, and lines whose middles leave a gap but whose widths overlap
+close it. A click inside a band makes nothing, as a click on a thin
+outline does. Objects with live effects count as before, by their middle
+lines
+(`pick_drag_tests::area_fill_can_stop_at_the_edges_of_wide_outlines`).
 
 ## Algorithm
 
@@ -57,7 +69,21 @@ colour (see `contour.md`, #1262). The choices are kept in the preferences
    The object is put on top of the active layer, selected, with the
    fill and outline the bar says; one undo step.
 
+## Inside a symmetry (#2998)
+
+A click that falls in a symmetry object (the one being edited, or the
+topmost whose original and copies cover the click) fills every copy:
+the area is taken back to the original's side by the mirror or turn
+that made the copy clicked (`live::symmetry_back_to`: the slice
+between two mirror lines holding the original's middle) and joins the
+symmetry as one of its objects, so its mirrors fill the same area in
+each copy. One undo step; out of editing the symmetry is selected
+afterwards, in editing the new object inside it.
+
 ## Checks
+
+- `ops2::symmetry_tests::area_fill_in_a_symmetry_fills_every_copy` and
+  `live::tests::a_point_in_a_symmetry_copy_goes_back_to_the_original`
 
 - `ui::fill_tool_bars::tests::smart_fill_takes_the_bars_fill_and_outline`
   (a 40 mm square's inside becomes a 40 mm object; the bar's fill and

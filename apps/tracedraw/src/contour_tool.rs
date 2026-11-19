@@ -61,7 +61,10 @@ impl ContourHandles {
     pub fn of(id: ShapeId, s: &ContourSettings, b: tracedraw_core::geometry::Rect) -> Self {
         let s = s.clamped();
         let anchor = Point::new(b.x1, (b.y0 + b.y1) / 2.0);
-        let dir = if s.direction == ContourDirection::Outside {
+        let dir = if matches!(
+            s.direction,
+            ContourDirection::Outside | ContourDirection::Both
+        ) {
             1.0
         } else {
             -1.0
@@ -115,13 +118,16 @@ pub enum ContourDirection {
     Inside,
     #[default]
     Outside,
+    /// Inside and outside at once (#3085).
+    Both,
 }
 
 impl ContourDirection {
-    pub const ALL: [ContourDirection; 3] = [
+    pub const ALL: [ContourDirection; 4] = [
         ContourDirection::ToCenter,
         ContourDirection::Inside,
         ContourDirection::Outside,
+        ContourDirection::Both,
     ];
 
     pub fn key(self) -> &'static str {
@@ -129,6 +135,7 @@ impl ContourDirection {
             ContourDirection::ToCenter => "docker.to_center",
             ContourDirection::Inside => "docker.inside",
             ContourDirection::Outside => "docker.outside",
+            ContourDirection::Both => "docker.contour_both",
         }
     }
 }
@@ -213,8 +220,12 @@ impl ContourSettings {
         Effect::Contour {
             steps: s.steps,
             offset: s.offset,
-            outside: s.direction == ContourDirection::Outside,
+            outside: matches!(
+                s.direction,
+                ContourDirection::Outside | ContourDirection::Both
+            ),
             to_center: s.direction == ContourDirection::ToCenter,
+            both: s.direction == ContourDirection::Both,
             fill_to: s.fill_to,
             outline_to: Some(s.outline_to),
             fill_end_to: Some(s.fill_end_to),
@@ -232,6 +243,7 @@ impl ContourSettings {
             offset,
             outside,
             to_center,
+            both,
             fill_to,
             outline_to,
             fill_end_to,
@@ -243,7 +255,9 @@ impl ContourSettings {
         else {
             return;
         };
-        self.direction = if *to_center {
+        self.direction = if *both {
+            ContourDirection::Both
+        } else if *to_center {
             ContourDirection::ToCenter
         } else if *outside {
             ContourDirection::Outside
@@ -378,7 +392,7 @@ impl App {
             let has = s.effects.iter().any(is_contour);
             if (!has && !add)
                 || (add && has)
-                || matches!(s.kind, ShapeKind::Bitmap { .. } | ShapeKind::Group { .. })
+                || matches!(s.kind, ShapeKind::Bitmap { .. })
             {
                 continue;
             }
@@ -434,7 +448,7 @@ impl App {
         if self
             .doc()
             .find_shape(id)
-            .is_none_or(|s| matches!(s.kind, ShapeKind::Bitmap { .. } | ShapeKind::Group { .. }))
+            .is_none_or(|s| matches!(s.kind, ShapeKind::Bitmap { .. }))
         {
             return false;
         }
@@ -462,7 +476,11 @@ impl App {
             return;
         }
         let mut st = self.contour;
-        if st.direction != ContourDirection::ToCenter {
+        // To centre and both sides stay as they are.
+        if matches!(
+            st.direction,
+            ContourDirection::Inside | ContourDirection::Outside
+        ) {
             st.direction = if away {
                 ContourDirection::Outside
             } else {
@@ -543,6 +561,73 @@ mod tests {
             .iter()
             .find(|e| is_contour(e))
             .cloned()
+    }
+
+    /// #3085: Both puts a contour on both sides of the object: the
+    /// effect says so, its handles go outward, a drag keeps it on both
+    /// sides, and the settings read it back.
+    #[test]
+    fn the_contour_can_go_both_ways() {
+        let mut app = App::headless();
+        let id = square(&mut app);
+        app.select(vec![id]);
+        app.contour.direction = ContourDirection::Both;
+        app.add_contour();
+        let Some(e @ Effect::Contour { both: true, .. }) = contour_of(&app, id) else {
+            panic!("a contour on both sides");
+        };
+        let mut s = ContourSettings::default();
+        s.take(&e);
+        assert_eq!(s.direction, ContourDirection::Both);
+        let b = app.doc().find_shape(id).expect("square").bounds();
+        assert_eq!(ContourHandles::of(id, &s, b).dir, 1.0);
+        // A drag toward the middle keeps both sides.
+        assert!(app.begin_contour(Point::new(19.0, 10.0)));
+        app.drag_contour(Point::new(13.0, 10.0));
+        app.contour_drag = None;
+        assert!(matches!(
+            contour_of(&app, id),
+            Some(Effect::Contour { both: true, .. })
+        ));
+        assert_eq!(app.contour.direction, ContourDirection::Both);
+        // Drawn on both sides.
+        let shape = app.doc().find_shape(id).expect("square");
+        let ev = tracedraw_core::live::evaluate(shape);
+        assert!(!ev.below.is_empty() && !ev.above.is_empty());
+    }
+
+    /// A group takes a contour (#3245): Apply on a selected group puts
+    /// the contour on the group, drawn round its objects, and a drag on
+    /// the group starts one.
+    #[test]
+    fn a_group_takes_a_contour() {
+        let mut app = App::headless();
+        let a = square(&mut app);
+        let b = app
+            .new_shape(ShapeKind::Rect {
+                rect: Rect::new(30.0, 0.0, 50.0, 20.0),
+                radius: 0.0,
+                corners: None,
+            })
+            .expect("second");
+        app.select(vec![a, b]);
+        app.group_selection();
+        let g = app.selection[0];
+        assert!(matches!(
+            app.doc().find_shape(g).expect("group").kind,
+            ShapeKind::Group { .. }
+        ));
+        app.contour.direction = ContourDirection::Outside;
+        app.add_contour();
+        assert!(contour_of(&app, g).is_some(), "the group has a contour");
+        let shape = app.doc().find_shape(g).expect("group");
+        let ev = tracedraw_core::live::evaluate(shape);
+        assert!(!ev.below.is_empty(), "drawn round the group");
+        // Cleared, then started again by a drag on the group.
+        app.clear_contour();
+        assert!(contour_of(&app, g).is_none());
+        assert!(app.begin_contour(Point::new(10.0, 10.0)));
+        assert_eq!(app.selection, vec![g]);
     }
 
     #[test]
@@ -761,6 +846,7 @@ mod tests {
             offset: f64::NAN,
             outside: false,
             to_center: false,
+            both: false,
             fill_to: Color::BLACK,
             outline_to: None,
             fill_end_to: None,

@@ -25,8 +25,16 @@ Open the [[docker.vector_mosaic]] panel with
    - **Merge adjacent**: combine up to that many neighbouring tiles of one
      color; **Weld adjacent overlap**: one curve per color instead of one
      object per tile.
-   - **Shape**: circle (at first), square or custom. For a custom tile,
-     select a closed curve and click **Select**.
+   - **Shape**: circle (at first), square, custom, **Glyphs** or
+     **Characters**. For a custom tile, select a closed curve and click
+     **Select**. **Glyphs** draws a built-in symbol in each tile, from a dot
+     where the picture is light to a full square where it is dark, or at
+     random with **Random symbols** and its seed. **Characters** draws a
+     letter of the **Character set** (lightest first, a space leaves a
+     cell empty) for a picture made of text. **Invert tones** swaps the
+     ends, for a light mosaic on a dark background.
+   - **One color**: every tile in the color beside it instead of the
+     picture's colors.
 3. Click [[docker.apply]].
 
 The mosaic is one group placed on top of the selection, and is selected.

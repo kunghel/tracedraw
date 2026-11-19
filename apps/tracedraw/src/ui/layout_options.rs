@@ -291,13 +291,26 @@ fn row_label(ui: &mut Ui, key: &str) {
 /// position, an offset, a spacing); returns the new value in mm when it
 /// changed.
 fn distance_field(ui: &mut Ui, tip: &str, units: Units, mm: f64, speed: f64) -> Option<f64> {
-    unit_field(ui, tip, units, units.world_mm(), mm, speed)
+    unit_field(ui, tip, units, units.world_mm(), mm, speed, false)
+}
+
+/// A distance field that takes the focus when `focus` is set, its value
+/// selected (the Guidelines panel, #2883).
+fn distance_field_focused(
+    ui: &mut Ui,
+    tip: &str,
+    units: Units,
+    mm: f64,
+    speed: f64,
+    focus: bool,
+) -> Option<f64> {
+    unit_field(ui, tip, units, units.world_mm(), mm, speed, focus)
 }
 
 /// A distance field in the ruler unit as printed (page margins, columns,
 /// the baseline grid), not through the drawing scale.
 fn paper_field(ui: &mut Ui, tip: &str, units: Units, mm: f64, speed: f64) -> Option<f64> {
-    unit_field(ui, tip, units, units.mm(), mm, speed)
+    unit_field(ui, tip, units, units.mm(), mm, speed, false)
 }
 
 fn unit_field(
@@ -307,6 +320,7 @@ fn unit_field(
     unit_mm: f64,
     mm: f64,
     speed: f64,
+    focus: bool,
 ) -> Option<f64> {
     let unit_mm = if unit_mm.is_finite() && unit_mm > 0.0 {
         unit_mm
@@ -320,7 +334,8 @@ fn unit_field(
             crate::ui::field::NumField::new(&mut v)
                 .speed(speed)
                 .max_decimals(4)
-                .suffix(format!(" {}", units.short())),
+                .suffix(format!(" {}", units.short()))
+                .focus(focus),
         )
         .rich_tip(crate::ui::tips::pair(tip, &format!("{tip}_tip")));
     r.changed().then_some(v * unit_mm)
@@ -1091,6 +1106,12 @@ fn guide_list(app: &mut App, ui: &mut Ui, kind: Option<GuideKind>, height: f32) 
             .auto_shrink([false, false])
             .show(ui, |ui| {
                 ui.set_min_width(ui.available_width());
+                let shown: Vec<usize> = guides
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, g)| kind.is_none_or(|k| k == GuideKind::of(&g.line)))
+                    .map(|(i, _)| i)
+                    .collect();
                 for (i, g) in guides.iter().enumerate() {
                     if kind.is_some_and(|k| k != GuideKind::of(&g.line)) {
                         continue;
@@ -1105,8 +1126,16 @@ fn guide_list(app: &mut App, ui: &mut Ui, kind: Option<GuideKind>, height: f32) 
                     }
                     let r = ui.selectable_label(selected, text);
                     if r.clicked() {
-                        let ctrl = ui.input(|i| i.modifiers.command);
-                        if ctrl {
+                        let (ctrl, shift) =
+                            ui.input(|i| (i.modifiers.command, i.modifiers.shift));
+                        // Shift+click: every guideline listed from the one
+                        // clicked last to this one (#2883).
+                        let range = shift
+                            .then(|| shift_range(&shown, &app.selected_guides, i, ctrl))
+                            .flatten();
+                        if let Some(sel) = range {
+                            app.selected_guides = sel;
+                        } else if ctrl {
                             if selected {
                                 app.selected_guides.retain(|j| *j != i);
                             } else {
@@ -1123,6 +1152,26 @@ fn guide_list(app: &mut App, ui: &mut Ui, kind: Option<GuideKind>, height: f32) 
                 }
             });
     });
+}
+
+/// The guidelines a Shift+click on `clicked` selects in a list showing
+/// `shown` (#2883): those listed from the anchor (the one selected last)
+/// to it, added to `selected` with Ctrl; the anchor stays last, for the
+/// next Shift+click. `None` without an anchor in the list.
+fn shift_range(shown: &[usize], selected: &[usize], clicked: usize, ctrl: bool) -> Option<Vec<usize>> {
+    let a = selected.last().and_then(|a| shown.iter().position(|j| j == a))?;
+    let h = shown.iter().position(|j| *j == clicked)?;
+    let (lo, hi) = (a.min(h), a.max(h));
+    let anchor = shown[a];
+    let mut sel: Vec<usize> = if ctrl { selected.to_vec() } else { Vec::new() };
+    for j in &shown[lo..=hi] {
+        if !sel.contains(j) {
+            sel.push(*j);
+        }
+    }
+    sel.retain(|j| *j != anchor);
+    sel.push(anchor);
+    Some(sel)
 }
 
 /// Window > Panels > Guidelines: show and snap toggles, the guideline type, position fields,
@@ -1155,6 +1204,11 @@ pub fn guidelines_docker(app: &mut App, ui: &mut Ui) {
             .rich_tip(crate::ui::tips::pair("guides.type", "guides.type_desc"));
     });
     let units = app.units;
+    // After a double click on a guideline its position field takes the
+    // focus, the value selected, ready to be typed over (#2883): y for a
+    // horizontal guideline, x for the others.
+    let focus = std::mem::take(&mut app.guide_focus_field);
+    let enter = ui.input(|i| i.key_pressed(egui::Key::Enter));
     egui::Grid::new("guide_form")
         .num_columns(2)
         .spacing([6.0, 4.0])
@@ -1164,7 +1218,7 @@ pub fn guidelines_docker(app: &mut App, ui: &mut Ui) {
                 let x = crate::ui::tips::tip_over(
                     ui,
                     crate::ui::tips::pair("toolbar.object_x", "guides.x_desc"),
-                    |ui| distance_field(ui, "guides.x", units, form.x, 0.1),
+                    |ui| distance_field_focused(ui, "guides.x", units, form.x, 0.1, focus),
                 );
                 if let Some(v) = x {
                     form.x = v;
@@ -1177,7 +1231,10 @@ pub fn guidelines_docker(app: &mut App, ui: &mut Ui) {
                 let y = crate::ui::tips::tip_over(
                     ui,
                     crate::ui::tips::pair("toolbar.object_y", "guides.y_desc"),
-                    |ui| distance_field(ui, "guides.y", units, form.y, 0.1),
+                    |ui| {
+                        let focus = focus && form.kind == GuideKind::Horizontal;
+                        distance_field_focused(ui, "guides.y", units, form.y, 0.1, focus)
+                    },
                 );
                 if let Some(v) = y {
                     form.y = v;
@@ -1204,9 +1261,23 @@ pub fn guidelines_docker(app: &mut App, ui: &mut Ui) {
             }
         });
     app.guide_form = form;
+    // Alt+A adds and Alt+M modifies from the keyboard, the hands kept off
+    // the mouse (#2883).
+    let (alt_add, alt_modify) = ui.input_mut(|i| {
+        (
+            i.consume_key(egui::Modifiers::ALT, egui::Key::A),
+            i.consume_key(egui::Modifiers::ALT, egui::Key::M),
+        )
+    });
+    let mut add = alt_add;
     if moved {
         let line = form.line(app);
-        app.set_selected_guide_line(line);
+        // Enter in a field with no guideline selected adds one there.
+        if app.selected_guides.is_empty() {
+            add |= enter;
+        } else {
+            app.move_guide_from_form(line);
+        }
     }
     ui.horizontal(|ui| {
         if ui
@@ -1214,9 +1285,11 @@ pub fn guidelines_docker(app: &mut App, ui: &mut Ui) {
             .rich_tip(crate::ui::tips::pair("guides.add", "guides.add_desc"))
             .clicked()
         {
+            add = true;
+        }
+        if add {
             let line = form.line(app);
-            app.add_guide(Guide::from(line));
-            app.selected_guides = vec![app.page_guides().len().saturating_sub(1)];
+            app.add_guide_from_form(line);
         }
         let single = match app.selected_guides.as_slice() {
             [i] => Some(*i),
@@ -1227,6 +1300,7 @@ pub fn guidelines_docker(app: &mut App, ui: &mut Ui) {
             .rich_tip(crate::ui::tips::pair("guides.modify", "guides.modify_desc"))
             .rich_disabled_tip(crate::ui::tips::pair("guides.modify", "guides.modify_desc"))
             .clicked()
+            || (alt_modify && single.is_some())
         {
             if let Some(i) = single {
                 if let Some(g) = app.page_guides().get(i).copied() {
@@ -1377,6 +1451,20 @@ mod tests {
         back.load(&app, &GuideLine::Vertical { x: 13.0 });
         assert_eq!(back.kind, GuideKind::Vertical);
         assert!((back.x - 3.0).abs() < 1e-9);
+    }
+
+    /// Shift+click in the guideline list (#2883).
+    #[test]
+    fn shift_click_selects_the_guidelines_listed_between() {
+        // The list shows guidelines 1, 3, 4, 6 (the others of another type).
+        let shown = [1, 3, 4, 6];
+        assert_eq!(shift_range(&shown, &[3], 6, false), Some(vec![4, 6, 3]));
+        assert_eq!(shift_range(&shown, &[6], 1, false), Some(vec![1, 3, 4, 6]));
+        // Ctrl keeps the others selected.
+        assert_eq!(shift_range(&shown, &[0, 4], 6, true), Some(vec![0, 6, 4]));
+        // No anchor in the list: nothing to range from.
+        assert_eq!(shift_range(&shown, &[], 4, false), None);
+        assert_eq!(shift_range(&shown, &[2], 4, false), None);
     }
 
     #[test]

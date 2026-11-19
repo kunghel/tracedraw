@@ -4,7 +4,17 @@ Edit > Find and Replace (Ctrl+F) opens the Find and Replace panel. It has
 three modes: Text, Objects and Properties.
 
 - Text: finds text objects holding a string (Match case, Whole word) and
-  replaces it (Replace, Replace All). Current page.
+  replaces it (Replace, Replace All). Current page. A text's runs (its
+  parts in their own looks) are searched as one text: a word half of it
+  bold is found and replaced, the replacement taking the look of the run
+  its match starts in. Texts inside groups and PowerClip frames are found
+  (Find selects the object they are in) and replaced. Without Match case
+  letters match one for one ignoring case; with Whole word a match has
+  no letter or digit right before or after it. Before, a word in two
+  looks was found but not replaced, grouped text was neither, and a
+  Turkish "İ" before the match (longer in lower case) cut the text in the
+  wrong place or closed TraceDraw
+  (`export::tests::replace_finds_words_across_runs_in_groups_and_after_a_dotted_capital_i`).
 - Objects: finds objects whose name or kind contains the string. Current
   page.
 - Properties: finds objects by their look and type and replaces fill

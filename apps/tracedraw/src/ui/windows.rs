@@ -226,7 +226,7 @@ fn frame(
 
 /// Draw drawing `i`, which is not the active one, into `rect`: its page
 /// as its own view shows it, fitted when its window is new.
-fn paint_parked(app: &mut App, ui: &Ui, i: usize, rect: Rect) {
+pub(crate) fn paint_parked(app: &mut App, ui: &Ui, i: usize, rect: Rect) {
     let holder = app.peek(i);
     // What the active window is doing is not drawn here.
     let drag = std::mem::replace(&mut app.drag, Drag::None);
@@ -251,7 +251,11 @@ fn paint_parked(app: &mut App, ui: &Ui, i: usize, rect: Rect) {
 
 /// The drawing area with every drawing in a window (see the module notes).
 pub fn arranged(app: &mut App, ui: &mut Ui, area: Rect) {
-    let n = app.docs.len();
+    // Drawings in windows of their own (#2904) are not arranged here.
+    let shown = crate::ui::detached::main_tabs(app);
+    let n = shown.len();
+    ui.painter()
+        .rect_filled(area, 0.0, crate::theme::Tokens::page_shadow());
     if n == 0 {
         return;
     }
@@ -260,13 +264,11 @@ pub fn arranged(app: &mut App, ui: &mut Ui, area: Rect) {
         app.window_layout_seen = Some(seen);
         fit_all(app);
     }
-    ui.painter()
-        .rect_filled(area, 0.0, crate::theme::Tokens::page_shadow());
     let rects = window_rects(app.window_layout, n, area);
-    let active = app.active_doc.min(n - 1);
+    let active = app.active_doc;
     let mut act = None;
-    for i in (0..n).filter(|i| *i != active) {
-        let r = rects[i];
+    for (k, &i) in shown.iter().enumerate().filter(|(_, i)| **i != active) {
+        let r = rects[k];
         // Under the title bar's buttons, so these win.
         let resp = ui.interact(r, egui::Id::new(("document_window", i)), Sense::click());
         let title = app.document_tab_title(i);
@@ -276,10 +278,12 @@ pub fn arranged(app: &mut App, ui: &mut Ui, area: Rect) {
             act = Some(Action::Activate(i));
         }
     }
-    let r = rects[active];
-    let title = app.document_tab_title(active);
-    let content = frame(ui, r, active, &title, true, &mut act);
-    crate::ui::drawing_window(app, ui, content);
+    if let Some(k) = shown.iter().position(|&i| i == active) {
+        let r = rects[k];
+        let title = app.document_tab_title(active);
+        let content = frame(ui, r, active, &title, true, &mut act);
+        crate::ui::drawing_window(app, ui, content);
+    }
     match act {
         Some(Action::Activate(i)) => app.switch_document(i),
         Some(Action::Close(i)) => {

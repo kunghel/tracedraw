@@ -168,6 +168,10 @@ Root: HKA; Subkey: "Software\Classes\TraceDraw.Document\ShellEx\{{e357fccd-a995-
 ; Kept when another program takes .tdraw's default (Open With, a
 ; UserChoice): Explorer reads this key whichever program opens the file.
 Root: HKA; Subkey: "Software\Classes\SystemFileAssociations\.tdraw\ShellEx\{{e357fccd-a995-4576-b01f-234630154e96}"; ValueType: string; ValueName: ""; ValueData: "{{6B1E5D3A-2F41-4C8E-9B7A-1D2C3E4F5A60}"; Flags: uninsdeletekey
+; Thumbnails of .cdr files too (#3239), in the fallback key alone:
+; Explorer asks the program that owns .cdr first, so one that draws its
+; own thumbnails keeps doing so.
+Root: HKA; Subkey: "Software\Classes\SystemFileAssociations\.cdr\ShellEx\{{e357fccd-a995-4576-b01f-234630154e96}"; ValueType: string; ValueName: ""; ValueData: "{{6B1E5D3A-2F41-4C8E-9B7A-1D2C3E4F5A60}"; Flags: uninsdeletekey
 ; "Open with TraceDraw" for .cdr, without stealing the default
 Root: HKA; Subkey: "Software\Classes\.cdr\OpenWithProgids"; ValueType: string; ValueName: "TraceDraw.Document"; ValueData: ""; Flags: uninsdeletevalue
 ; "Open with TraceDraw" for pictures, without stealing their default: a

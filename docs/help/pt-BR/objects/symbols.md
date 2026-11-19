@@ -21,7 +21,8 @@ A seleção passa a ser a primeira instância do novo símbolo.
 
 ## Colocar instâncias {#insert}
 
-O painel lista os símbolos do desenho, cada um com o número de instâncias.
+O painel lista os símbolos do desenho, cada um com uma pequena imagem dos seus
+objetos e o número de instâncias.
 Clique em [[docker.insert]] ao lado de um símbolo para colocar uma nova
 instância, ou escolha
 [[menu.object > menu.object.symbol > menu.object.symbol_insert]]. As instâncias
@@ -43,10 +44,21 @@ Clique em [[clip.finish]] na barra no canto superior esquerdo da janela de
 desenho, escolha
 [[menu.object > menu.object.symbol > menu.object.symbol_finish]] ou pressione
 <kbd>Esc</kbd> sem nada selecionado: todas as instâncias mostram a mudança.
-Desfazer percorre a edição passo a passo como qualquer outra.
+Desfazer percorre a edição passo a passo como qualquer outra. Clique em
+[[docker.cancel_symbol_edit]] ao lado de [[clip.finish]] no painel para
+descartar as mudanças e deixar o símbolo como estava.
+
+Instâncias selecionadas, e grupos que as contêm, são contornados pelos objetos
+que mostram, não por um quadrado.
 
 Um símbolo não pode conter uma instância de si mesmo; Concluir avisa e a edição
 continua até essa instância ser removida.
+
+## Copiar um símbolo {#duplicate}
+
+Clique em [[docker.duplicate_symbol]] ao lado de um símbolo no painel para
+criar um novo símbolo com os mesmos objetos, com o nome do primeiro. Edite a
+cópia sem mudar as instâncias do primeiro.
 
 ## Transformar instâncias em objetos de novo {#revert}
 

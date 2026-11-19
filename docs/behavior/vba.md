@@ -185,7 +185,9 @@ Shared with ranges and the selection:
   new curve).
 - **Groups and frames:** `Ungroup`, `UngroupEx`, `UngroupAll`,
   `UngroupAllEx`, `Shapes` (a group's), `Layer`, `Page`, `ParentGroup`,
-  `ClipFrame` (`Shapes` inside a clip frame), `ClipFrameParent`.
+  `ClipFrame` (`Shapes` inside a clip frame), `ClipFrameParent`; macros
+  that call these and `AddToClipFrame` by other programs' names reach
+  them too (#2968, see below).
 - **Views of the object:**
   - `Curve`: `Nodes`, `SubPaths`, `Segments`, `Closed`, `Length`.
     Nodes have `PositionX`, `PositionY`, `SetPosition`, `Move`, `Type`
@@ -373,12 +375,22 @@ declare variables (`cdrShapeType`, `cdrColorType`, `cdrImageType`,
 
 The remaining rarer members follow the same rules:
 
-- Works: `MoveToLayer`, `OrderIsInFrontOf`, `AddToClipFrame`,
+- Works: `MoveToLayer`, `OrderIsInFrontOf`, `AddToClipFrame`
+  (`CenterInContainer` true centres the contents first),
   `FindAnyOfType`, `SelectShapesAtPoint`, `ImportEx`, `DrawingOriginX`
   and `DrawingOriginY` (0: the origin is the page corner).
 - Raise a named error: `GetUserClick`, `GetUserArea`, `DesktopLayer`,
   `UserAssignEx`, `PasteSpecial`, `StartShape`, `Fill.Pattern`,
   `GetPixelColor`, `Quit`, `VBE`.
+
+### Other names for members
+
+Some members are called by other programs' names in macros. Those names
+are not written in this repository (AGENTS.md rule 3): the object model
+keeps the FNV-1a hashes of their lowercase spelling with the member each
+stands for (`__member_alias` in `vg_model.js`), and the VBA runtime looks
+a member the object lacks up there before raising error 438 (#2968: the
+clip frame members).
 
 ### Not supported
 
@@ -860,6 +872,81 @@ the desktop version, with OK and a button to the desktop downloads.
   first Sub without arguments of the snippet (or the lines as the body of
   one) as a macro, with its messages, forms and output; Load and Save use
   `.bas` files. The debugger works on JavaScript only.
+
+### Converting macros
+
+The Macro Editor helps move a project written for another drawing suite
+over to TraceDraw (`macro_convert.rs`, `scripting/vg_catalog.rs`,
+`tracedraw_vba::convert`). A row under its toolbar holds VBA and
+JavaScript tabs, Compatibility and Fix.
+
+- **Compatibility** checks the project and shows a panel on the right:
+  each macro (and each other procedure with something to report) with a
+  dot, green when it runs as it is, yellow when something in it does
+  nothing here or may not exist here, red when something in it is not
+  available; then every issue with its module and line. A click on a
+  macro or an issue opens that module at that line. What is checked:
+  - every member named after a dot, against the object model read from
+    `vg_model.js`: members that raise "is not available" are red (with
+    the model's reason), members with an empty body are yellow ("does
+    nothing here"), members in neither the model, the VBA runtime, the
+    forms nor the project's own declarations are yellow ("may stop with
+    error 438"), and other names of members (`__member_alias`) are
+    yellow with the member's name;
+  - statements the runtime cannot run (file statements, GoSub, On ...
+    GoTo), `Declare` of Windows functions other than ShellExecute and
+    URLDownloadToFile, `CreateObject` of anything but
+    `Scripting.Dictionary` and `VBA.Collection`, and Shell: red;
+  - a module that does not compile or was saved without its code: red.
+  Loading a project (Load in the Macro Manager or Tools > Macros > Load
+  Macro Project) opens the editor on it with this panel.
+- **Fix** saves the editor, then changes the code and saves the project
+  again: other names of members become the member's name; a red member
+  or statement on a line of its own is commented out as
+  `' TODO: <reason>: <the statement>`; one inside a block line (If ...
+  Then, a loop, Set, a line with `:`) or a red `Declare` gets a
+  `' TODO: <reason>` line above it instead. If the commented code would
+  not compile, only the notes are added. Fixing again adds nothing new.
+  The message line counts the names changed, lines commented out and
+  notes added.
+- **JavaScript** writes the project as plain JavaScript on the same
+  object model (the first time the tab opens, and with Convert Again):
+  - It starts with `// TraceDraw macro object model`, a comment naming
+    the project, and `// Run: <first macro>`; then the VBA constants it
+    uses (`const vbYes = 6;`) and each module in turn, with the VBA's
+    whole-line comments kept above the statements they precede.
+  - Procedures become functions (Functions return `result`); variables
+    get `let` with VBA's default for their type (Dim inside a block is
+    declared at the procedure's top; names assigned without Dim get a
+    `let` too); fixed arrays become JavaScript arrays (`Dim a(3)`: 4
+    items); user types become functions returning an object; enums and
+    constants become `const`; class modules become classes (fields set
+    in the constructor, which calls `Class_Initialize`, Property Get/Let
+    as getters and setters).
+  - Members take the model's spelling; a property given an index reads
+    its item (`ActivePage.Shapes(i)` is `ActivePage.Shapes.Item(i)`);
+    named arguments go to the parameter's place; `&` becomes `+` (with
+    `String()` when neither side is text), `\` `Math.trunc(a / b)`,
+    `Mod` `%`, `^` `**`, `=` `==`, `<>` `!=`, `Is` `===`; For Each is
+    `for (x of ...)`, Select Case an if chain on `sel`, With a block with
+    `const it`, Debug.Print `Debug.Print(...)`, `IIf` a `?:`, `Array()`
+    a literal. VBA's library functions keep their names (`Left`, `Mid`,
+    `UCase`, `MsgBox`...); those JavaScript uses are `VbArray`,
+    `VbString`, `VbDate` and `ErrorText`.
+  - What does not carry over becomes a `// TODO:` line: forms and their
+    events (they stay in the VBA project), GoTo, On Error and Resume,
+    Static, Windows functions, ByRef parameters the procedure changes,
+    the Mid statement, RaiseEvent, Load and Unload.
+  - The tab's text can be edited. Run (with the function chosen beside
+    it) runs it as a macro: on the worker thread, one undo step, its
+    messages, Debug.Print to the Scripts panel's output, errors there
+    too; loops check for Stop. Save .js... saves it; Open in Scripts
+    Panel puts it in the Scripts panel (JavaScript) with its `// Run:`
+    line naming the chosen function.
+- The Scripts panel runs a JavaScript script whose first line is
+  `// TraceDraw macro object model` as a macro the same way: the
+  function its `// Run:` line names, else its first function without
+  parameters, else the message that there is nothing to run.
 
 ### Checks (tests in `macros.rs` and `ui/macros_ui.rs`)
 

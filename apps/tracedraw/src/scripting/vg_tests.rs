@@ -378,6 +378,37 @@ fn community_macro_export_every_page_as_png() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// A page exported by a macro at a resolution where its size is not a
+/// whole number of pixels fills every pixel of the picture, as File >
+/// Export has since #2866: the right column and the top row were left
+/// light.
+#[test]
+fn macro_export_fills_the_picture_to_its_edges() {
+    let mut app = App::headless();
+    let dir = std::env::temp_dir().join(format!("tracedraw-vg-edges-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("dir");
+    let file = dir.join("page.png");
+    let src = format!(
+        "ActiveDocument.Unit = cdrMillimeter;
+         ActivePage.SetSize(210, 297);
+         const r = ActiveLayer.CreateRectangle2(0, 0, 210, 297);
+         r.Fill.UniformColor.RGBAssign(0, 0, 0);
+         r.Outline.SetNoOutline();
+         ActiveDocument.ExportBitmap({file:?}, cdrPNG, cdrCurrentPage, cdrRGBColorImage, 0, 0, 96, 96).Finish();",
+        file = file.display().to_string()
+    );
+    run(&mut app, &src);
+    let img = image::open(&file).expect("png written").to_rgba8();
+    assert_eq!((img.width(), img.height()), (794, 1123));
+    let (w, h) = img.dimensions();
+    for (x, y) in [(w - 1, h / 2), (w / 2, 0), (w - 1, 0), (0, h - 1), (0, 0)] {
+        let p = img.get_pixel(x, y);
+        assert!(p[0] < 8 && p[1] < 8 && p[2] < 8, "({x}, {y}) is {p:?}");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn nodes_segments_and_curve_building() {
     let mut app = App::headless();
@@ -846,4 +877,22 @@ fn pdf_settings_publish_the_current_page_alone() {
     assert_eq!(pages(&all), "2");
     assert_eq!(pages(&one), "1");
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// The other names macros call members by (#2968) are known by the
+/// FNV-1a hash of their lowercase spelling: the hash is the standard one
+/// (reference values of plain strings), and every entry names a member
+/// shapes have.
+#[test]
+fn other_member_names_are_known_by_hash_and_name_real_members() {
+    let mut app = App::headless();
+    let out = run(
+        &mut app,
+        "print(__nameHash(''), __nameHash('Shape'), __nameHash('AddToClipFrame'));
+         const r = ActiveLayer.CreateRectangle2(0, 0, 1, 1);
+         const missing = [...__memberAliases.values()].filter(m => !(m in r));
+         print(__memberAliases.size, missing.length, __member_alias('AddToClipFrame') === undefined);",
+    );
+    assert_eq!(out[0], "2166136261 2646858022 4187151640");
+    assert_eq!(out[1], "3 0 true");
 }

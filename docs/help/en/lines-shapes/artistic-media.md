@@ -10,7 +10,9 @@ The [[tool.brush_strokes]] tool (<kbd>I</kbd>) draws strokes in one of five
 modes. A Preset, Brush, Calligraphic or Expression stroke stays the path you
 drew, an open curve of a few nodes, with the brush as its live outline: edit
 its nodes with the Shape tool afterwards and the brush follows. The Sprayer
-makes objects instead.
+places objects along the path you drew, which stays: edit its nodes and the
+objects follow. Break Apart (<kbd>Ctrl</kbd>+<kbd>K</kbd>) turns them into a
+group of ordinary objects.
 
 To draw a brush stroke:
 

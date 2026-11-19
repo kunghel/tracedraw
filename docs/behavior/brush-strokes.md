@@ -66,7 +66,14 @@ the other modes could be reached from the panel alone (#1681,
 - Sprayer: objects (circles, squares, stars, hearts, leaves) placed
   from the start every `spacing` mm along the path (so a 40 mm path at
   8 mm gets 6 objects, at 0, 8, ... 40), each sized between 70 % and
-  100 % of `width` in a fixed pseudo-random sequence.
+  100 % of `width` in a fixed pseudo-random sequence. The path drawn
+  stays, with no fill or outline of its own, and the objects are a
+  live effect on it (Sprayer in the Effects docker's stack): edit its
+  nodes and the objects follow, a click on an object picks the path,
+  and Break Apart (Ctrl+K) leaves the objects as one group beside it
+  (#3435; before, the objects were left loose with no path). Apply to
+  curve with the Sprayer keeps the curve and its outline and sprays
+  along it.
 
 ## Checks
 
@@ -75,3 +82,6 @@ the other modes could be reached from the panel alone (#1681,
   `tapered_stroke_is_thin_at_the_ends`).
 - Given spacing 8 mm on a 40 mm path, then the sprayer places 6 objects
   (0, 8, 16, 24, 32, 40 mm).
+- Given a sprayed path whose nodes are moved, then the objects follow
+  it, and Break Apart leaves them as one group (test
+  `sprayed_objects_follow_their_path_and_break_apart_as_a_group`).

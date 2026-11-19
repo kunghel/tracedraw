@@ -604,3 +604,110 @@ fn combine_inside_a_group_keeps_the_result_in_the_group() {
     let back: Vec<ShapeId> = children_of(&app, group).iter().map(|k| k.id).collect();
     assert_eq!(back, vec![a, b, c]);
 }
+
+/// Simplify with a group at the bottom: each object of the group loses
+/// what is above it, the objects in front of it in the group included,
+/// and the group stays a group with their own fills. It became one curve
+/// with the group's fill (none, so it showed only in Wireframe) and a
+/// hole where its objects overlapped.
+#[test]
+fn simplify_keeps_a_group_and_its_fills() {
+    let mut app = App::headless();
+    let red = rect(&mut app, 0.0, 0.0, 10.0, 10.0);
+    let green = rect(&mut app, 5.0, 0.0, 15.0, 10.0);
+    app.run(tracedraw_core::Command::SetFill {
+        shapes: vec![green],
+        fill: Fill::Solid(Color::rgb8(0, 255, 0)),
+    });
+    app.select(vec![red, green]);
+    app.group_selection();
+    let group = app.selection[0];
+    let bar = rect(&mut app, 12.0, 0.0, 20.0, 10.0);
+    app.select(vec![group, bar]);
+    app.shaping(Shaping::Simplify);
+    let kids = children_of(&app, group);
+    assert_eq!(kids.len(), 2, "{kids:?}");
+    // Red (0, 0)-(10, 10) under green: (0, 0)-(5, 10); green (5, 0)-(15,
+    // 10) under the bar: (5, 0)-(12, 10).
+    let areas: Vec<f64> = kids.iter().map(shape_area).collect();
+    assert!(
+        near(areas[0], 50.0, 1e-6) && near(areas[1], 70.0, 1e-6),
+        "{areas:?}"
+    );
+    assert_eq!(kids[0].fill, Fill::Solid(Color::rgb8(255, 0, 0)));
+    assert_eq!(kids[1].fill, Fill::Solid(Color::rgb8(0, 255, 0)));
+    // One step back gives the group as it was.
+    app.undo();
+    let kids = children_of(&app, group);
+    let areas: Vec<f64> = kids.iter().map(shape_area).collect();
+    assert_eq!(areas, vec![100.0, 100.0]);
+}
+
+/// Simplify reads each object by the area it fills: a curve filled with
+/// the nonzero rule whose inner contour turns the same way as its outer
+/// one has no hole there, and it got one.
+#[test]
+fn simplify_keeps_a_nonzero_curve_solid() {
+    let mut app = App::headless();
+    let mut square = polygon(&[(0.0, 0.0), (30.0, 0.0), (30.0, 30.0), (0.0, 30.0)]);
+    square.extend(
+        polygon(&[(10.0, 10.0), (20.0, 10.0), (20.0, 20.0), (10.0, 20.0)])
+            .elements()
+            .iter()
+            .copied(),
+    );
+    let id = curve(&mut app, square);
+    app.run(tracedraw_core::Command::SetFillRule {
+        shapes: vec![id],
+        rule: tracedraw_core::shaping::FillRule::NonZero,
+    });
+    let bar = rect(&mut app, 25.0, 25.0, 40.0, 40.0);
+    app.select(vec![id, bar]);
+    app.shaping(Shaping::Simplify);
+    let s = app.doc().shape_on_page(id).expect("the curve");
+    // 900 filled, less the 5 x 5 corner under the bar.
+    let area = shape_area(&s);
+    assert!(near(area, 875.0, 1e-6), "{area}");
+}
+
+/// Create Boundary with a picture selected, alone or with a curve, the
+/// picture as target: a plain outline with no fill round what is
+/// selected, as for other objects. It gave the picture cropped to the
+/// outline, a second picture (#3253).
+#[test]
+fn boundary_of_a_picture_is_an_outline() {
+    let picture = |app: &mut App| {
+        app.new_shape(ShapeKind::Bitmap {
+            rect: Rect::new(30.0, 0.0, 70.0, 40.0),
+            width_px: 2,
+            height_px: 2,
+            png: Vec::<u8>::new().into(),
+            fx: None,
+        })
+        .expect("picture")
+    };
+    let with_curve = |app: &mut App| {
+        let r = rect(app, 0.0, 0.0, 40.0, 40.0);
+        vec![r, picture(app)]
+    };
+    let alone = |app: &mut App| vec![picture(app)];
+    for (name, build, area) in [
+        (
+            "with a curve",
+            &with_curve as &dyn Fn(&mut App) -> Vec<ShapeId>,
+            2800.0,
+        ),
+        ("alone", &alone as &dyn Fn(&mut App) -> Vec<ShapeId>, 1600.0),
+    ] {
+        let (got, made, _) = run(build, Shaping::Boundary, &as_built).expect(name);
+        assert_eq!(made.len(), 1, "{name}");
+        assert!(
+            matches!(made[0].kind, ShapeKind::Path { closed: true, .. }),
+            "{name}: {:?}",
+            made[0].kind
+        );
+        assert!(matches!(made[0].fill, Fill::None), "{name}");
+        assert!(made[0].stroke.is_some(), "{name}: an outline");
+        assert!(near(got, area, 1.0), "{name}: area {got}");
+    }
+}

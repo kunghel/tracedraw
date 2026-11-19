@@ -117,6 +117,13 @@ it stay as they are.
 The new object goes on top of the active layer and is selected. A click on an
 outline, or in an area that nothing encloses, makes nothing.
 
+With **Up to outline edges** on the property bar, outlines count as wide as
+they are drawn: the area stops at their inner edges, and lines that only touch
+through their width still close it.
+
+Inside a [symmetry](../objects/symmetry.md), a click in one copy fills the same
+area in every copy: the new object becomes part of the symmetry.
+
 ## Mesh fills {#mesh-fill}
 
 A mesh fill is a grid of nodes over an object, each node with its own color
@@ -136,6 +143,12 @@ The property bar also has **Smooth color**, which blends the colors more
 softly, the **transparency** of the selected node, and **Clear mesh**, which
 removes the mesh fill. Changing the rows and columns of a mesh keeps its
 colors.
+
+For a quick colorful background, choose a color set in the **Colors** list
+(Aurora, Sunset, Ocean, Candy, Forest, Neon or the document palette) and
+click **Shuffle**: every selected object gets a random mesh of those colors,
+with its nodes nudged off the grid. Click again for another mix, or undo to
+go back.
 
 ## Pattern and texture fills {#pattern-texture}
 

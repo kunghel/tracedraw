@@ -28,8 +28,8 @@
 
 use crate::parse::{
     ARG_CLIP_CONTENTS, ARG_COORDS, ARG_FILL, ARG_GUIDE_LINE, ARG_NAME, ARG_OPACITY, ARG_OUTLINE,
-    ARG_STYLE, ARG_STYLE_STRING, OBJ_ARTISTIC_TEXT, OBJ_BITMAP, OBJ_CURVE, OBJ_ELLIPSE, OBJ_GUIDE,
-    OBJ_PARAGRAPH_TEXT, OBJ_RECT,
+    ARG_STYLE, ARG_STYLE_STRING, ARG_SYMBOL, OBJ_ARTISTIC_TEXT, OBJ_BITMAP, OBJ_CURVE, OBJ_ELLIPSE,
+    OBJ_GUIDE, OBJ_PARAGRAPH_TEXT, OBJ_RECT,
 };
 use std::collections::HashMap;
 use std::io::Write as _;
@@ -187,6 +187,14 @@ pub fn document_to_cdr_version_with(doc: &Document, version: u16, previews: &Pre
     }
     if let Some(b) = crate::kept_effects::encode(&w.effects) {
         own.push((crate::kept_effects::MEMBER, b));
+    }
+    // Object data, a clone's link to its master among it (#2879).
+    if let Some(b) = crate::kept_data::encode(doc, &w.static_ids) {
+        own.push((crate::kept_data::MEMBER, b));
+    }
+    // The palette, inks and styles, which have no record written yet.
+    if let Some(b) = crate::kept_document::encode(doc) {
+        own.push((crate::kept_document::MEMBER, b));
     }
     let out = if v.redirects() {
         let (root, files) = pack_redirected(v, &tree);
@@ -351,6 +359,23 @@ const CLIP_CONTAINER_FLAG: u8 = 0x10;
 /// The flags of a drawing's own layer (byte 3: a layer; byte 0 the kind,
 /// byte 2 set on a master layer).
 const PLAIN_LAYER_FLAGS: [u8; 4] = [0, 0, 0, 0x98];
+/// The flags of a drawing's own layer from version 16: bit 0 of byte 1
+/// hides it, 0x10 in byte 0 locks it and 0x08 keeps it from print and
+/// export, as files of version 27 hold them (`docs/cdr-format.md`,
+/// "Modern saved states", #2850).
+fn layer_state_flags(l: &tracedraw_core::document::Layer) -> [u8; 4] {
+    let mut f = PLAIN_LAYER_FLAGS;
+    if l.locked {
+        f[0] |= 0x10;
+    }
+    if !l.printable {
+        f[0] |= 0x08;
+    }
+    if !l.visible {
+        f[1] |= 1;
+    }
+    f
+}
 /// Layer kinds stored as the `loda` object type of a layer.
 const LAYER_PLAIN: u32 = 0;
 const LAYER_GRID: u32 = 0x0b;
@@ -1398,10 +1423,19 @@ const DOC_PALETTE_XML: &str = "<?xml version=\"1.0\"?>\r\n<palette guid=\"3f8e2a
 
 /// `color/color.xml` naming the document's CMYK profile, when it carries
 /// one (stored under `color/profiles/cmyk/`), before the colour model, as
-/// files with profiles have it.
+/// files with profiles have it. The colour model is the document's
+/// primary colour mode: an RGB document was written as a CMYK one, and
+/// a reader showed what it could not read as an object's own colour (the
+/// contents of a clip frame under the colour eyedropper) in CMYK (#3425).
 fn color_xml(doc: &Document) -> String {
+    let xml = match doc.metadata.primary_color_mode {
+        tracedraw_core::document::PrimaryColorMode::Rgb => {
+            COLOR_XML.replacen("<ColorModel>Cmyk<", "<ColorModel>Rgb<", 1)
+        }
+        tracedraw_core::document::PrimaryColorMode::Cmyk => COLOR_XML.to_string(),
+    };
     match &doc.cmyk_profile {
-        Some(p) => COLOR_XML.replacen(
+        Some(p) => xml.replacen(
             "<ColorContext>",
             &format!(
                 "<ColorContext><ColorProfile id=\"Cmyk\">{}</ColorProfile>",
@@ -1409,7 +1443,7 @@ fn color_xml(doc: &Document) -> String {
             ),
             1,
         ),
-        None => COLOR_XML.to_string(),
+        None => xml,
     }
 }
 
@@ -1708,6 +1742,12 @@ fn fountain_type(kind: FountainKind) -> u8 {
         // A shaped gradient is written as a square one (`Fountain::to_plain`).
         FountainKind::Square | FountainKind::Shaped => 4,
     }
+}
+
+/// [`fild`] for the reader's tests: a fill record of version `v`.
+#[cfg(test)]
+pub(crate) fn fild_of_version(v: u16, id: u32, fill: &Fill) -> Vec<u8> {
+    fild(Ver(v), id, fill)
 }
 
 /// `fild`: a fill record. See `docs/cdr-format.md` for both layouts.
@@ -2887,7 +2927,7 @@ fn stlt(v: Ver, uses: StyleUses) -> Vec<u8> {
     let name = |t: &mut Buf, s: &str| {
         let s = if v.redirects() { "" } else { s };
         if v.unicode() {
-            t.u32(s.chars().count() as u32).bytes(&utf16(s));
+            t.u32(s.encode_utf16().count() as u32).bytes(&utf16(s));
         } else {
             let b = cp1252(s).unwrap_or_else(|| s.bytes().filter(|c| c.is_ascii()).collect());
             t.u32(b.len() as u32 + 1).bytes(&b).u8(0);
@@ -3145,10 +3185,16 @@ fn curve_coords_typed(
             PathEl::LineTo(p) => {
                 // A line of no length (a file of an earlier version read
                 // back: a curve to the start, then the closing line) is
-                // left out.
-                let q = (units(p.x), units(p.y));
+                // left out. A subpath that is only such a line (the
+                // extension lines of a dimension, as files have them)
+                // keeps a line of one unit instead: left out, the object
+                // was lost on saving.
+                let mut q = (units(p.x), units(p.y));
                 if pts.len() > last_start && pts.last() == Some(&q) {
-                    continue;
+                    if pts.len() > last_start + 1 {
+                        continue;
+                    }
+                    q.0 = q.0.saturating_add(1);
                 }
                 pts.push(q);
                 types.push(0x40 | node_bits(i));
@@ -3891,6 +3937,14 @@ struct Writer<'a> {
     clip_groups: Vec<Node>,
     clip_container: Option<u32>,
     clip_depth: usize,
+    /// Live symbols (version 14 on, #3250): the definitions written, the
+    /// groups of the document's `LIST sytr`; each symbol's number (its
+    /// group's `spnd`) and the box its definition covers, by its index in
+    /// the document's symbols; the symbols being written (one that draws
+    /// itself goes out drawn).
+    symbol_groups: Vec<Node>,
+    symbol_numbers: HashMap<usize, (u32, Rect)>,
+    symbols_writing: Vec<usize>,
     /// The faces the text uses, with their font files (see
     /// [`Previews::fonts`]), and what [`fonts::split_family`] said for
     /// each family named with a weight.
@@ -4032,6 +4086,9 @@ impl<'a> Writer<'a> {
             clip_groups: Vec::new(),
             clip_container: None,
             clip_depth: 0,
+            symbol_groups: Vec::new(),
+            symbol_numbers: HashMap::new(),
+            symbols_writing: Vec::new(),
             next_object: 1,
             graded: std::collections::HashMap::new(),
             next_fill: 1,
@@ -4402,6 +4459,21 @@ impl<'a> Writer<'a> {
         if !self.clip_groups.is_empty() {
             docl.push(list(b"clpt", std::mem::take(&mut self.clip_groups)));
         }
+        // The symbols' definitions and the table naming each symbol's
+        // group (#3250): entries of a zero, the symbol's number and its
+        // group's `spnd` (the same number here), as the reader takes them.
+        if !self.symbol_groups.is_empty() {
+            docl.push(list(b"sytr", std::mem::take(&mut self.symbol_groups)));
+            let mut numbers: Vec<u32> = self.symbol_numbers.values().map(|(n, _)| *n).collect();
+            numbers.sort_unstable();
+            let mut table = Vec::with_capacity(numbers.len() * 12);
+            for n in numbers {
+                table.extend_from_slice(&0u32.to_le_bytes());
+                table.extend_from_slice(&n.to_le_bytes());
+                table.extend_from_slice(&n.to_le_bytes());
+            }
+            docl.push(chunk(b"sblk", table));
+        }
         if !v.zip() {
             // RIFF files (before version 14) end the document tables
             // with an empty `uil` list.
@@ -4707,8 +4779,22 @@ impl<'a> Writer<'a> {
         if v.zip() {
             // Front to back, as files list them.
             for layer in page.layers.iter().rev() {
-                let objects = self.layer_objects(layer, centre, &mut content);
-                layers.push(self.layer(PLAIN_LAYER_FLAGS, LAYER_PLAIN, &layer.name, objects));
+                // From version 16 a layer's state is a flag, as the
+                // files' own layers carry it (#2850): a hidden layer
+                // keeps its objects. Before, it goes out empty.
+                let (flags, objects) = if v.style_strings() {
+                    let objects = self.objects(&layer.shapes, centre, 0);
+                    if let (true, Some(b)) = (layer.visible, objects.bounds) {
+                        content = Some(content.map_or(b, |c| c.union(b)));
+                    }
+                    (layer_state_flags(layer), objects.nodes)
+                } else {
+                    (
+                        PLAIN_LAYER_FLAGS,
+                        self.layer_objects(layer, centre, &mut content),
+                    )
+                };
+                layers.push(self.layer(flags, LAYER_PLAIN, &layer.name, objects));
             }
         } else {
             let slots = std::mem::take(&mut self.layer_slots);
@@ -5132,6 +5218,85 @@ impl<'a> Writer<'a> {
         nodes.push(list(b"lnkg", body));
         nodes.extend(p2.nodes);
         Placed { nodes, bounds }
+    }
+
+    /// The number of symbol `index` (#3250), its definition written
+    /// into the document's `LIST sytr` the first time: a group numbered
+    /// by its `spnd`, the symbol's name in argument 19201 (a UTF-16 name
+    /// at byte 548, as the reader takes it), the definition's objects at
+    /// their own place. `None` when the symbol is missing, draws nothing
+    /// or draws itself; the instance then goes out drawn.
+    fn symbol_number(&mut self, index: usize, centre: Point, depth: usize) -> Option<(u32, Rect)> {
+        if let Some(found) = self.symbol_numbers.get(&index) {
+            return Some(*found);
+        }
+        if self.symbols_writing.contains(&index) {
+            return None;
+        }
+        let symbol = self.symbols.get(index)?;
+        let (shape, name) = (symbol.shape.clone(), symbol.name.clone());
+        self.symbols_writing.push(index);
+        let inner = self.objects(std::slice::from_ref(&shape), centre, depth + 1);
+        self.symbols_writing.pop();
+        let b = inner.bounds?;
+        let number = self.next_spnd;
+        self.next_spnd += 1;
+        let mut record = vec![0u8; 548];
+        for u in name.encode_utf16().take(255).chain([0]) {
+            record.extend_from_slice(&u.to_le_bytes());
+        }
+        // 1580 bytes, as the definitions of the version 15 file seen.
+        record.resize(record.len().max(1580), 0);
+        let mut body = vec![chunk(b"spnd", number.to_le_bytes().to_vec())];
+        body.extend(self.head([0, 0, 0, 0x10], b, 0.0, centre));
+        body.push(list(
+            b"lgob",
+            vec![chunk(
+                b"loda",
+                loda(0, vec![(ARG_PROPS, vec![0; 4]), (ARG_SYMBOL, record)]),
+            )],
+        ));
+        body.extend(inner.nodes);
+        self.symbol_groups.push(list(b"grp ", body));
+        self.symbol_numbers.insert(index, (number, b));
+        Some((number, b))
+    }
+
+    /// A live symbol instance (version 14 on, #3250): a `LIST symb`
+    /// naming its symbol's number, its `trfd` placing the definition as
+    /// the instance's transform does (about the page centre, the file's
+    /// origin), its name as a group's.
+    fn symbol_instance(
+        &mut self,
+        s: &Shape,
+        index: usize,
+        centre: Point,
+        depth: usize,
+    ) -> Option<Placed> {
+        let (number, def_box) = self.symbol_number(index, centre, depth)?;
+        let to_file = Affine::translate(-centre.to_vec2());
+        let own = to_file * s.transform * to_file.inverse();
+        let b = s.transform.transform_rect_bbox(def_box);
+        let id = self.next_object;
+        self.next_object += 1;
+        let mut args = vec![(ARG_ID, id.to_le_bytes().to_vec()), (ARG_PROPS, vec![0; 4])];
+        if let Some(n) = s.name.as_deref().filter(|n| !n.is_empty()) {
+            args.push((ARG_NAME, name_bytes(self.v, n)));
+        }
+        let mut body = vec![chunk(b"spnd", number.to_le_bytes().to_vec())];
+        // The flags of the instances of the version 15 file seen.
+        body.extend(self.head([0, 0, 8, 0x20], b, 0.0, centre));
+        body.push(list(
+            b"lgob",
+            vec![
+                chunk(b"loda", loda(0, args)),
+                list(b"trfl", vec![chunk(b"trfd", trfd(self.v, own))]),
+            ],
+        ));
+        Some(Placed {
+            nodes: vec![list(b"symb", body)],
+            bounds: Some(b),
+        })
     }
 
     /// A group list of `children`, named `name` (argument 1000 of its
@@ -5655,6 +5820,45 @@ impl<'a> Writer<'a> {
             plain.raster_fx = None;
             return self.drawn_as(s, vec![plain], 0, None, centre, depth);
         }
+        // An object holding what these files cannot hold yet (a pattern,
+        // texture, PostScript or mesh fill, fountain options, an outline
+        // fill, arrowheads, overprint) goes out with stand-ins: the fill
+        // as one colour or the nearest plain fountain, the arrowheads as
+        // curves above the line in the outline's colour, which `outl`
+        // has no place for. From version 14 the package's own member
+        // keeps the object, so it opens here as it was saved.
+        if self.drawing_effects == 0 && s.effects.is_empty() && crate::kept_effects::not_held(s) {
+            let shadow = s.shadow.as_ref().and_then(|_| self.shadow_picture(s));
+            let mut plain = s.clone();
+            plain.shadow = None;
+            let mut heads = Vec::new();
+            if let Some(st) = plain.stroke.as_mut() {
+                if crate::kept_effects::has_arrowheads(st) {
+                    for head in tracedraw_core::arrowhead_paths(&s.page_path(), st) {
+                        let mut h = Shape::new(
+                            // No object of the drawing: the line keeps its
+                            // static id.
+                            tracedraw_core::ShapeId(u64::MAX),
+                            ShapeKind::Path {
+                                path: head,
+                                closed: true,
+                            },
+                        );
+                        h.fill = Fill::Solid(st.color);
+                        h.stroke = None;
+                        h.visible = s.visible;
+                        h.locked = s.locked;
+                        h.overprint_fill = s.overprint_outline;
+                        heads.push(h);
+                    }
+                    st.start_arrow = tracedraw_core::Arrowhead::None;
+                    st.end_arrow = tracedraw_core::Arrowhead::None;
+                }
+            }
+            let mut all = vec![plain];
+            all.extend(heads);
+            return self.drawn_as(s, all, 0, shadow, centre, depth);
+        }
         // An object with live effects goes out as what they draw, and its
         // drop shadow as a picture of it beneath it (the caller's, or one
         // drawn here). From version 14 the package's own member keeps the
@@ -5810,6 +6014,20 @@ impl<'a> Writer<'a> {
                         // A group's transparency is written on each object
                         // it holds.
                         c.absorb_opacity(s.opacity);
+                        c
+                    })
+                    .collect();
+                return self.group(&kids, s.name.as_deref(), centre, depth);
+            }
+            ShapeKind::SymbolInstance { index } if v.zip() && s.effects.is_empty() => {
+                if let Some(placed) = self.symbol_instance(s, *index, centre, depth) {
+                    return placed;
+                }
+                let kids: Vec<Shape> = s
+                    .expand(self.symbols)
+                    .into_iter()
+                    .map(|mut c| {
+                        c.absorb(s.transform);
                         c
                     })
                     .collect();
@@ -6085,22 +6303,34 @@ impl<'a> Writer<'a> {
             }
             _ => {
                 let coords = match &s.kind {
-                    // Before version 16 no file seen holds a fill rule: a
-                    // curve that fills nonzero (#1919) goes out as the
+                    // A curve that fills nonzero (#1919) goes out as the
                     // outline of the area it covers, which fills the same
-                    // under the even-odd rule those versions draw with.
+                    // under the even-odd rule: before version 16 no file
+                    // seen holds a fill rule, and from 16 the program that
+                    // reads the files still filled such curves even-odd,
+                    // with holes where their parts overlap, although
+                    // their style strings hold `winding` "1" (#2733). The
+                    // winding stays in the style string, so TraceDraw
+                    // reads the curve back as nonzero.
+                    // A curve the merge leaves as it is (no contours
+                    // overlapping one turning the same way) keeps its
+                    // chosen node types, as any other curve.
                     ShapeKind::Path { path, .. }
-                        if v.0 < 16
-                            && s.fill_rule == tracedraw_core::shaping::FillRule::NonZero
+                        if s.fill_rule == tracedraw_core::shaping::FillRule::NonZero
                             && !matches!(s.fill, Fill::None) =>
                     {
-                        curve_coords(&tracedraw_core::shaping::nonzero_as_even_odd(path))
+                        let merged = tracedraw_core::shaping::nonzero_as_even_odd(path);
+                        if merged == *path {
+                            curve_coords_typed(path, &s.node_types)
+                        } else {
+                            curve_coords(&merged)
+                        }
                     }
                     ShapeKind::Path { path, .. } => curve_coords_typed(path, &s.node_types),
-                    // The outline of a text fitted to a path fills nonzero
-                    // as the text does (#2733): before 16 as the area it
-                    // covers, from 16 with the style string's winding.
-                    ShapeKind::Text { .. } if v.0 < 16 => curve_coords(
+                    // The outline of a text fitted to a path, or bent,
+                    // fills nonzero as the text does (#2733): written as
+                    // the area it covers, in every version.
+                    ShapeKind::Text { .. } => curve_coords(
                         &tracedraw_core::shaping::nonzero_as_even_odd(&s.local_path()),
                     ),
                     _ => curve_coords(&s.local_path()),
@@ -6230,7 +6460,7 @@ impl<'a> Writer<'a> {
         let mut records: Vec<(usize, Option<String>)> = vec![(1, None)];
         let mut record_of_run = Vec::with_capacity(runs.len());
         for sp in runs {
-            let letters = sp.text.chars().count();
+            let letters = sp.text.encode_utf16().count();
             let own = json(sp);
             let k = if letters == 0 || Some(&own) == base.as_ref() {
                 0
@@ -6283,6 +6513,23 @@ impl<'a> Writer<'a> {
     ) -> Vec<u8> {
         let v = self.v;
         let n = v.0;
+        // Before 12 the letters are Windows-1252, which has no line
+        // separator: a line break inside a paragraph (U+2028) goes out as
+        // a paragraph break, the nearest the format holds, instead of a
+        // "?" that also turned every other letter beyond ASCII into one.
+        let broken: Vec<TextSpan>;
+        let spans = if !v.unicode() && spans.iter().any(|s| s.text.contains('\u{2028}')) {
+            broken = spans
+                .iter()
+                .map(|s| TextSpan {
+                    text: s.text.replace('\u{2028}', "\n"),
+                    ..s.clone()
+                })
+                .collect();
+            &broken[..]
+        } else {
+            spans
+        };
         // As files of versions 7 to 15 hold artistic text: -1, -1, 0, -1,
         // 8, a number growing with the version (2 in 7, 4 in 8 (both
         // variants), 4 in 9, 5 in 10 and 11, 6 in 12, 8 in 13, 9 in 14, 11
@@ -6403,7 +6650,7 @@ impl<'a> Writer<'a> {
                     }
                 };
                 if let Some(r) = records.get_mut(index) {
-                    r.3 += sp.text.chars().count() + end;
+                    r.3 += sp.text.encode_utf16().count() + end;
                 }
                 record_of_run.push(index);
             }
@@ -6449,9 +6696,12 @@ impl<'a> Writer<'a> {
             for (ri, sp) in runs.iter().enumerate() {
                 text.push_str(&sp.text);
                 let number = record_of_run.get(ri).copied().unwrap_or(0).min(127) as u8;
-                record_of_letter.extend(std::iter::repeat_n(number, sp.text.chars().count()));
+                record_of_letter
+                    .extend(std::iter::repeat_n(number, sp.text.encode_utf16().count()));
             }
-            let chars = text.chars().count();
+            // A letter is a UTF-16 unit: a letter beyond U+FFFF (an emoji,
+            // a mathematical letter) is two, a surrogate pair.
+            let chars = text.encode_utf16().count();
             if v.unicode() {
                 // From version 12 a letter of U+0000 to U+00FF is one byte
                 // (its code point) unless bit 0 of the first byte of its
@@ -6462,7 +6712,12 @@ impl<'a> Writer<'a> {
                 // dashes, the euro) go out marked too (#2124).
                 let mut descriptions = Buf::default();
                 let mut bytes = Vec::new();
-                for (i, c) in text.chars().enumerate() {
+                let units = text.chars().flat_map(|c| {
+                    let mut pair = [0u16; 2];
+                    let n = c.encode_utf16(&mut pair).len();
+                    (0..n).map(move |k| (c, pair[k]))
+                });
+                for (i, (c, unit)) in units.enumerate() {
                     let number = record_of_letter.get(i).copied().unwrap_or(0);
                     match text_byte(c) {
                         Some(b) => {
@@ -6470,11 +6725,6 @@ impl<'a> Writer<'a> {
                             bytes.push(b);
                         }
                         None => {
-                            let unit = if (c as u32) <= 0xffff {
-                                c as u16
-                            } else {
-                                b'?' as u16
-                            };
                             descriptions.u8(1).u8(0).u8(number << 1).zeros(5);
                             bytes.extend_from_slice(&unit.to_le_bytes());
                         }
@@ -6652,7 +6902,7 @@ impl<'a> Writer<'a> {
             let mut index = Vec::new();
             for (sp, k) in runs.iter().zip(&looks.record_of_run) {
                 text.push_str(&sp.text);
-                index.extend(std::iter::repeat_n(*k, sp.text.chars().count()));
+                index.extend(std::iter::repeat_n(*k, sp.text.encode_utf16().count()));
             }
             t.u32(index.len() as u32);
             // The letters are one byte each from version 16 (files saved
@@ -6664,9 +6914,15 @@ impl<'a> Writer<'a> {
             // dashes and euro Windows-1252 puts in 0x80 to 0x9f, #2124):
             // bit 0 of its record's flags marks it as a UTF-16 unit of two
             // bytes, as from version 12 (#368). A letter beyond the 16-bit
-            // range goes out as "?".
+            // range is two letters, a surrogate pair of marked units; it
+            // went out as "?" (an emoji, a mathematical letter).
             let mut bytes = Vec::new();
-            for (c, k) in text.chars().zip(&index) {
+            let units = text.chars().flat_map(|c| {
+                let mut pair = [0u16; 2];
+                let n = c.encode_utf16(&mut pair).len();
+                (0..n).map(move |k| (c, pair[k]))
+            });
+            for ((c, unit), k) in units.zip(&index) {
                 let one = if v.0 >= 16 { text_byte(c) } else { None };
                 let wide = one.is_none();
                 t.u16(u16::from(wide && v.0 >= 16))
@@ -6674,14 +6930,7 @@ impl<'a> Writer<'a> {
                     .zeros(5);
                 match one {
                     Some(b) => bytes.push(b),
-                    None => {
-                        let unit = if (c as u32) <= 0xffff {
-                            c as u16
-                        } else {
-                            u16::from(b'?')
-                        };
-                        bytes.extend_from_slice(&unit.to_le_bytes());
-                    }
+                    None => bytes.extend_from_slice(&unit.to_le_bytes()),
                 }
             }
             t.u32(bytes.len() as u32).bytes(&bytes).u8(0);

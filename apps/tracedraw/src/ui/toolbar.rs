@@ -1098,6 +1098,25 @@ pub fn zoom_toolbar(app: &mut App, ui: &mut Ui) {
     });
 }
 
+/// A toolbar the user made (#3264): the buttons dragged onto it, menu
+/// commands named in words when they have no picture; while it has none,
+/// a line saying how to give it some (which is also where they drop).
+pub fn custom_toolbar(app: &mut App, ui: &mut Ui, slot: u8) {
+    let bar = crate::ui::bar_items::ItemBar::Custom(slot);
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 1.0;
+        ui.set_min_height(std_btn());
+        if crate::ui::bar_items::items(app, bar).is_empty() {
+            ui.label(
+                egui::RichText::new(tr("bars.custom_bar_empty"))
+                    .color(Tokens::text_dim())
+                    .size(11.0),
+            );
+        }
+        crate::ui::bar_items::draw_bar(app, ui, bar, draw_item);
+    });
+}
+
 /// Window > Toolbars > Transform.
 pub fn transform_toolbar(app: &mut App, ui: &mut Ui) {
     ui.horizontal(|ui| {
@@ -1188,6 +1207,48 @@ fn balloon_bar(app: &mut App, ui: &mut Ui) {
     .changed()
     {
         app.set_balloon_settings(|_, _, b| *b = bend);
+    }
+}
+
+/// The Shape Builder's bar (#3220): Add or Delete, what a drag or a click
+/// does with the parts (Alt does the other); Keep Originals, a merge
+/// leaving the objects it came from as they were; Accept, the shapes
+/// built kept and back to the Pick tool; Cancel, the tool's steps since
+/// it was chosen undone.
+fn shape_builder_bar(app: &mut App, ui: &mut Ui) {
+    if ui
+        .selectable_label(!app.builder.delete_mode, tr("toolbar.builder_add"))
+        .rich_tip(crate::ui::tips::keyed("toolbar.builder_add"))
+        .clicked()
+    {
+        app.builder.delete_mode = false;
+    }
+    if ui
+        .selectable_label(app.builder.delete_mode, tr("toolbar.builder_delete"))
+        .rich_tip(crate::ui::tips::keyed("toolbar.builder_delete"))
+        .clicked()
+    {
+        app.builder.delete_mode = true;
+    }
+    vsep(ui);
+    ui.checkbox(&mut app.builder.keep_originals, tr("toolbar.builder_keep"))
+        .rich_tip(crate::ui::tips::keyed("toolbar.builder_keep"));
+    vsep(ui);
+    let made = app.builder.session_steps > 0;
+    if ui
+        .button(tr("toolbar.builder_accept"))
+        .rich_tip(crate::ui::tips::keyed("toolbar.builder_accept"))
+        .clicked()
+    {
+        app.builder_accept();
+    }
+    if ui
+        .add_enabled(made, egui::Button::new(tr("toolbar.builder_cancel")))
+        .rich_tip(crate::ui::tips::keyed("toolbar.builder_cancel"))
+        .rich_disabled_tip(crate::ui::tips::keyed("toolbar.builder_cancel"))
+        .clicked()
+    {
+        app.builder_cancel();
     }
 }
 
@@ -1600,6 +1661,7 @@ pub fn property_bar(app: &mut App, ui: &mut Ui) {
             Tool::Extrude => crate::ui::extrude_bar::extrude_bar(app, ui),
             Tool::Envelope => crate::ui::envelope_ui::envelope_bar(app, ui),
             Tool::Distort => crate::ui::distort_bar::distort_bar(app, ui),
+            Tool::ShapeBuilder => shape_builder_bar(app, ui),
             Tool::Eraser => {
                 let mut w = app.units.from_mm(app.eraser_width);
                 if dim_labelled(ui, "toolbar.eraser_thickness", |ui| {
@@ -1826,6 +1888,19 @@ pub fn property_bar(app: &mut App, ui: &mut Ui) {
                     tr("toolbar.sample_after_apply"),
                 )
                 .rich_tip(crate::ui::tips::keyed("toolbar.sample_after_apply"));
+                // The next click anywhere in the window, the panels and
+                // bars too, samples the colour shown there (#3040).
+                if ui
+                    .selectable_label(app.eyedropper_screen, tr("toolbar.sample_screen"))
+                    .rich_tip(crate::ui::tips::keyed("toolbar.sample_screen"))
+                    .clicked()
+                {
+                    app.eyedropper_screen = !app.eyedropper_screen;
+                    if app.eyedropper_screen {
+                        app.eyedropper_apply = false;
+                        app.status = tr("status.sample_screen");
+                    }
+                }
                 vsep(ui);
                 dim_labelled(ui, "toolbar.sample_size", |ui| {
                     for n in [1u32, 2, 5] {
@@ -2027,6 +2102,8 @@ pub fn property_bar(app: &mut App, ui: &mut Ui) {
                 }
             }
         }
+        // Draw Inside on the bars of the tools that draw (#3407).
+        crate::draw_inside::draw_inside_toggle(app, ui);
     });
 }
 
@@ -3028,6 +3105,23 @@ fn shape_tool_bar(app: &mut App, ui: &mut Ui) {
     if button(ui, Pic::ToCurve, "toolbar.to_curve_tip", has_nodes, false) {
         app.selected_segments_to_curve();
     }
+    // Bulge: the chosen segments bow into arcs by a percentage, on any
+    // curve, as a rectangle's Edge Bulge bows its sides (#3335).
+    dim_labelled(ui, "toolbar.segment_bulge", |ui| {
+        ui.add(
+            crate::ui::field::NumField::new(&mut app.segment_bulge)
+                .range(-100.0..=100.0)
+                .suffix(" %"),
+        )
+    });
+    if ui
+        .add_enabled(has_nodes, egui::Button::new(tr("toolbar.apply_bulge")))
+        .rich_tip(crate::ui::tips::keyed("toolbar.apply_bulge"))
+        .rich_disabled_tip(crate::ui::tips::keyed("toolbar.apply_bulge"))
+        .clicked()
+    {
+        app.bulge_selected_segments();
+    }
     sep(ui);
     let current = app.current_node_type();
     for (ty, pic, tip) in [
@@ -3290,7 +3384,7 @@ fn interactive_fill_bar(app: &mut App, ui: &mut Ui, shapes: &[tracedraw_core::do
         if clicked && kind != i {
             let base = fill
                 .preview_color()
-                .unwrap_or(tracedraw_core::Color::cmyk_pct(0.0, 0.0, 0.0, 20.0));
+                .unwrap_or(app.doc().metadata.primary_color_mode.gray(20.0));
             fill = match i {
                 0 => Fill::None,
                 1 => Fill::Solid(base),
@@ -3984,6 +4078,24 @@ fn inner_shadow_bar(app: &mut App, ui: &mut Ui) {
     let has_selection = !app.selection.is_empty();
     let (mut offset, mut st) = current.unwrap_or((CVec2::new(2.0, -2.0), app.inner_shadow));
     let mut changed = false;
+    // Apply where the Drop Shadow bar has it, after the tool buttons, and
+    // always there (greyed while the object has one), so it is not lost
+    // past the end of a narrow bar (#3353).
+    ui.label(
+        egui::RichText::new(tr("effect.inner_shadow"))
+            .color(Tokens::text_dim())
+            .size(11.0),
+    );
+    let apply = ui
+        .add_enabled(
+            has_selection && current.is_none(),
+            egui::Button::new(tr("docker.apply")),
+        )
+        .rich_tip(crate::ui::tips::pair(
+            "docker.apply",
+            "toolbar.apply_inner_shadow_desc",
+        ))
+        .clicked();
     let mut dx = offset.x;
     let mut dy = offset.y;
     changed |= dim_labelled_as(
@@ -4069,18 +4181,10 @@ fn inner_shadow_bar(app: &mut App, ui: &mut Ui) {
             app.push_effect(effect.clone(), true);
         }
     }
-    vsep(ui);
-    if current.is_none()
-        && ui
-            .add_enabled(
-                has_selection,
-                egui::Button::new(tr("toolbar.apply_inner_shadow")),
-            )
-            .rich_tip(crate::ui::tips::keyed("toolbar.apply_inner_shadow"))
-            .clicked()
-    {
+    if apply {
         app.push_effect(effect.clone(), true);
     }
+    vsep(ui);
     if ui
         .add_enabled(
             current.is_some(),
@@ -4397,6 +4501,57 @@ mod tests {
     use super::*;
     use crate::ui::dialogs::Dialog;
 
+    /// #3352: with the Speech Balloon tool and a balloon selected, a
+    /// click on another style in the property bar turns that balloon to
+    /// the style, keeping its box and the tip of its tail.
+    #[test]
+    fn a_style_clicked_on_the_bar_changes_the_selected_balloon() {
+        use crate::balloons::{Balloon, BalloonStyle};
+        let mut app = App::headless();
+        app.set_tool(Tool::Balloon);
+        app.create_box_shape(
+            tracedraw_core::geometry::Point::new(10.0, 50.0),
+            tracedraw_core::geometry::Point::new(50.0, 70.0),
+        );
+        let (id, before, _) = app.selected_balloons()[0];
+        let ctx = crate::theme::ui_context();
+        let screen = egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(6000.0, 60.0));
+        let run = |app: &mut App, events: Vec<egui::Event>| {
+            let mut out = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(screen),
+                    events,
+                    ..Default::default()
+                },
+                |ui| property_bar(app, ui),
+            );
+            out.textures_delta.clear();
+            out.shapes.iter().find_map(|c| match &c.shape {
+                egui::epaint::Shape::Text(t) if t.galley.text() == tr("balloon.thought") => {
+                    Some(t.visual_bounding_rect().center())
+                }
+                _ => None,
+            })
+        };
+        run(&mut app, Vec::new());
+        let at = run(&mut app, Vec::new()).expect("the Thought style on the bar");
+        let press = |pressed| egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        run(&mut app, vec![egui::Event::PointerMoved(at)]);
+        run(&mut app, vec![press(true)]);
+        run(&mut app, vec![press(false)]);
+        run(&mut app, Vec::new());
+        let s = app.doc().find_shape(id).expect("balloon");
+        let after = Balloon::of(s).expect("still a balloon");
+        assert_eq!(after.style, BalloonStyle::Thought, "the selected balloon");
+        assert_eq!(after.body, before.body, "same box");
+        assert_eq!(after.tip, before.tip, "same tail tip");
+    }
+
     /// #1892: with a drawing tool and nothing selected, the property bar
     /// shows the outline of the next object (width, line style,
     /// arrowheads) and follows the defaults when they change.
@@ -4589,6 +4744,48 @@ mod tests {
         );
         assert_eq!(app.nudge_mm, 1.5);
         assert_eq!(app.settings.micro_nudge_mm, 0.125);
+    }
+
+    /// The Inner Shadow bar has Apply where the Drop Shadow bar has it,
+    /// right after the tool buttons; it gives the selected object an
+    /// inner shadow and stays on the bar, greyed, once it has one (#3353).
+    #[test]
+    fn the_inner_shadow_bar_applies_like_the_drop_shadow_bar() {
+        use crate::tools::Tool;
+        let ctx = crate::theme::ui_context();
+        let mut app = App::headless();
+        app.show_welcome = false;
+        app.set_tool(Tool::InnerShadow);
+        let id = app
+            .new_shape(ShapeKind::Rect {
+                rect: tracedraw_core::Rect::new(10.0, 10.0, 40.0, 30.0),
+                radius: 0.0,
+                corners: None,
+            })
+            .expect("shape");
+        app.select(vec![id]);
+        frame(&ctx, &mut app, Vec::new());
+        let texts = frame(&ctx, &mut app, Vec::new());
+        let find = |texts: &[(String, egui::Rect)], v: &str| {
+            texts.iter().find(|(t, _)| t == v).map(|(_, r)| *r)
+        };
+        let apply = find(&texts, &tr("docker.apply")).expect("Apply on the bar");
+        let offset = find(&texts, &tr("docker.offset")).expect("the offset");
+        assert!(apply.max.x < offset.min.x, "Apply before the settings");
+        assert!(app.selected_inner_shadow_at().is_none());
+        let at = apply.center();
+        let button = |pressed| egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        frame(&ctx, &mut app, vec![egui::Event::PointerMoved(at)]);
+        frame(&ctx, &mut app, vec![button(true)]);
+        frame(&ctx, &mut app, vec![button(false)]);
+        assert!(app.selected_inner_shadow_at().is_some(), "applied");
+        let texts = frame(&ctx, &mut app, Vec::new());
+        assert!(find(&texts, &tr("docker.apply")).is_some(), "still there");
     }
 
     /// Both shadow bars start with the Drop Shadow and Inner Shadow tools'

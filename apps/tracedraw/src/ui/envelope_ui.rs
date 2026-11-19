@@ -436,7 +436,9 @@ pub fn draw_envelopes(app: &App, painter: &Painter) {
             let sp = app.view.to_screen(*n);
             let size = if page.is_corner(i) { 8.0 } else { 7.0 };
             let r = Rect::from_center_size(sp, Vec2::splat(size));
-            let chosen = dragged == Some(i) || app.selected_effect_node == Some((s.id, i));
+            let chosen = dragged == Some(i)
+                || app.selected_effect_node == Some((s.id, i))
+                || app.envelope_node_chosen(s.id, i);
             painter.rect_filled(r, 0.0, if chosen { blue } else { Color32::WHITE });
             painter.rect_stroke(r, 0.0, Stroke::new(1.0, blue), egui::StrokeKind::Outside);
         }

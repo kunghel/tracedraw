@@ -28,8 +28,19 @@ curve with a thick outline takes its segment anywhere the outline
 shows, out to its edge and the pick distance beyond (#1935,
 `pick_drag_tests::nodes_and_handles_are_taken_on_their_whole_marker`,
 `pick_drag_tests::a_thick_outline_takes_a_press_on_its_segment_out_to_its_edge`).
-The arrow showing the curve's direction is off by default (Options >
-Nodes and Handles).
+The curve's direction shows on its end nodes (Options > Nodes and
+Handles > Show curve direction, on by default): the first node of every
+part is a triangle pointing the way the curve leaves it, and the last
+node of an open part a triangle pointing the way it arrives, both turned
+along the curve, straight or curved; off, the first node is an upright
+triangle and the last an ordinary node. Small arrow heads in the
+secondary colour beside the end nodes showed it before (#3038, #2578,
+`canvas::tests::the_end_nodes_point_along_the_curve`).
+Options > Nodes and Handles > Colour nodes by type (off by default,
+#3000) outlines each node in a colour for its type besides its shape:
+cusp orange, smooth green, symmetrical purple, each colour set beside
+the box; a chosen node keeps the main colour's fill
+(`canvas::node_look_tests::nodes_are_coloured_by_type_when_asked`).
 
 With several objects selected, the one picked last shows its outline in
 the node colour and the others in the secondary node colour (red by
@@ -91,6 +102,21 @@ dragged the mark stays. Over the handles framing the selected nodes
 (Stretch and Scale or Rotate and Skew Nodes) the pointer is the Pick
 tool's: resize arrows, or the turning arrow at the corners and the slant
 arrows at the sides, also while they are dragged.
+
+## Bulge
+
+The property bar's Bulge (after To Curve) bows the segments ending at
+the chosen nodes into arcs on any curve, a rectangle converted to curves,
+a polygon, a freehand or Bezier curve alike, as a live rectangle's Edge
+Bulge bows its sides (#3335). The field sets how much, -100 to 100 %
+(50 at first): 100 % is a quarter circle through the segment's two nodes,
+so a converted square bulged all round is the circle through its
+corners; a negative value bows inward. On a closed curve it bows outward,
+on an open one to the left of the way the curve runs. Straight segments
+and the closing line become curves first; the nodes stay where they are;
+one undo step ("Bulge") for all the chosen segments
+(`nodes::tests::bulged_segments_bow_into_quarter_circles`,
+`shape_tool::bulge_tests::a_converted_rectangle_bulges_like_a_live_one`).
 
 ## Right click
 
@@ -339,7 +365,7 @@ round their corners with their own handles either way.
 | Drag a chosen corner node | the chosen corners only, all by the same amount, so two or three corners round together and the others keep theirs (#671) |
 | Drag an ellipse node | pie when the pointer is inside the ellipse, arc outside; a whole ellipse's node starts at the top and the way it turns picks which end it becomes; with Ctrl held (at the press or later) the angle goes in steps of the constrain angle (15 degrees at first; a whole ellipse's node counts its turn from the top) (#1340). An arc is an open curve: with the document's Fill open curves off it draws no fill on screen, in SVG and PDF, and is picked on its outline only; a pie keeps its fill (a live test of 0.41, `kind_nodes::tests::an_ellipse_made_an_arc_draws_no_fill_unless_open_curves_are_filled`) |
 | Double-click an edge of a polygon or star | it becomes a curve and a node goes in at the spot, so no Convert to Curves is needed first (#2451, `pick_drag_tests::double_click_on_a_polygon_edge_adds_a_node`) |
-| Drag an edge of a polygon or star | on the first move it becomes a curve and the edge bends as a curve's segment does; a plain click on the edge converts nothing (#2451, `pick_drag_tests::dragging_a_polygon_edge_bends_it`) |
+| Drag an edge of a polygon or star | every side bends alike, so the shape keeps its symmetry and stays a polygon or star (its nodes, sharpness and turn still edit as before): the side grabbed bows out or in with the pointer, its middle following it across, and the others take the same curve (the bend, `ShapeKind::Polygon::bend`, is a part of each side's length, up to 2 either way; near straight it snaps straight again). Changing the points or the sharpness on the property bar or dragging the nodes keeps the bend. One undo step "Bend Sides" a drag; a plain click changes nothing. It used to turn the shape into a curve and bend the one edge only, which the reporter asked to follow on every side; a complex star still does that. Convert to Curves first for sides of their own (#2451, `pick_drag_tests::dragging_a_polygon_edge_bends_it`, `geometry::tests::bent_polygon_sides_all_take_the_same_curve`) |
 | Drag a polygon node | its mirrored nodes follow: a vertex moves every vertex in or out (the points between them stay, and keep their turn); a point between two vertices moves all of those: in or out sharpens the star, and through the centre it comes out on the far side, an inverted star (negative sharpness, down to -0.99; dragged back through the centre it is a plain star again). The pointer's turn is read on the near or the far side of the centre, whichever is nearer the turn the points had at the press, so a drag straight through inverts the star rather than turning its points half a turn; with Ctrl the side is the one the pointer is on along the kept turn. It used to stop short of the centre, sharpness held to 0.001..0.999 (#1331, `kind_nodes::tests::inner_nodes_cross_the_centre_into_an_inverted_star`). Around the centre turns them (a twisted star; within 1 degree of straight it stays untwisted; Ctrl keeps the turn they have, held at the press or later; it was read at the press for rectangle corners only, so it did nothing on a star, #1331) |
 
 Rectangles, ellipses and polygons show these nodes and the property bar

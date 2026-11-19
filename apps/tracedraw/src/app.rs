@@ -15,7 +15,8 @@ use tracedraw_core::{
 
 /// What a drag with the Free Transform tool does. Modifier keys override
 /// the mode: Alt scales, Ctrl skews, Shift reflects.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum FreeTransformMode {
     Rotation,
     Reflection,
@@ -316,6 +317,11 @@ pub struct HandleMods {
     /// proportions; side handles scale the letters of paragraph texts
     /// and tables with their frames (#1553).
     pub free: bool,
+    /// Ctrl and Alt together on a corner handle: width and height grow
+    /// or shrink by the same distance, an even border round the
+    /// selection (with Shift on every side) instead of by the same
+    /// ratio (#3330).
+    pub even: bool,
 }
 
 impl HandleMods {
@@ -324,6 +330,7 @@ impl HandleMods {
             from_center: mods.shift,
             steps: mods.ctrl,
             free: mods.alt,
+            even: mods.ctrl && mods.alt,
         }
     }
 }
@@ -403,6 +410,11 @@ pub enum Drag {
         /// snapped axis alone, so the side stays on what it snapped to
         /// (#2004).
         snapped: (bool, bool),
+        /// Where the selection stood when the handle was grabbed, built
+        /// once the handle has left the snapping radius of its start: the
+        /// handle then snaps to the selection's own nodes and edges as
+        /// they were, as a move does (#3074, #1765).
+        start_geometry: Option<std::rc::Rc<crate::snap::StillGeometry>>,
     },
     /// Skewing the selection with a side handle in rotate mode: the
     /// opposite side stays (the centre line with Shift).
@@ -499,10 +511,19 @@ pub enum Drag {
         from: Point,
         begun: bool,
     },
-    /// A press on an edge of a polygon or star (Shape tool): the first
-    /// move turns it into a curve and bends the edge grabbed (page point
-    /// the press began at); a plain click converts nothing.
-    PolygonEdge { shape: ShapeId, from: Point },
+    /// A press on an edge of a polygon or star (Shape tool, page point
+    /// the press began at): a drag bends every side the same way, the
+    /// shape staying a polygon (`start` its kind at the press, `to_local`
+    /// from the page into its own space, #2451); a complex star becomes
+    /// a curve on the first move and the edge grabbed bends. A plain
+    /// click changes nothing.
+    PolygonEdge {
+        shape: ShapeId,
+        from: Point,
+        start: ShapeKind,
+        to_local: Affine,
+        begun: bool,
+    },
     /// Dragging a node transform handle (Shape tool).
     NodeTransform {
         handle: Handle,
@@ -546,6 +567,13 @@ pub enum Drag {
     /// Moving a fountain handle of the selected object (Interactive Fill).
     FountainHandle {
         handle: crate::fill_tool::FountainHandle,
+        /// The drag's undo step is recorded (the next moves join it).
+        begun: bool,
+    },
+    /// Moving a node of a pattern fill's first tile (Interactive Fill,
+    /// #3379).
+    PatternHandle {
+        handle: crate::pattern_fill_tool::PatternHandle,
         /// The drag's undo step is recorded (the next moves join it).
         begun: bool,
     },
@@ -723,6 +751,10 @@ pub struct CurveInProgress {
     /// was frozen (`None`: the segment arrives straight), no longer the
     /// mirror of their outgoing one.
     pub in_handles: std::collections::BTreeMap<usize, Option<Point>>,
+    /// Nodes made smooth (S while drawing, #2876): the length their
+    /// incoming handle keeps; it lies opposite the outgoing handle, which
+    /// can still be pulled longer or shorter on its own.
+    pub in_lengths: std::collections::BTreeMap<usize, f64>,
     /// A press on the first node closes the curve: while it is dragged,
     /// where the pointer is (it pulls the closing segment's handle at the
     /// first node; the first node's own outgoing handle stays).
@@ -740,7 +772,38 @@ impl CurveInProgress {
             return *h;
         }
         let (p, out) = *self.nodes.get(i)?;
+        if let (Some(len), Some(o)) = (self.in_lengths.get(&i), out) {
+            let d = o - p;
+            let n = d.hypot();
+            if n > 1e-12 {
+                return Some(p - d * (len / n));
+            }
+        }
         out.map(|o| p - (o - p))
+    }
+
+    /// The node keys while a curve is drawn (#2876), on the last node:
+    /// C a cusp (its handles move apart), S smooth (the incoming handle
+    /// keeps its length, opposite the outgoing one), Y symmetrical (the
+    /// incoming handle mirrors the outgoing one).
+    pub fn set_last_node_type(&mut self, ty: tracedraw_core::nodes::NodeType) {
+        use tracedraw_core::nodes::NodeType;
+        let Some(i) = self.nodes.len().checked_sub(1) else {
+            return;
+        };
+        match ty {
+            NodeType::Cusp => self.freeze_last_in(),
+            NodeType::Smooth => {
+                let p = self.nodes[i].0;
+                let len = self.in_handle(i).map_or(0.0, |h| (h - p).hypot());
+                self.in_handles.remove(&i);
+                self.in_lengths.insert(i, len);
+            }
+            _ => {
+                self.in_handles.remove(&i);
+                self.in_lengths.remove(&i);
+            }
+        }
     }
 
     /// Make the last node a cusp: its incoming handle stays as it is now
@@ -752,6 +815,7 @@ impl CurveInProgress {
         };
         let incoming = self.in_handle(i);
         self.in_handles.insert(i, incoming);
+        self.in_lengths.remove(&i);
         self.nodes[i].1 = None;
     }
 
@@ -763,6 +827,7 @@ impl CurveInProgress {
         };
         let incoming = self.in_handle(i);
         self.in_handles.insert(i, incoming);
+        self.in_lengths.remove(&i);
     }
 
     /// The handle the closing drag gives the first node for the closing
@@ -910,15 +975,16 @@ pub const OPEN_EXTENSIONS: &[&str] = &[
 ];
 
 /// The picture files a drawing is made of when they are opened (#2600).
-pub const PICTURE_EXTENSIONS: &[&str] =
-    &["png", "jpg", "jpeg", "bmp", "gif", "webp", "tif", "tiff"];
+pub const PICTURE_EXTENSIONS: &[&str] = &[
+    "png", "jpg", "jpeg", "bmp", "gif", "webp", "tif", "tiff", "jxl",
+];
 
 /// The extensions File > Import reads (besides those of installed script
 /// filters).
 pub const IMPORT_EXTENSIONS: &[&str] = &[
     "cdr", "cdt", "cdrt", "csl", "cmx", "tdraw", "svg", "svgz", "pdf", "ai", "eps", "ps", "prn",
     "dxf", "psd", "psb", "emf", "wmf", "plt", "hpgl", "hgl", "txt", "rtf", "docx", "xlsx", "csv",
-    "tsv", "pmd", "pm6", "p65", "png", "jpg", "jpeg", "bmp", "gif", "webp", "tif", "tiff",
+    "tsv", "pmd", "pm6", "p65", "png", "jpg", "jpeg", "bmp", "gif", "webp", "tif", "tiff", "jxl",
 ];
 
 /// The memory the undo steps of one drawing may hold before the oldest
@@ -1057,9 +1123,6 @@ pub struct App {
     /// down (see `interaction::paste_without_text`).
     pub paste_seen: bool,
     pub curve: Option<CurveInProgress>,
-    /// Freehand by clicks: the input time at which the line ends unless
-    /// a double-click made the last click a corner first (#2339).
-    pub freehand_ends_at: Option<f64>,
     /// Undo and redo steps of `curve`, node by node.
     pub curve_steps: CurveSteps,
     /// The steps that made or changed a curve drawn with the Pen or
@@ -1080,6 +1143,9 @@ pub struct App {
     /// The Trace dialog's live preview: the trace of the selected bitmap
     /// worked out off the interface thread as the settings change.
     pub trace_live: crate::trace_preview::Live,
+    /// The trace of the selected bitmaps running off the interface
+    /// thread, shown in its progress window (`trace_job.rs`).
+    pub trace_job: Option<crate::trace_job::TraceJob>,
     /// The digits typed with Alt held while editing text, for a character
     /// by its number (#447; the system does it on Windows).
     pub alt_code: String,
@@ -1148,6 +1214,9 @@ pub struct App {
     /// Missing Fonts dialog is turned off (Warnings, #1243).
     pub status_opens_options: Option<(String, crate::ui::dialogs::OptionsPage)>,
     pub fit_pending: bool,
+    /// The view each page of the drawing was last shown with in this
+    /// window, so going back to a page shows it as it was left (#3434).
+    pub page_views: std::collections::HashMap<PageId, crate::view::View>,
     /// Set the view of Options > Display > View when a drawing opens
     /// with the next fit (a drawing just opened or made, #1134).
     pub open_view_pending: bool,
@@ -1191,6 +1260,8 @@ pub struct App {
     /// reached the program on Windows (#2686).
     pub file_drag: crate::drop_files::FileDrag,
     pub duplicate_offset: Vec2,
+    /// Q held down on its own: all snapping off while it is held (#3072).
+    pub snap_held_off: bool,
     /// The last Duplicate: each original and its copy. While the copies
     /// are the selection, the next Duplicate repeats what was done to
     /// them since (moved, scaled, turned), as the reference program's
@@ -1275,6 +1346,8 @@ pub struct App {
     pub graph_cols: u32,
     /// The Action Lines tool's settings (#1617).
     pub action_lines: crate::action_lines::ActionLines,
+    /// The Shape Generator panel's settings (#3412, #3413).
+    pub shape_gen: crate::shape_gen::ShapeGenSettings,
     /// Speech Balloon tool (#2179): the style, the tail's width (percent
     /// of the body's smaller side) and bend for new balloons, and the
     /// balloon whose tail tip is being dragged.
@@ -1350,6 +1423,16 @@ pub struct App {
     pub eyedropper_apply: bool,
     /// Bitmap sample box side in pixels: 1, 2 or 5.
     pub eyedropper_sample: u32,
+    /// Sample from Screen: the next click anywhere in the window samples
+    /// the colour shown there (#3040).
+    pub eyedropper_screen: bool,
+    /// The Shape tool's Bulge, percent: 100 bows a segment into a quarter
+    /// circle, negative the other way (#3335).
+    pub segment_bulge: f64,
+    /// A sample of the window's pixels on its way (#3040).
+    pub screen_sample: Option<crate::screen_sample::ScreenSample>,
+    /// Frames waited for the window's read-back.
+    pub screen_sample_frames: u32,
     /// The colour eyedroppers' readout beside the pointer (#990).
     pub eyedropper_hover: crate::eyedropper::HoverReadout,
     pub canvas_rect: egui::Rect,
@@ -1425,6 +1508,10 @@ pub struct App {
     /// arrangement and number of windows last laid out.
     pub window_layout: crate::ui::windows::WindowLayout,
     pub window_layout_seen: Option<(crate::ui::windows::WindowLayout, usize)>,
+    /// Drawings in windows of their own (#2904), and the drawing the main
+    /// window shows while the active one is in such a window.
+    pub detached: Vec<crate::ui::detached::Detached>,
+    pub main_window_doc: Option<(u64, u32)>,
     /// Whether each paragraph text overflows its frame, by document
     /// revision (laying text out every frame would be slow).
     pub overflow_cache: std::cell::RefCell<(u64, std::collections::HashMap<ShapeId, bool>)>,
@@ -1439,6 +1526,11 @@ pub struct App {
     /// Families the font lists show: installed, carried by drawings, and
     /// (browser build) offered by the page's font folder.
     pub font_families: Vec<String>,
+    /// Font files being installed off the interface's thread: the Font
+    /// Manager's fonts at the start and the fonts of a folder just added
+    /// (a library of tens of thousands of fonts kept the window from
+    /// opening for a minute, or froze it for hours, d#2166, d#3200).
+    pub font_installs: Vec<std::sync::mpsc::Receiver<Vec<String>>>,
     /// What the Font Manager loaded and drew.
     pub font_catalog: crate::ui::font_manager::Catalog,
     /// The font lists' pictures of family names in their own fonts.
@@ -1566,6 +1658,11 @@ pub struct App {
     /// preview off), kept for the revision it was made at.
     pub symmetry_doc:
         std::cell::RefCell<Option<(u64, ShapeId, std::rc::Rc<tracedraw_core::Document>)>>,
+    /// Bitmaps > Edit Inside: the picture whose pixels are being edited
+    /// in place (see pixel_edit_app.rs).
+    pub pixel_edit: Option<Box<crate::pixel_edit_app::PixelEdit>>,
+    /// The brush settings of picture editing, kept between pictures.
+    pub pixel_opts: crate::pixel_edit::BrushOpts,
     pub show_guides: bool,
     /// Selected guidelines of the active page (indices).
     pub selected_guides: Vec<usize>,
@@ -1588,6 +1685,13 @@ pub struct App {
     /// The guideline whose values the Guidelines panel's fields hold
     /// (`sync_guide_form`); `None` with none or several selected.
     pub guide_form_for: Option<usize>,
+    /// The Guidelines panel's position field takes the focus, its value
+    /// selected, on the next frame (a double click on a guideline, #2883).
+    pub guide_focus_field: bool,
+    /// The guideline the Guidelines panel's fields hold, as it was before
+    /// a value typed there moved it: Add puts it back and adds the new
+    /// one at the typed place (#3068).
+    pub guide_form_from: Option<(usize, tracedraw_core::document::Guide)>,
     /// Document Setup > Guidelines presets section.
     pub guide_presets: crate::ui::layout_options::PresetForm,
     /// Document Setup > Grid shows lines per unit instead of spacing.
@@ -1808,6 +1912,8 @@ pub struct App {
     pub objects_master_closed: bool,
     /// Objects docker: the cached thumbnails of the objects.
     pub object_thumbs: crate::object_thumbs::ObjectThumbs,
+    /// Symbols docker: the cached pictures of the symbols (#3249).
+    pub symbol_thumbs: crate::object_thumbs::ObjectThumbs,
     /// When `autosave_settings` last wrote the preferences, and the
     /// preferences as last saved or looked at (JSON), to save them only
     /// when they changed.
@@ -2145,8 +2251,16 @@ pub struct App {
     pub area_outline_mode: u8,
     pub area_outline_width: f64,
     pub area_outline_color: Color,
+    /// Smart Fill stops at the edges of the outlines as they are drawn,
+    /// their width, not at their middle line (#3321).
+    pub area_fill_outline_edges: bool,
     pub mesh_rows: u32,
     pub mesh_cols: u32,
+    /// Mesh Fill bar: the colours Shuffle draws from (an index into
+    /// [`crate::mesh_tool::MESH_PALETTES`], past its end the document
+    /// palette) and the next mix it makes.
+    pub mesh_palette: usize,
+    pub mesh_seed: u64,
     /// Shape tool elastic mode: dragging one node pulls its neighbours.
     pub elastic_mode: bool,
     /// Shape tool: the node transform mode on the property bar.
@@ -2166,6 +2280,8 @@ pub struct App {
     pub coords: crate::coords::CoordsState,
     /// The Vector Mosaic docker's settings.
     pub vector_mosaic: crate::vector_mosaic::VectorMosaicSettings,
+    /// The Symbol Scatter docker's settings (and picked symbols).
+    pub symbol_scatter: crate::symbol_scatter::ScatterSettings,
     /// The Picture Mosaic docker's settings and indexed library.
     pub picture_mosaic: crate::picture_mosaic::PictureMosaicSettings,
     /// A Picture Mosaic library being indexed in the background.
@@ -2190,6 +2306,10 @@ pub struct App {
     /// and their numbers in its mesh. They count only while that node is
     /// still the one chosen.
     pub mesh_more_nodes: Option<((ShapeId, usize), Vec<usize>)>,
+    /// More envelope nodes chosen with the one in `selected_effect_node`
+    /// (Shift+click, a marquee; #3001): they move with it. They count
+    /// only while that node is still the one chosen.
+    pub envelope_more_nodes: Option<((ShapeId, usize), Vec<usize>)>,
     /// The Mesh Fill bar's eyedropper is on: the next click samples a
     /// colour for the chosen mesh nodes (discussion #2387).
     pub mesh_eyedropper: bool,
@@ -2357,6 +2477,8 @@ pub enum DockerTab {
     Coordinates,
     VectorMosaic,
     PictureMosaic,
+    ShapeGenerator,
+    SymbolScatter,
     Shelf,
     Export,
     Comments,
@@ -2367,7 +2489,7 @@ pub enum DockerTab {
 }
 
 impl DockerTab {
-    pub const ALL: [DockerTab; 44] = [
+    pub const ALL: [DockerTab; 46] = [
         DockerTab::Properties,
         DockerTab::Objects,
         DockerTab::Hints,
@@ -2408,6 +2530,8 @@ impl DockerTab {
         DockerTab::Coordinates,
         DockerTab::VectorMosaic,
         DockerTab::PictureMosaic,
+        DockerTab::ShapeGenerator,
+        DockerTab::SymbolScatter,
         DockerTab::Shelf,
         DockerTab::Effects,
         DockerTab::Macros,
@@ -2437,6 +2561,7 @@ impl DockerTab {
             DockerTab::AlignDistribute,
             DockerTab::StepAndRepeat,
             DockerTab::FitToPath,
+            DockerTab::ShapeGenerator,
         ],
         &[
             DockerTab::Shaping,
@@ -2464,7 +2589,7 @@ impl DockerTab {
     ];
 
     /// Window > Panels > Effects.
-    pub const EFFECTS_MENU: [DockerTab; 11] = [
+    pub const EFFECTS_MENU: [DockerTab; 12] = [
         DockerTab::Effects,
         DockerTab::Blend,
         DockerTab::Contour,
@@ -2476,6 +2601,7 @@ impl DockerTab {
         DockerTab::BitmapMask,
         DockerTab::VectorMosaic,
         DockerTab::PictureMosaic,
+        DockerTab::SymbolScatter,
     ];
 
     /// i18n key of the docker's title.
@@ -2518,6 +2644,8 @@ impl DockerTab {
             DockerTab::Coordinates => "docker.coordinates",
             DockerTab::VectorMosaic => "docker.vector_mosaic",
             DockerTab::PictureMosaic => "docker.picture_mosaic",
+            DockerTab::ShapeGenerator => "docker.shape_generator",
+            DockerTab::SymbolScatter => "docker.symbol_scatter",
             DockerTab::Shelf => "docker.shelf",
             DockerTab::Export => "docker.export",
             DockerTab::Comments => "docker.comments",
@@ -2569,6 +2697,10 @@ pub struct SelectedCache {
     shapes: std::rc::Rc<Vec<Shape>>,
     /// Their visual bounds, once asked for.
     bounds: std::cell::RefCell<Option<std::rc::Rc<Vec<Rect>>>>,
+    /// Answers worked out from them, by name, once asked for (see
+    /// [`App::from_selection`]).
+    derived:
+        std::cell::RefCell<std::collections::HashMap<&'static str, std::rc::Rc<dyn std::any::Any>>>,
 }
 
 /// An action Edit > Repeat can repeat.
@@ -2841,6 +2973,12 @@ impl App {
         if !crate::files::WEB {
             app.keep_default_font_installed();
         }
+        // The system's printers are read now, off the interface's thread,
+        // so the first File > Print finds them: reading them took seconds
+        // each time the dialog opened (#3337).
+        if !crate::files::WEB && !crate::files::ANDROID {
+            app.fetch_printers(crate::printers::system_printers);
+        }
         app
     }
 
@@ -2936,12 +3074,12 @@ impl App {
             pen_editing: false,
             paste_seen: false,
             curve: None,
-            freehand_ends_at: None,
             text_edit: None,
             ime_preedit: String::new(),
             text_clip: None,
             last_trace: None,
             trace_live: Default::default(),
+            trace_job: None,
             alt_code: String::new(),
             alt_composed: None,
             current_colors: (Color::BLACK, Color::WHITE),
@@ -2963,6 +3101,7 @@ impl App {
             status: String::new(),
             status_opens_options: None,
             fit_pending: true,
+            page_views: Default::default(),
             open_view_pending: true,
             units: Units::Millimeters,
             nudge_mm: 2.54,
@@ -2987,6 +3126,7 @@ impl App {
             // scaled or turned; the next one repeats that (#1494).
             duplicate_offset: Vec2::ZERO,
             last_duplicate: Vec::new(),
+            snap_held_off: false,
             forgotten_duplicate: None,
             selection_steps: Default::default(),
             last_guide_duplicate: None,
@@ -3024,6 +3164,7 @@ impl App {
             graph_rows: 4,
             graph_cols: 3,
             action_lines: Default::default(),
+            shape_gen: Default::default(),
             balloon_style: Default::default(),
             balloon_width: 30.0,
             balloon_bend: 0.0,
@@ -3066,6 +3207,10 @@ impl App {
             eyedropper_groups: Default::default(),
             eyedropper_apply: false,
             eyedropper_sample: 1,
+            eyedropper_screen: false,
+            segment_bulge: 50.0,
+            screen_sample: None,
+            screen_sample_frames: 0,
             eyedropper_hover: Default::default(),
             canvas_rect: egui::Rect::NOTHING,
             pointer_page: None,
@@ -3094,12 +3239,15 @@ impl App {
             view_anchor: None,
             window_layout: Default::default(),
             window_layout_seen: None,
+            detached: Vec::new(),
+            main_window_doc: None,
             overflow_cache: Default::default(),
             live_reflow: Default::default(),
             builder: Default::default(),
             corner_cache: Default::default(),
             wireframe: false,
             font_families: tracedraw_text::fonts().available_families(),
+            font_installs: Vec::new(),
             font_catalog: Default::default(),
             font_previews: Default::default(),
             font_generation: tracedraw_text::fonts().generation(),
@@ -3151,6 +3299,8 @@ impl App {
             symmetry_step: None,
             symmetry_turning: false,
             symmetry_doc: Default::default(),
+            pixel_edit: None,
+            pixel_opts: Default::default(),
             show_guides: true,
             selected_guides: Vec::new(),
             edit_master_guides: true,
@@ -3159,6 +3309,8 @@ impl App {
             guide_pivots: Vec::new(),
             guide_form: Default::default(),
             guide_form_for: None,
+            guide_focus_field: false,
+            guide_form_from: None,
             guide_presets: Default::default(),
             grid_frequency: false,
             settings: crate::settings::Settings::default(),
@@ -3271,6 +3423,7 @@ impl App {
             settings_pending: false,
             objects_closed_pages: Default::default(),
             object_thumbs: Default::default(),
+            symbol_thumbs: Default::default(),
             objects_master_closed: false,
             picked_layer: None,
             navigator_tex: None,
@@ -3415,8 +3568,11 @@ impl App {
             area_outline_mode: 0,
             area_outline_width: 0.2,
             area_outline_color: Color::BLACK,
+            area_fill_outline_edges: false,
             mesh_rows: 2,
             mesh_cols: 2,
+            mesh_palette: 0,
+            mesh_seed: 1,
             elastic_mode: false,
             node_transform: Default::default(),
             reflect_nodes: (false, false),
@@ -3425,6 +3581,7 @@ impl App {
             node_run: None,
             coords: Default::default(),
             vector_mosaic: Default::default(),
+            symbol_scatter: Default::default(),
             picture_mosaic: Default::default(),
             picture_mosaic_job: None,
             coord_pick: None,
@@ -3435,6 +3592,7 @@ impl App {
             selected_effect_node: None,
             shadow_picked: None,
             mesh_more_nodes: None,
+            envelope_more_nodes: None,
             mesh_eyedropper: false,
             docs: Vec::new(),
             active_doc: 0,
@@ -3692,16 +3850,47 @@ impl App {
     /// Apply persisted settings (language, workspace, snapping, units).
     pub fn load_settings(&mut self) {
         self.apply_settings(crate::settings::Settings::load());
-        // Fonts installed for TraceDraw in the Font Manager.
-        if !crate::ui::font_manager::install_saved(&self.settings.font_manager).is_empty() {
-            self.font_families = tracedraw_text::fonts().available_families();
+        // Fonts installed for TraceDraw in the Font Manager, read off the
+        // interface's thread: the window opens meanwhile (d#3200).
+        if let Some(job) =
+            crate::ui::font_manager::install_saved_in_background(&self.settings.font_manager)
+        {
+            self.font_installs.push(job);
         }
+    }
+
+    /// Take the fonts installed off the interface's thread once they are
+    /// in: the font lists name them, and the open drawing's missing fonts
+    /// and the font for new text are checked again. Whether some are
+    /// still being installed.
+    pub fn poll_font_installs(&mut self) -> bool {
+        if self.font_installs.is_empty() {
+            return false;
+        }
+        let before = self.font_installs.len();
+        self.font_installs
+            .retain(|rx| matches!(rx.try_recv(), Err(std::sync::mpsc::TryRecvError::Empty)));
+        if self.font_installs.len() == before {
+            return true;
+        }
+        self.font_families = tracedraw_text::fonts().available_families();
+        if self.font_installs.is_empty() {
+            if !crate::files::WEB {
+                self.keep_default_font_installed();
+            }
+            self.check_missing_fonts();
+        }
+        !self.font_installs.is_empty()
     }
 
     /// A font for new text that is no longer installed gives way to Arial,
     /// or the first font there is: text typed in it was drawn with a
     /// stand-in while the bars named the missing font (#504).
     pub fn keep_default_font_installed(&mut self) {
+        // The fonts of the Font Manager are still coming in.
+        if !self.font_installs.is_empty() {
+            return;
+        }
         let installed = |f: &str| self.font_families.iter().any(|g| g.eq_ignore_ascii_case(f));
         if self.font_families.is_empty() || installed(&self.text_default_font) {
             return;
@@ -3965,6 +4154,16 @@ impl App {
     /// The tool settings now (see [`crate::settings::ToolPrefs`]).
     pub fn tool_prefs(&self) -> crate::settings::ToolPrefs {
         crate::settings::ToolPrefs {
+            common_shape: self.common_shape.key().to_string(),
+            my_shape: self.my_shape,
+            eyedropper_groups: self.eyedropper_groups,
+            eyedropper_sample: self.eyedropper_sample,
+            free_transform_mode: self.free_transform_mode,
+            node_lasso: self.node_lasso,
+            node_lasso_keeps: self.node_lasso_keeps,
+            blend_rotation: self.blend_rotation,
+            blend_accel_objects: self.blend_accel_objects,
+            blend_accel_colors: self.blend_accel_colors,
             polygon_points: self.polygon_points,
             star_sharpness: self.star_sharpness,
             star_complex: self.star_complex,
@@ -3996,6 +4195,7 @@ impl App {
             smart_outline_mode: self.area_outline_mode,
             smart_outline_width: self.area_outline_width,
             smart_outline_color: self.area_outline_color,
+            smart_outline_edges: self.area_fill_outline_edges,
             brush_radius: self.brush_radius,
             roughen_amount: self.roughen_amount,
             brush: self.brush,
@@ -4008,6 +4208,23 @@ impl App {
             sketch: self.sketch,
             knife: self.knife,
             segment_freehand: self.segment_freehand,
+            media: crate::settings::MediaPrefs {
+                mode: self.media_mode,
+                preset: self.media_preset,
+                width: self.media_width,
+                angle: self.media_angle,
+                spacing: self.media_spacing,
+                pressure: self.media_pressure,
+                smoothing: self.media_smoothing,
+            },
+            balloon: crate::settings::BalloonPrefs {
+                style: self.balloon_style,
+                width: self.balloon_width,
+                bend: self.balloon_bend,
+            },
+            action_lines: self.action_lines,
+            shape_gen: self.shape_gen.clone(),
+            painterly: self.painterly,
         }
     }
 
@@ -4021,6 +4238,25 @@ impl App {
                 or
             }
         };
+        // A shape key this version does not know keeps the current one.
+        if let Some(s) = crate::tools2::CommonShape::ALL
+            .iter()
+            .find(|s| s.key() == t.common_shape)
+        {
+            self.common_shape = *s;
+        }
+        self.my_shape = t.my_shape;
+        self.eyedropper_groups = t.eyedropper_groups;
+        self.eyedropper_sample = match t.eyedropper_sample {
+            2 | 5 => t.eyedropper_sample,
+            _ => 1,
+        };
+        self.free_transform_mode = t.free_transform_mode;
+        self.node_lasso = t.node_lasso;
+        self.node_lasso_keeps = t.node_lasso_keeps;
+        self.blend_rotation = finite(t.blend_rotation, -3600.0, 3600.0, 0.0);
+        self.blend_accel_objects = finite(t.blend_accel_objects, -1.0, 1.0, 0.0);
+        self.blend_accel_colors = finite(t.blend_accel_colors, -1.0, 1.0, 0.0);
         self.polygon_points = t.polygon_points.clamp(3, 500);
         // Negative: inverted stars (#1331).
         self.star_sharpness = finite(t.star_sharpness, -1.0, 1.0, 0.5);
@@ -4060,6 +4296,7 @@ impl App {
         self.area_outline_mode = t.smart_outline_mode.min(2);
         self.area_outline_width = finite(t.smart_outline_width, 0.0, 1000.0, 0.2);
         self.area_outline_color = t.smart_outline_color;
+        self.area_fill_outline_edges = t.smart_outline_edges;
         self.brush_radius = finite(t.brush_radius, 0.5, 500.0, 10.0);
         self.roughen_amount = finite(t.roughen_amount, 0.05, 50.0, 2.0);
         self.brush = t.brush.clamped();
@@ -4081,6 +4318,34 @@ impl App {
             ..t.knife
         };
         self.segment_freehand = t.segment_freehand;
+        // The ranges of their bars.
+        let m = &t.media;
+        self.media_mode = m.mode;
+        self.media_preset = m.preset.min(64);
+        self.media_width = finite(m.width, 0.2, 50.0, 3.0);
+        self.media_angle = finite(m.angle, 0.0, 180.0, 45.0);
+        self.media_spacing = finite(m.spacing, 1.0, 50.0, 8.0);
+        self.media_pressure = finite(m.pressure, 0.0, 1.0, 0.5);
+        self.media_smoothing = finite(m.smoothing, 0.0, 100.0, 25.0);
+        self.balloon_style = t.balloon.style;
+        self.balloon_width = finite(t.balloon.width, 5.0, 100.0, 30.0);
+        self.balloon_bend = finite(t.balloon.bend, -100.0, 100.0, 0.0);
+        let a = t.action_lines;
+        self.action_lines = crate::action_lines::ActionLines {
+            count: a.count.clamp(2, 500),
+            length_var: finite(a.length_var, 0.0, 100.0, 70.0),
+            inner: finite(a.inner, 0.0, 90.0, 30.0),
+            width: finite(a.width, 0.0, 1000.0, 0.0),
+            width_var: finite(a.width_var, 0.0, 100.0, 50.0),
+            spacing_var: finite(a.spacing_var, 0.0, 100.0, 0.0),
+            angle: finite(a.angle, -360.0, 360.0, 0.0),
+            ..a
+        };
+        self.shape_gen = t.shape_gen.sanitized();
+        self.painterly = crate::painterly_tool::PainterlySettings {
+            size: finite(t.painterly.size, 0.1, 200.0, 5.0),
+            ..t.painterly
+        };
         self.sketch = crate::recognize::SketchSettings {
             join_distance: finite(t.sketch.join_distance, 0.0, 1000.0, 5.0),
             smoothing: t.sketch.smoothing.min(5),
@@ -4912,6 +5177,29 @@ impl App {
 
     /// The active drawing's name: its file's name without the extension,
     /// else the document title (an Untitled name for a new drawing).
+    /// The name an export of the drawing starts with (its extension
+    /// added): the drawing's file, else the file it was read from (a
+    /// `.cdr`, a PDF), else its title, else Graphic1 (#3254, #3208). A
+    /// drawing opened from a `.cdr` has no file of its own until it is
+    /// saved as `.tdraw`, so its exports were offered as Graphic1.
+    pub fn export_stem(&self) -> String {
+        let stem_of = |p: &std::path::Path| {
+            crate::files::plain_path(p)
+                .file_stem()
+                .map(|s| s.to_string_lossy().trim().to_string())
+                .filter(|s| !s.is_empty())
+        };
+        self.file
+            .as_deref()
+            .and_then(stem_of)
+            .or_else(|| self.opened_from.as_deref().and_then(stem_of))
+            .or_else(|| {
+                let t = self.doc().title.trim();
+                (!t.is_empty() && !is_untitled_name(t)).then(|| t.to_string())
+            })
+            .unwrap_or_else(|| "Graphic1".into())
+    }
+
     pub fn document_name(&self) -> String {
         // Imported files (.cdr, .svg) have no native path yet; their title
         // comes from the document.
@@ -5094,9 +5382,20 @@ impl App {
         let rotating = self.rotate_mode;
         // One step: the copies and their move (#471).
         let mark = self.engine.begin_group();
-        self.duplicate_in_place();
+        let saved = self.duplicate_offset;
+        self.duplicate_offset = Vec2::ZERO;
+        self.last_duplicate.clear();
+        self.duplicate();
+        self.duplicate_offset = saved;
+        let pairs = std::mem::take(&mut self.last_duplicate);
         self.transform_selection(t);
         self.engine.end_group(mark, "Duplicate");
+        // The copies are a Duplicate moved (turned, scaled) by `t`: while
+        // they stay selected, Ctrl+D makes the next copy by the same step,
+        // as after a Duplicate moved by hand. A copy left by a drag or a
+        // turn about a centre, then Ctrl+D, put each new copy on top of
+        // the last one (#3272).
+        self.last_duplicate = pairs;
         // A copy turned in rotate mode stays in it, its centre of rotation
         // in sight for the next turn (#2353).
         self.rotate_mode = rotating;
@@ -5295,6 +5594,21 @@ impl App {
             .unwrap_or(paper::A4)
     }
 
+    /// The point the document grid's lines pass through: the ruler
+    /// origin, and while the origin is at its place on the page's bottom
+    /// edge, the page's top edge for the horizontal lines, so the grid
+    /// starts square at the top-left corner as in the reference program
+    /// and the part row falls at the bottom (#2990).
+    pub fn grid_origin(&self) -> Point {
+        let r = &self.doc().metadata.rulers;
+        let y = if r.origin_y == 0.0 {
+            self.page_size().height
+        } else {
+            r.origin_y
+        };
+        Point::new(r.origin_x, y)
+    }
+
     pub fn page_rect(&self) -> Rect {
         Rect::from_origin_size((0.0, 0.0), self.page_size())
     }
@@ -5342,6 +5656,13 @@ impl App {
     /// else the page's topmost visible, unlocked layer (hidden layers
     /// cannot take new objects); with none visible, the topmost unlocked
     /// one.
+    /// Whether a click, a marquee or Select All may take the objects of
+    /// `layer`: any layer with Edit Across Layers on, else the active
+    /// layer alone (#3276).
+    pub fn layer_in_reach(&self, layer: LayerId) -> bool {
+        self.settings.edit_across_layers || self.active_layer() == Some(layer)
+    }
+
     pub fn active_layer(&self) -> Option<LayerId> {
         if let Some(id) = self.picked_layer {
             if self
@@ -5403,6 +5724,7 @@ impl App {
                 selection: self.selection.clone(),
                 shapes: shapes.clone(),
                 bounds: Default::default(),
+                derived: Default::default(),
             });
         }
         shapes
@@ -5469,14 +5791,17 @@ impl App {
         if self.selection.len() <= 8 {
             return self.selection.iter().any(|id| doc.is_nested(*id));
         }
-        // One pass over the layers rather than a search per object (#367).
-        let on_layer: std::collections::HashSet<ShapeId> = doc
-            .all_layers()
-            .flat_map(|l| l.shapes.iter().map(|s| s.id))
-            .collect();
-        self.selection
-            .iter()
-            .any(|id| !on_layer.contains(id) && doc.find_shape(*id).is_some())
+        // One pass over the layers rather than a search per object (#367),
+        // and only once for the selection: the canvas asks every frame.
+        *self.from_selection("nested", |_| {
+            let on_layer: std::collections::HashSet<ShapeId> = doc
+                .all_layers()
+                .flat_map(|l| l.shapes.iter().map(|s| s.id))
+                .collect();
+            self.selection
+                .iter()
+                .any(|id| !on_layer.contains(id) && doc.find_shape(*id).is_some())
+        })
     }
 
     /// Turn the rotate and skew handles on or off (a moved centre of
@@ -5528,6 +5853,43 @@ impl App {
         b
     }
 
+    /// `f` of [`Self::selected_rc`], worked out once for the gathered
+    /// selection and kept with it under `name`: what the bars show of the
+    /// selection is asked for every frame, and going through each of
+    /// 50,000 selected objects for it made each frame take a fifth of a
+    /// second. `f` may read the app only as the selection and the drawing
+    /// it is kept for (a new revision or selection works it out anew).
+    pub fn from_selection<T: 'static>(
+        &self,
+        name: &'static str,
+        f: impl FnOnce(&[Shape]) -> T,
+    ) -> std::rc::Rc<T> {
+        let shapes = self.selected_rc();
+        let kept = |c: &SelectedCache| {
+            std::rc::Rc::ptr_eq(&c.shapes, &shapes)
+                .then(|| c.derived.borrow().get(name).cloned())
+                .flatten()
+                .and_then(|v| v.downcast::<T>().ok())
+        };
+        if let Ok(cache) = self.selected_cache.try_borrow() {
+            if let Some(v) = cache.as_ref().and_then(kept) {
+                return v;
+            }
+        }
+        let v = std::rc::Rc::new(f(&shapes));
+        if let Ok(cache) = self.selected_cache.try_borrow() {
+            if let Some(c) = cache
+                .as_ref()
+                .filter(|c| std::rc::Rc::ptr_eq(&c.shapes, &shapes))
+            {
+                c.derived
+                    .borrow_mut()
+                    .insert(name, v.clone() as std::rc::Rc<dyn std::any::Any>);
+            }
+        }
+        v
+    }
+
     /// The outlines of the selected objects in page space, flattened
     /// finely enough for the current zoom: what Mask Outside Page draws
     /// over the mask (#615). Kept with the gathered selection and the
@@ -5551,7 +5913,13 @@ impl App {
             let mut line: Vec<Point> = Vec::new();
             let mut start = None;
             let mut done = Vec::new();
-            tracedraw_core::geometry::flatten(&s.page_path(), tolerance, &mut |el| {
+            // A symbol instance: the symbol's outline, not its
+            // placeholder box (#3437).
+            let path = match self.with_symbols_drawn(s) {
+                Some(d) => d.page_path(),
+                None => s.page_path(),
+            };
+            tracedraw_core::geometry::flatten(&path, tolerance, &mut |el| {
                 use tracedraw_core::geometry::PathEl;
                 match el {
                     PathEl::MoveTo(p) => {
@@ -5589,6 +5957,66 @@ impl App {
         lines
     }
 
+    /// `s` with every symbol instance it is or holds (in groups and clip
+    /// frames) replaced by its symbol's objects, placed as the instance
+    /// places them: what the outlines drawn over a selection follow. A
+    /// bare instance only knows a 10 x 10 placeholder box, which the
+    /// selection outline and the Shape tool's frame showed instead of
+    /// the symbol (#3437). `None` when `s` holds no instance.
+    pub fn with_symbols_drawn(&self, s: &Shape) -> Option<Shape> {
+        const DEEPEST: usize = 8;
+        fn holds(s: &Shape, depth: usize) -> bool {
+            depth <= DEEPEST
+                && match &s.kind {
+                    ShapeKind::SymbolInstance { .. } => true,
+                    ShapeKind::Group { children } => children.iter().any(|c| holds(c, depth + 1)),
+                    ShapeKind::ClipFrame { contents, .. } => {
+                        contents.iter().any(|c| holds(c, depth + 1))
+                    }
+                    _ => false,
+                }
+        }
+        fn drawn(s: &Shape, symbols: &[tracedraw_core::document::Symbol], depth: usize) -> Shape {
+            if depth > DEEPEST {
+                return s.clone();
+            }
+            match &s.kind {
+                ShapeKind::SymbolInstance { index } => match symbols.get(*index) {
+                    Some(def) => {
+                        let mut d = drawn(&def.shape, symbols, depth + 1);
+                        d.absorb(s.transform);
+                        d.id = s.id;
+                        d
+                    }
+                    None => s.clone(),
+                },
+                ShapeKind::Group { children } => {
+                    let mut g = s.clone();
+                    g.kind = ShapeKind::Group {
+                        children: children
+                            .iter()
+                            .map(|c| drawn(c, symbols, depth + 1))
+                            .collect(),
+                    };
+                    g
+                }
+                ShapeKind::ClipFrame { frame, contents } => {
+                    let mut c = s.clone();
+                    c.kind = ShapeKind::ClipFrame {
+                        frame: frame.clone(),
+                        contents: contents
+                            .iter()
+                            .map(|k| drawn(k, symbols, depth + 1))
+                            .collect(),
+                    };
+                    c
+                }
+                _ => s.clone(),
+            }
+        }
+        holds(s, 0).then(|| drawn(s, &self.doc().symbols, 0))
+    }
+
     /// The bounds of what `s` (in page space) draws, its live effects
     /// included; measured once per change of the drawing.
     pub fn visual_bounds(&self, s: &Shape) -> Rect {
@@ -5601,6 +6029,14 @@ impl App {
                     &def.shape.page_path(),
                     s.transform,
                 );
+            }
+        }
+        // A group or clip frame holding one: the box of what it draws, so
+        // a click or a marquee over the symbol's objects picks the group
+        // (#3437).
+        if !matches!(s.kind, ShapeKind::SymbolInstance { .. }) {
+            if let Some(drawn) = self.with_symbols_drawn(s) {
+                return drawn.bounds();
             }
         }
         if !s.has_live_effects() {
@@ -5708,6 +6144,14 @@ impl App {
         }
     }
 
+    /// Commands run straight on the engine as one undo step, kept by a
+    /// macro being recorded too, as [`Self::run`] keeps its command.
+    pub(crate) fn note_recorded(&mut self, cmds: &[Command]) {
+        if let Some(rec) = &mut self.recording {
+            rec.extend(cmds.iter().cloned());
+        }
+    }
+
     /// Open the docker (or hide the column when it is already the active
     /// tab), as the docker shortcuts do.
     pub fn toggle_docker(&mut self, tab: DockerTab) {
@@ -5763,6 +6207,11 @@ impl App {
             self.dimension_points.clear();
             self.previous_tool = self.tool;
             self.tool = tool;
+            // Cancel undoes only what the Shape Builder made since it was
+            // chosen (#3220).
+            if tool == Tool::ShapeBuilder {
+                self.builder.session_steps = 0;
+            }
             // Another tool ends a pick of Image > Color Mask (#2479).
             if tool != Tool::ColorEyedropper {
                 self.mask.picking = false;
@@ -5918,6 +6367,7 @@ impl App {
                 sharpness: 0.0,
                 complex: None,
                 twist: 0.0,
+                bend: 0.0,
             },
             // A complex star's vertices are those of a polygon.
             Tool::Star if self.star_complex => ShapeKind::Polygon {
@@ -5926,6 +6376,7 @@ impl App {
                 sharpness: 0.0,
                 complex: Some(self.complex_sharpness),
                 twist: 0.0,
+                bend: 0.0,
             },
             Tool::Star => ShapeKind::Polygon {
                 rect: self.polygon_model_rect(rect, self.polygon_points, self.star_sharpness),
@@ -5933,6 +6384,7 @@ impl App {
                 sharpness: self.star_sharpness,
                 complex: None,
                 twist: 0.0,
+                bend: 0.0,
             },
             Tool::GraphPaper => {
                 self.create_graph_paper(rect);
@@ -6111,9 +6563,14 @@ impl App {
     /// The pointer as the next node of the curve being drawn would take
     /// it (`ctrl`, the constrain key: in steps of the constrain angle);
     /// `None` while a handle is pulled. The preview runs the curve to it.
+    /// A 2-point line dragged from its first node pulls no handle: its
+    /// second node follows the pen or finger to where it is let go. The
+    /// line showed nothing until the release, so on a touch screen the
+    /// second node could not be placed by eye (#2594).
     pub fn curve_preview_point(&self, ctrl: bool) -> Option<Point> {
         let c = self.curve.as_ref()?;
-        if c.dragging_handle {
+        let line_drag = self.tool == Tool::TwoPointLine && c.nodes.len() == 1;
+        if c.dragging_handle && !line_drag {
             return None;
         }
         self.pointer_page
@@ -6131,6 +6588,31 @@ impl App {
     /// of the curve the line goes on from, so the curve is closed and a
     /// redo of this step ends it, as a close by hand does (#1846).
     pub(crate) fn finish_curve_as(&mut self, closes: bool) {
+        // A curve whose last node lies on its first (placed there by a
+        // snap, or a click just outside the reach that closes it) is
+        // closed: finished open, its two ends met with the line's caps
+        // and that corner came out cut off where the others came to a
+        // point (#3219).
+        if !closes {
+            if let Some(c) = self.curve.as_ref().filter(|c| !c.bspline) {
+                let ends_on_first = c.nodes.len() >= 4
+                    && c.nodes
+                        .first()
+                        .zip(c.nodes.last())
+                        .is_some_and(|(a, b)| (a.0 - b.0).hypot() < 1e-6 && b.1.is_none());
+                if ends_on_first {
+                    let line = c.path(None);
+                    if !self.would_join(&line) {
+                        if let Some(mut c) = self.curve.take() {
+                            c.nodes.pop();
+                            c.closing = None;
+                            self.close_curve(c);
+                        }
+                        return;
+                    }
+                }
+            }
+        }
         let history = std::mem::take(&mut self.curve_steps.undo);
         self.curve_steps.clear();
         let Some(c) = self.curve.take() else { return };
@@ -6515,6 +6997,19 @@ impl App {
             return;
         }
         let shapes = std::mem::take(&mut self.selection);
+        // A part of a dimension goes on its own, the rest of it staying
+        // as objects of their own (#3348).
+        if let Some(cmds) = self.dimension_part_delete_commands(&shapes) {
+            if let Err(e) = self.engine.run_batch("Delete", &cmds) {
+                self.status = e.to_string();
+                self.selection = shapes;
+                return;
+            }
+            if let Some(rec) = &mut self.recording {
+                rec.extend(cmds);
+            }
+            return;
+        }
         // A frame of a linked chain goes without its text: the frames
         // left take it, in the same step (#1986, see `textflow.rs`).
         let flow = self.flow_around_deleted(&shapes);
@@ -6646,6 +7141,7 @@ impl App {
             cmds.push(Command::AddSymbol { symbol });
         }
         crate::textflow::relink_copies(&cb.shapes, &mut copies);
+        self.unlink_foreign_blend_ends(&mut copies);
         // Copies of connected objects still in the drawing come with
         // their connectors (#476).
         // Only objects of this drawing count (the same id and identity):
@@ -6666,6 +7162,14 @@ impl App {
         let connectors = self.connector_copies(&originals, &copies);
         let mut copies: Vec<Shape> = copies.into_iter().chain(connectors).collect();
         self.bring_into_edited_frame(&mut copies);
+        // Pasted wholly beside the page, with the desktop taking such
+        // objects: onto the desktop layer (#3100).
+        let layer = match copies.iter().map(|s| s.bounds()).reduce(|a, b| a.union(b)) {
+            Some(all) if !self.editing_clip_contents() && self.symmetry_edit.is_none() => {
+                self.layer_beside_page(layer, all)
+            }
+            _ => layer,
+        };
         for shape in copies {
             cmds.push(Command::AddShape { layer, shape });
         }
@@ -6688,28 +7192,60 @@ impl App {
     /// showed nothing once the edit was finished. Objects that would lie
     /// wholly outside the frame's box are centred on it, together;
     /// objects reaching into the frame stay where they were copied.
-    fn bring_into_edited_frame(&self, pasted: &mut [Shape]) {
-        if !self.editing_clip_contents() {
-            return;
-        }
-        let Some(frame) = self
-            .clip_frame_edit
-            .as_ref()
-            .and_then(|(frame, _)| self.doc().find_shape(*frame))
-            .map(|f| f.bounds())
-        else {
-            return;
-        };
+    pub(crate) fn bring_into_edited_frame(&self, pasted: &mut [Shape]) {
         let Some(all) = pasted.iter().map(|s| s.bounds()).reduce(|a, b| a.union(b)) else {
             return;
         };
-        let finite = |r: Rect| [r.x0, r.y0, r.x1, r.y1].iter().all(|v| v.is_finite());
-        if !finite(frame) || !finite(all) || all.intersect(frame).area() > 0.0 {
+        let Some(d) = self.edited_frame_shift(all) else {
             return;
-        }
-        let d = frame.center() - all.center();
+        };
         for s in pasted {
             s.transform_by(Affine::translate(d));
+        }
+    }
+
+    /// How far objects of box `all` move to land in the clip frame whose
+    /// contents are edited (see [`App::bring_into_edited_frame`]): `None`
+    /// when no frame is edited or they reach into it already.
+    fn edited_frame_shift(&self, all: Rect) -> Option<kurbo::Vec2> {
+        if !self.editing_clip_contents() {
+            return None;
+        }
+        let frame = self
+            .clip_frame_edit
+            .as_ref()
+            .and_then(|(frame, _)| self.doc().find_shape(*frame))
+            .map(|f| f.bounds())?;
+        let finite = |r: Rect| [r.x0, r.y0, r.x1, r.y1].iter().all(|v| v.is_finite());
+        if !finite(frame) || !finite(all) || all.intersect(frame).area() > 0.0 {
+            return None;
+        }
+        Some(frame.center() - all.center())
+    }
+
+    /// Objects `ids` just pasted from another program (a picture, text)
+    /// while a clip frame's contents are edited go where the frame shows
+    /// them, in the step that pasted them, as copies made here do
+    /// (#2044): they came in at the page centre or where the other
+    /// program had them, and the frame cut them away whole.
+    pub(crate) fn bring_pasted_into_edited_frame(&mut self, ids: &[ShapeId]) {
+        let Some(all) = ids
+            .iter()
+            .filter_map(|id| self.doc().find_shape(*id))
+            .map(|s| s.bounds())
+            .reduce(|a, b| a.union(b))
+        else {
+            return;
+        };
+        let Some(d) = self.edited_frame_shift(all) else {
+            return;
+        };
+        let cmd = Command::TransformShapes {
+            shapes: ids.to_vec(),
+            transform: Affine::translate(d),
+        };
+        if let Err(e) = self.engine.amend(&cmd) {
+            self.status = e.to_string();
         }
     }
 
@@ -6925,13 +7461,13 @@ impl App {
         for g in groups {
             self.run(Command::Ungroup { group: g });
         }
+        let mut have: std::collections::HashSet<ShapeId> = members.iter().copied().collect();
         for id in self.added_top_level_ids(&before) {
-            if !members.contains(&id) {
+            if have.insert(id) {
                 members.push(id);
             }
         }
-        let doc = self.doc();
-        members.retain(|id| doc.find_shape(*id).is_some());
+        self.doc().retain_existing(&mut members);
         self.select(members);
     }
 
@@ -7032,8 +7568,10 @@ impl App {
 
     /// Something selected that Convert to Curves would change.
     pub fn can_convert_to_curves(&self) -> bool {
-        self.selected_shapes().iter().any(|s| {
-            s.converts_to_curves() || s.has_outline_warp() || crate::dimensions::is_dimension(s)
+        *self.from_selection("converts_to_curves", |shapes| {
+            shapes.iter().any(|s| {
+                s.converts_to_curves() || s.has_outline_warp() || crate::dimensions::is_dimension(s)
+            })
         })
     }
 
@@ -7444,6 +7982,26 @@ impl App {
         self.run(Command::SwapColors { shapes });
     }
 
+    /// Object > Thicker Outline and Thinner Outline (#2905): the
+    /// selection's outline one step up or down the outline width list,
+    /// as the wheel over the width box steps it, in the outline's unit.
+    /// Thinner stops at the hairline (it never takes the outline off);
+    /// thicker gives an object without an outline a hairline. Each object
+    /// keeps its own colour and the rest of its outline.
+    pub fn step_outline_width(&mut self, up: bool) {
+        if self.selection.is_empty() {
+            return;
+        }
+        let width = self
+            .first_paint_target()
+            .and_then(|s| s.stroke.as_ref().map(|k| k.width));
+        if let Some(Some(w)) =
+            crate::ui::propbar::outline_width_step(width, up, self.outline_units())
+        {
+            self.apply_outline_width(w);
+        }
+    }
+
     pub fn apply_outline_width(&mut self, width: f64) {
         let shapes = self.selected_shapes();
         if shapes.is_empty() {
@@ -7513,6 +8071,11 @@ impl App {
         }
         let shapes = self.selection.clone();
         let pivot = self.moved_rotation_center();
+        // What follows the transform (the contents of an unlocked
+        // PowerClip put back, hinted objects snapped to the pixels, the
+        // text of linked frames flowed again) is part of it: one Undo
+        // takes it all back.
+        let mark = self.engine.begin_group();
         // Paragraph text takes a scale as a new frame (see text_frames.rs).
         if !self.transform_with_frames(&shapes, t) {
             self.run(Command::TransformShapes {
@@ -7520,9 +8083,11 @@ impl App {
                 transform: t,
             });
         }
+        let label = self.engine.undo_label().unwrap_or("Transform");
         self.compensate_unlocked_clip_frames(&shapes, t);
         self.apply_hinting(&shapes);
         self.reflow_chains_of(&shapes);
+        self.engine.end_group(mark, label);
         // A centre of rotation that was moved goes where the transform
         // takes it: several objects kept it as a place in their box, which
         // a turn about it moved away from the point they turned round
@@ -7556,7 +8121,29 @@ impl App {
                 * Affine::scale_non_uniform(1.0, -1.0)
                 * Affine::translate((0.0, -c.y))
         };
-        self.transform_selection(t);
+        // Texts fitted to a path mirror their path, not their letters, so
+        // they still read (#3255); the rest mirrors as usual, one step.
+        let (cmds, texts) = self.mirror_fitted_texts(t, horizontal);
+        if texts.is_empty() {
+            self.transform_selection(t);
+            return;
+        }
+        let all = self.selection.clone();
+        let mark = self.engine.begin_group();
+        let rest: Vec<ShapeId> = all
+            .iter()
+            .copied()
+            .filter(|id| !texts.contains(id))
+            .collect();
+        if !rest.is_empty() {
+            self.selection = rest;
+            self.transform_selection(t);
+        }
+        if let Err(e) = self.engine.run_batch("Mirror", &cmds) {
+            self.status = e.to_string();
+        }
+        self.engine.end_group(mark, "Mirror");
+        self.selection = all;
     }
 
     pub fn undo(&mut self) {
@@ -7574,6 +8161,7 @@ impl App {
             return;
         }
         let step = self.engine.last_step_id();
+        let at = self.page_index_now();
         let undone = match self.engine.undo() {
             Ok(l) => {
                 self.status = crate::i18n::trf("status.undo_n", &[("l", l)]);
@@ -7584,9 +8172,9 @@ impl App {
                 false
             }
         };
-        self.selection
-            .retain(|id| self.engine.document().find_shape(*id).is_some());
+        self.engine.document().retain_existing(&mut self.selection);
         if undone {
+            self.settle_page_after_history(at);
             self.clip_edit_across(step, true);
             // A curve taken up by an earlier undo goes; undoing a Pen or
             // Bezier step takes its curve up again (#631). A curve being
@@ -7614,6 +8202,7 @@ impl App {
         if self.redo_selection_step() {
             return;
         }
+        let at = self.page_index_now();
         let redone = match self.engine.redo() {
             Ok(l) => {
                 self.status = crate::i18n::trf("status.redo_n", &[("l", l)]);
@@ -7624,9 +8213,9 @@ impl App {
                 false
             }
         };
-        self.selection
-            .retain(|id| self.engine.document().find_shape(*id).is_some());
+        self.engine.document().retain_existing(&mut self.selection);
         if redone {
+            self.settle_page_after_history(at);
             self.clip_edit_across(self.engine.last_step_id(), false);
             if self.curve.as_ref().is_some_and(|c| c.resumed) {
                 self.curve = None;
@@ -7635,6 +8224,34 @@ impl App {
                 self.resume_pen_step(self.engine.last_step_id(), false);
             }
         }
+    }
+
+    /// Where the current page stands among the drawing's pages.
+    fn page_index_now(&self) -> usize {
+        self.doc()
+            .pages
+            .iter()
+            .position(|p| p.id == self.page)
+            .unwrap_or(0)
+    }
+
+    /// After Undo or Redo: when the step took away the page shown (Undo
+    /// of Insert Page, Redo of Delete Page), the page now at its place
+    /// becomes current, the last one past the end. The view stayed on a
+    /// page that no longer existed, blank, and nothing drawn there was
+    /// made.
+    fn settle_page_after_history(&mut self, at: usize) {
+        if self.doc().page(self.page).is_ok() {
+            return;
+        }
+        let n = self.doc().pages.len();
+        if n == 0 {
+            return;
+        }
+        let idx = at.min(n - 1);
+        self.page = self.doc().pages[idx].id;
+        self.selection.clear();
+        self.fit_pending = true;
     }
 
     // ----- files -------------------------------------------------------------
@@ -7907,7 +8524,12 @@ impl App {
             crate::files::read(&path)
                 .map_err(|e| e.to_string())
                 .and_then(|bytes| {
-                    tracedraw_io::psd::parse(&bytes, &mut tracedraw_core::id::IdSource::default())
+                    let mut imported = tracedraw_io::psd::parse(
+                        &bytes,
+                        &mut tracedraw_core::id::IdSource::default(),
+                    )?;
+                    crate::bitmap_file::keep_psd_mode(&bytes, &mut imported.shapes);
+                    Ok(imported)
                 })
                 .map(|imported| {
                     let title = path
@@ -8678,12 +9300,14 @@ impl App {
         out
     }
 
-    /// The file name of a drawing's auto-backup in the folder: in a
-    /// browser inside the session's own folder, so two tabs never write
-    /// over each other's.
+    /// The file name of a drawing's auto-backup in the folder: inside the
+    /// session's own folder, so two tabs or two TraceDraws running at
+    /// once never write over each other's backups (both had
+    /// `AutoBackup_of_Untitled-1.tdraw`, and the one that closed cleanly
+    /// deleted the other's).
     fn backup_file(&self, slot: Option<usize>) -> String {
         let name = self.backup_name(slot);
-        match self.session.as_ref().filter(|_| crate::files::WEB) {
+        match self.session.as_ref() {
             Some(s) => format!("{}/{name}", s.id()),
             None => name,
         }
@@ -8868,6 +9492,14 @@ impl App {
         for path in &opened {
             let _ = crate::files::remove(path);
         }
+        for (f, path) in found
+            .iter()
+            .flat_map(|f| f.backups.iter().map(move |b| (f, b)))
+        {
+            if let Some(dir) = f.marker.parent() {
+                crate::recovery::remove_empty_folders(path, dir);
+            }
+        }
         crate::recovery::dismiss(found, false);
     }
 
@@ -9004,10 +9636,27 @@ impl App {
     /// `AutoBackup_of_<drawing name>.tdraw` for the active drawing (`None`)
     /// or another open one.
     fn backup_name(&self, slot: Option<usize>) -> String {
-        let title = match slot {
-            None => self.drawing_title(self.active_doc),
-            Some(i) => self.drawing_title(i),
-        };
+        let i = slot.unwrap_or(self.active_doc);
+        let stem = self.backup_stem(i);
+        // Two drawings of the same name (files of one name in two
+        // folders, `logo.tdraw` beside `logo.cdr`) get a backup each: the
+        // later ones are numbered.
+        let key = stem.to_lowercase();
+        let earlier = self
+            .dirty_documents()
+            .into_iter()
+            .filter(|&j| j < i && self.backup_stem(j).to_lowercase() == key)
+            .count();
+        if earlier == 0 {
+            format!("AutoBackup_of_{stem}.tdraw")
+        } else {
+            format!("AutoBackup_of_{stem} ({}).tdraw", earlier + 1)
+        }
+    }
+
+    /// The name drawing `i`'s auto-backup is called after.
+    fn backup_stem(&self, i: usize) -> String {
+        let title = self.drawing_title(i);
         // The name in its own script, accents and vowel marks included
         // (the tab of a recovered drawing shows it again); only what no
         // file name can hold changes, the same on every system.
@@ -9021,7 +9670,7 @@ impl App {
         )
         .trim_start_matches('.')
         .to_string();
-        format!("AutoBackup_of_{stem}.tdraw")
+        stem
     }
 
     /// Ctrl+8 and Ctrl+2: the selected text (or the text being edited)
@@ -9100,6 +9749,11 @@ impl App {
         st.remember = true;
         st.target = None;
         st.dont_show = self.settings.formats.skip_export_dialog;
+        // Selected only from the start, when the options say so and
+        // something is selected (#3208).
+        if self.settings.formats.export_selected_only && !self.selection.is_empty() {
+            st.selection_only = true;
+        }
         let skip = self.settings.formats.skip_export_dialog && !show_options;
         if EXPORT_FILE_FIRST {
             choose_export_file(self, st, skip);
@@ -9253,7 +9907,11 @@ impl App {
             st.printer = crate::printers::starting_printer(st.printer.as_deref(), &st.printers);
         }
         st.looking_for_printers = true;
-        self.fetch_printers(crate::printers::system_printers);
+        // The list read when the application started may still be on its
+        // way (or waiting to be taken): no second read meanwhile.
+        if self.printer_fetch.is_none() {
+            self.fetch_printers(crate::printers::system_printers);
+        }
         self.dialog = crate::ui::dialogs::Dialog::Print(st);
     }
 
@@ -9444,7 +10102,9 @@ impl App {
             .add_filter("Photoshop (*.psd, *.psb)", &["psd", "psb"])
             .add_filter(
                 crate::i18n::tr("file.images"),
-                &["png", "jpg", "jpeg", "bmp", "gif", "webp", "tif", "tiff"],
+                &[
+                    "png", "jpg", "jpeg", "bmp", "gif", "webp", "tif", "tiff", "jxl",
+                ],
             )
             .pick_files(self, |app, paths| app.import_picked_many(paths));
     }
@@ -9586,7 +10246,12 @@ impl App {
             return;
         }
         let library = is_symbol_library_path(&path);
-        self.import_document_with(Self::open_cdr(&path).map(|(doc, _)| doc), library);
+        let read = Self::open_cdr(&path).map(|(doc, _)| doc);
+        let carried = read.as_ref().ok().map(|d| d.cmyk_profile.clone());
+        self.import_document_with(read, library);
+        if let Some(carried) = carried {
+            self.warn_import_profile(carried.as_ref());
+        }
         if library {
             self.open_docker(DockerTab::Symbols);
         }
@@ -9692,7 +10357,7 @@ impl App {
     }
 
     /// Read a `.cdr` file through the file layer (uploads in a browser).
-    fn open_cdr(
+    pub(crate) fn open_cdr(
         path: &std::path::Path,
     ) -> std::result::Result<(tracedraw_core::Document, tracedraw_cdr::ParseReport), String> {
         let bytes = crate::files::read(path).map_err(|e| e.to_string())?;
@@ -9701,7 +10366,11 @@ impl App {
             .and_then(|s| s.to_str())
             .unwrap_or("Untitled")
             .to_string();
-        tracedraw_cdr::open_bytes(&bytes, &title).map_err(|e| e.to_string())
+        let (mut doc, report) =
+            tracedraw_cdr::open_bytes(&bytes, &title).map_err(|e| e.to_string())?;
+        // Clones saved by TraceDraw follow their masters again (#2879).
+        crate::object_clone::rebase_clone_links(&mut doc);
+        Ok((doc, report))
     }
 
     /// Read an SVG file (plain or gzip-compressed) as text.
@@ -9802,7 +10471,11 @@ impl App {
         let parsed = crate::files::read(path)
             .map_err(|e| e.to_string())
             .and_then(|bytes| {
-                tracedraw_io::psd::parse(&bytes, &mut tracedraw_core::id::IdSource::default())
+                let mut imported =
+                    tracedraw_io::psd::parse(&bytes, &mut tracedraw_core::id::IdSource::default())?;
+                // A 1-bit, grayscale or indexed file keeps its mode (#3025).
+                crate::bitmap_file::keep_psd_mode(&bytes, &mut imported.shapes);
+                Ok(imported)
             });
         match parsed {
             Ok(imported) => {
@@ -9865,7 +10538,7 @@ impl App {
     }
 
     /// Parse a text document (TXT, RTF, DOCX) by extension.
-    fn parse_text_file(
+    pub(crate) fn parse_text_file(
         path: &std::path::Path,
     ) -> Result<tracedraw_io::text_import::ImportedText, String> {
         let ext = path
@@ -10247,18 +10920,30 @@ impl App {
     }
 
     /// The document navigator's insert buttons: a page like the current
-    /// one, before or after it, made current.
+    /// one, before or after it, made current, in one undo step.
     pub fn insert_page(&mut self, after: bool) {
         let idx = self.page_index();
         let size = self.page_size();
-        self.run(self.localized_page(size));
-        let Some(new) = self.doc().pages.last().map(|p| p.id) else {
+        let Command::AddPage { name, size, layer } = self.localized_page(size) else {
             return;
         };
-        let to = if after { idx + 1 } else { idx };
-        if to + 1 < self.doc().pages.len() {
-            self.run(Command::MovePage { page: new, to });
-        }
+        let old: Vec<PageId> = self.doc().pages.iter().map(|p| p.id).collect();
+        self.run(Command::InsertPage {
+            at: if after { idx + 1 } else { idx },
+            name,
+            size,
+            layer,
+            shapes: Vec::new(),
+        });
+        let Some(new) = self
+            .doc()
+            .pages
+            .iter()
+            .map(|p| p.id)
+            .find(|id| !old.contains(id))
+        else {
+            return;
+        };
         self.page = new;
         self.selection.clear();
         self.fit_pending = true;
@@ -10269,20 +10954,114 @@ impl App {
     pub fn duplicate_page(&mut self, before: bool, contents: bool) {
         let page = self.page;
         let old: Vec<_> = self.doc().pages.iter().map(|p| p.id).collect();
+        let originals = self.page_shapes(page);
+        let revision = self.engine.revision();
         self.run(Command::DuplicatePage {
             page,
             before,
             contents,
         });
         let new = self.doc().pages.iter().position(|p| !old.contains(&p.id));
+        if let Some(i) = new.filter(|_| contents && self.engine.revision() != revision) {
+            let id = self.doc().pages[i].id;
+            let cmds = self.relink_page_copies(&originals, &self.page_shapes(id));
+            if !cmds.is_empty() {
+                if let Err(e) = self.engine.amend_batch("Duplicate Page", &cmds) {
+                    self.status = e.to_string();
+                }
+            }
+        }
         if let Some(i) = new {
             self.goto_page(i);
         }
     }
 
+    /// The objects on the layers of `page`, bottom layer first.
+    fn page_shapes(&self, page: PageId) -> Vec<Shape> {
+        self.doc()
+            .page(page)
+            .map(|p| {
+                p.layers
+                    .iter()
+                    .flat_map(|l| l.shapes.iter().cloned())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// The commands that make the objects of a duplicated page `copies`
+    /// (made of `originals`, member by member) link among themselves: a
+    /// copied chain of linked text frames is a chain of the copies and a
+    /// copied blend ends at the copy of its end object. They named the
+    /// original page's objects, so the copied frames ran on into the
+    /// original chain and a copied blend drew its steps to the original
+    /// end object.
+    fn relink_page_copies(&self, originals: &[Shape], copies: &[Shape]) -> Vec<Command> {
+        fn strip(s: &mut Shape) {
+            crate::textflow::without_links(&mut s.data);
+            match &mut s.kind {
+                ShapeKind::Group { children } => children.iter_mut().for_each(strip),
+                ShapeKind::ClipFrame { frame, contents } => {
+                    strip(frame);
+                    contents.iter_mut().for_each(strip);
+                }
+                _ => {}
+            }
+        }
+        fn changes(was: &Shape, now: &Shape, out: &mut Vec<Command>) {
+            if was.data != now.data {
+                out.push(Command::SetObjectData {
+                    shape: now.id,
+                    data: now.data.clone(),
+                });
+            }
+            if was.effects != now.effects {
+                out.push(Command::SetEffects {
+                    shape: now.id,
+                    effects: now.effects.clone(),
+                });
+            }
+            match (&was.kind, &now.kind) {
+                (ShapeKind::Group { children: a }, ShapeKind::Group { children: b }) => {
+                    a.iter().zip(b).for_each(|(x, y)| changes(x, y, out));
+                }
+                (
+                    ShapeKind::ClipFrame {
+                        frame: fa,
+                        contents: a,
+                    },
+                    ShapeKind::ClipFrame {
+                        frame: fb,
+                        contents: b,
+                    },
+                ) => {
+                    changes(fa, fb, out);
+                    a.iter().zip(b).for_each(|(x, y)| changes(x, y, out));
+                }
+                _ => {}
+            }
+        }
+        if originals.len() != copies.len() {
+            return Vec::new();
+        }
+        let mut fixed = copies.to_vec();
+        fixed.iter_mut().for_each(strip);
+        crate::textflow::relink_copies(originals, &mut fixed);
+        let mut out = Vec::new();
+        for (was, now) in copies.iter().zip(&fixed) {
+            changes(was, now, &mut out);
+        }
+        out
+    }
+
     pub fn delete_page(&mut self) {
         let page = self.page;
+        let flow = self.flow_around_deleted_pages(&[page]);
+        let revision = self.engine.revision();
         self.run(Command::DeletePage { page });
+        if self.engine.revision() != revision {
+            self.amend_flow("Delete Page", flow);
+        }
         if let Some(p) = self.doc().pages.first() {
             self.page = p.id;
         }
@@ -10304,10 +11083,12 @@ impl App {
             .iter()
             .map(|&page| Command::DeletePage { page })
             .collect();
+        let flow = self.flow_around_deleted_pages(&ids[a..=b]);
         if let Err(e) = self.engine.run_batch("Delete Page", &cmds) {
             self.status = e.to_string();
             return;
         }
+        self.amend_flow("Delete Page", flow);
         self.renumber_default_pages();
         let next = ids
             .get(b + 1)
@@ -10317,6 +11098,34 @@ impl App {
         }
         self.selection.clear();
         self.fit_pending = true;
+    }
+
+    /// The commands that keep the text of linked frame chains running
+    /// through the pages `pages` when they are deleted: the frames left
+    /// take it, as when the frames themselves are deleted (#1986). The
+    /// text the deleted frames showed was lost with the page.
+    pub(crate) fn flow_around_deleted_pages(&self, pages: &[PageId]) -> Vec<Command> {
+        let ids: Vec<ShapeId> = pages
+            .iter()
+            .flat_map(|p| self.page_shapes(*p))
+            .map(|s| s.id)
+            .collect();
+        self.flow_around_deleted(&ids)
+    }
+
+    /// Run `flow` (from [`Self::flow_around_deleted`]) in the step just
+    /// made.
+    pub(crate) fn amend_flow(&mut self, label: &'static str, flow: Vec<Command>) {
+        if flow.is_empty() {
+            return;
+        }
+        if let Err(e) = self.engine.amend_batch(label, &flow) {
+            self.status = e.to_string();
+            return;
+        }
+        if let Some(rec) = &mut self.recording {
+            rec.extend(flow);
+        }
     }
 
     /// Page > Delete Page asks which pages, the current one first.
@@ -10343,11 +11152,44 @@ impl App {
             }
             return;
         }
-        if let Some(p) = self.doc().pages.get(idx) {
-            self.page = p.id;
-            self.selection.clear();
-            self.fit_pending = true;
+        let Some(new) = id else {
+            return;
+        };
+        // The zoom stays: the page is shown as it was left, else at the
+        // same zoom, centred in the window; it was fitted to the window
+        // each time (#3434).
+        if new != self.page {
+            self.page_views.insert(self.page, self.view);
         }
+        self.page = new;
+        self.selection.clear();
+        match self.page_views.get(&new) {
+            Some(v) => self.view = *v,
+            None => self.centre_page_at_zoom(),
+        }
+    }
+
+    /// Show the current page in the middle of the window at the zoom it
+    /// has; fitted when the window has no size yet.
+    pub fn centre_page_at_zoom(&mut self) {
+        let c = self.canvas_rect.center();
+        if !(self.canvas_rect.width() > 0.0 && self.canvas_rect.height() > 0.0) {
+            self.fit_pending = true;
+            return;
+        }
+        let page = self.page_rect().center();
+        let z = self.view.zoom;
+        self.view.origin = egui::pos2(c.x - page.x as f32 * z, c.y + page.y as f32 * z);
+    }
+
+    /// Run `f` (a change of the page's size or orientation) keeping the
+    /// zoom and the page's centre where it is on screen; the page was
+    /// fitted to the window again (#3434).
+    pub fn keeping_page_centre(&mut self, f: impl FnOnce(&mut Self)) {
+        let before = self.view.to_screen(self.page_rect().center());
+        f(self);
+        let after = self.view.to_screen(self.page_rect().center());
+        self.view.origin += before - after;
     }
 
     /// View > Printable Area's margins on a page `width` x `height` mm:
@@ -10378,6 +11220,23 @@ impl App {
 
 /// Give a copied shape (and any children) fresh ids.
 /// Re-number a shape tree with fresh engine ids (for other modules).
+/// Whether `title` is a name a new drawing gets by itself ("Untitled",
+/// or the numbered name of `doc.untitled_n` in the interface language),
+/// not one the drawing was given.
+fn is_untitled_name(title: &str) -> bool {
+    if title == "Untitled" {
+        return true;
+    }
+    let pattern = crate::i18n::trf("doc.untitled_n", &[("n", "\u{0}")]);
+    let Some((before, after)) = pattern.split_once('\u{0}') else {
+        return false;
+    };
+    title
+        .strip_prefix(before)
+        .and_then(|rest| rest.strip_suffix(after))
+        .is_some_and(|n| !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()))
+}
+
 pub fn reid_pub(s: Shape, id: ShapeId, engine: &mut Engine) -> Shape {
     reid(s, id, engine)
 }
@@ -10600,7 +11459,7 @@ pub(crate) fn is_template_path(path: &std::path::Path) -> bool {
 
 /// `sym` with no object identities, for comparing symbols of two
 /// drawings (each drawing gives the objects identities of its own).
-fn symbol_without_uids(
+pub(crate) fn symbol_without_uids(
     mut sym: tracedraw_core::document::Symbol,
 ) -> tracedraw_core::document::Symbol {
     fn clear(s: &mut Shape) {
@@ -11187,6 +12046,59 @@ mod tests {
         app.duplicate();
         let g = app.selection[0];
         assert!(near(t(&app, g), t(&app, f)));
+    }
+
+    /// The name an export starts with: the drawing's file, else the
+    /// `.cdr` it was opened from (it has no file of its own until saved),
+    /// else its title, else Graphic1 (#3254, #3208).
+    #[test]
+    fn exports_are_named_after_the_drawing_or_the_file_it_came_from() {
+        let mut app = App::headless();
+        app.file = None;
+        app.opened_from = None;
+        app.run(Command::SetTitle {
+            title: String::new(),
+        });
+        assert_eq!(app.export_stem(), "Graphic1");
+        let auto = App::untitled_name();
+        app.run(Command::SetTitle { title: auto });
+        assert_eq!(app.export_stem(), "Graphic1", "a new drawing's own name");
+        app.run(Command::SetTitle {
+            title: "Poster".into(),
+        });
+        assert_eq!(app.export_stem(), "Poster");
+        app.opened_from = Some(PathBuf::from("/work/MyDesign.cdr"));
+        assert_eq!(app.export_stem(), "MyDesign");
+        app.file = Some(PathBuf::from("/work/Saved as.tdraw"));
+        assert_eq!(app.export_stem(), "Saved as");
+        // Selected only from the start when the options say so and there
+        // is a selection.
+        app.settings.formats.export_selected_only = true;
+        app.settings.formats.skip_export_dialog = false;
+        app.export_with_options();
+        if let crate::ui::dialogs::Dialog::Export(st) = &app.dialog {
+            assert!(!st.selection_only, "nothing selected");
+        }
+        app.dialog = crate::ui::dialogs::Dialog::None;
+        let id = app
+            .new_shape(ShapeKind::Rect {
+                rect: Rect::new(0.0, 0.0, 10.0, 10.0),
+                radius: 0.0,
+                corners: None,
+            })
+            .expect("rect");
+        app.select(vec![id]);
+        let _ = crate::files::test_save::asked();
+        app.export_with_options();
+        if let crate::ui::dialogs::Dialog::Export(st) = &app.dialog {
+            assert!(st.selection_only);
+        } else {
+            // The Save dialog comes first on the desktop; its answer opens
+            // the options, which start with Selected only.
+            let asked = crate::files::test_save::asked();
+            assert_eq!(asked.len(), 1);
+            assert_eq!(asked[0].file_name(), Some("Saved as.svg"));
+        }
     }
 
     /// A deselect by accident: Undo right after it selects the copies of
@@ -11834,6 +12746,43 @@ mod tests {
         assert_eq!(app.page, ids[2], "the page before them");
     }
 
+    /// Undo of Insert Page while the new page is shown, and Redo of
+    /// Delete Page: the page now at its place is current, so drawing goes
+    /// on. The view stayed on the page taken away, and a rectangle drawn
+    /// there was never made.
+    #[test]
+    fn undo_of_the_page_shown_moves_to_a_page_that_is_there() {
+        let mut app = App::headless();
+        app.add_page();
+        app.add_page();
+        let ids: Vec<_> = app.doc().pages.iter().map(|p| p.id).collect();
+        assert_eq!(app.page, ids[2]);
+        app.undo();
+        assert_eq!(app.page, ids[1], "the last page left");
+        let rect = ShapeKind::Rect {
+            rect: Rect::new(10.0, 10.0, 60.0, 40.0),
+            radius: 0.0,
+            corners: None,
+        };
+        let id = app.new_shape(rect.clone()).expect("drawn on the page shown");
+        let page = app.doc().page(ids[1]).expect("page");
+        assert!(page
+            .layers
+            .iter()
+            .any(|l| l.shapes.iter().any(|s| s.id == id)));
+        // Redo of Delete Page from the page after it.
+        app.add_page();
+        let ids: Vec<_> = app.doc().pages.iter().map(|p| p.id).collect();
+        app.goto_page(1);
+        app.delete_pages(1, 1);
+        app.undo();
+        app.goto_page(1);
+        assert_eq!(app.page, ids[1]);
+        app.redo();
+        assert_eq!(app.page, ids[2], "the page now in its place");
+        assert!(app.new_shape(rect).is_some());
+    }
+
     /// A font for new text that is not installed (uninstalled since it
     /// was kept) gives way to an installed one; an installed one stays,
     /// whatever its case (#504).
@@ -11853,6 +12802,65 @@ mod tests {
         app.text_default_font = "Gone".into();
         app.keep_default_font_installed();
         assert_eq!(app.text_default_font, "Georgia");
+    }
+
+    /// The bars of the Brush Strokes, Speech Balloon, Action Lines and
+    /// Painterly Brush tools went back to a first start's settings at
+    /// every start, while the other tools kept theirs: they are kept now,
+    /// through the preferences file and an export of them.
+    #[test]
+    fn brush_strokes_balloon_action_lines_and_painterly_survive_a_restart() {
+        use crate::balloons::BalloonStyle;
+        use crate::media::MediaMode;
+        let mut app = App::headless();
+        app.media_mode = MediaMode::Sprayer;
+        app.media_preset = 2;
+        app.media_width = 7.5;
+        app.media_angle = 30.0;
+        app.media_spacing = 12.0;
+        app.media_pressure = 0.8;
+        app.media_smoothing = 60.0;
+        app.balloon_style = BalloonStyle::Shout;
+        app.balloon_width = 55.0;
+        app.balloon_bend = -40.0;
+        app.action_lines.count = 40;
+        app.action_lines.radial = true;
+        app.action_lines.width = 1.5;
+        app.action_lines.taper = crate::action_lines::Taper::default();
+        app.action_lines.seed = 7;
+        app.painterly.size = 12.0;
+        app.painterly.brush = tracedraw_core::painterly::Painterly::new(
+            tracedraw_core::painterly::PainterlyBrush::Fur,
+        );
+        app.sync_settings();
+        // Written and read back as the preferences file is.
+        let text = serde_json::to_string(&app.settings).expect("saved");
+        let read: crate::settings::Settings = serde_json::from_str(&text).expect("read");
+        let mut next = App::headless();
+        next.apply_settings(read.upgrade());
+        assert_eq!(next.media_mode, MediaMode::Sprayer);
+        assert_eq!(next.media_preset, 2);
+        assert_eq!(next.media_width, 7.5);
+        assert_eq!(next.media_angle, 30.0);
+        assert_eq!(next.media_spacing, 12.0);
+        assert_eq!(next.media_pressure, 0.8);
+        assert_eq!(next.media_smoothing, 60.0);
+        assert_eq!(next.balloon_style, BalloonStyle::Shout);
+        assert_eq!(next.balloon_width, 55.0);
+        assert_eq!(next.balloon_bend, -40.0);
+        assert_eq!(next.action_lines, app.action_lines);
+        assert_eq!(next.painterly, app.painterly);
+        // A file edited by hand is brought into the bars' ranges.
+        let mut odd = crate::settings::ToolPrefs::default();
+        odd.media.width = 1e9;
+        odd.balloon.width = -3.0;
+        odd.action_lines.count = 0;
+        odd.painterly.size = f64::NAN;
+        next.apply_tool_prefs(&odd);
+        assert_eq!(next.media_width, 50.0);
+        assert_eq!(next.balloon_width, 5.0);
+        assert_eq!(next.action_lines.count, 2);
+        assert_eq!(next.painterly.size, 5.0);
     }
 
     #[test]
@@ -11959,6 +12967,52 @@ mod tests {
             old.snap.dynamic,
             crate::live_guides::DynamicOptions::default()
         );
+    }
+
+    /// The Common Shapes tool's shape, the eyedroppers' groups and sample
+    /// box, the Free Transform mode, the Shape tool's freehand marquee and
+    /// the Blend tool's rotation and acceleration went back to a first
+    /// start's at every start: they are kept now.
+    #[test]
+    fn common_shapes_eyedropper_free_transform_and_blend_choices_survive_a_restart() {
+        let mut app = App::headless();
+        app.common_shape = crate::tools2::CommonShape::ALL[3];
+        app.my_shape = Some(42);
+        app.eyedropper_groups.size = true;
+        app.eyedropper_groups.fill = false;
+        app.eyedropper_sample = 5;
+        app.free_transform_mode = FreeTransformMode::Skew;
+        app.node_lasso = true;
+        app.node_lasso_keeps = true;
+        app.blend_rotation = 90.0;
+        app.blend_accel_objects = 0.4;
+        app.blend_accel_colors = -0.3;
+        app.sync_settings();
+        let text = serde_json::to_string(&app.settings).expect("saved");
+        let read: crate::settings::Settings = serde_json::from_str(&text).expect("read");
+        let mut next = App::headless();
+        next.apply_settings(read.upgrade());
+        assert_eq!(next.common_shape, crate::tools2::CommonShape::ALL[3]);
+        assert_eq!(next.my_shape, Some(42));
+        assert_eq!(next.eyedropper_groups, app.eyedropper_groups);
+        assert_eq!(next.eyedropper_sample, 5);
+        assert_eq!(next.free_transform_mode, FreeTransformMode::Skew);
+        assert!(next.node_lasso && next.node_lasso_keeps);
+        assert_eq!(next.blend_rotation, 90.0);
+        assert_eq!(next.blend_accel_objects, 0.4);
+        assert_eq!(next.blend_accel_colors, -0.3);
+        // A file edited by hand: an unknown shape keeps the current one,
+        // and values outside the bars come back into them.
+        let mut odd = next.tool_prefs();
+        odd.common_shape = "no.such.shape".into();
+        odd.eyedropper_sample = 3;
+        odd.blend_accel_objects = 7.0;
+        odd.blend_rotation = f64::NAN;
+        next.apply_tool_prefs(&odd);
+        assert_eq!(next.common_shape, crate::tools2::CommonShape::ALL[3]);
+        assert_eq!(next.eyedropper_sample, 1);
+        assert_eq!(next.blend_accel_objects, 1.0);
+        assert_eq!(next.blend_rotation, 0.0);
     }
 
     /// The preferences are saved when something changed, not every
@@ -12447,6 +13501,102 @@ mod tests {
         assert!(!backup.exists());
         assert!(app.session.as_ref().expect("session").backups().is_empty());
         app.end_session();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Two TraceDraws running at once with one auto-backup folder keep
+    /// their own backups: each one's first new drawing is Untitled-1, and
+    /// both backed it up as `AutoBackup_of_Untitled-1.tdraw`, so the
+    /// second overwrote the first's and the first, closing cleanly,
+    /// deleted the backup the second counted on.
+    #[test]
+    fn two_programs_at_once_keep_their_own_backups() {
+        let dir = std::env::temp_dir().join(format!("tracedraw-two-{}", crate::recovery::new_id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let now = crate::recovery::now_secs();
+        let start = |dir: &std::path::Path| {
+            let mut app = App::headless();
+            app.settings.backup.auto_dir = Some(dir.to_path_buf());
+            app.session_tick(now);
+            app
+        };
+        let mut a = start(&dir);
+        let mut b = start(&dir);
+        assert_eq!(a.drawing_title(a.active_doc), b.drawing_title(b.active_doc));
+        rect_shape(&mut a, Rect::new(0.0, 0.0, 10.0, 10.0), true);
+        rect_shape(&mut b, Rect::new(0.0, 0.0, 20.0, 10.0), true);
+        rect_shape(&mut b, Rect::new(0.0, 0.0, 30.0, 10.0), true);
+        assert!(a.backup_now() && b.backup_now());
+        // The first closes cleanly; the second then ends without closing.
+        a.end_session();
+        let found = crate::recovery::find(&dir, now + crate::recovery::STALE_SECS + 10, None);
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].backups.len(), 1, "the second's backup is there");
+        let mut next = start(&dir);
+        next.recover(&found);
+        assert_eq!(
+            next.doc().pages[0].layers[0].shapes.len(),
+            2,
+            "the second's drawing"
+        );
+        // Nothing is left behind, not even the sessions' folders.
+        drop(b);
+        next.end_session();
+        assert!(files_in(&dir).is_empty(), "{:?}", files_in(&dir));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Two open drawings of the same name get an auto-backup each: they
+    /// shared one, so only the drawing backed up last came back.
+    #[test]
+    fn two_drawings_of_one_name_get_a_backup_each() {
+        let dir =
+            std::env::temp_dir().join(format!("tracedraw-same-{}", crate::recovery::new_id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let now = crate::recovery::now_secs();
+        let mut app = App::headless();
+        app.settings.backup.auto_dir = Some(dir.clone());
+        app.session_tick(now);
+        for (folder, w) in [("one", 10.0), ("two", 20.0)] {
+            let file = std::path::PathBuf::from(format!("/nowhere/{folder}/logo.tdraw"));
+            app.open_document(tracedraw_core::Document::default(), Some(file));
+            rect_shape(&mut app, Rect::new(0.0, 0.0, w, 10.0), true);
+        }
+        assert!(app.backup_now());
+        let mut names: Vec<String> = app
+            .session
+            .as_ref()
+            .expect("session")
+            .backups()
+            .iter()
+            .map(|b| b.rsplit('/').next().unwrap_or(b).to_string())
+            .collect();
+        names.sort();
+        assert_eq!(
+            names,
+            vec!["AutoBackup_of_logo (2).tdraw", "AutoBackup_of_logo.tdraw"]
+        );
+        app.leave_session();
+        let found = crate::recovery::find(&dir, now + 1, None);
+        assert_eq!(found.iter().map(|f| f.backups.len()).sum::<usize>(), 2);
+        let mut next = App::headless();
+        next.settings.backup.auto_dir = Some(dir.clone());
+        next.recover(&found);
+        let mut widths: Vec<f64> = next
+            .docs
+            .iter()
+            .enumerate()
+            .filter_map(|(i, _)| next.tab_engine(i))
+            .filter_map(|e| {
+                e.document().pages[0].layers[0]
+                    .shapes
+                    .first()
+                    .map(|s| s.page_path())
+            })
+            .map(|p| tracedraw_core::geometry::Shape::bounding_box(&p).width())
+            .collect();
+        widths.sort_by(f64::total_cmp);
+        assert_eq!(widths, vec![10.0, 20.0], "both drawings came back");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -30,6 +30,10 @@ thread_local! {
     static PICKED: RefCell<HashMap<String, PathBuf>> = RefCell::new(HashMap::new());
     /// Uploaded files by synthetic path (browser only).
     static STORE: RefCell<HashMap<PathBuf, Vec<u8>>> = RefCell::new(HashMap::new());
+    /// Uploads whose job ran but that the app still reads on a later
+    /// frame (an import waiting for its place, a PDF question), freed
+    /// once nothing does (#3231).
+    static LINGERING: RefCell<Vec<PathBuf>> = const { RefCell::new(Vec::new()) };
 }
 
 /// True in the browser build: no file system, downloads instead of saves.
@@ -128,6 +132,7 @@ pub fn name_with_extension(name: &str, mime: &str) -> String {
         "image/gif" => "gif",
         "image/bmp" => "bmp",
         "image/webp" => "webp",
+        "image/jxl" => "jxl",
         "image/tiff" => "tiff",
         "image/svg+xml" => "svg",
         "text/plain" => "txt",
@@ -221,6 +226,7 @@ pub fn mime_for_extension(ext: &str) -> &'static str {
         "gif" => "image/gif",
         "bmp" => "image/bmp",
         "webp" => "image/webp",
+        "jxl" => "image/jxl",
         "tif" | "tiff" => "image/tiff",
         "svg" => "image/svg+xml",
         "txt" => "text/plain",
@@ -351,7 +357,7 @@ pub fn write(path: impl AsRef<Path>, bytes: impl AsRef<[u8]>) -> std::io::Result
     if let Some(uri) = document_uri(path) {
         return crate::android::documents::write(&uri, bytes.as_ref());
     }
-    std::fs::write(path, bytes)
+    replace_with(path, |w| std::io::Write::write_all(w, bytes.as_ref()))
 }
 
 /// Write a file as `fill` makes it, without holding the whole file in
@@ -368,9 +374,83 @@ pub fn write_with(
         fill(&mut bytes)?;
         return write(path, bytes);
     }
-    let mut w = std::io::BufWriter::new(std::fs::File::create(path)?);
-    fill(&mut w)?;
-    std::io::Write::flush(&mut w)
+    replace_with(path, fill)
+}
+
+/// Write the file `path` as `fill` makes it, never losing the file that
+/// was there when the write fails half way (a full disk, an error while
+/// the drawing is written, the program stopped): the new file is made
+/// whole under a `.part` name beside it first, and only then takes the
+/// old one's place. A file that was there is written over in place from
+/// the `.part` file, so it keeps its permissions and links and an open
+/// drawing's hold on it (`file_hold`) stays; should that copy fail, the
+/// `.part` file stays with the whole new file and the error names it. A
+/// new file is the `.part` file renamed. Where no `.part` file can be
+/// made (a folder that takes no new files, a device), the file is
+/// written directly, as before.
+fn replace_with(
+    path: &Path,
+    fill: impl FnOnce(&mut dyn std::io::Write) -> std::io::Result<()>,
+) -> std::io::Result<()> {
+    use std::io::Write as _;
+    let direct = |fill: &mut dyn FnMut(&mut dyn std::io::Write) -> std::io::Result<()>| {
+        let mut w = std::io::BufWriter::new(std::fs::File::create(path)?);
+        fill(&mut w)?;
+        w.flush()
+    };
+    let mut fill = Some(fill);
+    let mut once = |w: &mut dyn std::io::Write| match fill.take() {
+        Some(f) => f(w),
+        None => Ok(()),
+    };
+    let existing = std::fs::metadata(path).ok();
+    if existing.as_ref().is_some_and(|m| !m.is_file()) {
+        return direct(&mut once);
+    }
+    let mut part = path.as_os_str().to_owned();
+    part.push(".part");
+    let part = PathBuf::from(part);
+    let Ok(file) = std::fs::File::create(&part) else {
+        return direct(&mut once);
+    };
+    let written = (|| {
+        let mut w = std::io::BufWriter::new(file);
+        once(&mut w)?;
+        w.flush()?;
+        w.get_ref().sync_all()
+    })();
+    if let Err(e) = written {
+        let _ = std::fs::remove_file(&part);
+        return Err(e);
+    }
+    if existing.is_none() {
+        return match std::fs::rename(&part, path) {
+            Ok(()) => Ok(()),
+            Err(e) => {
+                let _ = std::fs::remove_file(&part);
+                Err(e)
+            }
+        };
+    }
+    let copied = std::fs::File::open(&part).and_then(|mut from| {
+        let mut to = std::fs::OpenOptions::new()
+            .write(true)
+            .truncate(true)
+            .open(path)?;
+        std::io::copy(&mut from, &mut to)?;
+        to.flush()?;
+        to.sync_all()
+    });
+    match copied {
+        Ok(()) => {
+            let _ = std::fs::remove_file(&part);
+            Ok(())
+        }
+        Err(e) => Err(std::io::Error::new(
+            e.kind(),
+            format!("{e}; the whole file is in {}", part.display()),
+        )),
+    }
 }
 
 /// Write a file as `fill` makes it, creating its folder first
@@ -536,11 +616,14 @@ pub enum FolderUse {
     BackupFolder,
     /// Options > Save, the auto-backups.
     AutoBackupFolder,
+    /// The Save Drawing dialog's Browse, the system's folder window
+    /// with the places only it knows (#3416).
+    SaveDrawing,
 }
 
 impl FolderUse {
     #[cfg(test)]
-    pub const ALL: [FolderUse; 8] = [
+    pub const ALL: [FolderUse; 9] = [
         FolderUse::ExportAssets,
         FolderUse::Package,
         FolderUse::FontFolder,
@@ -549,6 +632,7 @@ impl FolderUse {
         FolderUse::DictionaryFolder,
         FolderUse::BackupFolder,
         FolderUse::AutoBackupFolder,
+        FolderUse::SaveDrawing,
     ];
 
     /// What the folder button does in this build.
@@ -603,6 +687,7 @@ pub fn folder_action(place: FolderUse, platform: Platform) -> FolderAction {
         (Platform::Android, BackupFolder | AutoBackupFolder) => {
             Unavailable("folder.backup_android")
         }
+        (_, SaveDrawing) => Unavailable("folder.save_desktop"),
     }
 }
 
@@ -625,13 +710,23 @@ pub fn folder_tip(place: FolderUse, platform: Platform) -> Option<&'static str> 
 /// Choose a folder with the system's dialog (`None` when cancelled). The
 /// token comes from [`folder_action`], which gives one on the desktop only.
 pub fn pick_folder(token: FolderToken) -> Option<PathBuf> {
+    pick_folder_from(token, None)
+}
+
+/// [`pick_folder`] opening on `start` when it is a folder.
+pub fn pick_folder_from(token: FolderToken, start: Option<&Path>) -> Option<PathBuf> {
     let _ = token;
     #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
     {
-        rfd::FileDialog::new().pick_folder()
+        let mut d = rfd::FileDialog::new();
+        if let Some(start) = start.filter(|s| s.is_dir()) {
+            d = d.set_directory(start);
+        }
+        d.pick_folder()
     }
     #[cfg(any(target_arch = "wasm32", target_os = "android"))]
     {
+        let _ = start;
         None
     }
 }
@@ -878,6 +973,10 @@ pub enum Place {
     /// A mounted drive, memory card, network share or other volume
     /// (#1391): named after its folder.
     Drive,
+    /// A cloud storage folder (OneDrive, Dropbox, Google Drive, iCloud
+    /// Drive), named after its folder: the system's own file windows
+    /// list them, the Save Drawing dialog did not (#3416).
+    Cloud,
 }
 
 /// The user's home folder.
@@ -917,6 +1016,11 @@ pub fn places() -> Vec<(Place, PathBuf)> {
             out.push((place, dir));
         }
     }
+    for dir in cloud_dirs(&home, &|k| std::env::var_os(k)) {
+        if dir.is_dir() && !out.iter().any(|(_, p)| *p == dir) {
+            out.push((Place::Cloud, dir));
+        }
+    }
     if cfg!(windows) {
         for letter in b'C'..=b'Z' {
             let root = PathBuf::from(format!("{}:\\", letter as char));
@@ -932,6 +1036,31 @@ pub fn places() -> Vec<(Place, PathBuf)> {
             out.push((Place::Drive, drive));
         }
     }
+    out
+}
+
+/// The cloud storage folders the desktop programs of OneDrive, Dropbox,
+/// Google Drive and iCloud make in the home folder `home` (or name in
+/// the variables `var` reads), whether they exist or not (#3416).
+pub fn cloud_dirs(
+    home: &Path,
+    var: &dyn Fn(&str) -> Option<std::ffi::OsString>,
+) -> Vec<PathBuf> {
+    let mut out: Vec<PathBuf> = Vec::new();
+    for key in ["OneDrive", "OneDriveConsumer", "OneDriveCommercial"] {
+        if let Some(v) = var(key).filter(|v| !v.is_empty()) {
+            out.push(PathBuf::from(v));
+        }
+    }
+    for name in ["OneDrive", "Dropbox", "Google Drive", "iCloudDrive"] {
+        out.push(home.join(name));
+    }
+    let mut seen = Vec::new();
+    out.retain(|p| {
+        let fresh = !seen.contains(p);
+        seen.push(p.clone());
+        fresh
+    });
     out
 }
 
@@ -1258,6 +1387,9 @@ pub fn decode_picture(bytes: &[u8]) -> image::ImageResult<image::DynamicImage> {
 /// stands upright, #2167).
 pub fn decode_picture_within(bytes: &[u8], limit: u64) -> image::ImageResult<image::DynamicImage> {
     use image::ImageDecoder;
+    if is_jxl(bytes) {
+        return decode_jxl(bytes, limit);
+    }
     let mut reader = image::ImageReader::new(std::io::Cursor::new(bytes)).with_guessed_format()?;
     let mut limits = image::Limits::default();
     limits.max_alloc = Some(limit);
@@ -1271,6 +1403,24 @@ pub fn decode_picture_within(bytes: &[u8], limit: u64) -> image::ImageResult<ima
     let mut img = image::DynamicImage::from_decoder(decoder)?;
     img.apply_orientation(orientation);
     Ok(img)
+}
+
+/// A JPEG XL file: the bare codestream or the ISO container (#3210).
+pub fn is_jxl(bytes: &[u8]) -> bool {
+    bytes.starts_with(&[0xff, 0x0a]) || bytes.starts_with(b"\0\0\0\x0cJXL \r\n\x87\n")
+}
+
+/// Decode a JPEG XL file within `limit` bytes (#3210). The codestream's
+/// own orientation is applied by the decoder; an Exif orientation in the
+/// file is not applied again, as the format says.
+fn decode_jxl(bytes: &[u8], limit: u64) -> image::ImageResult<image::DynamicImage> {
+    use image::ImageDecoder;
+    let mut decoder = jxl_oxide::integration::JxlDecoder::new(std::io::Cursor::new(bytes))?;
+    let mut limits = image::Limits::default();
+    limits.max_alloc = Some(limit);
+    decoder.set_limits(limits.clone())?;
+    limits.reserve(decoder.total_bytes())?;
+    image::DynamicImage::from_decoder(decoder)
 }
 
 /// Whether the Exif orientation of picture file `bytes` turns it a
@@ -1331,8 +1481,29 @@ pub fn run_finished(app: &mut App) {
     let jobs: Vec<(Job, PathBuf)> = FINISHED.with(|f| std::mem::take(&mut *f.borrow_mut()));
     for (job, path) in jobs {
         job(app, path.clone());
-        forget(&path);
+        linger(path);
     }
+    // An upload is freed once the app no longer reads it: File > Import
+    // reads it again when the placement cursor is clicked or a PDF's
+    // question is answered, frames after its job ran (#3231).
+    let lingering: Vec<PathBuf> = LINGERING.with(|l| std::mem::take(&mut *l.borrow_mut()));
+    for path in lingering {
+        if app.reads_later(&path) {
+            linger(path);
+        } else {
+            forget(&path);
+        }
+    }
+}
+
+/// Free `path` on a frame when the app no longer reads it.
+fn linger(path: PathBuf) {
+    LINGERING.with(|l| {
+        let mut l = l.borrow_mut();
+        if !l.contains(&path) {
+            l.push(path);
+        }
+    });
 }
 
 /// The paths whose extension is one of `exts` (lower case; any case in
@@ -1823,8 +1994,8 @@ impl Dialog {
             let job: Job = Box::new(move |app: &mut App, _| {
                 let rest = paths.clone();
                 then(app, paths);
-                for p in rest.iter().skip(1) {
-                    forget(p);
+                for p in rest.into_iter().skip(1) {
+                    linger(p);
                 }
             });
             FINISHED.with(|f| f.borrow_mut().push((job, first)));
@@ -1911,6 +2082,69 @@ pub mod test_save {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The cloud folders offered in the Save Drawing dialog: OneDrive
+    /// where Windows names it, and the folders the cloud programs make
+    /// in the home folder, each once (#3416).
+    #[test]
+    fn cloud_folders_come_from_the_home_folder_and_onedrive() {
+        let home = Path::new("/home/me");
+        let var = |k: &str| match k {
+            "OneDrive" => Some(std::ffi::OsString::from("/home/me/OneDrive")),
+            "OneDriveCommercial" => Some(std::ffi::OsString::from("/home/me/OneDrive - Work")),
+            _ => None,
+        };
+        let dirs = cloud_dirs(home, &var);
+        assert_eq!(
+            dirs,
+            vec![
+                home.join("OneDrive"),
+                home.join("OneDrive - Work"),
+                home.join("Dropbox"),
+                home.join("Google Drive"),
+                home.join("iCloudDrive"),
+            ]
+        );
+    }
+
+    /// A write that fails half way (a full disk, an error while the
+    /// drawing is written) leaves the file it was replacing as it was:
+    /// it was written over from the start and left cut short. A write
+    /// that succeeds replaces it and leaves no `.part` file; a new file
+    /// is made the same way.
+    #[test]
+    fn a_failed_write_keeps_the_file_it_was_replacing() {
+        let dir =
+            std::env::temp_dir().join(format!("tracedraw-replace-{}", crate::recovery::new_id()));
+        std::fs::create_dir_all(&dir).expect("dir");
+        let path = dir.join("drawing.tdraw");
+        std::fs::write(&path, b"the old drawing").expect("old");
+        let failed = write_with(&path, |w| {
+            w.write_all(b"half of the new")?;
+            Err(std::io::Error::other("no space left on device"))
+        });
+        assert!(failed.is_err());
+        assert_eq!(std::fs::read(&path).expect("read"), b"the old drawing");
+        let names = |dir: &Path| -> Vec<String> {
+            let mut v: Vec<String> = std::fs::read_dir(dir)
+                .expect("list")
+                .flatten()
+                .map(|e| e.file_name().to_string_lossy().to_string())
+                .collect();
+            v.sort();
+            v
+        };
+        assert_eq!(names(&dir), vec!["drawing.tdraw"], "no .part left");
+        write_with(&path, |w| w.write_all(b"the new drawing")).expect("save");
+        assert_eq!(std::fs::read(&path).expect("read"), b"the new drawing");
+        write(&path, b"shorter").expect("write");
+        assert_eq!(std::fs::read(&path).expect("read"), b"shorter");
+        let new = dir.join("new.cdr");
+        write(&new, b"made").expect("new");
+        assert_eq!(std::fs::read(&new).expect("read"), b"made");
+        assert_eq!(names(&dir), vec!["drawing.tdraw", "new.cdr"]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     /// Names in every script stay as typed; only direction marks, control
     /// characters and what the system refuses change.
@@ -2031,6 +2265,61 @@ mod tests {
         assert!(STORE.with(|s| s.borrow().get(&path).is_none()));
     }
 
+    /// An upload File > Import still reads on a later frame (the file
+    /// waiting for its place, the ones picked with it, a PDF's question)
+    /// stays until nothing does; it was freed as soon as the picker's job
+    /// ran, so the import found nothing in a browser (#3231).
+    #[test]
+    fn an_upload_stays_while_an_import_still_reads_it() {
+        let mut app = App::headless();
+        let first = PathBuf::from("/upload/two-pages.ai");
+        let second = PathBuf::from("/upload/second.pdf");
+        store(&first, b"%PDF-1.4".to_vec());
+        store(&second, b"%PDF-1.4".to_vec());
+        let paths = vec![first.clone(), second.clone()];
+        FINISHED.with(|f| {
+            f.borrow_mut().push((
+                Box::new(move |app: &mut App, _| {
+                    app.import_placing = Some(crate::import_place::ImportPlacing {
+                        path: paths[0].clone(),
+                        drag_from: None,
+                    });
+                    app.import_queue = paths[1..].iter().cloned().collect();
+                    linger(paths[1].clone());
+                }),
+                first.clone(),
+            ))
+        });
+        let kept = |p: &PathBuf| STORE.with(|s| s.borrow().contains_key(p));
+        run_finished(&mut app);
+        run_finished(&mut app);
+        assert!(kept(&first) && kept(&second));
+        // Placed: the PDF asks how to read its text, then reads it again.
+        app.import_placing = None;
+        app.dialog =
+            crate::ui::dialogs::Dialog::PdfText(crate::ui::pdf_import_dialog::PdfTextState {
+                path: first.clone(),
+                import: true,
+                curves: false,
+                paragraphs: false,
+                picture: false,
+                dpi: 300.0,
+                page_size: None,
+                all_pages: true,
+                range: "1".into(),
+                reduce_pictures: true,
+                dont_ask: false,
+            });
+        run_finished(&mut app);
+        assert!(kept(&first) && kept(&second));
+        app.dialog = crate::ui::dialogs::Dialog::None;
+        run_finished(&mut app);
+        assert!(!kept(&first) && kept(&second));
+        app.import_queue.clear();
+        run_finished(&mut app);
+        assert!(!kept(&second));
+    }
+
     /// A document the Android picker returned is named by its URI and its
     /// display name: the name gives the title and the type, the URI comes
     /// back whole from the path, however many slashes and percent signs
@@ -2134,6 +2423,7 @@ mod tests {
                 OpenFiles,
                 Unavailable("folder.backup_web"),
                 Unavailable("folder.backup_web"),
+                Unavailable("folder.save_desktop"),
             ]
         );
         assert_eq!(
@@ -2147,6 +2437,7 @@ mod tests {
                 OpenFiles,
                 Unavailable("folder.backup_android"),
                 Unavailable("folder.backup_android"),
+                Unavailable("folder.save_desktop"),
             ]
         );
         assert_eq!(
@@ -2249,6 +2540,7 @@ mod tests {
             "options.rs",
             "picture_mosaic_docker.rs",
             "export_assets.rs",
+            "save_as.rs",
         ] {
             let (_, text) = sources
                 .iter()

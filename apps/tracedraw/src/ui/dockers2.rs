@@ -58,6 +58,8 @@ pub fn show(app: &mut App, ui: &mut Ui, tab: DockerTab) {
         DockerTab::Coordinates => crate::ui::coords_docker::coordinates(app, ui),
         DockerTab::VectorMosaic => crate::ui::vector_mosaic_docker::vector_mosaic(app, ui),
         DockerTab::PictureMosaic => crate::ui::picture_mosaic_docker::picture_mosaic(app, ui),
+        DockerTab::ShapeGenerator => crate::ui::shape_gen_docker::shape_generator(app, ui),
+        DockerTab::SymbolScatter => crate::ui::symbol_scatter_docker::symbol_scatter(app, ui),
         DockerTab::Shelf => crate::ui::shelf_docker::shelf(app, ui),
         DockerTab::Export => crate::ui::export_docker::export_docker(app, ui),
         DockerTab::Comments => crate::ui::comments_docker::comments_docker(app, ui),
@@ -1548,7 +1550,7 @@ fn lens(app: &mut App, ui: &mut Ui) {
                 Some(lens) => {
                     if app.lens.frozen {
                         app.push_effect(Effect::Lens(lens), true);
-                        app.flatten_effects();
+                        app.freeze_lens();
                     } else {
                         app.push_effect(Effect::Lens(lens), true);
                     }
@@ -1609,6 +1611,35 @@ fn blend_pic(
 }
 
 use egui::Color32;
+
+/// Where the blend's start and end objects sit along its path, in % of
+/// its length: changing either moves the object there (#2946).
+pub(crate) fn blend_path_ends(app: &mut App, ui: &mut Ui, opt: &tracedraw_core::live::BlendOptions) {
+    let (a, b) = opt.path_ends();
+    let (mut from, mut to) = (a * 100.0, b * 100.0);
+    let mut moved = false;
+    for (key, v) in [
+        ("docker.blend_path_start", &mut from),
+        ("docker.blend_path_end", &mut to),
+    ] {
+        ui.horizontal(|ui| {
+            ui.label(tr(key));
+            moved |= ui
+                .add(
+                    crate::ui::field::NumField::new(v)
+                        .range(0.0..=100.0)
+                        .speed(0.5)
+                        .max_decimals(1)
+                        .suffix(" %"),
+                )
+                .rich_tip(crate::ui::tips::keyed(key))
+                .changed();
+        });
+    }
+    if moved {
+        app.set_blend_path_ends(from / 100.0, to / 100.0);
+    }
+}
 
 /// The Blend docker: steps or spacing, rotation with Loop, the path
 /// options, the acceleration of objects and colours (with Apply to
@@ -1769,6 +1800,9 @@ fn blend(app: &mut App, ui: &mut Ui) {
         .rich_tip(crate::ui::tips::keyed("docker.rotate_all_objects"))
         .rich_disabled_tip(crate::ui::tips::keyed("docker.rotate_all_objects"))
         .changed();
+    if has_path {
+        blend_path_ends(app, ui, &opt);
+    }
     section(ui, Some(&tr("docker.blend_acceleration")));
     ui.spacing_mut().slider_width = (ui.available_width() - 80.0).clamp(80.0, 200.0);
     ui.horizontal(|ui| {
@@ -1955,6 +1989,14 @@ fn blend(app: &mut App, ui: &mut Ui) {
             {
                 app.pending_blend_path = true;
                 app.status = tr("status.click_blend_path");
+            }
+            if has_path
+                && ui
+                    .button(tr("docker.detach_path"))
+                    .rich_tip(crate::ui::tips::keyed("docker.detach_path"))
+                    .clicked()
+            {
+                app.detach_blend_path();
             }
             if ui
                 .button(tr("docker.clear_blend"))
@@ -2576,6 +2618,18 @@ fn object_data(app: &mut App, ui: &mut Ui) {
     if changed {
         app.run(Command::SetObjectData { shape: s.id, data });
     }
+    // Copy the fields to the other selected objects (#3262).
+    if app.selected_shapes().len() > 1
+        && ui
+            .button(tr("docker.data_copy_to_selection"))
+            .rich_tip(crate::ui::tips::pair(
+                "docker.data_copy_to_selection",
+                "docker.data_copy_to_selection_tip",
+            ))
+            .clicked()
+    {
+        app.copy_object_data_to_selection();
+    }
     // Summary of a cost field across the selection.
     let total: f64 = app
         .selected_shapes()
@@ -2713,6 +2767,27 @@ fn links(app: &mut App, ui: &mut Ui) {
     }
 }
 
+/// How many instances of symbol `index` the drawing holds, on every
+/// page and master layer, inside groups and clip frames too (#3248): an
+/// instance in a group was not counted, so a symbol whose copies were all
+/// grouped said 0.
+pub(crate) fn symbol_uses(doc: &tracedraw_core::Document, index: usize) -> usize {
+    fn count(s: &tracedraw_core::document::Shape, index: usize) -> usize {
+        match &s.kind {
+            ShapeKind::SymbolInstance { index: i } => usize::from(*i == index),
+            ShapeKind::Group { children } => children.iter().map(|c| count(c, index)).sum(),
+            ShapeKind::ClipFrame { frame, contents } => {
+                count(frame, index) + contents.iter().map(|c| count(c, index)).sum::<usize>()
+            }
+            _ => 0,
+        }
+    }
+    doc.all_layers()
+        .flat_map(|l| &l.shapes)
+        .map(|s| count(s, index))
+        .sum()
+}
+
 fn symbols(app: &mut App, ui: &mut Ui) {
     let has = !app.selection.is_empty();
     ui.horizontal(|ui| {
@@ -2740,8 +2815,13 @@ fn symbols(app: &mut App, ui: &mut Ui) {
         .map(|(i, s)| (i, s.name.clone()))
         .collect();
     let editing = app.symbol_edit_index();
+    let mut thumbs = std::mem::take(&mut app.symbol_thumbs);
+    thumbs.begin_frame();
+    let drawing = (app.engine.instance(), app.engine.revision());
     for (i, name) in syms {
         ui.horizontal(|ui| {
+            // What the symbol draws, beside its name (#3249).
+            symbol_picture(app, ui, &mut thumbs, drawing, i);
             ui.label(&name);
             if ui
                 .small_button(tr("docker.insert"))
@@ -2763,6 +2843,15 @@ fn symbols(app: &mut App, ui: &mut Ui) {
                 {
                     app.finish_clip_frame_edit();
                 }
+                // Cancel: the edit ends and the symbol stays as it was
+                // (#3437).
+                if ui
+                    .small_button(tr("docker.cancel_symbol_edit"))
+                    .rich_tip(tr("docker.cancel_symbol_edit_tip"))
+                    .clicked()
+                {
+                    app.cancel_symbol_edit();
+                }
             } else if ui
                 .add_enabled(
                     app.clip_frame_edit.is_none(),
@@ -2776,19 +2865,78 @@ fn symbols(app: &mut App, ui: &mut Ui) {
             {
                 app.edit_symbol(i);
             }
-            let uses = app
-                .doc()
-                .all_layers()
-                .flat_map(|l| &l.shapes)
-                .filter(|s| matches!(s.kind, ShapeKind::SymbolInstance { index } if index == i))
-                .count();
+            // A copy of the symbol, placed nowhere (#3437).
+            if ui
+                .add_enabled(
+                    app.clip_frame_edit.is_none(),
+                    egui::Button::new(tr("docker.duplicate_symbol")).small(),
+                )
+                .rich_tip(tr("docker.duplicate_symbol_tip"))
+                .clicked()
+            {
+                app.duplicate_symbol(i);
+            }
+            let uses = symbol_uses(app.doc(), i);
             dim(ui, trf("docker.instances_n", &[("n", &uses.to_string())]));
         });
     }
+    thumbs.trim(crate::object_thumbs::MAX_BYTES / 4);
+    if thumbs.waiting {
+        ui.ctx().request_repaint();
+    }
+    app.symbol_thumbs = thumbs;
     if app.doc().symbols.is_empty() {
         dim(ui, tr("docker.symbols_hint"));
     }
 }
+
+/// The side of a symbol's picture in the Symbols docker, points.
+const SYMBOL_PICTURE: f32 = 28.0;
+
+/// Symbol `index`'s definition drawn in a white tile (#3249): drawn once
+/// per change of the symbol, whatever its instances.
+fn symbol_picture(
+    app: &App,
+    ui: &mut Ui,
+    thumbs: &mut crate::object_thumbs::ObjectThumbs,
+    drawing: (u64, u64),
+    index: usize,
+) {
+    let (r, _) = ui.allocate_exact_size(egui::Vec2::splat(SYMBOL_PICTURE), egui::Sense::hover());
+    let p = ui.painter();
+    p.rect_filled(r, 2.0, egui::Color32::WHITE);
+    p.rect_stroke(
+        r,
+        2.0,
+        egui::Stroke::new(1.0, Tokens::border()),
+        egui::StrokeKind::Inside,
+    );
+    // An instance of it at the origin stands for the symbol; its own key,
+    // apart from any object's.
+    let shape = tracedraw_core::Shape::new(
+        ShapeId(u64::MAX - index as u64),
+        ShapeKind::SymbolInstance { index },
+    );
+    let ppp = ui.ctx().pixels_per_point().max(0.5);
+    let inner = r.shrink(2.0);
+    let px = (inner.width() * ppp).round().max(4.0) as u32;
+    if let crate::object_thumbs::Thumb::Picture(id, [w, h]) =
+        thumbs.get(ui.ctx(), app.doc(), drawing, &shape, px)
+    {
+        let size = egui::Vec2::new(w as f32, h as f32) / ppp;
+        let fit = (inner.width() / size.x.max(size.y).max(1.0)).min(1.0);
+        let at = egui::Rect::from_center_size(inner.center(), size * fit);
+        ui.painter().image(
+            id,
+            at,
+            egui::Rect::from_min_max(egui::Pos2::ZERO, egui::Pos2::new(1.0, 1.0)),
+            egui::Color32::WHITE,
+        );
+    }
+}
+
+/// The side of a page's miniature in the Pages docker, points (#2932).
+const PAGE_THUMB: f32 = 44.0;
 
 fn pages(app: &mut App, ui: &mut Ui) {
     let pages: Vec<(tracedraw_core::PageId, String, tracedraw_core::Size)> = app
@@ -2829,9 +2977,26 @@ fn pages(app: &mut App, ui: &mut Ui) {
             app.page_sorter = !app.page_sorter;
         }
     });
+    let revision = app.engine.revision();
     for (i, (id, name, size)) in pages.iter().enumerate() {
         ui.horizontal(|ui| {
             let active = *id == app.page;
+            // The page's miniature, so a page is found by what it shows,
+            // not by its number alone (#2932).
+            let (r, resp) =
+                ui.allocate_exact_size(egui::vec2(PAGE_THUMB, PAGE_THUMB), egui::Sense::click());
+            if active {
+                ui.painter()
+                    .rect_filled(r.expand(2.0), 2.0, crate::theme::Tokens::tool_active());
+            }
+            let thumb = crate::ui::preview::page_thumb(ui, app.doc(), revision, *id, PAGE_THUMB);
+            crate::ui::preview::paint_page_thumb(ui, r.shrink(2.0), thumb, *size);
+            if resp
+                .rich_tip_with(|| format!("{name}\n{}", tr("docker.page_list_desc")))
+                .clicked()
+            {
+                app.goto_page(i);
+            }
             if ui
                 .selectable_label(active, format!("{}. {name}", i + 1))
                 .rich_tip_with(|| format!("{name}\n{}", tr("docker.page_list_desc")))
@@ -3885,5 +4050,155 @@ mod corners_docker_tests {
         ));
         click(&mut app, "dialog.preview");
         assert!(app.settings.corners_preview, "and back on");
+    }
+}
+
+#[cfg(test)]
+mod symbol_docker_tests {
+    use super::*;
+
+    /// The Symbols panel counts every instance of a symbol, those inside
+    /// a group or a clip frame too (#3248): grouped instances were not
+    /// counted, so a symbol whose copies were all grouped said 0.
+    #[test]
+    fn grouped_symbol_instances_are_counted() {
+        let mut app = App::headless();
+        let square = app
+            .new_shape(ShapeKind::Rect {
+                rect: tracedraw_core::geometry::Rect::new(0.0, 0.0, 10.0, 10.0),
+                radius: 0.0,
+                corners: None,
+            })
+            .expect("square");
+        app.select(vec![square]);
+        app.create_symbol_from_selection();
+        assert_eq!(symbol_uses(app.doc(), 0), 1);
+        let mut copies = Vec::new();
+        for _ in 0..4 {
+            app.insert_symbol_instance(0);
+            copies.push(app.selection[0]);
+        }
+        assert_eq!(symbol_uses(app.doc(), 0), 5);
+        app.select(copies[..3].to_vec());
+        app.group_selection();
+        assert_eq!(symbol_uses(app.doc(), 0), 5, "three of them in a group");
+        // One inside a clip frame.
+        let frame = app
+            .new_shape(ShapeKind::Rect {
+                rect: tracedraw_core::geometry::Rect::new(0.0, 0.0, 300.0, 300.0),
+                radius: 0.0,
+                corners: None,
+            })
+            .expect("frame");
+        app.place_inside(vec![copies[3]], frame);
+        assert_eq!(symbol_uses(app.doc(), 0), 5, "one in a clip frame");
+        let all: Vec<ShapeId> = app.doc().pages[0].layers[0]
+            .shapes
+            .iter()
+            .map(|s| s.id)
+            .collect();
+        app.select(all);
+        app.group_selection();
+        assert_eq!(symbol_uses(app.doc(), 0), 5, "groups in a group");
+        assert_eq!(symbol_uses(app.doc(), 1), 0);
+    }
+}
+
+/// Whether the object data field `key` is one TraceDraw keeps for itself
+/// (a name with a dot, as `bitmap.link` or `anchor.1`, and the
+/// connector's and hinting's): Copy to Selection leaves those alone.
+pub(crate) fn data_field_is_internal(key: &str) -> bool {
+    key.contains('.') || matches!(key, "connector" | "hinting")
+}
+
+impl App {
+    /// Object Data's Copy to Selection (#3262): the fields of the first
+    /// selected object go to the other selected objects, as one undo
+    /// step; a field they have of the same name takes the value, their
+    /// other fields stay, and fields TraceDraw keeps for itself are not
+    /// copied.
+    pub fn copy_object_data_to_selection(&mut self) {
+        let shapes = self.selected_shapes();
+        let Some((first, rest)) = shapes.split_first() else {
+            return;
+        };
+        let fields: Vec<(String, String)> = first
+            .data
+            .iter()
+            .filter(|(k, _)| !data_field_is_internal(k))
+            .cloned()
+            .collect();
+        let cmds: Vec<Command> = rest
+            .iter()
+            .filter_map(|s| {
+                let mut data = s.data.clone();
+                for (k, v) in &fields {
+                    match data.iter_mut().find(|(f, _)| f == k) {
+                        Some(entry) => entry.1 = v.clone(),
+                        None => data.push((k.clone(), v.clone())),
+                    }
+                }
+                (data != s.data).then_some(Command::SetObjectData { shape: s.id, data })
+            })
+            .collect();
+        if cmds.is_empty() {
+            return;
+        }
+        if let Err(e) = self.engine.run_batch("Copy Object Data", &cmds) {
+            self.status = e.to_string();
+        }
+    }
+}
+
+#[cfg(test)]
+mod object_data_copy_tests {
+    use super::*;
+    use tracedraw_core::document::ShapeKind;
+    use tracedraw_core::geometry::Rect;
+
+    /// Copy to Selection gives the first object's own fields to the
+    /// others in one undo step, keeping their other fields and leaving
+    /// TraceDraw's own fields alone (#3262).
+    #[test]
+    fn copy_to_selection_gives_the_fields_in_one_step() {
+        let mut app = App::headless();
+        let rect = |app: &mut App, x: f64| {
+            app.new_shape(ShapeKind::Rect {
+                rect: Rect::new(x, 0.0, x + 10.0, 10.0),
+                radius: 0.0,
+                corners: None,
+            })
+            .expect("rect")
+        };
+        let a = rect(&mut app, 0.0);
+        let b = rect(&mut app, 20.0);
+        app.run(Command::SetObjectData {
+            shape: a,
+            data: vec![
+                ("Name".into(), "Bolt".into()),
+                ("Cost".into(), "3".into()),
+                ("bitmap.link".into(), "/a.png".into()),
+            ],
+        });
+        app.run(Command::SetObjectData {
+            shape: b,
+            data: vec![("Cost".into(), "9".into()), ("Size".into(), "M4".into())],
+        });
+        app.select(vec![a, b]);
+        let depth = app.engine.history_labels().0.len();
+        app.copy_object_data_to_selection();
+        assert_eq!(app.engine.history_labels().0.len(), depth + 1);
+        let data = app.doc().find_shape(b).expect("b").data.clone();
+        assert_eq!(
+            data,
+            vec![
+                ("Cost".to_string(), "3".to_string()),
+                ("Size".to_string(), "M4".to_string()),
+                ("Name".to_string(), "Bolt".to_string()),
+            ]
+        );
+        app.undo();
+        let data = app.doc().find_shape(b).expect("b").data.clone();
+        assert_eq!(data.len(), 2);
     }
 }

@@ -57,7 +57,7 @@ selected (the default outline) nothing is previewed.
 | Caps | butt | butt, round, square |
 | Corners | mitre | mitre, round, bevel |
 | Mitre limit | 45 degrees | 1 to 179 degrees; shown with mitred corners |
-| Dash | solid | presets dashed 4:2, dotted 1:1, dash dot 6:2:1:2, and custom line styles, in multiples of the width |
+| Dash | solid | presets dashed 4:2, dotted 1:1, dash dot 6:2:1:2, round dots 0:2 (dashes of no length, which round caps draw as dots two widths apart; choosing it turns flat caps round, #3404), and custom line styles, in multiples of the width |
 | Align dashes | off | fit the dashes to the corners and ends (with a dash pattern) |
 | Position | centred | outside, centred, inside |
 | Arrowheads | none / none | start and end; presets and custom heads, filled in the outline colour |
@@ -68,7 +68,7 @@ selected (the default outline) nothing is previewed.
 | Share attributes | off | the end takes the start's head and settings and follows them |
 | Nib stretch | 1.0 | 0.1 to 1: the calligraphic nib's thickness across its axis |
 | Nib angle | 0 | degrees |
-| Behind fill | off | the outline is drawn under the fill |
+| Behind fill | off | the outline is drawn under the fill; on a PowerClip frame, under its fill and its contents (on screen, in print and in PDF, SVG, EPS and AI exports) |
 | Scale with object | off | the width follows the object's scale factor `sqrt(|det|)` |
 
 ## Arrowhead editor
@@ -168,6 +168,15 @@ the Outline Pen dialog offer one list, round values in that unit: points 0.25, 0
 `ui::propbar::tests::the_width_presets_follow_the_outline_unit`;
 `ui::outline_pen::tests::the_width_list_matches_the_property_bar`
 checks the dialog's list is the same (#967).
+
+Object > Thicker Outline and Thinner Outline step the selection's
+outline one width up or down that list, as the wheel over the width box
+does (past the widest in steps of the last gap). They have no key at
+first; one is given in Options > Customization > Commands. Thinner
+stops at the hairline and never takes the outline off; Thicker gives an
+object without an outline a hairline. Each object keeps its colour and
+the rest of its outline, in one undo step (#2905,
+`ui::propbar::tests::outline_width_commands_step_the_selection`).
 
 ## Mitre limit
 

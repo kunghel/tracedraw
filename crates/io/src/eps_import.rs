@@ -227,8 +227,10 @@ fn parse_here(bytes: &[u8], ids: &mut IdSource, stack_budget: usize) -> Result<I
 /// them, in PostScript: path construction (`m`, `l`, `L`, `c`, `C`,
 /// `v`, `V`, `y`, `Y`), painting (`f`, `F`, `s`, `S`, `b`, `B`, `n`,
 /// `N`), compound paths (`*u`, `*U`), clipping (`W` in a `q` ... `Q`
-/// group), groups (`u`, `U`), process and grey colours for the fill
-/// (`k`, `g`) and the outline (`K`, `G`), outline settings and layers.
+/// group), groups (`u`, `U`), process, grey, RGB and custom colours for
+/// the fill (`k`, `g`, `Xa`, `x`, `Xx`) and the outline (`K`, `G`, `XA`,
+/// `X`, `XX`), outline settings and layers. A custom colour's tint runs
+/// from 0 (the whole colour) to 1 (none: white).
 /// The fill and outline colours are kept apart, as the format keeps
 /// them; the parts of a compound path are painted together at its end.
 const CLASSIC_AI_PROCS: &str = "\
@@ -238,6 +240,13 @@ const CLASSIC_AI_PROCS: &str = "\
 /K {[ 5 1 roll /setcmykcolor load ] cvx /_s exch def} def
 /g {[ exch /setgray load ] cvx /_f exch def} def
 /G {[ exch /setgray load ] cvx /_s exch def} def
+/Xa {[ 4 1 roll /setrgbcolor load ] cvx /_f exch def} def
+/XA {[ 4 1 roll /setrgbcolor load ] cvx /_s exch def} def
+/_tc {/_t exch def pop [ 5 1 roll 4 {1 _t sub mul 4 1 roll} repeat /setcmykcolor load ] cvx} def
+/_tr {/_t exch def pop [ 4 1 roll 3 {1 exch sub 1 _t sub mul 1 exch sub 3 1 roll} repeat /setrgbcolor load ] cvx} def
+/x {_tc /_f exch def} def /X {_tc /_s exch def} def
+/Xx {1 eq {_tr} {_tc} ifelse /_f exch def} def
+/XX {1 eq {_tr} {_tc} ifelse /_s exch def} def
 /w {setlinewidth} def /j {setlinejoin} def /J {setlinecap} def
 /M {setmiterlimit} def /d {setdash} def
 /m {moveto} def /l {lineto} def /L {lineto} def /c {curveto} def /C {curveto} def
@@ -252,7 +261,7 @@ const CLASSIC_AI_PROCS: &str = "\
 /N {{} _paint} def /n {closepath N} def
 /W {/_clip true def} def
 /*u {/_cp true def} def /*U {/_cp false def _pp _done /_pp {} def} def
-/u {} def /U {} def /q {gsave} def /Q {grestore} def
+/u {.tdbegingroup} def /U {.tdendgroup} def /q {gsave} def /Q {grestore} def
 /Lb {clear} def /Ln {pop} def /LB {} def
 /A {pop} def /O {pop} def /R {pop} def /D {pop} def
 ";
@@ -886,6 +895,9 @@ struct Interp<'a> {
     pages: Vec<(usize, Option<Size>)>,
     /// The page size `setpagedevice` set, mm.
     page_size: Option<Size>,
+    /// Where each open group of a classic Illustrator file (`u`) started
+    /// among the objects painted.
+    group_starts: Vec<usize>,
     /// Where the stack stood when the program started running, and how
     /// many bytes of it the program's recursion may use (see
     /// [`STACK_BUDGET`]).
@@ -935,6 +947,7 @@ impl<'a> Interp<'a> {
             jpeg_files: Vec::new(),
             pages: Vec::new(),
             page_size: None,
+            group_starts: Vec::new(),
             stack_base: stack_mark(),
             stack_budget: usize::MAX,
         }
@@ -1099,6 +1112,9 @@ impl<'a> Interp<'a> {
             "resourcestatus",
             "setpagedevice",
             "currentpagedevice",
+            // the groups of classic Illustrator files (see CLASSIC_AI_PROCS)
+            ".tdbegingroup",
+            ".tdendgroup",
             "nulldevice",
             "echo",
             "setuserparams",
@@ -1452,6 +1468,9 @@ impl<'a> Interp<'a> {
                 self.exec_obj(Obj::Array(items.clone(), true))
             }
             other => {
+                // Pushing counts as a step too, or `/a loop` (a literal
+                // name as its procedure) loops for ever.
+                self.ops += 1;
                 self.push(other.clone());
                 Flow::Normal
             }
@@ -1459,6 +1478,25 @@ impl<'a> Interp<'a> {
     }
 
     // ----- shapes -----
+
+    /// The objects painted since `start` become one group (two or more;
+    /// one object stays as it is). Page ends inside the group move to
+    /// its end.
+    fn close_group(&mut self, start: usize) {
+        if start > self.shapes.len() || self.shapes.len() - start < 2 {
+            return;
+        }
+        let children = self.shapes.split_off(start);
+        let mut group = self.new_shape(ShapeKind::Group { children });
+        group.fill = Fill::None;
+        group.stroke = None;
+        self.shapes.push(group);
+        for (at, _) in &mut self.pages {
+            if *at > start {
+                *at = start + 1;
+            }
+        }
+    }
 
     fn new_shape(&mut self, kind: ShapeKind) -> Shape {
         Shape::new(ShapeId(self.ids.shape().0), kind)
@@ -1507,6 +1545,7 @@ impl<'a> Interp<'a> {
         if path.elements().is_empty() {
             return;
         }
+        let nonzero = crate::nonzero_matters(&path);
         let closed = path
             .elements()
             .iter()
@@ -1525,6 +1564,9 @@ impl<'a> Interp<'a> {
         };
         if fill && even_odd {
             shape.data.push(("fill.rule".into(), "evenodd".into()));
+        } else if fill && nonzero {
+            // `fill` uses the nonzero rule, `eofill` even-odd (#3224).
+            shape.fill_rule = tracedraw_core::shaping::FillRule::NonZero;
         }
         shape.stroke = if stroke {
             let scale = self.device_scale();
@@ -1541,7 +1583,65 @@ impl<'a> Interp<'a> {
         } else {
             None
         };
+        // An outline painted over the fill just painted, on the same path
+        // (`gsave fill grestore stroke`, Illustrator's `B`), is that
+        // object's outline, not an object of its own.
+        if !fill && shape.stroke.is_some() {
+            let stroke = shape.stroke.clone();
+            if let (ShapeKind::Path { path: p, .. }, Some(last)) =
+                (&shape.kind, self.unoutlined_fill())
+            {
+                if matches!(&last.kind, ShapeKind::Path { path: q, .. } if q == p) {
+                    last.stroke = stroke;
+                    return;
+                }
+            }
+        }
         self.emit(shape);
+    }
+
+    /// The object painted last, when it is a filled path without an
+    /// outline (in a clip frame of its own when clipped) that no group
+    /// or page has begun since.
+    fn unoutlined_fill(&mut self) -> Option<&mut Shape> {
+        let floor = self
+            .group_starts
+            .last()
+            .copied()
+            .into_iter()
+            .chain(self.pages.last().map(|p| p.0))
+            .max()
+            .unwrap_or(0);
+        if self.shapes.len() <= floor {
+            return None;
+        }
+        let clip = self.gs.clip.as_ref();
+        let last = self.shapes.last_mut()?;
+        let framed = match &last.kind {
+            ShapeKind::ClipFrame { frame, contents } => {
+                let same = contents.len() == 1
+                    && matches!((&frame.kind, clip),
+                        (ShapeKind::Path { path, .. }, Some(c)) if path == c);
+                if !same {
+                    return None;
+                }
+                true
+            }
+            _ => false,
+        };
+        fn unoutlined(s: &mut Shape) -> Option<&mut Shape> {
+            (matches!(s.kind, ShapeKind::Path { .. })
+                && s.stroke.is_none()
+                && !matches!(s.fill, Fill::None))
+            .then_some(s)
+        }
+        if !framed {
+            return unoutlined(last);
+        }
+        match &mut last.kind {
+            ShapeKind::ClipFrame { contents, .. } => unoutlined(&mut contents[0]),
+            _ => None,
+        }
     }
 
     fn user_to_device(&self, p: Point) -> Point {
@@ -2491,6 +2591,16 @@ impl<'a> Interp<'a> {
                 self.gs = GState::default();
                 self.gs.ctm = self.base;
                 self.gs.path = path;
+            }
+            ".tdbegingroup" => {
+                if self.group_starts.len() < 256 {
+                    self.group_starts.push(self.shapes.len());
+                }
+            }
+            ".tdendgroup" => {
+                if let Some(start) = self.group_starts.pop() {
+                    self.close_group(start);
+                }
             }
             "showpage" | "copypage" => {
                 // A page ends (copypage keeps the marks on the device;
@@ -4841,6 +4951,19 @@ mod tests {
         parse(ps.as_bytes(), &mut ids).expect("parse")
     }
 
+    /// `fill` is nonzero and `eofill` even-odd (#3224).
+    #[test]
+    fn fill_is_nonzero_and_eofill_even_odd() {
+        use tracedraw_core::shaping::FillRule;
+        let sq = "newpath 10 10 moveto 50 10 lineto 50 50 lineto 10 50 lineto closepath 30 30 moveto 70 30 lineto 70 70 lineto 30 70 lineto closepath";
+        let imp = run(&format!(
+            "%!PS-Adobe-3.0 EPSF-3.0\n%%BoundingBox: 0 0 200 100\n{sq} fill\n{sq} eofill\nshowpage\n"
+        ));
+        assert_eq!(imp.shapes.len(), 2, "{:?}", imp.warnings);
+        assert_eq!(imp.shapes[0].fill_rule, FillRule::NonZero);
+        assert_eq!(imp.shapes[1].fill_rule, FillRule::EvenOdd);
+    }
+
     #[test]
     fn paths_fills_strokes_and_bounding_box() {
         let imp = run(
@@ -4851,7 +4974,8 @@ mod tests {
             "{:?}",
             imp.size
         );
-        assert_eq!(imp.shapes.len(), 3, "{:?}", imp.warnings);
+        // The outline stroked over the fill is that object's outline.
+        assert_eq!(imp.shapes.len(), 2, "{:?}", imp.warnings);
         assert_eq!(
             imp.shapes[0].fill,
             Fill::Solid(Color::Rgb {
@@ -4860,7 +4984,7 @@ mod tests {
                 b: 1.0
             })
         );
-        let s = imp.shapes[1].stroke.as_ref().expect("stroke");
+        let s = imp.shapes[0].stroke.as_ref().expect("stroke");
         assert_eq!(
             s.color,
             Color::Rgb {
@@ -4870,7 +4994,7 @@ mod tests {
             }
         );
         assert!((s.width - 4.0 * PT_MM).abs() < 1e-9);
-        let b = imp.shapes[2].bounds();
+        let b = imp.shapes[1].bounds();
         assert!(
             (b.x0 - 100.0 * PT_MM).abs() < 1e-6 && (b.y1 - 80.0 * PT_MM).abs() < 1e-6,
             "{b:?}"
@@ -5032,6 +5156,16 @@ mod tests {
         assert!(parse(b"hello world", &mut ids).is_err());
         let imp = parse(b"%!PS\n{ } loop\n", &mut ids).expect("parse");
         assert!(imp.warnings.iter().any(|w| w.contains("too long")));
+        // A literal name as the procedure of `loop` or `repeat` (a
+        // damaged file) stops too: it never ended.
+        for p in [
+            &b"%!PS\n/a loop\n"[..],
+            b"%!PS\n1000000000 /a repeat\n",
+            b"%!PS\n/m loop {moveto} def 10 10 m\n",
+        ] {
+            let imp = parse(p, &mut ids).expect("parse");
+            assert!(imp.warnings.iter().any(|w| w.contains("too long")), "{:?}", imp.warnings);
+        }
         let imp = parse(b"%!PS\n/r { r } def r\n", &mut ids).expect("parse");
         assert!(imp.warnings.iter().any(|w| w.contains("deeply")));
         let imp = parse(
@@ -5082,5 +5216,91 @@ mod tests {
             imp.warnings
         );
         assert!(imp.shapes.is_empty());
+    }
+
+    /// A classic Illustrator file as tracing programs write them: RGB
+    /// (`Xa`), custom (`x`, `Xx`) colours and groups (`u` ... `U`),
+    /// with no procedure set (d#2949: everything came in black and
+    /// ungrouped).
+    #[test]
+    fn classic_ai_rgb_and_custom_colours_and_groups() {
+        let imp = run("%!PS-Adobe-3.0\n%%Creator: tracer\n%AI5_FileFormat 3\n\
+            %%BoundingBox: 0 0 100 100\n%%EndProlog\n%%BeginSetup\n%%EndSetup\n\
+            u\n1 0 0 Xa\n0 0 m 10 0 L 10 10 L 0 10 L 0 0 L f\n\
+            0 0 1 XA 2 w\n20 0 m 30 0 L 30 10 L S\n\
+            U\n\
+            0 1 1 0 (Spot red) 0.25 x\n40 0 m 50 0 L 50 10 L f\n\
+            0 0.5 0 (Green) 0 1 Xx\n60 0 m 70 0 L 70 10 L f\n\
+            1 0 0 0 (Cyan) 0 0 Xx\n80 0 m 90 0 L 90 10 L f\n\
+            u\n0 0 m 1 0 L 1 1 L f\nU\n\
+            %%Trailer\n");
+        assert!(
+            imp.warnings.iter().all(|w| !w.contains("undefined")),
+            "{:?}",
+            imp.warnings
+        );
+        assert_eq!(imp.shapes.len(), 5, "{:?}", imp.shapes);
+        let ShapeKind::Group { children } = &imp.shapes[0].kind else {
+            panic!("the first two paths make a group: {:?}", imp.shapes[0].kind);
+        };
+        assert_eq!(children.len(), 2);
+        let near = |a: f32, b: f32| (a - b).abs() < 1e-4;
+        assert!(
+            matches!(children[0].fill, Fill::Solid(Color::Rgb { r, g, b }) if near(r, 1.0) && near(g, 0.0) && near(b, 0.0)),
+            "{:?}",
+            children[0].fill
+        );
+        let stroke = children[1].stroke.as_ref().expect("the line is stroked");
+        assert!(
+            matches!(stroke.color, Color::Rgb { r, g, b } if near(r, 0.0) && near(g, 0.0) && near(b, 1.0)),
+            "{:?}",
+            stroke.color
+        );
+        // A custom colour at tint 0.25 is three quarters of the colour.
+        assert!(
+            matches!(imp.shapes[1].fill, Fill::Solid(Color::Cmyk { c, m, y, k }) if near(c, 0.0) && near(m, 0.75) && near(y, 0.75) && near(k, 0.0)),
+            "{:?}",
+            imp.shapes[1].fill
+        );
+        // `Xx` with type 1 is RGB, type 0 CMYK.
+        assert!(
+            matches!(imp.shapes[2].fill, Fill::Solid(Color::Rgb { r, g, b }) if near(r, 0.0) && near(g, 0.5) && near(b, 0.0)),
+            "{:?}",
+            imp.shapes[2].fill
+        );
+        assert!(
+            matches!(imp.shapes[3].fill, Fill::Solid(Color::Cmyk { c, .. }) if near(c, 1.0)),
+            "{:?}",
+            imp.shapes[3].fill
+        );
+        // A group of one object is the object.
+        assert!(matches!(imp.shapes[4].kind, ShapeKind::Path { .. }));
+    }
+
+    /// An outline stroked over the fill just painted, on the same path,
+    /// is that object's outline: `gsave fill grestore stroke`, and a
+    /// classic Illustrator file's `B` (also inside a clipping group). A
+    /// stroke of another path, or one after a group began, stays an
+    /// object of its own.
+    #[test]
+    fn an_outline_over_its_fill_is_one_object() {
+        let imp = run("%!PS-Adobe-3.0\n%%Creator: tracer\n%AI5_FileFormat 3\n\
+             %%BoundingBox: 0 0 200 100\n%%EndComments\n\
+             0 1 1 0 k 0 0 1 0 K 2 w 10 10 m 60 10 L 60 40 L 10 40 L b\n\
+             q 0 0 m 100 0 L 100 50 L 0 50 L h W n\n\
+             1 0 0 0 k 20 20 m 140 20 L 140 60 L 20 60 L b Q\n\
+             0 0 0 1 k 150 10 m 190 10 L 190 40 L f 150 10 m 190 40 L S\n\
+             0.5 g 10 70 m 30 70 L 30 90 L f u 10 70 m 30 70 L 30 90 L s U\n");
+        assert_eq!(imp.shapes.len(), 6, "{:?}", imp.shapes);
+        let outlined = |s: &Shape| s.stroke.is_some() && !matches!(s.fill, Fill::None);
+        assert!(outlined(&imp.shapes[0]), "{:?}", imp.shapes[0]);
+        let ShapeKind::ClipFrame { contents, .. } = &imp.shapes[1].kind else {
+            panic!("clipped: {:?}", imp.shapes[1].kind)
+        };
+        assert!(outlined(&contents[0]), "{:?}", contents[0]);
+        // Another path's stroke and a stroke inside a group stay apart.
+        assert!(imp.shapes[2].stroke.is_none() && imp.shapes[3].stroke.is_some());
+        assert!(imp.shapes[4].stroke.is_none());
+        assert!(imp.shapes[5].stroke.is_some() && matches!(imp.shapes[5].fill, Fill::None));
     }
 }

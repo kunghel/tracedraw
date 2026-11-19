@@ -95,6 +95,7 @@ próprios atalhos; veja
 | [[menu.view.zoom_in]] | [Desfazer, zoom e deslocamento](../get-started/undo-and-views.md#views) |
 | [[menu.view.zoom_out]] | [Desfazer, zoom e deslocamento](../get-started/undo-and-views.md#views) |
 | [[menu.view.zoom_to_fit]] | [Desfazer, zoom e deslocamento](../get-started/undo-and-views.md#views) |
+| [[menu.view.zoom_1to1]] | [Desfazer, zoom e deslocamento](../get-started/undo-and-views.md#views) |
 | [[menu.view.navigator]] | [Desfazer, zoom e deslocamento](../get-started/undo-and-views.md#views) |
 | [[menu.view.proof_colors]] | [Gerenciamento de cores](../color/color-management.md#proof) |
 | [[menu.view.simulate_overprints]] | [Gerenciamento de cores](../color/color-management.md#proof) |
@@ -320,6 +321,7 @@ próprios atalhos; veja
 | [[menu.bitmaps.convert_to_bitmap]] | [Converter objetos em bitmaps](../bitmaps/convert-to-bitmap.md) |
 | [[menu.bitmaps.straighten_image]] | [Reamostrar, endireitar e expandir bitmaps](../bitmaps/resample-and-straighten.md) |
 | [[menu.bitmaps.edit_bitmap]] | [Reamostrar, endireitar e expandir bitmaps](../bitmaps/resample-and-straighten.md) |
+| [[menu.bitmaps.edit_inside]] | [Reamostrar, endireitar e expandir bitmaps](../bitmaps/resample-and-straighten.md) |
 | [[menu.bitmaps.crop_bitmap]] | [Reamostrar, endireitar e expandir bitmaps](../bitmaps/resample-and-straighten.md) |
 | [[menu.bitmaps.resample]] | [Reamostrar, endireitar e expandir bitmaps](../bitmaps/resample-and-straighten.md) |
 | [[menu.bitmaps.remove_background_local]] | [Remover fundo](../bitmaps/remove-background.md) |

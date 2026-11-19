@@ -37,7 +37,11 @@ It sits at the bottom of the window, or at the top below the menu bar
 3. The object information: "Rectangle on Layer 1", "Curve on Layer 1",
    "2 Objects Selected on Layer 1" (or "on Multiple Layers"); with the
    Shape tool and a curve selected, "Curve: N Nodes"; while typing,
-   "Editing text". It starts after the first field, never closer than
+   "Editing text". A symmetry reads "Symmetry group: Curve on Layer 1"
+   (#2997), an object clone "Clone: Rectangle on Layer 1" and its master
+   "Clone master: Rectangle (2 clones) on Layer 1" (#2877); the Objects
+   docker names a symmetry and a clone the same way
+   (`object_clone::tests::clones_masters_and_symmetries_say_what_they_are`). It starts after the first field, never closer than
    156 px from it.
 4. The fill: the Interactive Fill icon (20 px), a 26 x 25 px swatch and
    a description (None, the colour values, or the fill type). At 68.5 %

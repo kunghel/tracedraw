@@ -971,3 +971,71 @@ fn text_takes_the_shape_of_an_object_as_its_envelope() {
     });
     assert!(worst < 1.02, "{worst}");
 }
+
+/// Convert to Curves on a paragraph text whose words have colours of
+/// their own: a group of curves, one a colour, each with its colour and
+/// only its own words; the whole stays one undo step. All came out in the
+/// object's fill (#3107).
+#[test]
+fn multicoloured_paragraph_text_converts_to_curves_in_its_colours() {
+    tracedraw_text::install();
+    let mut app = App::headless();
+    let red = Fill::Solid(Color::rgb8(220, 0, 0));
+    let green = Fill::Solid(Color::rgb8(0, 160, 0));
+    let blue = Fill::Solid(Color::rgb8(0, 0, 200));
+    let mut a = tracedraw_core::TextSpan::new("Red words ", "DejaVu Sans", 24.0);
+    a.fill = Some(red.clone());
+    let b = tracedraw_core::TextSpan::new("plain ", "DejaVu Sans", 24.0);
+    let mut c = tracedraw_core::TextSpan::new("green", "DejaVu Sans", 24.0);
+    c.fill = Some(green.clone());
+    let id = app.engine.new_shape_id();
+    let mut s = tracedraw_core::Shape::new(
+        id,
+        ShapeKind::Text {
+            spans: vec![a, b, c],
+            origin: Point::new(20.0, 20.0),
+            frame: Some(tracedraw_core::geometry::Size::new(150.0, 80.0)),
+            align: tracedraw_core::document::TextAlign::Left,
+            para: Default::default(),
+            on_path: None,
+        },
+    );
+    s.fill = blue.clone();
+    let layer = app.doc().pages[0].layers[0].id;
+    app.run(tracedraw_core::Command::AddShape { layer, shape: s });
+    let whole = app
+        .doc()
+        .find_shape(id)
+        .expect("text")
+        .page_path()
+        .bounding_box();
+    app.select(vec![id]);
+    let rev = app.engine.revision();
+    app.convert_to_curves();
+    assert_eq!(app.engine.revision(), rev + 1);
+    let out = app.doc().find_shape(id).expect("converted").clone();
+    let ShapeKind::Group { children } = &out.kind else {
+        panic!("a group of curves: {:?}", out.kind);
+    };
+    let fills: Vec<&Fill> = children.iter().map(|c| &c.fill).collect();
+    assert_eq!(fills, vec![&red, &blue, &green]);
+    for (i, c) in children.iter().enumerate() {
+        assert!(matches!(c.kind, ShapeKind::Path { .. }), "{i}");
+        let bb = c.bounds();
+        assert!(
+            bb.width() > 1.0 && bb.area() < whole.area() * 0.8,
+            "{i}: {bb:?}"
+        );
+    }
+    assert!(
+        near_rect(out.bounds(), whole, 0.5),
+        "{:?} {whole:?}",
+        out.bounds()
+    );
+    // Undo gives the text back.
+    app.undo();
+    assert!(matches!(
+        app.doc().find_shape(id).expect("text").kind,
+        ShapeKind::Text { .. }
+    ));
+}

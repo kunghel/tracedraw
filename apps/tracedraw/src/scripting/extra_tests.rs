@@ -87,6 +87,93 @@ fn a_recorded_dimension_plays_back_as_one() {
     assert_eq!(dimensions(&again), dimensions(&app));
 }
 
+/// Dimensions drawn with the Dimension tools and Add Dimensions while a
+/// macro is recorded are in the recorded script, and play back as live
+/// dimensions (#2348: only the rectangle was recorded).
+#[test]
+fn dimensions_drawn_while_recording_are_recorded() {
+    use tracedraw_core::geometry::Point;
+    let mut app = App::headless();
+    app.toggle_recording();
+    let rect = app
+        .new_shape(ShapeKind::Rect {
+            rect: tracedraw_core::geometry::Rect::new(10.0, 10.0, 50.0, 30.0),
+            radius: 0.0,
+            corners: None,
+        })
+        .expect("rect");
+    app.create_dimension(
+        Point::new(10.0, 10.0),
+        Point::new(50.0, 10.0),
+        Point::new(30.0, 0.0),
+    );
+    app.create_dimension(
+        Point::new(50.0, 10.0),
+        Point::new(50.0, 30.0),
+        Point::new(60.0, 20.0),
+    );
+    app.create_dimension(
+        Point::new(10.0, 10.0),
+        Point::new(50.0, 30.0),
+        Point::new(20.0, 40.0),
+    );
+    app.create_angular_dimension(
+        Point::new(10.0, 10.0),
+        Point::new(50.0, 10.0),
+        Point::new(10.0, 30.0),
+        Point::new(20.0, 20.0),
+    );
+    app.select(vec![rect]);
+    app.add_dimensions(false);
+    app.toggle_recording();
+    let script = app.script_source.clone();
+    for call in [
+        "layer.CreateHorizontalDimension(10.000, 10.000, 50.000, 10.000, 30.000, 0.000)",
+        "layer.CreateVerticalDimension(50.000, 10.000, 50.000, 30.000, 60.000, 20.000)",
+        "layer.CreateParallelDimension(10.000, 10.000, 50.000, 30.000, 20.000, 40.000)",
+        "layer.CreateAngularDimension(10.000, 10.000, 50.000, 10.000, 10.000, 30.000",
+    ] {
+        assert!(script.contains(call), "{call} missing from:\n{script}");
+    }
+    // The tool's four and Add Dimensions' two.
+    assert_eq!(script.matches("Dimension(").count(), 6, "{script}");
+    let mut again = App::headless();
+    js(&mut again, &script);
+    assert_eq!(dimensions(&again).len(), 6);
+}
+
+/// A script's dimension between an object's corners holds to them, as the
+/// Dimension tool's does: the object made wider, the dimension measures
+/// the new width (#2348: script dimensions did not follow).
+#[test]
+fn a_script_dimension_follows_its_object() {
+    let mut app = App::headless();
+    js(
+        &mut app,
+        "const r = ActiveLayer.CreateRectangle(10, 10, 40, 20);
+         ActiveLayer.CreateHorizontalDimension(10, 10, 50, 10, 30, 0);
+         ActiveLayer.CreateHorizontalDimension(100, 100, 140, 100, 120, 90);",
+    );
+    let dims = dimensions(&app);
+    assert_eq!(dims[0].anchors.len(), 2, "{:?}", dims[0].anchors);
+    assert!(dims[1].anchors.is_empty(), "nothing under the second");
+    let rect = top(&app)
+        .iter()
+        .find(|s| matches!(s.kind, ShapeKind::Rect { .. }))
+        .expect("rect")
+        .id;
+    app.run(tracedraw_core::Command::TransformShapes {
+        shapes: vec![rect],
+        transform: tracedraw_core::geometry::Affine::translate((10.0, 0.0))
+            * tracedraw_core::geometry::Affine::scale_non_uniform(2.0, 1.0)
+            * tracedraw_core::geometry::Affine::translate((-10.0, 0.0)),
+    });
+    app.bake_dimensions();
+    let dims = dimensions(&app);
+    assert!((dims[0].value() - 80.0).abs() < 1e-6, "{}", dims[0].value());
+    assert!((dims[1].value() - 40.0).abs() < 1e-6);
+}
+
 /// Four "parts": a box and a dot, three alike (two with a label), one
 /// recoloured.
 const PARTS: &str = "

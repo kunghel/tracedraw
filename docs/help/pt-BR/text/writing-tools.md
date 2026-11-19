@@ -129,7 +129,8 @@ hifenização está ativada.
 selecionado para
 [[menu.text.case_sentence]], [[menu.text.case_lower]],
 [[menu.text.case_upper]], [[menu.text.case_title]] ou
-[[menu.text.case_toggle]].
+[[menu.text.case_toggle]]. Com vários textos selecionados, todos mudam num
+único passo de desfazer.
 
 ![A caixa de diálogo Mudar maiúsculas e minúsculas](../../img/text-writing-tools-change-case.png)
 

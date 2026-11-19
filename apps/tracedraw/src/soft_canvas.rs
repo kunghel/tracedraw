@@ -152,9 +152,14 @@ impl Canvas {
 
 /// What `body` paints with `ctx` on a `w` x `h` point area at `ppp`
 /// device pixels per point, as device pixels. `ctx` is one kept for
-/// this alone: the frame it runs shows nothing else.
+/// this alone: the frame it runs shows nothing else. `tex` is kept
+/// with `ctx` from one call to the next: egui sends a texture (the font
+/// atlas, which also holds its small round dots) only once, in the
+/// first frame that uses it, so a later frame drawn without it painted
+/// those dots as squares (#2871).
 pub(crate) fn rasterise(
     ctx: &egui::Context,
+    tex: &mut Textures,
     w: usize,
     h: usize,
     ppp: f32,
@@ -181,8 +186,9 @@ pub(crate) fn rasterise(
             b(ui.painter());
         }
     });
-    let mut tex = Textures::default();
     tex.apply(&out.textures_delta);
+    // (Freed once this frame is painted.)
+    let freed = std::mem::take(&mut out.textures_delta.free);
     out.textures_delta.clear();
     let shapes = std::mem::take(&mut out.shapes);
     let prims = ctx.tessellate(shapes, out.pixels_per_point);
@@ -207,6 +213,9 @@ pub(crate) fn rasterise(
         (w as f32 * scale).round() as usize,
         (h as f32 * scale).round() as usize,
     );
-    canvas.paint(&tex, &prims);
+    canvas.paint(tex, &prims);
+    for id in &freed {
+        tex.0.remove(id);
+    }
     canvas
 }

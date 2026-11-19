@@ -103,6 +103,132 @@ pub struct Measured {
     pub worst_frame: f64,
     /// When, as the system clock gave it (seconds since 1970).
     pub when: u64,
+    /// Quick (the four parts) or advanced (the tasks too).
+    pub level: Level,
+    /// The advanced test's tasks, timed on real drawings.
+    pub tasks: Vec<Task>,
+}
+
+/// How far a run goes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum Level {
+    /// The four parts: some seconds.
+    #[default]
+    Quick,
+    /// The four parts, then real tasks on two large drawings: a minute
+    /// or more.
+    Advanced,
+}
+
+/// One task of the advanced test: what was done (its key in the
+/// language files), on a drawing of how many objects, and how long it
+/// took.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(default)]
+pub struct Task {
+    pub key: String,
+    pub objects: usize,
+    pub seconds: f64,
+}
+
+/// How a task's time feels.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Rating {
+    Good,
+    Fair,
+    Slow,
+}
+
+/// Tasks done while drawing (a redraw, a zoom, a move): under a quarter
+/// of a second feels at once, over a second feels slow. Tasks on files
+/// (save, open, PDF) have four times as long.
+pub fn rating(key: &str, seconds: f64) -> Rating {
+    let file = matches!(key, TASK_SAVE | TASK_OPEN | TASK_PDF);
+    let (good, fair) = if file { (1.0, 4.0) } else { (0.25, 1.0) };
+    if seconds <= good {
+        Rating::Good
+    } else if seconds <= fair {
+        Rating::Fair
+    } else {
+        Rating::Slow
+    }
+}
+
+pub const TASK_REDRAW: &str = "benchmark.task_redraw";
+pub const TASK_ZOOM: &str = "benchmark.task_zoom";
+pub const TASK_MOVE: &str = "benchmark.task_move";
+pub const TASK_SAVE: &str = "benchmark.task_save";
+pub const TASK_OPEN: &str = "benchmark.task_open";
+pub const TASK_PDF: &str = "benchmark.task_pdf";
+pub const TASK_SHADOWS_CARD: &str = "benchmark.task_shadows_card";
+pub const TASK_SHADOWS_PROCESSOR: &str = "benchmark.task_shadows_processor";
+
+/// The drawings of the advanced test, objects.
+pub const ADVANCED_SIZES: [usize; 2] = [10_000, 50_000];
+
+/// Objects of the quick test's sample drawing.
+pub const SAMPLE_OBJECTS: usize = 1501;
+
+/// A redraw of the whole view that takes no longer than this feels at
+/// once: what "comfortable" means in [`Measured::comfortable_objects`].
+pub const COMFORT_SECONDS: f64 = 0.25;
+
+/// The zoom that suits a computer (Options > Tools > Zoom/Pan).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ZoomStyle {
+    /// A wheel notch zooms in a short glide, drawn at every step.
+    Smooth,
+    /// As in CorelDRAW: a wheel notch zooms at once, drawn sharp at
+    /// once, the point under the pointer kept.
+    Corel,
+    /// For slow computers: a notch zooms at once and the drawing is drawn
+    /// again only once the zoom stops.
+    Light,
+}
+
+impl ZoomStyle {
+    pub const ALL: [ZoomStyle; 3] = [ZoomStyle::Smooth, ZoomStyle::Corel, ZoomStyle::Light];
+
+    /// The style the settings give.
+    pub fn of(s: &crate::settings::Settings) -> ZoomStyle {
+        if s.light_zoom {
+            ZoomStyle::Light
+        } else if s.smooth_zoom {
+            ZoomStyle::Smooth
+        } else {
+            ZoomStyle::Corel
+        }
+    }
+
+    /// Set the zoom options for this style.
+    pub fn apply(self, s: &mut crate::settings::Settings) {
+        s.light_zoom = self == ZoomStyle::Light;
+        s.smooth_zoom = self == ZoomStyle::Smooth;
+        if self == ZoomStyle::Corel {
+            s.wheel_zoom_centers = false;
+        }
+    }
+
+    pub fn key(self) -> &'static str {
+        match self {
+            ZoomStyle::Smooth => "benchmark.zoom_smooth",
+            ZoomStyle::Corel => "benchmark.zoom_corel",
+            ZoomStyle::Light => "benchmark.zoom_light",
+        }
+    }
+}
+
+/// Round `n` down to a round number of objects (500, 1 000, 2 000,
+/// 5 000, 10 000...); 0 under 500.
+fn round_objects(n: f64) -> u64 {
+    let mut best = 0;
+    let mut step = 500u64;
+    while (step as f64) <= n && step <= 10_000_000 {
+        best = step;
+        let lead = step.to_string().as_bytes()[0];
+        step = if lead == b'2' { step / 2 * 5 } else { step * 2 };
+    }
+    best
 }
 
 impl Measured {
@@ -130,6 +256,37 @@ impl Measured {
         .into_iter()
         .fold(MAX_SCORE, f32::min)
     }
+    /// About how many objects a drawing can have before a redraw of the
+    /// whole view takes longer than [`COMFORT_SECONDS`] here, from the
+    /// largest drawing timed (the advanced test's, else the sample
+    /// drawing), rounded down; 0 when nothing was timed.
+    pub fn comfortable_objects(&self) -> u64 {
+        let largest = self
+            .tasks
+            .iter()
+            .filter(|t| t.key == TASK_REDRAW && t.seconds > 0.0 && t.objects > 0)
+            .max_by_key(|t| t.objects)
+            .map(|t| t.seconds / t.objects as f64);
+        let per_object = largest.or_else(|| {
+            (self.all_cores_seconds > 0.0).then(|| self.all_cores_seconds / SAMPLE_OBJECTS as f64)
+        });
+        match per_object {
+            Some(p) if p > 0.0 => round_objects(COMFORT_SECONDS / p),
+            _ => 0,
+        }
+    }
+
+    /// The zoom to suggest: Light on a slow computer; else as in
+    /// CorelDRAW, which most people coming from it prefer, and which
+    /// draws less than the glide.
+    pub fn suggested_zoom(&self) -> ZoomStyle {
+        if self.slow() {
+            ZoomStyle::Light
+        } else {
+            ZoomStyle::Corel
+        }
+    }
+
     /// Large drawings are slow on this computer.
     pub fn slow(&self) -> bool {
         self.overall() < SLOW_SCORE
@@ -186,13 +343,42 @@ pub fn report(m: &Measured, version: &str) -> String {
         if m.acceleration { "on" } else { "off" },
         std::env::consts::OS,
         std::env::consts::ARCH,
-    )
+    ) + &tasks_report(m)
+}
+
+/// The advanced test's lines of the report, in English.
+fn tasks_report(m: &Measured) -> String {
+    let mut out = String::new();
+    let comfortable = m.comfortable_objects();
+    if comfortable > 0 {
+        out.push_str(&format!("\nComfortable up to about {comfortable} objects"));
+    }
+    for t in &m.tasks {
+        let name = t
+            .key
+            .trim_start_matches("benchmark.task_")
+            .replace('_', " ");
+        out.push_str(&format!(
+            "\n{name}, {} objects: {:.0} ms",
+            t.objects,
+            t.seconds * 1000.0
+        ));
+    }
+    out
 }
 
 /// The sample drawing: an A4 page with closed curves in solid colours,
 /// gradients, some see-through and some with a shadow, and outlines.
 /// The same every run.
 pub fn sample_document() -> Document {
+    sample_document_of(SAMPLE_OBJECTS - 1)
+}
+
+/// The sample drawing with `n` curves (and the rectangle under them),
+/// smaller the more there are, so that a large one stays a page of
+/// separate objects.
+pub fn sample_document_of(n: usize) -> Document {
+    let size = (30.0 * (1500.0 / n.max(1) as f64).sqrt()).clamp(3.0, 30.0);
     let mut doc = Document::new("benchmark", Size::new(297.0, 210.0));
     let Some(layer) = doc
         .pages
@@ -210,12 +396,12 @@ pub fn sample_document() -> Document {
         ((seed >> 33) as f64) / (1u64 << 31) as f64
     };
     let mut shapes = Vec::new();
-    for i in 0..1500 {
+    for i in 0..n {
         let (x, y) = (r() * 280.0 + 8.0, r() * 195.0 + 8.0);
         let mut p = BezPath::new();
         p.move_to((x, y));
         for _ in 0..6 {
-            let mut q = || (x + r() * 30.0 - 15.0, y + r() * 30.0 - 15.0);
+            let mut q = || (x + (r() - 0.5) * size, y + (r() - 0.5) * size);
             p.curve_to(q(), q(), q());
         }
         p.close_path();
@@ -284,6 +470,7 @@ pub fn sample_options() -> tracedraw_render::RenderOptions {
             zoom,
             origin_x: (w as f64 - 297.0 * zoom) / 2.0,
             origin_y: h as f64 - (h as f64 - 210.0 * zoom) / 2.0,
+            stretch_y: 1.0,
         },
         anti_alias: true,
         draft: true,
@@ -319,6 +506,132 @@ pub fn time_drawing() -> (f64, f64) {
         let _ = tracedraw_render::render_page_on_one_thread(&doc, page, &opts);
     });
     (all, one)
+}
+
+/// The advanced test on a drawing of `objects` objects: the whole view
+/// drawn, drawn zoomed in four times, every object moved, the drawing
+/// saved and opened as `.tdraw`, and exported as PDF. `step` is told
+/// each task before it runs.
+pub fn time_tasks(objects: usize, step: &mut dyn FnMut(&'static str)) -> Vec<Task> {
+    let mut out = Vec::new();
+    let doc = sample_document_of(objects.saturating_sub(1));
+    let Some(page) = doc.pages.first().map(|p| p.id) else {
+        return out;
+    };
+    let mut task = |key: &'static str, seconds: f64| {
+        out.push(Task {
+            key: key.to_string(),
+            objects,
+            seconds,
+        })
+    };
+    let opts = sample_options();
+    step(TASK_REDRAW);
+    task(
+        TASK_REDRAW,
+        best_of(2, || {
+            let _ = tracedraw_render::render_page(&doc, page, &opts);
+        }),
+    );
+    step(TASK_ZOOM);
+    let zoomed = zoomed_options(4.0);
+    task(
+        TASK_ZOOM,
+        best_of(2, || {
+            let _ = tracedraw_render::render_page(&doc, page, &zoomed);
+        }),
+    );
+    // Every object moved, with the copy of the drawing that Undo keeps.
+    step(TASK_MOVE);
+    let mut moved = doc.clone();
+    let shift = tracedraw_core::geometry::Affine::translate((5.0, 5.0));
+    task(
+        TASK_MOVE,
+        best_of(1, || {
+            let copy = moved.clone();
+            for layer in moved.pages.iter_mut().flat_map(|p| p.layers.iter_mut()) {
+                for s in layer.shapes.iter_mut() {
+                    s.transform_by(shift);
+                }
+            }
+            std::hint::black_box(copy);
+        }),
+    );
+    step(TASK_SAVE);
+    let mut bytes = Vec::new();
+    task(
+        TASK_SAVE,
+        best_of(1, || {
+            bytes.clear();
+            let _ =
+                doc.write_tdraw_version(&mut bytes, tracedraw_core::document::TDRAW_FORMAT_VERSION);
+        }),
+    );
+    step(TASK_OPEN);
+    task(
+        TASK_OPEN,
+        best_of(1, || {
+            let _ = std::hint::black_box(Document::from_tdraw_bytes(&bytes));
+        }),
+    );
+    step(TASK_PDF);
+    task(
+        TASK_PDF,
+        best_of(1, || {
+            std::hint::black_box(tracedraw_io::pdf::document_to_pdf(&doc));
+        }),
+    );
+    out
+}
+
+/// Sixty rectangles with shadows drawn for the screen, with the graphics
+/// card blurring the shadows and without it (Options > General, "Blur
+/// shadows on the graphics card"); `card` turns that on or off for the
+/// time of each half.
+pub fn time_shadows(card: &mut dyn FnMut(bool), step: &mut dyn FnMut(&'static str)) -> Vec<Task> {
+    let mut doc = sample_document_of(60);
+    let mut k = 0;
+    for layer in doc.pages.iter_mut().flat_map(|p| p.layers.iter_mut()) {
+        for s in layer.shapes.iter_mut().skip(1) {
+            let (x, y) = ((k % 10) as f64 * 27.0 + 15.0, (k / 10) as f64 * 30.0 + 15.0);
+            k += 1;
+            s.kind = ShapeKind::Rect {
+                rect: Rect::new(x, y, x + 24.0, y + 24.0),
+                radius: 2.0,
+                corners: None,
+            };
+            s.shadow = Some(Shadow::default());
+        }
+    }
+    let Some(page) = doc.pages.first().map(|p| p.id) else {
+        return Vec::new();
+    };
+    let opts = sample_options();
+    let mut out = Vec::new();
+    for (on, key) in [(true, TASK_SHADOWS_CARD), (false, TASK_SHADOWS_PROCESSOR)] {
+        step(key);
+        card(on);
+        let _ = tracedraw_render::render_page(&doc, page, &opts);
+        let seconds = best_of(2, || {
+            let _ = tracedraw_render::render_page(&doc, page, &opts);
+        });
+        out.push(Task {
+            key: key.to_string(),
+            objects: k + 1,
+            seconds,
+        });
+    }
+    out
+}
+
+/// [`sample_options`] zoomed in `times` about the middle of the page.
+pub fn zoomed_options(times: f64) -> tracedraw_render::RenderOptions {
+    let mut o = sample_options();
+    let (w, h) = PICTURE;
+    o.view.zoom *= times;
+    o.view.origin_x = w as f64 / 2.0 - 148.5 * o.view.zoom;
+    o.view.origin_y = h as f64 / 2.0 + 105.0 * o.view.zoom;
+    o
 }
 
 /// The memory test: gigabytes a second copying a 64 MB block, best of
@@ -453,6 +766,48 @@ mod tests {
         assert!(px.alpha() > 0);
         assert!(time_memory() > 0.0);
         assert!(cores() >= 1);
+    }
+
+    #[test]
+    fn tasks_are_rated_and_objects_rounded() {
+        assert_eq!(rating(TASK_REDRAW, 0.2), Rating::Good);
+        assert_eq!(rating(TASK_REDRAW, 0.6), Rating::Fair);
+        assert_eq!(rating(TASK_REDRAW, 1.5), Rating::Slow);
+        assert_eq!(rating(TASK_PDF, 1.5), Rating::Fair);
+        assert_eq!(rating(TASK_SAVE, 0.9), Rating::Good);
+        assert_eq!(round_objects(400.0), 0);
+        assert_eq!(round_objects(999.0), 500);
+        assert_eq!(round_objects(4_800.0), 2_000);
+        assert_eq!(round_objects(5_000.0), 5_000);
+        assert_eq!(round_objects(73_000.0), 50_000);
+        // The quick test's drawing: 1501 objects in 0.1 s, 3 750 in 0.25 s.
+        let m = sample(60.0);
+        assert_eq!(m.comfortable_objects(), 2_000);
+    }
+
+    /// The advanced test's tasks on a small drawing: every task, in
+    /// order, each told before it runs.
+    #[test]
+    fn the_tasks_of_the_advanced_test_run() {
+        let mut told = Vec::new();
+        let tasks = time_tasks(200, &mut |k| told.push(k));
+        let keys: Vec<&str> = tasks.iter().map(|t| t.key.as_str()).collect();
+        let want = [
+            TASK_REDRAW,
+            TASK_ZOOM,
+            TASK_MOVE,
+            TASK_SAVE,
+            TASK_OPEN,
+            TASK_PDF,
+        ];
+        assert_eq!(keys, want);
+        assert_eq!(told, want);
+        assert!(tasks.iter().all(|t| t.objects == 200 && t.seconds >= 0.0));
+        let mut card = Vec::new();
+        let shadows = time_shadows(&mut |on| card.push(on), &mut |_| {});
+        assert_eq!(card, [true, false]);
+        assert_eq!(shadows.len(), 2);
+        assert_eq!(shadows[0].objects, 61);
     }
 
     /// The whole benchmark on this computer, to see the numbers:

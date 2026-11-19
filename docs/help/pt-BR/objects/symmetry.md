@@ -14,6 +14,11 @@ então você desenha uma metade (ou uma fatia) e vê o todo. Os comandos ficam e
 Uma linha de espelho vertical é colocada na borda direita do objeto, para que a
 cópia apareça ao lado dele, e o TraceDraw entra direto na edição da simetria.
 
+Também dá para começar numa página vazia: sem nada selecionado,
+[[menu.object.symmetry_create]] coloca a linha de espelho no meio da página e
+começa a editar uma simetria vazia. Tudo o que você desenhar entra nela e é
+espelhado. Se concluir sem desenhar nada, a simetria vazia some.
+
 ## Editar uma simetria {#edit}
 
 [[menu.object.symmetry_edit]] (<kbd>Alt+E</kbd>) edita a simetria do objeto
@@ -34,6 +39,9 @@ espelho com a ferramenta Seleção para mover as linhas; clique em uma linha par
 mostrar alças redondas nas pontas e arraste uma para girar as linhas. Enquanto
 um objeto com simetria está selecionado ou em edição, as linhas de espelho
 aparecem tracejadas.
+
+A ferramenta [[tool.area_fill]] preenche uma área em todas as cópias de uma vez:
+clique na área em qualquer cópia.
 
 Clique em Concluir na barra, ou escolha [[menu.object.symmetry_finish]]
 (<kbd>Alt+Shift+E</kbd>), para parar de editar.

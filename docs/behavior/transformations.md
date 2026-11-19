@@ -46,7 +46,8 @@ positive), scales in percent.
   With n copies the selection stays as it is and n copies are added to
   the active layer, copy k transformed k times; the last copies become
   the selection, so another Apply goes on from there. The copies are one
-  undo step named after the page.
+  undo step named after the page. Copies of linked text frames copied
+  together are linked to each other, as Step and Repeat links them.
 - Rotate keeps its centre: after Apply (with or without copies) the
   centre of rotation of the new selection is the point it turned about,
   so Apply again goes on round the same point (copies make a wheel
@@ -67,3 +68,4 @@ positive), scales in percent.
 - `ui::transform_docker::tests::the_docker_draws_with_nothing_selected`
 - `ui::transform_docker::tests::the_shortcuts_open_a_page_and_close_it_again`
 - `ui::transform_docker::tests::the_docker_draws_every_page`
+- `textflow::tests::transformation_copies_of_a_chain_are_linked`

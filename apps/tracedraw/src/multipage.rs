@@ -730,13 +730,7 @@ pub fn draw_other_papers(app: &App, painter: &Painter, rect: ERect) {
         .collect();
     if app.show_page_shadow {
         for paper in &papers {
-            painter.rect_filled(
-                paper
-                    .expand(1.0)
-                    .translate(crate::theme::Tokens::PAGE_SHADOW_OFFSET),
-                0.0,
-                crate::theme::Tokens::page_shadow(),
-            );
+            crate::canvas::paint_page_shadow(app, painter, *paper);
         }
     }
     for paper in &papers {
@@ -818,7 +812,14 @@ pub fn draw_other_pages(
                     let revision = app.engine.revision();
                     let mut snap = app.page_snapshot.borrow_mut();
                     if snap.as_ref().is_none_or(|(r, _)| *r != revision) {
-                        *snap = Some((revision, std::sync::Arc::new(doc.clone())));
+                        // The drawing as it stands, shared for nothing
+                        // when it is the one being edited (#3440).
+                        let shared = if std::ptr::eq(doc, app.engine.document()) {
+                            app.engine.shared_document()
+                        } else {
+                            std::sync::Arc::new(doc.clone())
+                        };
+                        *snap = Some((revision, shared));
                     }
                     raster.snapshot = snap.as_ref().map(|(_, d)| d.clone());
                 }
@@ -857,7 +858,7 @@ pub fn draw_other_pages(
                 painter.rect_stroke(
                     paper,
                     0.0,
-                    egui::Stroke::new(1.0, crate::theme::Tokens::page_border()),
+                    crate::canvas::page_border_stroke(app),
                     egui::StrokeKind::Outside,
                 );
             }
@@ -886,6 +887,47 @@ pub fn draw_other_pages(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #3434: going to another page keeps the zoom (the page centred at
+    /// it the first time), going back shows a page as it was left, and
+    /// turning the page keeps the zoom and its centre on screen; each
+    /// was fitted to the window.
+    #[test]
+    fn pages_keep_the_zoom_when_gone_to_and_turned() {
+        let mut app = App::headless();
+        app.show_welcome = false;
+        app.canvas_rect = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(800.0, 600.0));
+        app.add_page();
+        app.page = app.doc().pages[0].id;
+        app.fit_pending = false;
+        app.view.zoom = 0.7;
+        app.view.origin = egui::pos2(-40.0, 900.0);
+        let first_view = app.view;
+        app.goto_page(1);
+        assert!(!app.fit_pending);
+        assert_eq!(app.view.zoom, 0.7);
+        let centre = app.view.to_screen(app.page_rect().center());
+        assert!((centre - app.canvas_rect.center()).length() < 1e-3);
+        // Panned on the second page, then back and forth.
+        app.view.origin += egui::vec2(25.0, -10.0);
+        let second_view = app.view;
+        app.goto_page(0);
+        assert_eq!(
+            (app.view.zoom, app.view.origin),
+            (first_view.zoom, first_view.origin)
+        );
+        app.goto_page(1);
+        assert_eq!(app.view.origin, second_view.origin);
+        // Turned to landscape: the same zoom, the centre where it was.
+        let size = app.page_size();
+        let before = app.view.to_screen(app.page_rect().center());
+        crate::ui::propbar::turn_pages(&mut app, size);
+        assert_eq!(app.page_size().width, size.height);
+        assert!(!app.fit_pending);
+        assert_eq!(app.view.zoom, 0.7);
+        let after = app.view.to_screen(app.page_rect().center());
+        assert!((after - before).length() < 1e-3);
+    }
 
     /// The space between pages of a drawing that sets none.
     const GAP_MM: f64 = tracedraw_core::document::DEFAULT_PAGE_SPACING;

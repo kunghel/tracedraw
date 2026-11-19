@@ -16,6 +16,7 @@ reads every `<text>` element itself, following SVG 1.1:
 | `<text>` and its `tspan`, `a` and `textPath` children | one text object, a span per run of characters in one style |
 | `x`, `y` of the text and of a `tspan` with an `x` (a text chunk) | the start of the baseline; only the first value of a list is read |
 | chunks with the same `x` and anchor, each the same distance below the one before (or a whole number of times it, for left out empty lines) | lines of one text, line spacing in points equal to that distance |
+| a `tspan` with an `x` for each of its characters, right after one that had them, on the same baseline and within two ems of its characters (the next run of a laid out line, as TraceDraw's own SVG with editable text and other programs write it) | goes on in the same chunk; each run came in as a text of its own |
 | other chunks | one text object each, grouped |
 | `dy` and `dx` inside a chunk, `baseline-shift` | baseline shift and horizontal character offset of the characters that follow (`super` +1/3 em, `sub` -1/5 em) |
 | `text-anchor` start, middle, end | alignment left, centre, right on the anchor point |
@@ -27,10 +28,16 @@ reads every `<text>` element itself, following SVG 1.1:
 | `display="none"`, `visibility="hidden"` | the text is left out |
 
 Properties come from the `style` attribute, then the most specific
-`<style>` rule (later rules win ties), then the presentation attribute,
+`<style>` rule (later rules win ties; a sheet longer than 16 KB is read
+in pieces of whole rules, in order, so 20,000 rules read in a fraction of
+a second instead of 17 seconds, #3341), then the presentation attribute,
 then the parent. White space collapses (newlines removed, tabs to spaces,
 runs of spaces to one, none at the start or end of a chunk) unless
-`xml:space="preserve"`, which keeps every space.
+`xml:space="preserve"`, which keeps every space, but for the line breaks
+and indents between the tags of text written as lines of markup (white
+space holding a line break next to a `tspan`), which are left out: they
+came in as texts of spaces (`svg_text::tests::runs_placed_letter_by_letter_go_on_as_one_text`;
+round trip: `crates/io/tests/svg_text_round_trip.rs`).
 
 Not read: text inside `clipPath`, `mask`, `pattern` and `marker`
 (left out, as before), per-character position lists after their first

@@ -26,13 +26,16 @@ whatever tool is active.
 
 With the Rectangle, Ellipse, Polygon, Star (and Complex star), Graph
 paper, Action Lines, 3-point rectangle, 3-point ellipse, Spiral and
-Common shapes tools still chosen, the pointer over one of those handles
+Common shapes tools (and the Text tool) still chosen, the pointer over one of those handles
 shows the resize arrows and a drag from it resizes the selection as the
 Pick tool's handles do (Shift from the centre, Ctrl in steps, Alt
 freely, a right click for a copy), the tool staying chosen. A click on
 a handle leaves the selection as it is; a press anywhere else draws a
 new object as before
-(`pick_drag_tests::a_drawing_tool_resizes_by_the_handles`).
+(`pick_drag_tests::a_drawing_tool_resizes_by_the_handles`). The Text
+tool does the same with the handles of a text just typed (or a frame
+just drawn), the text staying open for typing (#3258,
+`pick_drag_tests::a_text_just_typed_resizes_by_its_handles_with_the_text_tool`).
 
 ## Drag modifiers (every box tool)
 

@@ -166,6 +166,7 @@ mod tests {
                 zoom: 1.0,
                 origin_x: 0.0,
                 origin_y: 40.0,
+                stretch_y: 1.0,
             },
             focus,
             ..Default::default()

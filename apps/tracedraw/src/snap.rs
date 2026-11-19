@@ -238,7 +238,7 @@ impl App {
     /// The pieces of `still` within the snapping radius of `p`: what a
     /// node dragged there snaps to of its own curves.
     pub(crate) fn still_near<'a>(&self, still: &'a StillGeometry, p: Point) -> Vec<&'a Geo> {
-        if self.snap.off || !self.snaps_to_objects() || !self.snap_enabled() {
+        if self.snaps_off() || !self.snaps_to_objects() || !self.snap_enabled() {
             return Vec::new();
         }
         let tol = self.snap_tolerance();
@@ -324,13 +324,13 @@ impl App {
             }
         }
         if best.is_none() && self.snap.grid {
-            // Grid lines pass through the ruler origin.
+            // Grid lines pass through the grid origin (#2990).
             let grid = self.doc().metadata.grid;
-            let rulers = self.doc().metadata.rulers.clone();
+            let o = self.grid_origin();
             let (step, origin) = if horizontal {
-                (grid.spacing_x, rulers.origin_x)
+                (grid.spacing_x, o.x)
             } else {
-                (grid.spacing_y, rulers.origin_y)
+                (grid.spacing_y, o.y)
             };
             let step = step.max(0.001);
             let g = origin + ((v - origin) / step).round() * step;
@@ -352,24 +352,32 @@ impl App {
     /// Snap an x value (a vertical guideline being dragged) to everything
     /// but guidelines.
     pub fn snap_x_without_guides(&self, x: f64) -> f64 {
-        self.snap_guide_axis(x, true)
+        self.snap_guide_axis(x, true, None)
+    }
+
+    /// [`App::snap_x_without_guides`] for a guideline dragged with the
+    /// pointer at `y` (or a horizontal one, [`App::snap_y_without_guides`],
+    /// with the pointer at `x`): the objects nearest the pointer along
+    /// the guideline come first (#3359).
+    pub fn snap_guide_near(&self, v: f64, x_axis: bool, pointer: f64) -> f64 {
+        self.snap_guide_axis(v, x_axis, Some(pointer))
     }
 
     /// Snap a y value (a horizontal guideline being dragged) to everything
     /// but guidelines.
     pub fn snap_y_without_guides(&self, y: f64) -> f64 {
-        self.snap_guide_axis(y, false)
+        self.snap_guide_axis(y, false, None)
     }
 
     /// A guideline being dragged at `v` (an x with `x_axis`, else a y):
     /// onto the objects' points and the places where it touches their
     /// outlines (marked as the pointer's snaps are, #2004), else the
     /// page's and the objects' boxes, the grid or the pixels.
-    fn snap_guide_axis(&self, v: f64, x_axis: bool) -> f64 {
+    fn snap_guide_axis(&self, v: f64, x_axis: bool, pointer: Option<f64>) -> f64 {
         if !self.snap_enabled() {
             return v;
         }
-        if let Some((c, t)) = self.axis_stop(v, x_axis, None, &[]) {
+        if let Some((c, t)) = self.axis_stop_near(v, x_axis, None, &[], pointer) {
             self.snap_mark.set(Some(t));
             return c;
         }
@@ -394,11 +402,31 @@ impl App {
         span: Option<(f64, f64)>,
         exclude: &[ShapeId],
     ) -> Option<(f64, Target)> {
+        self.axis_stop_near(v, x_axis, span, exclude, None)
+    }
+
+    /// [`App::axis_stop`] with the pointer at `pointer` along the line
+    /// (a y for a vertical line, `x_axis`): the stops of the objects the
+    /// pointer is over, or nearest to, win over those of objects farther
+    /// along the line, however close those line up. Dragging a guideline
+    /// onto a rectangle among others about level with it snapped it to
+    /// one far from the pointer (#3359).
+    fn axis_stop_near(
+        &self,
+        v: f64,
+        x_axis: bool,
+        span: Option<(f64, f64)>,
+        exclude: &[ShapeId],
+        pointer: Option<f64>,
+    ) -> Option<(f64, Target)> {
         if !self.snaps_to_objects() || !v.is_finite() {
             return None;
         }
         let tol = self.snap_tolerance();
         let mut g = Vec::new();
+        // Each object's stops and how far the pointer is from the object
+        // along the line (0 over it or within the snapping radius).
+        let mut stops: Vec<(f64, (f64, Point, snap_points::SnapMode))> = Vec::new();
         for sh in self
             .page_layers()
             .into_iter()
@@ -424,13 +452,26 @@ impl App {
                     continue;
                 }
             }
+            let away = pointer.map_or(0.0, |q| {
+                let d = if q < o0 { o0 - q } else if q > o1 { q - o1 } else { 0.0 };
+                (d - tol).max(0.0)
+            });
+            g.clear();
             snap_points::object_geometry(&self.snap_shape(sh), &text_baselines, &mut g);
+            stops.extend(
+                snap_points::axis_stops(&g, &self.settings.snap.modes, x_axis, span, tol)
+                    .into_iter()
+                    .map(|s| (away, s)),
+            );
         }
-        snap_points::axis_stops(&g, &self.settings.snap.modes, x_axis, span, tol)
+        stops
             .into_iter()
-            .filter(|(c, _, _)| (c - v).abs() <= tol)
-            .min_by(|a, b| (a.0 - v).abs().total_cmp(&(b.0 - v).abs()))
-            .map(|(c, point, mode)| {
+            .filter(|(_, (c, _, _))| (c - v).abs() <= tol)
+            .min_by(|(wa, a), (wb, b)| {
+                wa.total_cmp(wb)
+                    .then((a.0 - v).abs().total_cmp(&(b.0 - v).abs()))
+            })
+            .map(|(_, (c, point, mode))| {
                 (
                     c,
                     Target {
@@ -663,8 +704,9 @@ impl App {
     /// round its circle towards the pointer; near another object's point
     /// the turn aims at that point, and near an edge the point lands
     /// where its circle crosses the edge, so a node turned onto a line
-    /// ends on the line. Returns where the turn aims (only its direction
-    /// from `center` counts).
+    /// ends on the line; a guideline takes it the same way (#3056).
+    /// Returns where the turn aims (only its direction from `center`
+    /// counts).
     pub fn snap_turn_grab(
         &self,
         center: Point,
@@ -682,28 +724,80 @@ impl App {
         if !self.snap_enabled() {
             return q;
         }
-        let Some(t) = self.object_snap(q, exclude, &[], true, true) else {
-            return q;
-        };
-        if t.mode.is_point() {
-            self.snap_mark.set(Some(t));
-            return t.point;
-        }
         let reach = 2.0 * self.snap_tolerance();
-        match t.edge.and_then(|seg| circle_crossing(seg, center, r, q)) {
-            Some(x) if (x - q).hypot() <= reach => {
-                self.snap_mark.set(Some(Target { point: x, ..t }));
-                x
+        let mut best: Option<Target> = None;
+        if let Some(t) = self.object_snap(q, exclude, &[], true, true) {
+            if t.mode.is_point() {
+                self.snap_mark.set(Some(t));
+                return t.point;
             }
-            _ => q,
+            if let Some(x) = t.edge.and_then(|seg| circle_crossing(seg, center, r, q)) {
+                if (x - q).hypot() <= reach {
+                    best = Some(Target { point: x, ..t });
+                }
+            }
         }
+        // Guidelines: the point lands where its circle crosses the
+        // nearest one, as on an object's edge (#3056).
+        if let Some(x) = self.guide_circle_crossing(center, r, q) {
+            if (x - q).hypot() <= reach
+                && best.is_none_or(|b| (x - q).hypot() < (b.point - q).hypot())
+            {
+                best = Some(Target {
+                    point: x,
+                    mode: crate::snap_points::SnapMode::Guideline,
+                    edge: None,
+                });
+            }
+        }
+        match best {
+            Some(t) => {
+                self.snap_mark.set(Some(t));
+                t.point
+            }
+            None => q,
+        }
+    }
+
+    /// Where the circle about `center` of radius `r` crosses a guideline
+    /// of the page (or its master page), the crossing nearest `near`;
+    /// `None` with Snap to Guidelines off.
+    fn guide_circle_crossing(&self, center: Point, r: f64, near: Point) -> Option<Point> {
+        if !self.snap.guides {
+            return None;
+        }
+        let guides = self.doc().guides_on_page(self.page).ok()?;
+        let mut best: Option<(f64, Point)> = None;
+        for g in &guides {
+            let (o, dir) = g.line.point_and_direction();
+            let dl = dir.hypot();
+            if dl < 1e-12 {
+                continue;
+            }
+            let dir = dir / dl;
+            // Foot of the perpendicular from the centre, then the two
+            // crossings either side of it.
+            let foot = o + dir * (center - o).dot(dir);
+            let h2 = r * r - (foot - center).hypot2();
+            if h2 < 0.0 {
+                continue;
+            }
+            let h = h2.sqrt();
+            for x in [foot + dir * h, foot - dir * h] {
+                let dist = (x - near).hypot();
+                if best.is_none_or(|(bd, _)| dist < bd) {
+                    best = Some((dist, x));
+                }
+            }
+        }
+        best.map(|(_, x)| x)
     }
 
     /// [`App::snap_point_excluding`], with `own` snapping geometry of the
     /// excluded objects that stays put meanwhile (a node being dragged
     /// snaps to the other nodes and segments of its own curve, #673).
     pub fn snap_point_with(&self, p: Point, exclude: &[ShapeId], own: &[&Geo]) -> Point {
-        if self.snap.off {
+        if self.snaps_off() {
             return p;
         }
         let enabled = self.snap_enabled();
@@ -778,14 +872,13 @@ impl App {
                 return false;
             }
             let grid = self.doc().metadata.grid;
-            let rulers = &self.doc().metadata.rulers;
+            let o = self.grid_origin();
             let on = |v: f64, step: f64, origin: f64| {
                 let step = step.max(0.001);
                 let k = (v - origin) / step;
                 (k - k.round()).abs() * step < 1e-9
             };
-            (moved_x && on(q.x, grid.spacing_x, rulers.origin_x))
-                || (moved_y && on(q.y, grid.spacing_y, rulers.origin_y))
+            (moved_x && on(q.x, grid.spacing_x, o.x)) || (moved_y && on(q.y, grid.spacing_y, o.y))
         };
         let on_baseline = || {
             self.snap.baseline_grid
@@ -815,7 +908,7 @@ impl App {
     /// exactly (#2352); the point it takes is marked with its name. Else
     /// it snaps as the pointer does (guidelines, the grid, the page).
     pub fn snap_pivot(&self, p: Point) -> Point {
-        if self.snap.off {
+        if self.snaps_off() {
             return p;
         }
         let tol = self.snap_tolerance();
@@ -854,7 +947,9 @@ impl App {
     /// Where the point of the selection box that a scale handle stands for
     /// goes for `raw` (the pointer less its grab), and whether snapping
     /// put it there on the x and on the y axis (#2004). The point snaps as
-    /// the pointer does, to everything but the selection; a side it moves
+    /// the pointer does, to everything but the selection as it changes,
+    /// and, once it has left its start, to the selection's own nodes and
+    /// edges where they stood (#3074); a side it moves
     /// that found nothing then stops on the points of other objects (a
     /// node, a midpoint, a centre) and on their lines (a straight side
     /// along it, the outermost point of a curve) that it meets along its
@@ -867,12 +962,19 @@ impl App {
             anchor,
             start_bounds,
             mods,
+            start_geometry,
             ..
         } = &self.drag
         else {
             return (raw, (false, false));
         };
-        let mut q = self.snap_point_excluding(raw, &self.selection);
+        // Once away from its start, the selection's own nodes and edges
+        // where they stood count as another object's (#3074).
+        let own = match start_geometry {
+            Some(g) => self.still_near(g, raw),
+            None => Vec::new(),
+        };
+        let mut q = self.snap_point_with(raw, &self.selection, &own);
         let (moves_x, moves_y) = match handle {
             Handle::E | Handle::W => (true, false),
             Handle::N | Handle::S => (false, true),
@@ -970,7 +1072,7 @@ impl App {
         d: Vec2,
         start: Option<&StillGeometry>,
     ) -> Vec2 {
-        if self.snap.off {
+        if self.snaps_off() {
             return d;
         }
         let enabled = self.snap_enabled();
@@ -1074,11 +1176,11 @@ impl App {
     }
 
     pub fn alignment_guides_on(&self) -> bool {
-        self.snap.alignment_guides && !self.snap.off
+        self.snap.alignment_guides && !self.snaps_off()
     }
 
     pub fn dynamic_guides_on(&self) -> bool {
-        self.snap.dynamic_guides && !self.snap.off
+        self.snap.dynamic_guides && !self.snaps_off()
     }
 
     fn set_overlay(
@@ -1373,8 +1475,55 @@ impl App {
         Vec2::new(d.x + best_dx.unwrap_or(0.0), d.y + best_dy.unwrap_or(0.0))
     }
 
+    /// All snapping off: Alt+Q, or Q held down on its own for the
+    /// moment (#3072).
+    pub fn snaps_off(&self) -> bool {
+        self.snap.off || self.snap_held_off
+    }
+
+    /// The guidelines what is being dragged lies on: the edges and
+    /// centre of the selection being moved or scaled, or of the box
+    /// being drawn, with Snap to Guidelines on. The drawing window
+    /// shows them highlighted, so a snap to a guideline is seen in a
+    /// cluttered drawing (#3073).
+    pub fn snapped_guides(&self) -> Vec<GuideLine> {
+        use crate::app::Drag;
+        if self.snaps_off() || !self.snap.guides {
+            return Vec::new();
+        }
+        let b = match &self.drag {
+            Drag::Move {
+                start_bounds,
+                total,
+                ..
+            } => *start_bounds + *total,
+            Drag::Scale { start_bounds, .. } => match self.preview_transform_of(&self.drag) {
+                Some(t) => t.transform_rect_bbox(*start_bounds),
+                None => return Vec::new(),
+            },
+            Drag::Box { start, current, .. } | Drag::ThreePointBase { start, current } => {
+                Rect::from_points(*start, *current)
+            }
+            _ => return Vec::new(),
+        };
+        let Ok(guides) = self.doc().guides_on_page(self.page) else {
+            return Vec::new();
+        };
+        let on = |v: f64, edges: [f64; 3]| edges.iter().any(|e| (e - v).abs() < 1e-6);
+        let (xs, ys) = ([b.x0, b.x1, b.center().x], [b.y0, b.y1, b.center().y]);
+        guides
+            .iter()
+            .map(|g| g.line)
+            .filter(|line| match *line {
+                GuideLine::Vertical { x } => on(x, xs),
+                GuideLine::Horizontal { y } => on(y, ys),
+                GuideLine::Angled { .. } => false,
+            })
+            .collect()
+    }
+
     pub fn snap_enabled(&self) -> bool {
-        !self.snap.off
+        !self.snaps_off()
             && (self.snap.grid
                 || self.snap.guides
                 || self.snaps_to_objects()
@@ -1467,6 +1616,37 @@ mod tests {
         app
     }
 
+    /// A new drawing's grid starts at the page's top-left corner, so a
+    /// page whose height is not a whole number of grid squares has its
+    /// part row at the bottom (#2990); a ruler origin moved elsewhere
+    /// still has the grid pass through it.
+    #[test]
+    fn the_grid_starts_at_the_top_of_the_page() {
+        let mut app = App::headless();
+        app.view.zoom = 1.0;
+        app.snap = SnapSettings {
+            grid: true,
+            page: false,
+            guides: false,
+            objects: false,
+            off: false,
+            ..SnapSettings::default()
+        };
+        let top = app.page_size().height;
+        assert_eq!(app.doc().metadata.rulers.origin_y, 0.0);
+        assert_eq!(app.grid_origin(), Point::new(0.0, top));
+        // A4 is 297 mm tall: lines at 287, 277, ... 7, not at 290 or 10.
+        let p = app.snap_point_without_guides(Point::new(30.4, top - 19.6));
+        assert!((p.y - (top - 20.0)).abs() < 1e-9, "{p:?}");
+        assert!((p.x - 30.0).abs() < 1e-9, "{p:?}");
+        let mut metadata = app.doc().metadata.clone();
+        metadata.rulers.origin_y = 5.0;
+        app.run(Command::SetMetadata { metadata });
+        assert_eq!(app.grid_origin(), Point::new(0.0, 5.0));
+        let p = app.snap_point_without_guides(Point::new(30.4, 24.6));
+        assert!((p.y - 25.0).abs() < 1e-9, "{p:?}");
+    }
+
     fn rect(app: &mut App, x0: f64, y0: f64, x1: f64, y1: f64) -> ShapeId {
         app.new_shape(ShapeKind::Rect {
             rect: Rect::new(x0, y0, x1, y1),
@@ -1503,6 +1683,34 @@ mod tests {
         assert!(mode(&app, 130.0, 110.0).is_none());
         app.snap.objects = false;
         assert!(mode(&app, 130.0, 120.5).is_none());
+    }
+
+    /// A horizontal guideline dragged onto one of a row of rectangles
+    /// about level with each other lands on the top of the one the
+    /// pointer is over, not on a closer-lined-up top far away (#3359).
+    #[test]
+    fn a_dragged_guideline_snaps_to_the_object_under_the_pointer() {
+        let mut app = app();
+        app.settings.snap.threshold_px = 3.0;
+        // Tops at 60, 61 and 59.
+        rect(&mut app, 10.0, 20.0, 40.0, 60.0);
+        rect(&mut app, 110.0, 20.0, 140.0, 61.0);
+        rect(&mut app, 210.0, 20.0, 240.0, 59.0);
+        // The pointer over the middle one at y 60.2: its top, 61, though
+        // the first one's 60 is nearer the pointer's height.
+        assert!((app.snap_guide_near(60.2, false, 125.0) - 61.0).abs() < 1e-9);
+        // Over the last one: 59.
+        assert!((app.snap_guide_near(60.2, false, 225.0) - 59.0).abs() < 1e-9);
+        // Over the first one: 60.
+        assert!((app.snap_guide_near(60.2, false, 25.0) - 60.0).abs() < 1e-9);
+        // Between objects, the nearest object along the line counts.
+        assert!((app.snap_guide_near(60.2, false, 190.0) - 59.0).abs() < 1e-9);
+        // Without the pointer the nearest top along the axis, as before.
+        assert!((app.snap_y_without_guides(60.2) - 60.0).abs() < 1e-9);
+        // A vertical guideline: the rectangle the pointer is beside.
+        rect(&mut app, 39.0, 100.0, 80.0, 130.0);
+        assert!((app.snap_guide_near(39.6, true, 115.0) - 39.0).abs() < 1e-9);
+        assert!((app.snap_guide_near(39.6, true, 40.0) - 40.0).abs() < 1e-9);
     }
 
     /// A guideline dragged near a node of a curve lands on the node, not
@@ -1700,6 +1908,42 @@ mod tests {
         let _ = circle;
     }
 
+    /// Rotate mode, the selection turned by one of its nodes: the node
+    /// stops where its circle crosses a guideline it comes near, as it
+    /// does on another object's edge (#3056).
+    #[test]
+    fn a_node_turned_onto_a_guideline_ends_on_it() {
+        let mut app = app();
+        app.settings.snap.threshold_px = 3.0;
+        let page = app.page;
+        app.run(Command::AddGuide {
+            page,
+            guide: Guide::vertical(32.0),
+        });
+        let id = rect(&mut app, 10.0, 10.0, 30.0, 30.0);
+        app.select(vec![id]);
+        app.rotate_mode = true;
+        let center = Point::new(20.0, 20.0);
+        let grab = Point::new(30.0, 30.0);
+        let r = (grab - center).hypot();
+        // The circle crosses x = 32 at y = 20 - sqrt(r² - 144).
+        let cross = Point::new(32.0, 20.0 - (r * r - 144.0).sqrt());
+        let v = cross - center;
+        let (sn, cs) = 0.03_f64.sin_cos();
+        let near = center + Vec2::new(v.x * cs - v.y * sn, v.x * sn + v.y * cs);
+        let t = app.snap_turn_grab(center, grab, near, &[id]);
+        assert!((t - cross).hypot() < 1e-9, "{t:?} should be {cross:?}");
+        assert_eq!(
+            app.snap_mark.get().map(|m| m.mode),
+            Some(SnapMode::Guideline)
+        );
+        // Snap to Guidelines off: the node follows the pointer.
+        app.snap.guides = false;
+        let t = app.snap_turn_grab(center, grab, near, &[id]);
+        assert!((t - cross).hypot() > 0.1, "{t:?}");
+        assert!(((t - center).hypot() - r).abs() < 1e-9);
+    }
+
     #[test]
     fn snapping_to_objects_turns_off_but_the_page_stays() {
         let mut app = app();
@@ -1821,6 +2065,43 @@ mod tests {
         // Far from it, it lets go.
         let d = app.snap_move_from(src, b, Vec2::new(50.0, 60.0), None);
         assert!((d.x - 50.0).abs() < 1e-9, "{d:?}");
+    }
+
+    /// A scale handle snaps to the selection's own nodes, midpoints and
+    /// centre where they stood when it was grabbed, once it has left its
+    /// start (#3074): before, it left the selection out altogether.
+    #[test]
+    fn a_scale_handle_snaps_to_where_the_selection_stood() {
+        use crate::app::{Drag, Handle};
+        let mut app = app();
+        app.settings.snap.threshold_px = 3.0;
+        let id = rect(&mut app, 20.0, 20.0, 60.0, 40.0);
+        app.select(vec![id]);
+        let b = app.selection_bounds().unwrap();
+        let drag = |g: Option<std::rc::Rc<StillGeometry>>| Drag::Scale {
+            handle: Handle::E,
+            anchor: Point::new(b.x0, b.center().y),
+            start_bounds: b,
+            current: Point::new(b.x1, b.center().y),
+            grab: Vec2::ZERO,
+            mods: Default::default(),
+            snapped: (false, false),
+            start_geometry: g,
+        };
+        // Without its start geometry the right side passes the middle of
+        // the box freely.
+        app.drag = drag(None);
+        let raw = Point::new(40.6, 30.4);
+        let (q, _) = app.snap_scale_handle(raw);
+        assert!((q.x - 40.6).abs() < 1e-9, "{q:?}");
+        // With it, the side stops on where the box's centre was.
+        app.drag = drag(Some(std::rc::Rc::new(app.selection_start_geometry())));
+        let (q, (sx, _)) = app.snap_scale_handle(raw);
+        assert_eq!(q.x, 40.0, "{q:?}");
+        assert!(sx);
+        // And on where its top right corner was, dragged past it and back.
+        let (q, _) = app.snap_scale_handle(Point::new(60.5, 39.6));
+        assert_eq!(q, Point::new(60.0, 40.0));
     }
 
     /// A move snaps to where the selection itself was when it began (its
@@ -1969,6 +2250,7 @@ mod tests {
             grab: Vec2::ZERO,
             mods: Default::default(),
             snapped: (false, false),
+            start_geometry: None,
         };
         let q = app.snap_point_excluding(Point::new(49.0, 21.0), &[id]);
         assert_eq!(q, Point::new(50.0, 21.0));
@@ -2135,6 +2417,7 @@ mod tests {
             grab: Vec2::ZERO,
             mods: Default::default(),
             snapped: (false, false),
+            start_geometry: None,
         };
         app.drag = scale(b, 20.0);
         let (q, axes) = app.snap_scale_handle(Point::new(49.0, 20.0));
@@ -2144,6 +2427,53 @@ mod tests {
         app.drag = scale(Rect::new(10.0, 20.0, 30.0, 30.0), 25.0);
         let (q, axes) = app.snap_scale_handle(Point::new(49.0, 25.0));
         assert_eq!((q, axes), (Point::new(49.0, 25.0), (false, false)));
+    }
+
+    /// An object moved onto guidelines shows them highlighted: the ones
+    /// its edges or centre lie on, and only while Snap to Guidelines is
+    /// on (#3073).
+    #[test]
+    fn guidelines_an_object_snapped_to_are_highlighted() {
+        use crate::app::Drag;
+        let mut app = app();
+        let page = app.page;
+        for guide in [
+            Guide::vertical(50.0),
+            Guide::horizontal(100.0),
+            Guide::vertical(80.0),
+        ] {
+            app.run(Command::AddGuide { page, guide });
+        }
+        let id = rect(&mut app, 10.0, 10.0, 30.0, 30.0);
+        app.select(vec![id]);
+        let b = app.selection_bounds().expect("bounds");
+        let moved = |total: Vec2| Drag::Move {
+            start: Point::ZERO,
+            last: Point::ZERO,
+            total,
+            start_bounds: b,
+            source: None,
+            start_geometry: None,
+        };
+        // The left edge onto x = 50, the top onto y = 100.
+        app.drag = moved(Vec2::new(50.0 - b.x0, 100.0 - b.y1));
+        assert_eq!(
+            app.snapped_guides(),
+            vec![
+                GuideLine::Vertical { x: 50.0 },
+                GuideLine::Horizontal { y: 100.0 }
+            ]
+        );
+        // Off the guidelines: none.
+        app.drag = moved(Vec2::new(3.0, 3.0));
+        assert!(app.snapped_guides().is_empty());
+        // Snap to Guidelines off: none.
+        app.drag = moved(Vec2::new(50.0 - b.x0, 100.0 - b.y1));
+        app.snap.guides = false;
+        assert!(app.snapped_guides().is_empty());
+        app.snap.guides = true;
+        app.drag = Drag::None;
+        assert!(app.snapped_guides().is_empty());
     }
 
     /// A corner keeping the proportions, snapped onto a vertical
@@ -2172,6 +2502,7 @@ mod tests {
                 grab: Vec2::ZERO,
                 mods: Default::default(),
                 snapped: (false, false),
+                start_geometry: None,
             };
             let (q, snapped) = app.snap_scale_handle(Point::new(49.5, y));
             assert_eq!(snapped, (true, false), "{y}");

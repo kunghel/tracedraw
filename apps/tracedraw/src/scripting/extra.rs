@@ -61,6 +61,10 @@ fn definition_objects(def: &Shape) -> Vec<&Shape> {
     }
 }
 
+/// How near an object a script's dimension point has to be to hold to
+/// it, mm: the 3 decimals a recorded macro writes, and some.
+const SCRIPT_ANCHOR_REACH: f64 = 0.01;
+
 fn point(a: &Value, x: &str, y: &str) -> Point {
     Point::new(num(a, x, 0.0), num(a, y, 0.0))
 }
@@ -112,7 +116,14 @@ impl HostInner {
                     },
                     other => return Err(format!("unknown dimension kind {other}")),
                 };
-                let d = Dimension::new(measure, self.dims.style.clone());
+                let mut d = Dimension::new(measure, self.dims.style.clone());
+                // Held to the objects its points are on, as the tool's
+                // dimensions are, so it follows them (#2348).
+                d.anchors = crate::dimensions::anchors_on(
+                    &self.doc.layers_for_page(self.page).unwrap_or_default(),
+                    &d,
+                    SCRIPT_ANCHOR_REACH,
+                );
                 let ids = [self.new_id(), self.new_id(), self.new_id()];
                 let group = self.new_id();
                 let g =

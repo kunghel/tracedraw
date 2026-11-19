@@ -57,16 +57,19 @@ Text tool keep their clicks.
 - Drag a corner handle to resize in proportion, a side handle to stretch in
   one direction. Hold <kbd>Shift</kbd> to resize from the center,
   <kbd>Ctrl</kbd> to resize in steps of 100% (crossing the other side
-  mirrors the object), <kbd>Alt</kbd> to resize freely.
+  mirrors the object), <kbd>Alt</kbd> to resize freely, or
+  <kbd>Ctrl</kbd>+<kbd>Alt</kbd> on a corner to add the same distance to the
+  width and the height, an even border (with <kbd>Shift</kbd> too, on
+  every side).
 - Click a selected object again to show the rotation handles: drag a curved
   corner arrow to rotate, a side arrow to skew. Hold <kbd>Ctrl</kbd> for steps
   of 15 degrees. Drag the ring in the middle to turn about another point;
   double-click it to put it back in the middle. In this rotate mode, a node of
   the selection (or the middle of a segment) dragged turns the selection
-  about the ring; let go near another object's edge and the node lands
-  exactly on it, so an arc turned about one end can be laid onto a line. The
-  rotate handle still snaps to other objects' nodes, midpoints and centres to
-  aim the turn at one.
+  about the ring; let go near another object's edge or a guideline and
+  the node lands exactly on it, so an arc turned about one end can be laid
+  onto a line. The rotate handle still snaps to other objects' nodes,
+  midpoints and centres to aim the turn at one.
 - While dragging, press <kbd>Space</kbd> or click the right button to leave
   a copy where the objects were; <kbd>Esc</kbd> cancels the drag.
 - The arrow keys nudge the selection by the nudge distance (2.54 mm at

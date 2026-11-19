@@ -234,6 +234,35 @@ pub fn embedded_pictures(buf: &[u8]) -> HashMap<String, Picture> {
         .collect()
 }
 
+/// The labels of the embedded objects in the compound file `buf` that
+/// are packages (a file wrapped whole, as Windows' Object Packager
+/// does), by storage name. Seen (#3083): after the u32 size, a u16 2,
+/// then the label (the file's name) and its path, each ANSI and ended by
+/// a NUL, then the file. No picture comes with them.
+pub fn embedded_packages(buf: &[u8]) -> HashMap<String, String> {
+    let Some(c) = Compound::parse(buf) else {
+        return HashMap::new();
+    };
+    c.streams_named("\u{1}Ole10Native")
+        .into_iter()
+        .filter_map(|(name, data)| package_label(&data).map(|l| (name, l)))
+        .collect()
+}
+
+/// The label of an `\x01Ole10Native` stream holding a package.
+pub fn package_label(data: &[u8]) -> Option<String> {
+    if data.get(4..6)? != [2, 0] {
+        return None;
+    }
+    let rest = data.get(6..)?;
+    let end = rest.iter().take(260).position(|&b| b == 0)?;
+    let label = &rest[..end];
+    if label.is_empty() || label.iter().any(|&b| b < 0x20) {
+        return None;
+    }
+    Some(label.iter().map(|&b| b as char).collect())
+}
+
 /// The cached pictures (`\x02OlePres000` streams) of the embedded objects
 /// in the compound file `buf` that hold a Windows metafile, by storage
 /// name. Objects whose own data we cannot draw (a barcode, #1131) keep
@@ -453,6 +482,31 @@ pub mod tests {
         out.extend(dir);
         out.extend_from_slice(stream);
         out
+    }
+
+    /// A package stream: the size, 2, the label and path, then the file.
+    pub fn package(label: &str) -> Vec<u8> {
+        let mut s = vec![0u8; 4096];
+        let mut body = vec![2u8, 0];
+        body.extend_from_slice(label.as_bytes());
+        body.push(0);
+        body.extend_from_slice(b"C:\\x\\");
+        body.extend_from_slice(label.as_bytes());
+        body.push(0);
+        s[..4].copy_from_slice(&(4092u32).to_le_bytes());
+        s[4..4 + body.len()].copy_from_slice(&body);
+        s
+    }
+
+    #[test]
+    fn packages_are_known_by_their_label() {
+        let found = embedded_packages(&compound(&package("New.crv3d")));
+        assert_eq!(
+            found.get("Embedding 3").map(String::as_str),
+            Some("New.crv3d")
+        );
+        // A picture is not a package.
+        assert!(embedded_packages(&compound_with_picture()).is_empty());
     }
 
     /// A compound file whose "Embedding 3" holds the 2 by 2 picture.

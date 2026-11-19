@@ -63,7 +63,10 @@ frame is edited node by node, and the clip frame stays one
   ungrouped stays in as its members, drawn in full, and objects drawn or
   pasted while editing go in too (a paste that would land wholly outside
   the frame's box is centred on the frame, so it shows in it, #2044,
-  `pick_drag_tests::a_paste_while_editing_a_clip_frame_lands_inside_the_frame`);
+  `pick_drag_tests::a_paste_while_editing_a_clip_frame_lands_inside_the_frame`;
+  so does SVG, vector data, a picture or text another program copied,
+  in the paste's own step,
+  `clipboard::tests::pastes_from_other_programs_land_inside_an_edited_clip_frame`);
   the members of an ungrouped group were
   left out and faded, and Finish emptied the frame (#537,
   `a_group_inside_a_clip_frame_being_edited_drags_and_ungroups`).
@@ -102,7 +105,24 @@ frame is edited node by node, and the clip frame stays one
   the object data when off): with the lock on, moving, scaling or
   rotating the frame transforms the contents too. With it off, the frame
   moves alone and the contents stay where they are
-  (`compensate_unlocked_clip_frames` undoes the transform on them).
+  (`compensate_unlocked_clip_frames` undoes the transform on them). The
+  contents put back are part of the transform: one Undo takes back both
+  (`ops2::tests::transforming_an_unlocked_clip_frame_is_one_undo`).
+- Draw Inside (#3407, `draw_inside.rs`): a button at the end of the
+  property bar of the tools that draw (the curve tools, Brush Strokes,
+  Painterly Brush, Sketch, Shape Recognition, Rectangle, Ellipse,
+  Polygon, Star, Spiral, Common Shapes). With one closed shape selected
+  (a rectangle, polygon or star, an ellipse or pie, a closed curve, or a
+  clip frame) it starts editing the shape's contents, as Edit Contents
+  does: everything else on the page stays out of reach and what is drawn
+  goes in when the editing ends, by pressing the button again (it shows
+  on meanwhile) or Finish Editing Contents, as Place Inside Frame puts
+  it there (a plain shape becomes a clip frame; nothing drawn leaves it
+  as it was). With no closed shape selected, or more than one object,
+  the button is greyed out and its tip, like the status line when it is
+  pressed, says one closed shape is needed
+  (`draw_inside::tests::what_is_drawn_inside_goes_into_the_shape`,
+  `draw_inside::tests::draw_inside_needs_one_closed_shape`).
 
 ## The clip frame bar
 

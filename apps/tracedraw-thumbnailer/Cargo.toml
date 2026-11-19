@@ -1,6 +1,6 @@
 [package]
 name = "tracedraw-thumbnailer"
-description = "Windows Explorer thumbnails of .tdraw drawings: a thumbnail provider (shell extension) that draws the first page"
+description = "Windows Explorer thumbnails of .tdraw and .cdr drawings: a thumbnail provider (shell extension) that draws the first page"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -11,6 +11,7 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 tracedraw-core = { path = "../../crates/core" }
+tracedraw-cdr = { path = "../../crates/cdr" }
 tracedraw-render = { path = "../../crates/render" }
 tracedraw-text = { path = "../../crates/text" }
 

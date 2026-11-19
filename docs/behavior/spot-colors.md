@@ -77,6 +77,13 @@ is that name's ink.
   prints as its stand-in. PDF/X keeps the Separation spaces. Opened or
   imported again, each Separation space is the ink of its name again and
   each colour in it a spot colour at its tint (see `pdf-import.md`).
+- EPS and PostScript: each ink is a Separation colour space of its
+  name, as in PDF, and the header names the drawing's inks in
+  `%%DocumentCustomColors` with each one's stand-in in
+  `%%CMYKCustomColor` (after `%%DocumentProcessColors`). A RIP that
+  builds its list of spot channels from those comments found none and
+  printed a spot ink in process inks (#3458,
+  `eps::tests::spot_colours_keep_their_ink_name`).
 - PDF overprint: an object whose fill or outline overprints is drawn
   under a graphics state with `/op` (fill) and `/OP` (outline) and
   overprint mode `/OPM 1`, so the inks under it stay (ISO 32000-1,

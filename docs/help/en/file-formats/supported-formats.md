@@ -23,7 +23,7 @@
 | EMF, WMF | paths, pens, brushes, text, bitmaps, clips |
 | PLT (HPGL) | plotter pen strokes |
 | PSD, PSB | the layers as bitmaps, with opacity, visibility and masks |
-| PNG, JPEG, BMP, GIF, WebP, TIFF | bitmaps |
+| PNG, JPEG, BMP, GIF, WebP, TIFF, JPEG XL | bitmaps |
 | TXT, RTF, DOCX | paragraph text with its formatting |
 
 Some applications keep the format of their own files closed, with no public
@@ -41,7 +41,7 @@ pictures editable, or as SVG, and open that file.
 | EPS, PostScript (`.ps`), PRN | vector, for print |
 | DXF, PLT | vector, for CAD, plotters and cutters |
 | EMF, WMF | vector, for office programs |
-| PNG, JPEG, WebP, GIF, BMP, TIFF | bitmap |
+| PNG, JPEG, WebP, GIF, BMP, TIFF, JPEG XL | bitmap |
 | PSD | bitmap, one layer per layer of the drawing |
 
 Scripts can add more formats to importing and exporting; see

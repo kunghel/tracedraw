@@ -379,6 +379,11 @@ pub fn overlay_parts(subject: &BezPath, clip: &BezPath, op: Op) -> Vec<BezPath> 
 /// crossing of the two chords lies up to [`TOL`] off either curve.
 const ON_SOURCE: f64 = 1.5 * TOL;
 
+/// How far a stretch of a source may stray from an edge of the result, mm,
+/// and still be the curve that edge flattens: the flattening's error, and
+/// a little for the overlay's rounding.
+const FOLLOW: f64 = 1.25 * TOL;
+
 /// A place on a source outline: the subpath, and its segment index plus
 /// the parameter within the segment, one number that runs on across the
 /// segment ends (a closed subpath's wraps back to 0).
@@ -525,6 +530,8 @@ impl SourceSub {
 fn exact_crossing(subs: &[SourceSub], places: &[Place], p: Point) -> Option<Point> {
     use kurbo::{ParamCurveDeriv as _, PathSeg};
     let reach = 2.0 * ON_SOURCE;
+    // A node of an outline the vertex lies on, where outlines meet at it.
+    let mut node: Option<Point> = None;
     let mut inner: Vec<(PathSeg, f64)> = Vec::new();
     for q in places {
         let Some(sub) = subs.get(q.sub) else {
@@ -534,9 +541,10 @@ fn exact_crossing(subs: &[SourceSub], places: &[Place], p: Point) -> Option<Poin
             continue;
         };
         if (q.u - q.u.round()).abs() <= 1e-6 {
-            let node = sub.at(q.u, 0.0);
-            if (node - p).hypot() <= reach {
-                return Some(node);
+            let at = sub.at(q.u, 0.0);
+            if (at - p).hypot() <= reach && node.is_none_or(|n| (at - p).hypot() < (n - p).hypot())
+            {
+                node = Some(at);
             }
             continue;
         }
@@ -546,6 +554,8 @@ fn exact_crossing(subs: &[SourceSub], places: &[Place], p: Point) -> Option<Poin
         }
     }
     let mut best: Option<Point> = None;
+    // The nearest of them where the outlines cross at an angle.
+    let mut crossing: Option<Point> = None;
     for (n, (a, s0)) in inner.iter().enumerate() {
         for (b, t0) in inner.iter().skip(n + 1) {
             let (a, b) = (a.to_cubic(), b.to_cubic());
@@ -558,6 +568,13 @@ fn exact_crossing(subs: &[SourceSub], places: &[Place], p: Point) -> Option<Poin
                     let d = (q - p).hypot();
                     if d <= reach && best.is_none_or(|b| d < (b - p).hypot()) {
                         best = Some(q);
+                    }
+                    // Outlines that run along each other meet everywhere
+                    // there: no crossing to prefer to a node.
+                    let (ta, tb) = (da.eval(s).to_vec2(), db.eval(t).to_vec2());
+                    let sin = ta.cross(tb).abs() / (ta.hypot() * tb.hypot()).max(1e-300);
+                    if sin > 1e-3 && d <= reach && crossing.is_none_or(|b| d < (b - p).hypot()) {
+                        crossing = Some(q);
                     }
                     break;
                 }
@@ -572,7 +589,14 @@ fn exact_crossing(subs: &[SourceSub], places: &[Place], p: Point) -> Option<Poin
             }
         }
     }
-    best
+    // The node, unless the curves cross nearer to the vertex: a vertex
+    // beside a node, where another outline crosses the next segment a
+    // little way along it, lies on that crossing, not on the node (#1483).
+    match node {
+        Some(n) if crossing.is_some_and(|c| (c - p).hypot() < (n - p).hypot()) => crossing,
+        Some(n) => Some(n),
+        None => best,
+    }
 }
 
 /// A stretch of the result lying along one source subpath: where it
@@ -736,6 +760,16 @@ fn recover_curves(result: &BezPath, sources: &[&BezPath]) -> BezPath {
                 for (s, i) in grid.near(q) {
                     subs[*s].place_on(*s, *i, q, &mut v);
                 }
+                // On the crossing, the vertex lies exactly on each outline:
+                // a place on one a little way off it (the node it is near,
+                // #1483) would pull the result away from it again.
+                let off = |pl: &Place| (subs[pl.sub].at(pl.u, 0.0) - q).hypot();
+                let exact: Vec<usize> = v
+                    .iter()
+                    .filter(|pl| off(pl) < 1e-7)
+                    .map(|pl| pl.sub)
+                    .collect();
+                v.retain(|pl| off(pl) < 1e-7 || !exact.contains(&pl.sub));
                 places[k] = v;
             }
         }
@@ -789,14 +823,30 @@ fn recover_curves(result: &BezPath, sources: &[&BezPath]) -> BezPath {
                     return None;
                 }
                 // The flattening put each edge within TOL of the curve; a
-                // chord across more of it lies farther from it.
+                // chord across more of it lies farther from it. The nodes
+                // the stretch passes are checked too: round a corner, a
+                // stretch can come back within a hair of the chord at the
+                // points sampled, as across the narrow gap between two
+                // stems of condensed text (#1483).
                 let chord = kurbo::Line::new(prev, p);
-                for f in [0.25, 0.5, 0.75] {
+                let off = |q: Point| {
                     use kurbo::ParamCurveNearest as _;
-                    let q = sub.at(ua, du * f);
-                    if chord.nearest(q, 1e-9).distance_sq > (2.0 * TOL) * (2.0 * TOL) {
+                    chord.nearest(q, 1e-9).distance_sq > FOLLOW * FOLLOW
+                };
+                if [0.25, 0.5, 0.75].iter().any(|f| off(sub.at(ua, du * f))) {
+                    return None;
+                }
+                let (lo, hi) = if du > 0.0 {
+                    (ua, ua + du)
+                } else {
+                    (ua + du, ua)
+                };
+                let mut node = lo.floor() + 1.0;
+                while node < hi - 1e-6 {
+                    if off(sub.at(node, 0.0)) {
                         return None;
                     }
+                    node += 1.0;
                 }
                 Some(du)
             };

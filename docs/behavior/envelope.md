@@ -59,6 +59,12 @@ Ctrl+F7).
 - In the Unconstrained mode a click on a node selects it and shows its two
   handles (the end of the segment coming in and the start of the one
   going out); dragging a handle bends that segment alone.
+- Several nodes can be chosen at once (#3001): Shift+click on a node adds
+  it to the chosen nodes or takes it out, and a drag on empty space draws
+  a marquee that chooses the nodes inside it (with Shift, adds them).
+  Dragging any chosen node moves all of them by the same amount, as one
+  undo step; dragging a node that is not chosen chooses it alone
+  (`envelope_edit::tests::several_envelope_nodes_move_together`).
 - Dragging a segment of the frame (anywhere along it, within 4 screen
   pixels, away from its nodes and handles) bends it, in every mode, as
   the Shape tool bends a curve's segment: the point grabbed follows the

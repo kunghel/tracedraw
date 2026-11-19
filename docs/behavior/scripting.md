@@ -234,7 +234,9 @@ So `AddDropShadow` leaves `Effects.Count` as it was.
 make a live dimension from (x1, y1) to (x2, y2), its line through
 (tx, ty), in the Dimension tool's style, font and units: the same object
 the tool draws, which follows the objects it measures when they are
-edited. `CreateLinearDimension(kind, ...)` takes the kind as `'parallel'`,
+edited: a point within 0.01 mm of a node or an edge of an object on the
+page holds to it, as the tool's points hold within 3 pixels.
+`CreateLinearDimension(kind, ...)` takes the kind as `'parallel'`,
 `'horizontal'`, `'vertical'` or `'auto'` (the larger span).
 `CreateAngularDimension(cx, cy, x1, y1, x2, y2, tx, ty)` measures the
 angle at (cx, cy) from the first point to the second, its arc through
@@ -247,8 +249,9 @@ TextCentered, TextX, TextY)` with `cdrDimensionHorizontal` (0),
 `Layer.CreateAngularDimension(Center, Point1, Point2, TextX, TextY)`. A
 point is anything with `PositionX`/`PositionY`, `{x, y}` or `[x, y]`, in
 the document unit; without TextX/TextY the line goes 10 mm off the
-points. A recorded macro records a dimension the Dimension tools drew as
-one of these calls, so playing it back makes a live dimension again.
+points. A recorded macro records a dimension the Dimension tools drew
+(and those Add Dimensions draws) as one of these calls, so playing it back
+makes a live dimension again; they went unrecorded until 0.48 (#2348).
 
 ### Symbols
 
@@ -294,5 +297,7 @@ what the user sees.
 - `scripting::extra::tests::a_script_makes_live_dimensions`
 - `scripting::extra::tests::a_vba_macro_makes_a_linear_dimension`
 - `scripting::extra::tests::a_recorded_dimension_plays_back_as_one`
+- `scripting::extra::tests::dimensions_drawn_while_recording_are_recorded`
+- `scripting::extra::tests::a_script_dimension_follows_its_object`
 - `scripting::extra::tests::similar_groups_become_one_symbol_and_keep_their_text`
 - `scripting::extra::tests::a_script_creates_and_places_symbols`

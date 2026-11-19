@@ -123,12 +123,8 @@ fn combo_tip(id: &str) -> String {
             ("color_mgmt.primary_mode", "color_mgmt.primary_mode_desc")
         }
         "cm_doc_intent" | "cm_def_intent" => ("color_mgmt.intent", "color_mgmt.intent_desc"),
-        "cm_open_rgb" | "cm_open_cmyk" | "cm_open_gray" => {
-            ("color_mgmt.open_policy", "color_mgmt.open_policy_desc")
-        }
-        "cm_imp_rgb" | "cm_imp_cmyk" | "cm_imp_gray" => {
-            ("color_mgmt.import_policy", "color_mgmt.import_policy_desc")
-        }
+        "cm_open_cmyk" => ("color_mgmt.open_policy", "color_mgmt.open_policy_desc"),
+        "cm_imp_cmyk" => ("color_mgmt.import_policy", "color_mgmt.import_policy_desc"),
         _ => (
             "color_mgmt.spot_definition",
             "color_mgmt.spot_definition_desc",
@@ -650,14 +646,10 @@ fn default_tab(ui: &mut Ui, st: &mut ColorManagementState, load: &mut Option<Spa
         .num_columns(2)
         .spacing([8.0, 8.0])
         .show(ui, |ui| {
-            row(ui, "RGB:");
-            combo_u8(ui, "cm_open_rgb", &mut d.open_rgb, &open_keys);
-            ui.end_row();
+            // CMYK only: a drawing carries its CMYK profile and no RGB
+            // or grayscale one, so rows for those changed nothing.
             row(ui, "CMYK:");
             combo_u8(ui, "cm_open_cmyk", &mut d.open_cmyk, &open_keys);
-            ui.end_row();
-            row(ui, &tr("color_mgmt.grayscale"));
-            combo_u8(ui, "cm_open_gray", &mut d.open_gray, &open_keys);
             ui.end_row();
             ui.label("");
             ui.vertical(|ui| {
@@ -677,14 +669,8 @@ fn default_tab(ui: &mut Ui, st: &mut ColorManagementState, load: &mut Option<Spa
         .num_columns(2)
         .spacing([8.0, 8.0])
         .show(ui, |ui| {
-            row(ui, "RGB:");
-            combo_u8(ui, "cm_imp_rgb", &mut d.import_rgb, &import_keys);
-            ui.end_row();
             row(ui, "CMYK:");
             combo_u8(ui, "cm_imp_cmyk", &mut d.import_cmyk, &import_keys);
-            ui.end_row();
-            row(ui, &tr("color_mgmt.grayscale"));
-            combo_u8(ui, "cm_imp_gray", &mut d.import_gray, &import_keys);
             ui.end_row();
             ui.label("");
             ui.vertical(|ui| {
@@ -701,24 +687,8 @@ fn default_tab(ui: &mut Ui, st: &mut ColorManagementState, load: &mut Option<Spa
             });
             ui.end_row();
         });
-    ui.separator();
-    egui::Grid::new("cm_spot")
-        .num_columns(2)
-        .spacing([8.0, 8.0])
-        .show(ui, |ui| {
-            row(ui, &tr("color_mgmt.spot_definition"));
-            combo_u8(
-                ui,
-                "cm_spot",
-                &mut d.spot_definition,
-                &[
-                    "color_mgmt.spot_lab",
-                    "color_mgmt.spot_cmyk",
-                    "color_mgmt.spot_rgb",
-                ],
-            );
-            ui.end_row();
-        });
+    // No Spot color definition: a spot ink is defined by its CMYK values
+    // alone, so a choice of Lab or RGB values changed nothing.
 }
 
 fn preset_label(key: &str) -> String {
@@ -843,6 +813,46 @@ mod tests {
             frame(&ctx, &mut app, true);
             assert!(matches!(app.dialog, Dialog::None));
         }
+    }
+
+    /// The Default tab shows no choice that changes nothing: drawings
+    /// carry a CMYK profile alone, so the open and import policies have a
+    /// CMYK row only, and spot inks are defined by CMYK values alone, so
+    /// there is no Spot color definition.
+    #[test]
+    fn the_default_tab_has_no_choices_that_change_nothing() {
+        let mut app = App::headless();
+        app.dialog = Dialog::ColorManagement(Box::new(ColorManagementState {
+            tab: 1,
+            ..Default::default()
+        }));
+        let ctx = crate::theme::ui_context();
+        let mut texts = Vec::new();
+        for _ in 0..3 {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1400.0, 4000.0),
+                )),
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(input, |ui| crate::ui::dialogs::show(&mut app, ui.ctx()));
+            out.textures_delta.clear();
+            texts = out
+                .shapes
+                .iter()
+                .filter_map(|c| match &c.shape {
+                    egui::epaint::Shape::Text(t) => Some(t.galley.text().to_string()),
+                    _ => None,
+                })
+                .collect();
+        }
+        let count = |s: &str| texts.iter().filter(|t| t.as_str() == s).count();
+        assert!(count(&tr("color_mgmt.open_policy")) == 1, "{texts:?}");
+        assert_eq!(count("RGB:"), 0, "{texts:?}");
+        assert_eq!(count(&tr("color_mgmt.grayscale")), 0, "{texts:?}");
+        assert_eq!(count("CMYK:"), 2, "open and import: {texts:?}");
+        assert_eq!(count(&tr("color_mgmt.spot_definition")), 0);
     }
 
     #[test]

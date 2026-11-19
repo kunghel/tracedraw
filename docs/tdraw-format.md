@@ -31,6 +31,15 @@ A file of 8 MB or more opens on a worker thread (`opening.rs`); after
 half a second a window shows how much of it is read, then that the
 drawing is being built, with Cancel.
 
+Groups inside groups: a file may nest 16,384 brackets deep
+(`MAX_JSON_DEPTH`), some 5,000 groups inside groups, and a drawing nested
+more than 30 deep is written and read on a thread with room for it
+(`on_deep_stack`). The limit was 1024 brackets, some 330 groups, which
+the Group command goes past: the drawing saved and then refused to open.
+A drawing nested past the limit is not saved; the status line says it
+nests too deep to open again, and the file on disk stays as it was
+(`document::tests::deeply_nested_groups_open`).
+
 ## Versions
 
 | Version | First written by | Change |
@@ -67,3 +76,4 @@ version `i + 1` to `i`).
 - `document::tests::tdraw_files_can_be_written_in_an_older_format_version`
 - `document::tests::tdraw_files_are_packed_with_each_picture_once`
 - `opening::tests::a_large_file_is_read_on_a_worker_and_can_be_cancelled`
+- `document::tests::deeply_nested_groups_open`

@@ -13,20 +13,26 @@ bitmap selecionado tem o mesmo comando.
 2. Clique em [[menu.bitmaps > menu.bitmaps.remove_background_local]]. A
    prévia mostra o bitmap antes e depois, com um quadriculado onde ele fica
    transparente.
-3. Ajuste as opções abaixo até o assunto se destacar de forma limpa.
+3. Com **[[dialog.bg_colors_auto_button]]**, o TraceDraw encontra o assunto
+   sozinho e remove o resto. Se sobrar ou faltar alguma coisa, corrija com
+   as opções e os pincéis abaixo.
 4. Clique em [[dialog.ok]]. Todos os bitmaps selecionados mudam em uma única
    etapa de desfazer.
 
 ## Opções {#options}
 
-- **[[dialog.bg_colors]]** As cores a remover, uma por linha. No início há
-  uma só linha, **[[dialog.bg_colors_auto_button]]**: o TraceDraw descobre
-  as cores do fundo nas bordas da imagem (até quatro, então um degradê ou um
-  fundo de dois tons funciona). Cada linha tem:
+- **[[dialog.bg_colors]]** O que remover, uma linha para cada coisa. No
+  início há uma só linha, **[[dialog.bg_colors_auto_button]]**: o TraceDraw
+  encontra o assunto da imagem (uma pessoa, um produto, um logotipo) e
+  remove todo o resto, sejam quais forem as cores. Um assunto que sai da
+  imagem, como ombros na borda de baixo, fica inteiro; um fundo com tons
+  diferentes, como um céu com nuvens, sai inteiro; o fundo visto por um vão,
+  como entre um braço e a cabeça, também sai. As outras linhas são cores a
+  remover além disso. Cada linha tem:
   - a amostra da cor;
   - um conta-gotas: clique nele e depois em uma cor numa prévia ou no
     desenho, e a linha fica com essa cor. Na primeira linha,
-    **[[dialog.bg_colors_auto_button]]** volta às cores aprendidas;
+    **[[dialog.bg_colors_auto_button]]** volta a encontrar o assunto;
   - a sua própria tolerância, um número inteiro de 0 a 100. Ela mostra a
     **[[dialog.tolerance]]** de baixo até você mudá-la;
   - **[[dialog.bg_row_remove]]** (x), que tira a linha da lista. A última
@@ -42,17 +48,22 @@ bitmap selecionado tem o mesmo comando.
   próxima da que está sob o ponteiro. A cor escolhida numa prévia vem da
   imagem antes da mudança, então dá para escolher até uma parte que já
   sumiu.
-- **[[dialog.tolerance]]** Quanto uma cor pode se afastar da cor do fundo e
-  ainda contar como fundo (0 a 100, em números inteiros). É a tolerância de
-  toda linha que não tem uma própria. Aumente quando sobrar fundo; diminua
-  quando partes do assunto sumirem.
+- **[[dialog.tolerance]]** Para uma cor escolhida, quanto uma cor pode se
+  afastar dela e ainda contar como fundo (0 a 100, em números inteiros):
+  aumente quando sobrar dessa cor, diminua quando partes do assunto
+  sumirem. Para **[[dialog.bg_colors_auto_button]]**, só diz quanto da borda
+  suave sai: aumente para uma borda mais justa, diminua para manter fios
+  finos de cabelo. É a tolerância de toda linha que não tem uma própria.
 - **[[dialog.edge_softness]]** Suaviza a borda do assunto, em pixels. 0 mantém
   a borda nítida.
-- **[[dialog.bg_contiguous]]** (ligado no início) Só sai o fundo ligado às
-  bordas da imagem, então uma camisa branca sobre fundo branco mantém o
-  interior. Uma cor escolhida numa prévia também começa a remoção no ponto
-  clicado, então um furo dentro do assunto pode sair com uma só escolha.
-  Desligue para remover todo pixel perto de uma cor da lista, por exemplo
+- **[[dialog.bg_contiguous]]** (ligado no início) Uma cor escolhida só sai
+  onde está ligada às bordas da imagem ou ao que
+  **[[dialog.bg_colors_auto_button]]** removeu. Em um fundo chapado, como o
+  branco de um desenho ou de uma digitalização, as partes da mesma cor
+  dentro do assunto ficam, então uma camisa branca desenhada sobre branco
+  mantém o interior. Uma cor escolhida numa prévia também começa a remoção
+  no ponto clicado, então um furo dentro do assunto pode sair com uma só
+  escolha. Desligue para remover essas partes em toda a imagem, por exemplo
   todos os furos de uma letra ou de um anel.
 - **[[dialog.bg_despeckle]]** (ligado no início) Pequenos pontos soltos que
   ficaram no fundo também saem.
@@ -69,8 +80,15 @@ TraceDraw, e o próximo Remover fundo começa com elas.
 ## Dicas {#tips}
 
 - Funciona melhor com um fundo diferente do assunto: um fundo de estúdio, um
-  céu, um produto sobre uma mesa lisa. Para cenas carregadas, o comando de IA
+  céu, uma parede lisa. Para cenas carregadas, o comando de IA
   [[menu.bitmaps.remove_background]] (veja [IA](../customize/ai.md)) separa
   assunto e cena pelo significado.
+- Um piso ou uma mesa em que o assunto está apoiado fica quando a cor não é
+  a do fundo: clique em **[[dialog.bg_add_color]]** (+) e depois no piso
+  para removê-lo também.
+- Para corrigir um detalhe, clique em **[[dialog.bg_brush_erase]]** ou
+  **[[dialog.bg_brush_restore]]** e pinte na prévia: o resultado acompanha o
+  pincel. O botão do pincel em uso fica pressionado; clique nele de novo
+  para soltar o pincel.
 - O resultado substitui os pixels; os efeitos do bitmap ficam permanentes.
   Para ajustar depois, use [Mascarar cores](bitmap-mask.md).

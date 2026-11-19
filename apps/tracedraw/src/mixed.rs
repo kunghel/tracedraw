@@ -278,30 +278,12 @@ impl App {
     /// none, `None` mixed or nothing selected. Read by reference, as the
     /// status bar asks it every frame.
     pub fn selection_overprint(&self, fill: bool) -> Option<bool> {
-        let selected = self.selected_rc();
-        let mut leaves = Vec::new();
-        for s in selected.iter() {
-            leaf_refs(s, &mut leaves);
-        }
-        let count = leaves
-            .iter()
-            .filter(|s| {
-                if fill {
-                    s.overprint_fill
-                } else {
-                    s.overprint_outline
-                }
-            })
-            .count();
-        if leaves.is_empty() {
-            None
-        } else if count == leaves.len() {
-            Some(true)
-        } else if count == 0 {
-            Some(false)
+        let name = if fill {
+            "overprint_fill"
         } else {
-            None
-        }
+            "overprint_outline"
+        };
+        *self.from_selection(name, |selected| overprint_of(selected, fill))
     }
 
     pub fn paint_targets(&self) -> Vec<Shape> {
@@ -314,22 +296,28 @@ impl App {
 
     /// How the outlines of the selection differ.
     pub fn selection_stroke_mix(&self) -> StrokeMix {
-        let selected = self.selected_rc();
-        let mut shapes = Vec::new();
-        for s in selected.iter() {
-            leaf_refs(s, &mut shapes);
-        }
-        stroke_mixed(shapes.iter().map(|s| s.stroke.as_ref()))
+        // Asked by the bars and the status bar every frame.
+        (*self.from_selection("stroke_mix", |selected| {
+            let mut shapes = Vec::new();
+            for s in selected {
+                leaf_refs(s, &mut shapes);
+            }
+            stroke_mixed(shapes.iter().map(|s| s.stroke.as_ref()))
+        }))
+        .clone()
     }
 
     /// How the fills of the selection differ.
     pub fn selection_fill_mix(&self) -> FillMix {
-        let selected = self.selected_rc();
-        let mut shapes = Vec::new();
-        for s in selected.iter() {
-            leaf_refs(s, &mut shapes);
-        }
-        fill_mixed(shapes.iter().map(|s| &s.fill))
+        // Asked by the bars and the status bar every frame.
+        (*self.from_selection("fill_mix", |selected| {
+            let mut shapes = Vec::new();
+            for s in selected {
+                leaf_refs(s, &mut shapes);
+            }
+            fill_mixed(shapes.iter().map(|s| &s.fill))
+        }))
+        .clone()
     }
 
     /// An outline editor showed `old` and the user made it `new`: send the
@@ -647,8 +635,11 @@ impl App {
     /// left, top right, bottom left, bottom right (the radii in `Corners`
     /// order), scaling]`.
     pub fn selection_corner_mix(&self) -> Option<(Corners, [bool; 6])> {
-        let all: Vec<Corners> = self
-            .selected_rc()
+        *self.from_selection("corner_mix", |shapes| self.corner_mix_of(shapes))
+    }
+
+    fn corner_mix_of(&self, shapes: &[Shape]) -> Option<(Corners, [bool; 6])> {
+        let all: Vec<Corners> = shapes
             .iter()
             .filter_map(|s| self.corners_as_seen(s))
             .collect();
@@ -662,6 +653,33 @@ impl App {
             mix[5] |= c.fixed != first.fixed;
         }
         Some((first, mix))
+    }
+}
+
+/// [`App::selection_overprint`] of the objects `selected`.
+fn overprint_of(selected: &[Shape], fill: bool) -> Option<bool> {
+    let mut leaves = Vec::new();
+    for s in selected {
+        leaf_refs(s, &mut leaves);
+    }
+    let count = leaves
+        .iter()
+        .filter(|s| {
+            if fill {
+                s.overprint_fill
+            } else {
+                s.overprint_outline
+            }
+        })
+        .count();
+    if leaves.is_empty() {
+        None
+    } else if count == leaves.len() {
+        Some(true)
+    } else if count == 0 {
+        Some(false)
+    } else {
+        None
     }
 }
 
@@ -731,6 +749,36 @@ mod tests {
         let _ = app.engine.undo();
         assert_eq!(stroke_of(&app, a).width, 1.0);
         assert_eq!(stroke_of(&app, b).width, 3.0);
+    }
+
+    /// What the bars show of the selection is worked out once and kept
+    /// with it (50,000 selected objects took a fifth of a second a
+    /// frame), and worked out anew when the selection, the drawing or an
+    /// undo changes it.
+    #[test]
+    fn kept_selection_answers_follow_changes() {
+        let mut app = App::headless();
+        let (a, b) = two_rects(&mut app);
+        let more: Vec<_> = (0..10).map(|_| two_rects(&mut app).0).collect();
+        app.select(vec![a]);
+        assert!(!app.selection_stroke_mix().has(StrokeField::Width));
+        app.select(vec![a, b]);
+        assert!(app.selection_stroke_mix().has(StrokeField::Width));
+        app.select(more.clone());
+        assert!(!app.selection_stroke_mix().has(StrokeField::Width));
+        let mut all = more.clone();
+        all.push(b);
+        app.select(all);
+        assert!(app.selection_stroke_mix().has(StrokeField::Width));
+        assert!(app.selection_stroke_mix().has(StrokeField::Width));
+        let old = Some(stroke_of(&app, b));
+        let mut new = old.clone();
+        new.as_mut().unwrap().width = 1.0;
+        app.patch_selection_stroke(&old, &new, &[StrokeField::Width]);
+        assert!(!app.selection_stroke_mix().has(StrokeField::Width));
+        let _ = app.engine.undo();
+        assert!(app.selection_stroke_mix().has(StrokeField::Width));
+        assert_eq!(app.selection_overprint(true), Some(false));
     }
 
     /// Every outline attribute the panel edits changes only itself: the

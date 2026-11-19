@@ -51,6 +51,7 @@ says "Exported with the last options". To see the options again:
 | Format | Options |
 |---|---|
 | PNG, WebP, GIF | resolution (or the size in pixels), transparent background; WebP also quality |
+| JPEG XL | resolution (or the size in pixels), transparent background; always lossless |
 | JPEG | resolution, quality (1 to 100) |
 | BMP, TIFF, PSD | resolution |
 | PDF | standard (PDF 1.4, PDF/X-1a, PDF/X-3 or PDF/X-4), bleed, output condition for PDF/X |

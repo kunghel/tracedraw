@@ -138,11 +138,10 @@ impl CustomCursor {
             (*ximage).delay = 0;
 
             let dst = slice::from_raw_parts_mut((*ximage).pixels, cursor.0.rgba.len() / 4);
+            // TraceDraw: Xcursor takes premultiplied ARGB (#2871).
             for (dst, chunk) in dst.iter_mut().zip(cursor.0.rgba.chunks_exact(4)) {
-                *dst = (chunk[0] as u32) << 16
-                    | (chunk[1] as u32) << 8
-                    | (chunk[2] as u32)
-                    | (chunk[3] as u32) << 24;
+                *dst =
+                    crate::cursor_pixels::xcursor_pixel([chunk[0], chunk[1], chunk[2], chunk[3]]);
             }
 
             let cursor =

@@ -311,13 +311,22 @@ pub fn apply(app: &mut App) {
     for _ in 0..copies {
         step = t * step;
         last.clear();
+        let mut round = Vec::new();
         for s in &shapes {
             let id = app.engine.new_shape_id();
             let mut shape = crate::app::reid_pub(s.clone(), id, &mut app.engine);
             shape.transform_by(step);
             last.push(id);
-            cmds.push(Command::AddShape { layer, shape });
+            round.push(shape);
         }
+        // Copies of linked text frames copied together are linked to each
+        // other, as Step and Repeat, Duplicate and Paste link them.
+        crate::textflow::relink_copies(&shapes, &mut round);
+        cmds.extend(
+            round
+                .into_iter()
+                .map(|shape| Command::AddShape { layer, shape }),
+        );
     }
     let label = tab_info(app.transform.tab).2;
     if let Err(e) = app.engine.run_batch(label, &cmds) {

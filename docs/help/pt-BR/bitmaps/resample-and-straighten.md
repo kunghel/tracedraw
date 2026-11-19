@@ -3,13 +3,16 @@
 ## Reamostrar {#resample}
 
 [[menu.bitmaps > menu.bitmaps.resample]] dá aos bitmaps selecionados um novo
-número de pixels; o tamanho deles na página continua o mesmo.
+número de pixels e, se você quiser, um novo tamanho na página.
 
 ![A caixa de diálogo Reamostrar](../../img/bitmaps-resample-and-straighten-resample.png)
 
 1. Digite o novo tamanho em **pixels**, em **porcentagem** ou como a
    **resolução** que ele dá no tamanho da página. Com **Manter proporção**
    ligado, a altura acompanha a largura.
+   Para mudar o tamanho na página, digite-o em **Tamanho na página** nas
+   **Unidades** que escolher, ou escolha esta página ou um papel em
+   **Ajustar a**: a resolução fica e os pixels acompanham.
 2. Escolha o método:
    - **Suave** (fotos), de início;
    - **Nítido**, um pouco mais definido;
@@ -62,6 +65,7 @@ Alguns efeitos, como desfoques, passam das bordas de um bitmap.
   [[tool.crop]]; arrastar um canto de um bitmap com a ferramenta
   [[tool.shape]] também o recorta.
 - [[menu.bitmaps.edit_bitmap]] abre o bitmap em outro programa.
+- [[menu.bitmaps.edit_inside]] (ou um duplo clique na imagem com a ferramenta Seleção) edita os pixels ali mesmo, dentro do TraceDraw: seleções, pincel, borracha suave, clone, correção, desfoque, preenchimento pelo conteúdo, olhos vermelhos e qualquer efeito de bitmap só na seleção. Enter conclui, num único passo de desfazer.
 - [[menu.bitmaps.remove_background_local]] deixa transparente o fundo de uma
   foto neste computador (veja [Remover o fundo](remove-background.md));
   [[menu.bitmaps.remove_background]] faz isso com o serviço de IA.

@@ -49,6 +49,16 @@ picked (by a click, a marquee, Select All or <kbd>Tab</kbd>). Undo stops at
 the start of the edit: undoing past it leaves the edit with the frame as it
 was; redo enters it again, and undoing Finish goes back into it.
 
+## Drawing inside a shape {#draw-inside}
+
+To draw straight into a shape instead of placing objects in it afterwards,
+select one closed shape (a rectangle, ellipse, polygon, closed curve or a
+frame), pick a drawing tool, such as Freehand, Bezier, Brush Strokes or
+Rectangle, and click [[toolbar.draw_inside]] at the end of its property bar.
+Draw as usual; the rest of the page waits out of reach. Click
+[[toolbar.draw_inside]] again, or Finish Editing Contents, and what you drew
+goes inside the shape, clipped by it.
+
 ## Opacity masks {#opacity-mask}
 
 [[menu.object > menu.object.clip_frame > menu.object.clip_frame_opacity_mask]]

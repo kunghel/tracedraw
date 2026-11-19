@@ -377,6 +377,7 @@ fn render_page(app: &App, area: Rect) -> Option<(image::RgbaImage, f64)> {
                 zoom,
                 origin_x: -area.x0 * zoom,
                 origin_y: area.y1 * zoom,
+                stretch_y: 1.0,
             },
             ..Default::default()
         },

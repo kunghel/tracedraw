@@ -6,7 +6,8 @@ This file covers what every contribution must also respect.
 
 ## Reporting a problem
 
-Use one of the forms under **New issue**, so the report has what it takes
+Make sure you understand all the rules on this page before you open an
+issue or a discussion. Use one of the forms under **New issue**, so the report has what it takes
 to find the problem:
 
 - **One problem per issue.** A report with several problems is hard to
@@ -24,6 +25,26 @@ to find the problem:
 
 Reports without what it takes to repeat the problem are marked
 `needs info` until the missing details come.
+
+### What you post stays public {#posts-stay-public}
+
+Issues, discussions, comments and the files attached to them are public
+and are kept as part of the project's history. From 18 November 2026 on,
+they are not deleted on request:
+
+- **Attached files cannot be removed by the project.** Screenshots,
+  videos and drawings uploaded to GitHub are stored by GitHub, not by
+  TraceDraw. Taking a file out of a comment, or even deleting the whole
+  issue, does not delete the file, and its link keeps working; only
+  GitHub Support can remove it.
+- **Issues and discussions are not deleted.** They record why the code
+  changed: commits, pull requests and the change log point to them, and
+  they are what is checked when a problem comes back.
+
+So before you post, check that your text, screenshots, videos and files
+show nothing private or confidential: client work, names, e-mail
+addresses, folder paths, other open windows. You can still edit your own
+posts and comments.
 
 ## Clean contributions
 

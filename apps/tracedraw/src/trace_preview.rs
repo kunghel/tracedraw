@@ -82,6 +82,8 @@ pub struct Outcome {
     pub colors: Arc<Vec<([u8; 3], usize)>>,
     /// Mean centreline stroke width, pixels of what was traced.
     pub stroke_px: f64,
+    /// The size, pixels, of what was traced (`traced`'s space).
+    pub trace_size: (u32, u32),
     pub stats: Stats,
     pub after: ColorImage,
     pub wire: ColorImage,
@@ -102,6 +104,8 @@ pub struct Shown {
     pub traced: Arc<Vec<Traced>>,
     pub colors: Arc<Vec<([u8; 3], usize)>>,
     pub stroke_px: f64,
+    /// The size, pixels, of what was traced (`traced`'s space).
+    pub trace_size: (u32, u32),
     pub stats: Stats,
     pub after: TextureHandle,
     pub wire: TextureHandle,
@@ -162,6 +166,11 @@ pub struct Live {
     pub started: usize,
     /// How many times a trace on show was only given new colours.
     pub recolored: usize,
+    /// The threads the traces were made on that may still be running:
+    /// one stopped, or one whose last result is in, still asks for a
+    /// frame before it ends.
+    #[cfg(not(target_arch = "wasm32"))]
+    workers: Vec<std::thread::JoinHandle<()>>,
 }
 
 impl Live {
@@ -294,6 +303,7 @@ impl Live {
             traced: o.traced,
             colors: o.colors,
             stroke_px: o.stroke_px,
+            trace_size: o.trace_size,
             stats: o.stats,
             after,
             wire,
@@ -331,7 +341,10 @@ impl Live {
             }
         };
         #[cfg(not(target_arch = "wasm32"))]
-        std::thread::spawn(work);
+        {
+            self.workers.retain(|t| !t.is_finished());
+            self.workers.push(std::thread::spawn(work));
+        }
         #[cfg(target_arch = "wasm32")]
         work();
         self.job = Some(Job {
@@ -403,6 +416,16 @@ impl Live {
     /// Whether Best optimization is running.
     pub fn optimizing(&self) -> bool {
         self.search.is_some()
+    }
+
+    /// Wait for every thread a trace was made on to end, so that none
+    /// asks for a frame later: what a test of the frames after a trace
+    /// waits for, instead of for some time to pass.
+    #[cfg(all(test, not(target_arch = "wasm32")))]
+    pub fn join_workers(&mut self) {
+        for t in self.workers.drain(..) {
+            let _ = t.join();
+        }
     }
 
     /// Whether a trace is being made or waiting to start.
@@ -539,6 +562,7 @@ fn outcome(
         traced,
         colors,
         stroke_px,
+        trace_size: (tw, th),
         stats,
         after: color_image(&after),
         wire: color_image(&wire),

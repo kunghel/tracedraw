@@ -13,7 +13,8 @@ use tracedraw_core::painterly::{Painterly, PainterlyBrush};
 use tracedraw_core::{Color, Command, Fill, Shape, ShapeId, ShapeKind, Stroke};
 
 /// The tool's brush and size for new strokes.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
 pub struct PainterlySettings {
     pub brush: Painterly,
     /// Brush size (the outline width), mm.

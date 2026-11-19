@@ -269,7 +269,7 @@ fn page_file(
                     return bytes.ok_or_else(|| "CMYK encoding failed".to_string());
                 }
                 ExportColorMode::Gray => {
-                    let pm = tracedraw_render::render_page_image(doc, pid, st.render_dpi())
+                    let pm = tracedraw_render::render_page_export_image(doc, pid, st.render_dpi())
                         .ok_or("render failed")?;
                     let bytes =
                         encode_gray(&on_white(&pm).ok_or("render failed")?, ext, st.quality)?;
@@ -277,25 +277,39 @@ fn page_file(
                 }
                 ExportColorMode::Rgb => {}
             }
-            let mut pm = tracedraw_render::render_page_image(doc, pid, st.render_dpi())
+            let p = doc.page(pid).map_err(|e| e.to_string())?;
+            let fit = tracedraw_render::ViewTransform::whole_page(
+                p.size.width,
+                p.size.height,
+                st.render_dpi() / 25.4,
+            );
+            let pixels = u64::from(fit.0) * u64::from(fit.1);
+            // A large picture is drawn and written a strip at a time, so
+            // it is never whole in memory (#3039).
+            if matches!(ext, "png" | "tif") && pixels > STREAMED_PIXELS {
+                let transparent = st.transparent && ext == "png";
+                return streamed_picture(doc, pid, fit, ext, transparent, st.dpi, STRIP_PIXELS);
+            }
+            if pixels > tracedraw_render::MAX_PIXELS {
+                return Err(too_large(fit.0, fit.1));
+            }
+            let mut pm = tracedraw_render::render_page_export_image(doc, pid, st.render_dpi())
                 .ok_or("render failed")?;
-            if st.transparent && matches!(ext, "png" | "webp" | "gif") {
+            if st.transparent && matches!(ext, "png" | "webp" | "gif" | "jxl") {
                 // Re-render on a transparent background.
                 let p = doc.page(pid).map_err(|e| e.to_string())?;
-                let zoom = st.render_dpi() / 25.4;
-                let w = (p.size.width * zoom).ceil() as u32;
-                let h = (p.size.height * zoom).ceil() as u32;
+                let (w, h, view) = tracedraw_render::ViewTransform::whole_page(
+                    p.size.width,
+                    p.size.height,
+                    st.render_dpi() / 25.4,
+                );
                 pm = tracedraw_render::render_page(
                     doc,
                     pid,
                     &tracedraw_render::RenderOptions {
                         width: w,
                         height: h,
-                        view: tracedraw_render::ViewTransform {
-                            zoom,
-                            origin_x: 0.0,
-                            origin_y: h as f64,
-                        },
+                        view,
                         preview: None,
                         wireframe: false,
                         ..tracedraw_render::RenderOptions::default()
@@ -309,6 +323,148 @@ fn page_file(
             record_dpi(bytes, ext, st.dpi)
         }
     })
+}
+
+/// Pages of more pixels than this are exported as PNG or TIFF a strip at
+/// a time (#3039).
+const STREAMED_PIXELS: u64 = 1 << 26;
+
+/// The most pixels of one strip of a picture written a strip at a time
+/// (64 MB of RGBA).
+const STRIP_PIXELS: u64 = 1 << 24;
+
+/// Why a picture of `w` x `h` pixels was not made.
+fn too_large(w: u32, h: u32) -> String {
+    format!(
+        "The picture ({w} x {h} pixels) is too large for this format: \
+         export it as PNG or TIFF, or at a lower resolution"
+    )
+}
+
+/// The page `pid` as a PNG or TIFF (`ext`) file of `w` x `h` pixels drawn
+/// through `view`, saying it was made at `dpi`: drawn and encoded strips
+/// of at most `strip_pixels` pixels at a time, the same pixels as the page
+/// drawn whole, on white or (`transparent`, PNG only) on nothing. The
+/// page drawn whole took four times the picture's size in memory and
+/// failed above a billion pixels, so a banner of 180 ft exported at 50 or
+/// 72 dpi was not made (#3039). A TIFF of more than 4 GB is a BigTIFF.
+fn streamed_picture(
+    doc: &Document,
+    pid: tracedraw_core::PageId,
+    (w, h, view): (u32, u32, tracedraw_render::ViewTransform),
+    ext: &str,
+    transparent: bool,
+    dpi: f64,
+    strip_pixels: u64,
+) -> Result<Vec<u8>, String> {
+    let opts = tracedraw_render::RenderOptions {
+        width: w,
+        height: h,
+        view,
+        ..Default::default()
+    };
+    // Whole multiples of 16 rows, as the coarse grid of procedural fills.
+    let rows =
+        ((strip_pixels / u64::from(w)) / 16 * 16).clamp(16, u64::from(h).div_ceil(16) * 16) as u32;
+    let channels: usize = if transparent { 4 } else { 3 };
+    // Each strip's pixels, demultiplied, `channels` bytes each.
+    let strip = |y0: u32| -> Result<Vec<u8>, String> {
+        let band = rows.min(h - y0);
+        let objects = tracedraw_render::render_page_rows(doc, pid, &opts, y0, y0 + band)
+            .ok_or_else(|| too_large(w, h))?;
+        let pm = if transparent {
+            objects
+        } else {
+            let mut pm = tiny_skia::Pixmap::new(w, band).ok_or_else(|| too_large(w, h))?;
+            pm.fill(tiny_skia::Color::WHITE);
+            pm.draw_pixmap(
+                0,
+                0,
+                objects.as_ref(),
+                &Default::default(),
+                tiny_skia::Transform::identity(),
+                None,
+            );
+            pm
+        };
+        let mut out = Vec::with_capacity(pm.pixels().len() * channels);
+        for p in pm.pixels() {
+            let d = p.demultiply();
+            out.extend_from_slice(&[d.red(), d.green(), d.blue(), d.alpha()][..channels]);
+        }
+        Ok(out)
+    };
+    let dpi = if dpi.is_finite() && dpi >= 1.0 {
+        dpi
+    } else {
+        96.0
+    };
+    let mut file = std::io::Cursor::new(Vec::new());
+    if ext == "png" {
+        let mut enc = png::Encoder::new(&mut file, w, h);
+        enc.set_color(if transparent {
+            png::ColorType::Rgba
+        } else {
+            png::ColorType::Rgb
+        });
+        enc.set_depth(png::BitDepth::Eight);
+        let per_metre = (dpi / 0.0254).round().min(f64::from(i32::MAX)) as u32;
+        enc.set_pixel_dims(Some(png::PixelDimensions {
+            xppu: per_metre,
+            yppu: per_metre,
+            unit: png::Unit::Meter,
+        }));
+        let mut writer = enc.write_header().map_err(|e| e.to_string())?;
+        let mut stream = writer.stream_writer().map_err(|e| e.to_string())?;
+        let mut y0 = 0;
+        while y0 < h {
+            std::io::Write::write_all(&mut stream, &strip(y0)?).map_err(|e| e.to_string())?;
+            y0 += rows;
+        }
+        stream.finish().map_err(|e| e.to_string())?;
+        writer.finish().map_err(|e| e.to_string())?;
+    } else {
+        use tiff::encoder::{colortype, Rational, TiffEncoder, TiffKind};
+        fn write<K: TiffKind>(
+            mut enc: TiffEncoder<&mut std::io::Cursor<Vec<u8>>, K>,
+            (w, h, rows, dpi): (u32, u32, u32, f64),
+            strip: &dyn Fn(u32) -> Result<Vec<u8>, String>,
+        ) -> Result<(), String> {
+            let mut image = enc
+                .new_image::<colortype::RGB8>(w, h)
+                .map_err(|e| e.to_string())?;
+            image.resolution(
+                tiff::tags::ResolutionUnit::Inch,
+                Rational {
+                    n: (dpi * 100.0).round() as u32,
+                    d: 100,
+                },
+            );
+            image.rows_per_strip(rows).map_err(|e| e.to_string())?;
+            let mut y0 = 0;
+            while y0 < h {
+                image.write_strip(&strip(y0)?).map_err(|e| e.to_string())?;
+                y0 += rows;
+            }
+            image.finish().map_err(|e| e.to_string())
+        }
+        let dims = (w, h, rows, dpi);
+        // Classic TIFF counts its bytes in 32 bits.
+        if u64::from(w) * u64::from(h) * 3 > u64::from(u32::MAX) - (1 << 20) {
+            write(
+                TiffEncoder::new_big(&mut file).map_err(|e| e.to_string())?,
+                dims,
+                &strip,
+            )?;
+        } else {
+            write(
+                TiffEncoder::new(&mut file).map_err(|e| e.to_string())?,
+                dims,
+                &strip,
+            )?;
+        }
+    }
+    Ok(file.into_inner())
 }
 
 /// The output intent's profile for a PDF/X file: the CMYK profile picked
@@ -376,7 +532,7 @@ pub(crate) fn cmyk_pixels(
     let mut out: Option<(u32, u32, Vec<u8>)> = None;
     for ink in 0..4 {
         *one.pages.first_mut()? = plate_page(&page, Plate::Process(ink));
-        let pm = on_white(&tracedraw_render::render_page_image(&one, pid, dpi)?)?;
+        let pm = on_white(&tracedraw_render::render_page_export_image(&one, pid, dpi)?)?;
         let (w, h) = (pm.width(), pm.height());
         let (ow, oh, buf) =
             out.get_or_insert_with(|| (w, h, vec![0u8; w as usize * h as usize * 4]));
@@ -523,7 +679,7 @@ fn crc32(data: &[u8]) -> u32 {
 
 /// True when the export format `ext` keeps transparency.
 pub fn keeps_alpha(ext: &str) -> bool {
-    matches!(ext, "png" | "webp" | "gif")
+    matches!(ext, "png" | "webp" | "gif" | "jxl")
 }
 
 /// What the export will look like: the page (or the selection) of `st`
@@ -535,19 +691,15 @@ pub fn preview(app: &App, st: &ExportState, max_px: u32) -> Option<tiny_skia::Pi
     let page = doc.pages.first()?;
     let longest = page.size.width.max(page.size.height).max(0.1);
     let zoom = max_px.max(16) as f64 / longest;
-    let w = (page.size.width * zoom).ceil().max(1.0) as u32;
-    let h = (page.size.height * zoom).ceil().max(1.0) as u32;
+    let (w, h, view) =
+        tracedraw_render::ViewTransform::whole_page(page.size.width, page.size.height, zoom);
     let mut pm = tracedraw_render::render_page(
         &doc,
         page.id,
         &tracedraw_render::RenderOptions {
             width: w,
             height: h,
-            view: tracedraw_render::ViewTransform {
-                zoom,
-                origin_x: 0.0,
-                origin_y: h as f64,
-            },
+            view,
             preview: None,
             wireframe: false,
             ..tracedraw_render::RenderOptions::default()
@@ -606,7 +758,7 @@ pub fn estimated_size(app: &App, st: &ExportState, preview: &tiny_skia::Pixmap) 
         "ps" | "prn" => Some(tracedraw_io::eps::document_to_ps(&doc).len()),
         "ai" if st.classic_ai() => Some(tracedraw_io::ai::page_to_ai8(&doc, 0).len() * pages),
         "pdf" | "ai" => Some(tracedraw_io::pdf::document_to_pdf(&doc).len()),
-        "png" | "jpg" | "bmp" | "tif" | "webp" | "gif" | "psd" => {
+        "png" | "jpg" | "bmp" | "tif" | "webp" | "gif" | "psd" | "jxl" => {
             let enc = if ext == "psd" { "tif" } else { ext };
             let (w, h) = (preview.width(), preview.height());
             let bytes = match st.color_mode_for(ext) {
@@ -727,6 +879,40 @@ fn webp_lossy_pure(img: &image::RgbaImage, quality: u8) -> Option<Vec<u8>> {
     }
 }
 
+/// A JPEG XL file of `img`, lossless (#3063): RGB when it is opaque,
+/// RGBA otherwise. The encoder takes no picture of one pixel across or
+/// down, so such a picture is widened to two by repeating it.
+pub fn encode_jxl(img: &image::RgbaImage) -> Result<Vec<u8>, String> {
+    use zune_core::{bit_depth::BitDepth, colorspace::ColorSpace, options::EncoderOptions};
+    let img = if img.width() < 2 || img.height() < 2 {
+        image::imageops::resize(
+            img,
+            img.width().max(2),
+            img.height().max(2),
+            image::imageops::FilterType::Nearest,
+        )
+    } else {
+        img.clone()
+    };
+    let (w, h) = (img.width() as usize, img.height() as usize);
+    let opaque = img.pixels().all(|p| p.0[3] == 255);
+    let (data, space) = if opaque {
+        let rgb: Vec<u8> = img
+            .pixels()
+            .flat_map(|p| [p.0[0], p.0[1], p.0[2]])
+            .collect();
+        (rgb, ColorSpace::RGB)
+    } else {
+        (img.into_raw(), ColorSpace::RGBA)
+    };
+    let options = EncoderOptions::new(w, h, space, BitDepth::Eight);
+    let mut out = Vec::new();
+    zune_jpegxl::JxlSimpleEncoder::new(&data, options)
+        .encode(&mut out)
+        .map_err(|e| format!("JPEG XL: {e:?}"))?;
+    Ok(out)
+}
+
 /// Encode a rendered page in the bitmap format `ext`; WebP lossless
 /// (`lossless`, colours rounded below quality 100) or lossy at the
 /// quality (#592).
@@ -743,6 +929,9 @@ fn encode_raster_with(
         rgba.extend_from_slice(&[d.red(), d.green(), d.blue(), d.alpha()]);
     }
     let img = image::RgbaImage::from_raw(w, h, rgba).ok_or("image buffer")?;
+    if ext == "jxl" {
+        return encode_jxl(&img);
+    }
     let dynimg = image::DynamicImage::ImageRgba8(img);
     let format = match ext {
         "png" => image::ImageFormat::Png,
@@ -1220,6 +1409,7 @@ fn sheet_tiles(
             zoom,
             origin_x: 0.0,
             origin_y: h as f64,
+            stretch_y: 1.0,
         },
         ..Default::default()
     };
@@ -1432,66 +1622,6 @@ fn fit_contents_to_page(page: &mut tracedraw_core::document::Page, all: bool) {
     }
 }
 
-/// Fit to page on facing pages (#2678): the objects of each spread that
-/// run off it shrink to fit inside it, centred on it, as
-/// [`fit_contents_to_page`] does for a page, with the spread's pages
-/// side by side. An object across the spine but inside the spread stays
-/// as it is, so each page prints its part of it.
-fn fit_contents_to_spreads(doc: &mut Document) {
-    const EPS: f64 = 1e-6;
-    let Some(start) = doc.facing() else {
-        return;
-    };
-    for spread in tracedraw_core::spreads::spreads(doc.pages.len(), start) {
-        let (placed, area) = doc.place_spread(spread);
-        let shows =
-            |b: &Rect| b.x0 <= area.x1 && b.x1 >= area.x0 && b.y0 <= area.y1 && b.y1 >= area.y0;
-        // Each page's objects in the spread's coordinates.
-        let on_spread = |at: tracedraw_core::geometry::Point, b: Rect| b + at.to_vec2();
-        let Some(b) = placed
-            .iter()
-            .filter_map(|(i, at)| doc.pages.get(*i).map(|p| (p, *at)))
-            .flat_map(|(p, at)| {
-                p.layers
-                    .iter()
-                    .flat_map(|l| &l.shapes)
-                    .map(move |s| on_spread(at, s.bounds()))
-            })
-            .filter(|b| b.width().is_finite() && b.height().is_finite() && shows(b))
-            .reduce(|a, b| a.union(b))
-        else {
-            continue;
-        };
-        let inside = b.x0 >= area.x0 - EPS
-            && b.y0 >= area.y0 - EPS
-            && b.x1 <= area.x1 + EPS
-            && b.y1 <= area.y1 + EPS;
-        if inside {
-            continue;
-        }
-        let k = (area.width() / b.width().max(EPS))
-            .min(area.height() / b.height().max(EPS))
-            .min(1.0);
-        let t = Affine::translate(area.center().to_vec2())
-            * Affine::scale(k)
-            * Affine::translate(-b.center().to_vec2());
-        for (i, at) in &placed {
-            let Some(page) = doc.pages.get_mut(*i) else {
-                continue;
-            };
-            // The spread's fit in the page's own coordinates.
-            let local = Affine::translate(-at.to_vec2()) * t * Affine::translate(at.to_vec2());
-            for layer in page.layers.iter_mut() {
-                for s in layer.shapes.iter_mut() {
-                    if shows(&on_spread(*at, s.bounds())) {
-                        s.transform_by(local);
-                    }
-                }
-            }
-        }
-    }
-}
-
 /// The area `shapes` print on: their outlines (half the outline's width
 /// beyond the path) and live effects included, at least a sliver each
 /// way (a line has no height). `None` for no shapes.
@@ -1648,18 +1778,10 @@ pub fn print_sheets(app: &App, st: &PrintState) -> Document {
     let src = app.engine.document();
     // Facing pages: each page printed with what its facing page holds
     // across the spine and in the bleed beside it (#1972); not for the
-    // selection alone. With Fit to page what runs off a spread shrinks
-    // to fit the spread first, so an object across the spine stays split
-    // between its two pages: fitted page by page, it shrank onto its own
-    // page and left the facing one empty (#2678).
+    // selection alone.
     let selection = st.range == 3 && !app.selection.is_empty();
-    let fit_spreads = st.fit_to_page && !selection && src.facing().is_some();
-    let mut doc = if selection || (st.fit_to_page && !fit_spreads) {
+    let mut doc = if selection {
         src.clone()
-    } else if fit_spreads {
-        let mut fitted = src.clone();
-        fit_contents_to_spreads(&mut fitted);
-        fitted.with_spread_overhangs(src.metadata.bleed)
     } else {
         src.with_spread_overhangs(src.metadata.bleed)
     };
@@ -1693,26 +1815,42 @@ pub fn print_sheets(app: &App, st: &PrintState) -> Document {
             page.background = None;
         }
     }
-    // Fit to page: objects running off the page (the selection, when
-    // that is printed) shrink to fit inside it, centred, rather than
-    // being cut at its edge (#534).
-    if st.fit_to_page && !fit_spreads {
+    // Fit to page with the selection printed: the selection shrinks to
+    // fit the page, centred, rather than being cut at its edge (#534).
+    // Printing pages, Fit to page scales the page itself to the paper
+    // (`imposition::Options::fit`) and what runs off a page stays cut at
+    // its edge, as on screen: pulling it in shrank the page's own objects
+    // and moved them off their place (#2678).
+    if st.fit_to_page && selection {
         for page in doc.pages.iter_mut() {
-            fit_contents_to_page(page, st.range == 3);
+            fit_contents_to_page(page, true);
         }
     }
-    for page in doc.pages.iter_mut() {
-        for layer in page.layers.iter_mut() {
-            for s in layer.shapes.iter_mut() {
-                if st.spot_to_cmyk {
-                    map_colors(s, &spot_as_cmyk);
-                }
-                if st.text_black {
-                    text_in_black(s);
-                }
-                if st.overprint_black {
-                    overprint_black(s);
-                }
+    // The master layers' objects print on the pages too, and the pages'
+    // backgrounds: they were left out, so a spot ink there stayed a spot
+    // ink and text there kept its colour.
+    if st.spot_to_cmyk {
+        for page in doc.pages.iter_mut() {
+            if let Some(bg) = &mut page.background {
+                map_fill_colors(bg, &spot_as_cmyk);
+            }
+        }
+    }
+    let layers = doc
+        .pages
+        .iter_mut()
+        .flat_map(|p| p.layers.iter_mut())
+        .chain(doc.master.iter_mut());
+    for layer in layers {
+        for s in layer.shapes.iter_mut() {
+            if st.spot_to_cmyk {
+                map_colors(s, &spot_as_cmyk);
+            }
+            if st.text_black {
+                text_in_black(s);
+            }
+            if st.overprint_black {
+                overprint_black(s);
             }
         }
     }
@@ -1767,6 +1905,18 @@ pub fn print_sheets(app: &App, st: &PrintState) -> Document {
     if st.grayscale && !st.separations {
         grayscale_doc(&mut doc);
     }
+    // The printer's colour profile (#3374): composite colours and
+    // pictures as the printer needs them, for printers whose colour the
+    // driver does not manage (sublimation, for one).
+    if !st.grayscale && !st.separations {
+        if let Some(t) = st
+            .output_profile
+            .as_deref()
+            .and_then(|p| printer_transform(p, st.output_intent))
+        {
+            printer_profile_doc(&mut doc, &t);
+        }
+    }
     // Tile: each sheet (fitted to the pages, mirrored or inverted as a
     // whole) cut into tiles of the paper, a poster.
     if st.tile {
@@ -1807,10 +1957,28 @@ fn gray_of(c: tracedraw_core::Color) -> tracedraw_core::Color {
 /// pixels). The colours are found wherever the document keeps one, by
 /// walking the objects' serialized form, so no kind of object is missed.
 pub fn grayscale_doc(doc: &mut Document) {
-    fn walk(v: &mut serde_json::Value) {
+    map_doc_colors(doc, &gray_of, &|img| crate::bitmap_fx::encode_gray(img));
+}
+
+/// Every colour the sheets hold (fills, outlines, text, gradients,
+/// meshes, patterns, effects, shadows and lenses) through `color`, and
+/// every picture through `picture` (its new PNG; `None` leaves it). A
+/// CMYK picture's own inks are left out, so it prints from the new
+/// pixels. The colours are found wherever the document keeps one, by
+/// walking the objects' serialized form, so no kind of object is missed.
+pub fn map_doc_colors(
+    doc: &mut Document,
+    color: &dyn Fn(tracedraw_core::Color) -> tracedraw_core::Color,
+    picture: &dyn Fn(&image::RgbaImage) -> Option<Vec<u8>>,
+) {
+    type Maps<'a> = (
+        &'a dyn Fn(tracedraw_core::Color) -> tracedraw_core::Color,
+        &'a dyn Fn(&image::RgbaImage) -> Option<Vec<u8>>,
+    );
+    fn walk(v: &mut serde_json::Value, f: Maps) {
         use serde_json::Value;
         match v {
-            Value::Array(a) => a.iter_mut().for_each(walk),
+            Value::Array(a) => a.iter_mut().for_each(|x| walk(x, f)),
             Value::Object(m) => {
                 if m.get("model").is_some_and(Value::is_string) {
                     if let Ok(c) =
@@ -1819,13 +1987,13 @@ pub fn grayscale_doc(doc: &mut Document) {
                         // A colour can share its object with the tag of
                         // what holds it (a solid fill is `{"fill":
                         // "solid", "model": ...}`): only its own keys go.
-                        if let (Ok(Value::Object(was)), Ok(Value::Object(gray))) =
-                            (serde_json::to_value(c), serde_json::to_value(gray_of(c)))
+                        if let (Ok(Value::Object(was)), Ok(Value::Object(new))) =
+                            (serde_json::to_value(c), serde_json::to_value((f.0)(c)))
                         {
                             for k in was.keys() {
                                 m.remove(k);
                             }
-                            m.extend(gray);
+                            m.extend(new);
                         }
                         return;
                     }
@@ -1835,37 +2003,127 @@ pub fn grayscale_doc(doc: &mut Document) {
                 if let Some(Value::String(b64)) = m.get_mut("png") {
                     use base64::Engine;
                     let engine = base64::engine::general_purpose::STANDARD;
-                    let gray = engine
+                    let new = engine
                         .decode(b64.as_bytes())
                         .ok()
                         .and_then(|png| crate::bitmap_fx::decode(&png))
-                        .and_then(|img| crate::bitmap_fx::encode_gray(&img));
-                    if let Some(gray) = gray {
-                        *b64 = engine.encode(gray);
+                        .and_then(|img| (f.1)(&img));
+                    if let Some(new) = new {
+                        *b64 = engine.encode(new);
                         // The picture's effects stay as printed, not
-                        // worked out again from the colour original.
+                        // worked out again from the original.
                         m.remove("fx");
                     }
                 }
-                m.values_mut().for_each(walk);
+                m.values_mut().for_each(|x| walk(x, f));
             }
             _ => {}
         }
     }
-    fn gray<T: serde::Serialize + serde::de::DeserializeOwned>(x: &mut T) {
+    fn map<T: serde::Serialize + serde::de::DeserializeOwned>(x: &mut T, f: Maps) {
         let Ok(mut v) = serde_json::to_value(&*x) else {
             return;
         };
-        walk(&mut v);
+        walk(&mut v, f);
         match serde_json::from_value(v) {
             Ok(back) => *x = back,
-            Err(e) => log::warn!("grayscale print: {e}"),
+            Err(e) => log::warn!("print colours: {e}"),
         }
     }
     for page in doc.pages.iter_mut() {
-        gray(page);
+        map(page, (color, picture));
     }
-    gray(&mut doc.master);
+    map(&mut doc.master, (color, picture));
+}
+
+/// The colour profile of the printer the composite output is converted
+/// to (#3374): from the drawing's colours, as sRGB, to the device values
+/// of the RGB or CMYK profile at `path`. `None` when the file is not a
+/// profile that can be printed to.
+pub fn printer_transform(
+    path: &str,
+    intent: tracedraw_core::icc::Intent,
+) -> Option<tracedraw_core::icc::Transform> {
+    use tracedraw_core::icc::{ColorSpace, Profile, Transform};
+    let bytes = std::fs::read(path).ok()?;
+    let dst = Profile::parse(&bytes).ok()?;
+    if !matches!(dst.color_space(), ColorSpace::Rgb | ColorSpace::Cmyk) {
+        return None;
+    }
+    Transform::new(&Profile::srgb(), &dst, intent, true)
+}
+
+/// Every colour and picture of the sheets converted through the
+/// printer's profile `t` (#3374): a colour becomes the RGB or CMYK
+/// values the printer needs for it; pictures go through it pixel by
+/// pixel with an RGB profile (with a CMYK one they go as RGB, back from
+/// the printer's CMYK, so they print as the profile would have them).
+/// The registration colour stays: it prints on every plate.
+pub fn printer_profile_doc(doc: &mut Document, t: &tracedraw_core::icc::Transform) {
+    use std::cell::RefCell;
+    use std::collections::HashMap;
+    use tracedraw_core::icc::ColorSpace;
+    use tracedraw_core::Color;
+    let cmyk = t.output_space() == ColorSpace::Cmyk;
+    let device = |rgb: [u8; 3]| -> Vec<f32> {
+        t.transform(&rgb.map(|v| f32::from(v) / 255.0))
+            .into_iter()
+            .map(|v| v.clamp(0.0, 1.0))
+            .collect()
+    };
+    let color = |c: Color| -> Color {
+        if matches!(c, Color::Registration) {
+            return c;
+        }
+        let d = device(c.to_rgb8());
+        match (cmyk, d.as_slice()) {
+            (true, [c, m, y, k, ..]) => Color::Cmyk {
+                c: *c,
+                m: *m,
+                y: *y,
+                k: *k,
+            },
+            (false, [r, g, b, ..]) => {
+                let v = |x: f32| (x * 255.0).round() as u8;
+                Color::rgb8(v(*r), v(*g), v(*b))
+            }
+            _ => c,
+        }
+    };
+    // A picture's pixels, each colour worked out once.
+    let seen: RefCell<HashMap<[u8; 3], [u8; 3]>> = RefCell::new(HashMap::new());
+    let pixel = |rgb: [u8; 3]| -> [u8; 3] {
+        if let Some(out) = seen.borrow().get(&rgb) {
+            return *out;
+        }
+        let d = device(rgb);
+        let v = |x: f32| (x.clamp(0.0, 1.0) * 255.0).round() as u8;
+        let out = match (cmyk, d.as_slice()) {
+            (false, [r, g, b, ..]) => [v(*r), v(*g), v(*b)],
+            (true, [c, m, y, k, ..]) => {
+                let [r, g, b] = Color::Cmyk {
+                    c: *c,
+                    m: *m,
+                    y: *y,
+                    k: *k,
+                }
+                .to_rgb8();
+                [r, g, b]
+            }
+            _ => rgb,
+        };
+        seen.borrow_mut().insert(rgb, out);
+        out
+    };
+    let picture = |img: &image::RgbaImage| -> Option<Vec<u8>> {
+        let mut out = img.clone();
+        for p in out.pixels_mut() {
+            let [r, g, b] = pixel([p[0], p[1], p[2]]);
+            p.0 = [r, g, b, p[3]];
+        }
+        crate::bitmap_fx::encode(&out)
+    };
+    map_doc_colors(doc, &color, &picture);
 }
 
 /// A spot ink's colour as its CMYK mix at the tint.
@@ -1898,6 +2156,10 @@ fn text_in_black(s: &mut tracedraw_core::Shape) {
             for sp in spans.iter_mut() {
                 if sp.fill.is_some() {
                     sp.fill = Some(Fill::Solid(Color::BLACK));
+                }
+                // A character's own outline too: it kept its colour.
+                if let Some(st) = &mut sp.outline {
+                    st.color = Color::BLACK;
                 }
             }
         }
@@ -1944,7 +2206,7 @@ fn sheet_pixels(
     id: tracedraw_core::PageId,
     dpi: f64,
 ) -> Option<(Vec<u8>, u32, u32)> {
-    let pm = tracedraw_render::render_page_image(doc, id, dpi)?;
+    let pm = tracedraw_render::render_page_export_image(doc, id, dpi)?;
     let mut white = tiny_skia::Pixmap::new(pm.width(), pm.height())?;
     white.fill(tiny_skia::Color::WHITE);
     white.draw_pixmap(
@@ -2160,6 +2422,7 @@ pub fn print_layout(app: &App, st: &PrintState, doc: &Document) -> crate::imposi
         cell_rotation: st.cell_rotation.clone(),
         cell_order: st.cell_order.clone(),
         stretch_fit: st.stretch_fit,
+        fit: st.fit_to_page,
         booklet: st.booklet(),
         marks: crate::imposition::Marks {
             crop: st.crop_marks,
@@ -2191,32 +2454,27 @@ pub fn map_colors(
     s: &mut tracedraw_core::Shape,
     f: &dyn Fn(tracedraw_core::Color) -> tracedraw_core::Color,
 ) {
-    fn fill(
-        x: &mut tracedraw_core::Fill,
-        f: &dyn Fn(tracedraw_core::Color) -> tracedraw_core::Color,
-    ) {
-        use tracedraw_core::{Fill, Pattern};
-        match x {
-            Fill::Solid(c) => *c = f(*c),
-            Fill::Fountain(g) => g.stops.iter_mut().for_each(|s| s.color = f(s.color)),
-            Fill::Mesh(m) => m.nodes.iter_mut().for_each(|n| n.color = f(n.color)),
-            Fill::Pattern(Pattern::TwoColor { front, back, .. }) => {
-                *front = f(*front);
-                *back = f(*back);
-            }
-            _ => {}
-        }
-    }
+    let fill = map_fill_colors;
     fill(&mut s.fill, f);
     if let Some(st) = &mut s.stroke {
         st.color = f(st.color);
     }
     // The copy of its end object a blend keeps: the steps run to the
-    // end's colour as mapped (#1541).
+    // end's colour as mapped (#1541). The colours of the other effects
+    // (a contour's last step, an extrusion's shades, glows, shadows and
+    // the rest) and of the drop shadow go too: they were left as they
+    // were, so a contour or a shadow printed in colour on every plate of
+    // the separations and kept its spot ink with Convert spot colours to
+    // CMYK.
     for e in s.effects.iter_mut() {
         if let tracedraw_core::live::Effect::Blend { end, .. } = e {
             map_colors(end, f);
+        } else {
+            map_colors_within(e, f);
         }
+    }
+    if let Some(sh) = &mut s.shadow {
+        sh.color = f(sh.color);
     }
     match &mut s.kind {
         ShapeKind::Group { children } => children.iter_mut().for_each(|c| map_colors(c, f)),
@@ -2229,9 +2487,77 @@ pub fn map_colors(
                 if let Some(x) = &mut sp.fill {
                     fill(x, f);
                 }
+                if let Some(x) = &mut sp.background {
+                    fill(x, f);
+                }
+                if let Some(st) = &mut sp.outline {
+                    st.color = f(st.color);
+                }
             }
         }
         _ => {}
+    }
+}
+
+/// The colours of a fill mapped through `f`.
+fn map_fill_colors(
+    x: &mut tracedraw_core::Fill,
+    f: &dyn Fn(tracedraw_core::Color) -> tracedraw_core::Color,
+) {
+    use tracedraw_core::{Fill, Pattern};
+    match x {
+        Fill::Solid(c) => *c = f(*c),
+        Fill::Fountain(g) => g.stops.iter_mut().for_each(|s| s.color = f(s.color)),
+        Fill::Mesh(m) => m.nodes.iter_mut().for_each(|n| n.color = f(n.color)),
+        Fill::Pattern(Pattern::TwoColor { front, back, .. }) => {
+            *front = f(*front);
+            *back = f(*back);
+        }
+        _ => {}
+    }
+}
+
+/// Every colour `x` holds, wherever it keeps one, mapped through `f`,
+/// found by walking its serialized form (as `grayscale_doc` does), so no
+/// effect's colour is missed.
+fn map_colors_within<T: serde::Serialize + serde::de::DeserializeOwned>(
+    x: &mut T,
+    f: &dyn Fn(tracedraw_core::Color) -> tracedraw_core::Color,
+) {
+    fn walk(v: &mut serde_json::Value, f: &dyn Fn(tracedraw_core::Color) -> tracedraw_core::Color) {
+        use serde_json::Value;
+        match v {
+            Value::Array(a) => a.iter_mut().for_each(|v| walk(v, f)),
+            Value::Object(m) => {
+                if m.get("model").is_some_and(Value::is_string) {
+                    if let Ok(c) =
+                        serde_json::from_value::<tracedraw_core::Color>(Value::Object(m.clone()))
+                    {
+                        // Only the colour's own keys go: it can share its
+                        // object with the tag of what holds it.
+                        if let (Ok(Value::Object(was)), Ok(Value::Object(new))) =
+                            (serde_json::to_value(c), serde_json::to_value(f(c)))
+                        {
+                            for k in was.keys() {
+                                m.remove(k);
+                            }
+                            m.extend(new);
+                        }
+                        return;
+                    }
+                }
+                m.values_mut().for_each(|v| walk(v, f));
+            }
+            _ => {}
+        }
+    }
+    let Ok(mut v) = serde_json::to_value(&*x) else {
+        return;
+    };
+    walk(&mut v, f);
+    match serde_json::from_value(v) {
+        Ok(back) => *x = back,
+        Err(e) => log::warn!("colours of an effect: {e}"),
     }
 }
 
@@ -2744,11 +3070,16 @@ pub fn find_shapes(
             _ => {}
         }
     }
+    // Only top-level objects are selectable: a text found inside a group
+    // or a frame selects the object it is in (it was left out, so Find
+    // found no grouped text).
     for s in page.layers.iter().flat_map(|l| &l.shapes) {
-        walk(s, needle, kind, match_case, whole_word, &mut out);
+        let mut hits = Vec::new();
+        walk(s, needle, kind, match_case, whole_word, &mut hits);
+        if !hits.is_empty() {
+            out.push(s.id);
+        }
     }
-    // Only top-level ids are selectable; keep those.
-    out.retain(|id| app.doc().shape(*id).is_ok());
     out
 }
 
@@ -2760,46 +3091,61 @@ pub fn replace_text(
     whole_word: bool,
     all: bool,
 ) {
-    let ids = find_shapes(app, needle, 0, match_case, whole_word);
-    let ids: Vec<ShapeId> = if all {
-        ids
-    } else {
-        ids.into_iter().take(1).collect()
+    let Ok(page) = app.doc().page(app.page) else {
+        return;
     };
-    let mut cmds = Vec::new();
-    for id in ids {
-        let Some(s) = app.doc().find_shape(id).cloned() else {
-            continue;
-        };
-        if let ShapeKind::Text {
-            spans,
-            origin,
-            frame,
-            align,
-            para,
-            on_path,
-        } = s.kind
-        {
-            let new_spans: Vec<TextSpan> = spans
-                .into_iter()
-                .map(|sp| TextSpan {
-                    text: replace_in(&sp.text, needle, replacement, match_case, whole_word),
-                    ..sp
-                })
-                .collect();
-            cmds.push(Command::SetShapeKind {
-                shape: id,
-                kind: ShapeKind::Text {
-                    spans: new_spans,
-                    origin,
-                    frame,
-                    align,
-                    para,
-                    on_path,
-                },
-            });
+    // The texts that hold `needle`, inside groups and frames too, each
+    // with its runs changed: Find and Replace found the texts of a group
+    // and replaced nothing in them.
+    let mut changed: Vec<(ShapeId, ShapeKind)> = Vec::new();
+    fn walk(
+        s: &tracedraw_core::Shape,
+        find: &dyn Fn(&[TextSpan]) -> Option<Vec<TextSpan>>,
+        out: &mut Vec<(ShapeId, ShapeKind)>,
+    ) {
+        match &s.kind {
+            ShapeKind::Text {
+                spans,
+                origin,
+                frame,
+                align,
+                para,
+                on_path,
+            } => {
+                if let Some(spans) = find(spans) {
+                    out.push((
+                        s.id,
+                        ShapeKind::Text {
+                            spans,
+                            origin: *origin,
+                            frame: *frame,
+                            align: *align,
+                            para: para.clone(),
+                            on_path: on_path.clone(),
+                        },
+                    ));
+                }
+            }
+            ShapeKind::Group { children } => children.iter().for_each(|c| walk(c, find, out)),
+            ShapeKind::ClipFrame { frame, contents } => {
+                walk(frame, find, out);
+                contents.iter().for_each(|c| walk(c, find, out));
+            }
+            _ => {}
         }
     }
+    let find =
+        |spans: &[TextSpan]| replace_in_spans(spans, needle, replacement, match_case, whole_word);
+    for s in page.layers.iter().flat_map(|l| &l.shapes) {
+        walk(s, &find, &mut changed);
+    }
+    if !all {
+        changed.truncate(1);
+    }
+    let cmds: Vec<Command> = changed
+        .into_iter()
+        .map(|(shape, kind)| Command::SetShapeKind { shape, kind })
+        .collect();
     if !cmds.is_empty() {
         if let Err(e) = app.engine.run_batch("Replace", &cmds) {
             app.status = e.to_string();
@@ -2807,55 +3153,97 @@ pub fn replace_text(
     }
 }
 
-pub(crate) fn replace_in(
+/// `text` with `needle` replaced (see [`replace_in_spans`]).
+#[cfg(test)]
+fn replace_in(
     text: &str,
     needle: &str,
     replacement: &str,
     match_case: bool,
     whole_word: bool,
 ) -> String {
-    if needle.is_empty() {
-        return text.to_string();
+    let span = [TextSpan::new(text, "", 12.0)];
+    match replace_in_spans(&span, needle, replacement, match_case, whole_word) {
+        Some(mut spans) => spans.pop().map(|s| s.text).unwrap_or_default(),
+        None => text.to_string(),
     }
-    if whole_word {
-        let mut out = String::new();
-        let mut word = String::new();
-        let flush = |word: &mut String, out: &mut String| {
-            if !word.is_empty() {
-                let eq = if match_case {
-                    word == needle
-                } else {
-                    word.to_lowercase() == needle.to_lowercase()
-                };
-                out.push_str(if eq { replacement } else { word });
-                word.clear();
-            }
-        };
-        for c in text.chars() {
-            if c.is_alphanumeric() {
-                word.push(c);
-            } else {
-                flush(&mut word, &mut out);
-                out.push(c);
-            }
-        }
-        flush(&mut word, &mut out);
-        return out;
+}
+
+/// The runs of a text with every `needle` in them replaced, `None` when
+/// there is none. The runs are searched as one text, so a word in two
+/// looks (half of it bold) is found and replaced too; the replacement
+/// takes the look of the run its match starts in, and a run left with no
+/// letters goes. Letters match one for one, ignoring case unless
+/// `match_case`; with `whole_word` a match has no letter or digit right
+/// before or after it. The positions were taken from the text made lower
+/// case, which can be longer or shorter than the text ("İ" is three bytes
+/// lower case and two as typed), so a Turkish "İ" before a match cut the
+/// text in the wrong place, or past its end, which closed TraceDraw.
+pub(crate) fn replace_in_spans(
+    spans: &[TextSpan],
+    needle: &str,
+    replacement: &str,
+    match_case: bool,
+    whole_word: bool,
+) -> Option<Vec<TextSpan>> {
+    let want: Vec<char> = needle.chars().collect();
+    if want.is_empty() {
+        return None;
     }
-    if match_case {
-        return text.replace(needle, replacement);
-    }
-    let lower = text.to_lowercase();
-    let nl = needle.to_lowercase();
-    let mut out = String::new();
+    // Every letter of the text with the run it is in.
+    let letters: Vec<(char, usize)> = spans
+        .iter()
+        .enumerate()
+        .flat_map(|(k, sp)| sp.text.chars().map(move |c| (c, k)))
+        .collect();
+    let same = |a: char, b: char| a == b || (!match_case && a.to_lowercase().eq(b.to_lowercase()));
+    let word = |at: Option<&(char, usize)>| at.is_some_and(|(c, _)| c.is_alphanumeric());
+    let mut found: Vec<usize> = Vec::new();
     let mut i = 0;
-    while let Some(pos) = lower[i..].find(&nl) {
-        out.push_str(&text[i..i + pos]);
-        out.push_str(replacement);
-        i += pos + nl.len();
+    while i + want.len() <= letters.len() {
+        let hit = want
+            .iter()
+            .enumerate()
+            .all(|(k, w)| same(letters[i + k].0, *w))
+            && !(whole_word
+                && (word(i.checked_sub(1).and_then(|p| letters.get(p)))
+                    || word(letters.get(i + want.len()))));
+        if hit {
+            found.push(i);
+            i += want.len();
+        } else {
+            i += 1;
+        }
     }
-    out.push_str(&text[i..]);
-    out
+    if found.is_empty() {
+        return None;
+    }
+    let mut texts: Vec<String> = vec![String::new(); spans.len()];
+    let mut next = found.into_iter().peekable();
+    let mut i = 0;
+    while i < letters.len() {
+        if next.next_if_eq(&i).is_some() {
+            texts[letters[i].1].push_str(replacement);
+            i += want.len();
+        } else {
+            texts[letters[i].1].push(letters[i].0);
+            i += 1;
+        }
+    }
+    let mut out: Vec<TextSpan> = spans
+        .iter()
+        .zip(texts)
+        .filter(|(sp, t)| !t.is_empty() || sp.text.is_empty())
+        .map(|(sp, text)| TextSpan { text, ..sp.clone() })
+        .collect();
+    if out.is_empty() {
+        // All of it replaced by nothing: the first run stays, empty.
+        out.extend(spans.first().map(|sp| TextSpan {
+            text: String::new(),
+            ..sp.clone()
+        }));
+    }
+    Some(out)
 }
 
 // ----- find and replace by properties -----------------------------------------
@@ -4016,6 +4404,96 @@ mod tests {
         assert!(keeps_alpha("png") && !keeps_alpha("jpg"));
     }
 
+    /// #3039: a page drawn and written a strip at a time is the same
+    /// picture as the page drawn whole, as PNG (on white or transparent)
+    /// and TIFF, with the resolution recorded; blurred shadows that reach
+    /// across strips included.
+    #[test]
+    fn a_picture_written_a_strip_at_a_time_is_the_page_drawn_whole() {
+        use tracedraw_core::{Color, Fill};
+        let mut app = App::headless();
+        let circle = app
+            .new_shape(ShapeKind::Ellipse {
+                rect: Rect::new(20.0, 20.0, 120.0, 90.0),
+                arc: None,
+            })
+            .expect("circle");
+        app.run(Command::SetFill {
+            shapes: vec![circle],
+            fill: Fill::Solid(Color::rgb8(220, 0, 30)),
+        });
+        app.run(Command::SetShadow {
+            shapes: vec![circle],
+            shadow: Some(tracedraw_core::Shadow {
+                offset: tracedraw_core::geometry::Vec2::new(6.0, -6.0),
+                opacity: 0.8,
+                blur: 3.0,
+                ..Default::default()
+            }),
+        });
+        app.new_shape(ShapeKind::Rect {
+            rect: Rect::new(60.0, 100.0, 180.0, 160.0),
+            radius: 4.0,
+            corners: None,
+        });
+        let (doc, _) = export_document(&app, &ExportState::default());
+        let pid = doc.pages[0].id;
+        for (format, ext, transparent) in [(2, "png", false), (2, "png", true), (5, "tif", false)] {
+            let st = ExportState {
+                format,
+                dpi: 40.0,
+                transparent,
+                ..ExportState::default()
+            };
+            let whole = page_file(&doc, 0, ext, &st, None).expect(ext);
+            let p = doc.page(pid).unwrap();
+            let fit = tracedraw_render::ViewTransform::whole_page(
+                p.size.width,
+                p.size.height,
+                st.render_dpi() / 25.4,
+            );
+            // Strips of 16 rows: many of them, each blurred shadow drawn
+            // across several.
+            let strips = streamed_picture(&doc, pid, fit, ext, transparent, st.dpi, 16).expect(ext);
+            let a = image::load_from_memory(&whole).expect(ext).to_rgba8();
+            let b = image::load_from_memory(&strips).expect(ext).to_rgba8();
+            assert_eq!(a.dimensions(), (fit.0, fit.1), "{ext}");
+            assert_eq!(a.dimensions(), b.dimensions(), "{ext}");
+            // Only the smoothing of some edge pixels may differ a little,
+            // as between the bands the page is drawn in on several cores.
+            let diff = |x: &image::Rgba<u8>, y: &image::Rgba<u8>| {
+                x.0.iter()
+                    .zip(y.0)
+                    .map(|(u, v)| u.abs_diff(v))
+                    .max()
+                    .unwrap_or(0)
+            };
+            let worst = a.pixels().zip(b.pixels()).map(|(x, y)| diff(x, y)).max();
+            let off = a
+                .pixels()
+                .zip(b.pixels())
+                .filter(|(x, y)| diff(x, y) > 2)
+                .count();
+            assert!(
+                worst <= Some(32),
+                "{ext} transparent {transparent}: {worst:?}"
+            );
+            assert!(
+                off * 100 < a.pixels().len(),
+                "{ext} transparent {transparent}: {off} pixels differ"
+            );
+            assert!(
+                a.pixels().any(|q| q.0 == [220, 0, 30, 255]),
+                "{ext}: the circle"
+            );
+            if ext == "png" {
+                let (x, y) = crate::image_dpi::resolution(&strips).expect("dpi");
+                assert!((x - 40.0).abs() < 0.1 && (y - 40.0).abs() < 0.1, "{x} {y}");
+            }
+        }
+        assert!(too_large(1, 2).contains("PNG or TIFF"));
+    }
+
     /// A bitmap export records the resolution of the dialog, and the
     /// scale changes how many pixels it has but not that resolution, so it
     /// opens at the size chosen (#617).
@@ -4606,6 +5084,94 @@ mod tests {
         assert!(ps.starts_with("%!PS-Adobe-3.0\n%%LanguageLevel: 3\n"));
     }
 
+    /// #3374: with a printer's colour profile chosen, the composite
+    /// colours and the pictures print as that profile's device values
+    /// (here a linear RGB profile: sRGB 128 grey is about 55); none
+    /// leaves them, and grayscale or separations pass it over.
+    #[test]
+    fn a_printer_profile_converts_the_printed_colours() {
+        use tracedraw_core::icc::test_profiles::{curv_gamma, matrix_trc_profile};
+        use tracedraw_core::{Color, Fill};
+        let mut app = App::headless();
+        let grey = Color::rgb8(128, 128, 128);
+        app.new_shape_styled(
+            ShapeKind::Rect {
+                rect: tracedraw_core::geometry::Rect::new(10.0, 10.0, 60.0, 40.0),
+                radius: 0.0,
+                corners: None,
+            },
+            |s| {
+                s.name = Some("grey".into());
+                s.fill = Fill::Solid(grey);
+                s.stroke = None;
+            },
+        )
+        .expect("rect");
+        let img = image::RgbaImage::from_pixel(3, 2, image::Rgba([128, 128, 128, 200]));
+        app.new_shape(ShapeKind::Bitmap {
+            rect: tracedraw_core::geometry::Rect::new(70.0, 10.0, 100.0, 30.0),
+            width_px: 3,
+            height_px: 2,
+            png: crate::bitmap_fx::encode(&img).expect("png").into(),
+            fx: None,
+        })
+        .expect("bitmap");
+        let dir = std::env::temp_dir().join(format!("td-print-icc-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("dir");
+        let path = dir.join("linear.icc");
+        let g = || curv_gamma(1.0);
+        std::fs::write(&path, matrix_trc_profile(g(), g(), g())).expect("profile");
+        let printed = |st: &PrintState| {
+            let doc = print_sheets(&app, st);
+            fn all(shapes: &[tracedraw_core::Shape], out: &mut Vec<tracedraw_core::Shape>) {
+                for s in shapes {
+                    out.push(s.clone());
+                    match &s.kind {
+                        ShapeKind::Group { children } => all(children, out),
+                        ShapeKind::ClipFrame { frame, contents } => {
+                            all(std::slice::from_ref(&**frame), out);
+                            all(contents, out);
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            let mut shapes = Vec::new();
+            for l in doc.pages.iter().flat_map(|p| p.layers.iter()) {
+                all(&l.shapes, &mut shapes);
+            }
+            let rect = shapes
+                .iter()
+                .find(|s| s.name.as_deref() == Some("grey"))
+                .expect("rect printed");
+            let fill = match &rect.fill {
+                Fill::Solid(c) => c.to_rgb8(),
+                other => panic!("{other:?}"),
+            };
+            let px = shapes
+                .iter()
+                .find_map(|s| match &s.kind {
+                    ShapeKind::Bitmap { png, .. } => crate::bitmap_fx::decode(png),
+                    _ => None,
+                })
+                .expect("picture printed")
+                .get_pixel(0, 0)
+                .0;
+            (fill, px)
+        };
+        let mut st = PrintState::default();
+        assert_eq!(printed(&st), ([128, 128, 128], [128, 128, 128, 200]));
+        st.output_profile = Some(path.display().to_string());
+        let (fill, px) = printed(&st);
+        for v in fill.into_iter().chain(px[..3].iter().copied()) {
+            assert!((50..=60).contains(&v), "{fill:?} {px:?}");
+        }
+        assert_eq!(px[3], 200, "the alpha stays");
+        st.grayscale = true;
+        assert_eq!(printed(&st).0, [128, 128, 128]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// Grayscale output (#1657): every colour on the sheets, an effect's
     /// too, prints as its grey and a picture as grey pixels; the drawing
     /// keeps its colours. Reverse order (#1394, #1571): the last sheet
@@ -4845,6 +5411,85 @@ mod tests {
         assert_eq!(r[0], vec!["João", "5 €"]);
     }
 
+    /// Find and Replace searches the runs of a text as one text, finds and
+    /// replaces texts inside groups, and ignores case letter for letter: a
+    /// word in two looks was found and left as it was, a grouped text was
+    /// not found and not replaced, and a Turkish "İ" (longer lower case)
+    /// before a match cut the text in the wrong place or past its end,
+    /// which closed TraceDraw.
+    #[test]
+    fn replace_finds_words_across_runs_in_groups_and_after_a_dotted_capital_i() {
+        assert_eq!(
+            replace_in("\u{130}\u{130}x", "x", "y", false, false),
+            "\u{130}\u{130}y"
+        );
+        assert_eq!(
+            replace_in("\u{130}stanbul", "STAN", "-", false, false),
+            "\u{130}-bul"
+        );
+        let mut app = App::headless();
+        let mut bold = TextSpan::new("lo wor", "Arial", 12.0);
+        bold.bold = true;
+        let text = |spans: Vec<TextSpan>| ShapeKind::Text {
+            spans,
+            origin: tracedraw_core::Point::new(10.0, 10.0),
+            frame: None,
+            align: tracedraw_core::TextAlign::Left,
+            para: Default::default(),
+            on_path: None,
+        };
+        let split = app
+            .new_shape(text(vec![
+                TextSpan::new("hel", "Arial", 12.0),
+                bold,
+                TextSpan::new("ld", "Arial", 12.0),
+            ]))
+            .expect("text");
+        let inner = app
+            .new_shape(text(vec![TextSpan::new("say hello", "Arial", 12.0)]))
+            .expect("text");
+        let other = app
+            .new_shape(ShapeKind::Rect {
+                rect: Rect::new(0.0, 0.0, 10.0, 10.0),
+                radius: 0.0,
+                corners: None,
+            })
+            .expect("rect");
+        app.select(vec![inner, other]);
+        app.group_selection();
+        let group = app.selection[0];
+        assert_eq!(
+            find_shapes(&app, "HELLO", 0, false, true),
+            vec![split, group]
+        );
+        replace_text(&mut app, "hello", "bye", false, true, true);
+        let runs = |id| match &app.doc().find_shape(id).expect("text").kind {
+            ShapeKind::Text { spans, .. } => spans
+                .iter()
+                .map(|s| (s.text.clone(), s.bold))
+                .collect::<Vec<_>>(),
+            _ => Vec::new(),
+        };
+        assert_eq!(
+            runs(split),
+            vec![
+                ("bye".to_string(), false),
+                (" wor".to_string(), true),
+                ("ld".to_string(), false)
+            ]
+        );
+        assert_eq!(runs(inner), vec![("say bye".to_string(), false)]);
+        // Whole words only: "hello" in "helloworld" stays.
+        assert!(replace_in_spans(
+            &[TextSpan::new("helloworld", "A", 1.0)],
+            "hello",
+            "x",
+            false,
+            true
+        )
+        .is_none());
+    }
+
     #[test]
     fn replace_variants() {
         assert_eq!(replace_in("Hello hello", "hello", "x", false, false), "x x");
@@ -4918,6 +5563,27 @@ mod tests {
         assert_eq!(back.get_pixel(200, 10).0[3], 255);
         // Nothing to encode: no lossy file.
         assert!(webp_lossy_pure(&image::RgbaImage::new(0, 0), 50).is_none());
+    }
+
+    /// #3063: JPEG XL is in the Export list, keeps transparency, and a
+    /// page written as JPEG XL reads back with the same pixels.
+    #[test]
+    fn a_page_exports_as_lossless_jpeg_xl() {
+        assert!(crate::ui::dialogs::EXPORT_FORMATS
+            .iter()
+            .any(|(_, e)| *e == "jxl"));
+        assert!(keeps_alpha("jxl"));
+        let mut pm = tiny_skia::Pixmap::new(40, 30).expect("pixmap");
+        for (i, p) in pm.pixels_mut().iter_mut().enumerate() {
+            let (x, y) = ((i % 40) as u8, (i / 40) as u8);
+            *p = tiny_skia::PremultipliedColorU8::from_rgba(x * 6, y * 8, 200, 255).expect("px");
+        }
+        let bytes = encode_raster_with(&pm, "jxl", 80, false).expect("jxl");
+        let back = crate::files::decode_picture(&bytes)
+            .expect("reads")
+            .to_rgba8();
+        assert_eq!(back.dimensions(), (40, 30));
+        assert_eq!(back.get_pixel(39, 29).0, [39 * 6, 29 * 8, 200, 255]);
     }
 
     #[test]
@@ -5283,10 +5949,9 @@ mod tests {
     }
 
     /// Fit to page on facing pages (#2678): an object across the spine
-    /// inside its spread prints split between the two pages, as without
-    /// Fit to page; one running off the spread shrinks to fit the spread,
-    /// still split. Fitted page by page, it shrank onto its own page and
-    /// the facing page printed empty.
+    /// prints split between the two pages, as without Fit to page.
+    /// Fitted page by page, it shrank onto its own page and the facing
+    /// page printed empty.
     #[test]
     fn fit_to_page_keeps_an_object_across_the_spine_on_both_pages() {
         fn shapes(s: &tracedraw_core::Shape, out: &mut Vec<tracedraw_core::Shape>) {
@@ -5339,31 +6004,78 @@ mod tests {
             1,
             "the facing page has its part"
         );
-        // Off the spread's right edge: it shrinks to the spread, and the
-        // facing page still has its part.
-        let r = |w: f64| Rect::new(size.width - 20.0, 10.0, size.width + w, 40.0);
-        app.select(vec![id]);
-        let mut doc = app.doc().clone();
-        if let Some(s) = doc.find_shape_mut(id) {
-            s.kind = ShapeKind::Rect {
-                rect: r(size.width * 2.0),
+    }
+
+    /// Fit to page scales the page to the paper and leaves what runs off
+    /// a page cut at its edge, where it was drawn (#2678): an object put
+    /// partly off the page on purpose, or past the outer edge of a
+    /// spread, keeps its place and size instead of being pulled onto the
+    /// page and shrunk with the page's other objects.
+    #[test]
+    fn fit_to_page_leaves_what_runs_off_the_page_where_it_is() {
+        // The rectangles printed on page `k`, inside any clip frame.
+        fn rects(doc: &Document, k: usize) -> Vec<Rect> {
+            fn walk(s: &tracedraw_core::Shape, out: &mut Vec<Rect>) {
+                match &s.kind {
+                    ShapeKind::ClipFrame { contents, .. } => {
+                        contents.iter().for_each(|c| walk(c, out))
+                    }
+                    ShapeKind::Rect { .. } => out.push(s.bounds()),
+                    _ => {}
+                }
+            }
+            let mut out = Vec::new();
+            for s in doc.pages[k].layers.iter().flat_map(|l| &l.shapes) {
+                walk(s, &mut out);
+            }
+            out
+        }
+        let mut app = App::headless();
+        let size = app.page_size();
+        let rect = |app: &mut App, r: Rect| {
+            app.new_shape(ShapeKind::Rect {
+                rect: r,
                 radius: 0.0,
                 corners: None,
-            };
+            })
+            .expect("rect")
+        };
+        rect(&mut app, Rect::new(20.0, 20.0, 60.0, 60.0));
+        let off = Rect::new(size.width - 30.0, 100.0, size.width + 70.0, 150.0);
+        rect(&mut app, off);
+        let st = PrintState {
+            fit_to_page: true,
+            ..PrintState::default()
+        };
+        let printed = print_sheets(&app, &st);
+        let on_page = rects(&printed, 0);
+        assert!(
+            on_page.contains(&off),
+            "not pulled onto the page: {on_page:?}"
+        );
+        assert!(on_page.contains(&Rect::new(20.0, 20.0, 60.0, 60.0)));
+        // The page is what fits the paper: Fit to page goes to the layout.
+        assert!(print_layout(&app, &st, &printed).fit);
+        // Facing pages: past the outer edge of the spread, the same.
+        for _ in 0..2 {
+            app.add_page();
         }
-        let mut fitted = doc.clone();
-        fit_contents_to_spreads(&mut fitted);
-        let b = fitted.find_shape(id).expect("rect").bounds();
-        assert!(b.x1 <= 2.0 * size.width + 1e-6, "{b:?}");
-        assert!(b.x1 > size.width, "still across the spine: {b:?}");
-        assert!(b.width() < size.width * 2.0 + 20.0);
-        // Page 1 stands alone: inside it, untouched.
-        assert_eq!(fitted.pages[0], doc.pages[0]);
+        app.set_facing_pages(true, tracedraw_core::spreads::PageSide::Right);
+        app.page = app.doc().pages[2].id;
+        let outer = Rect::new(size.width - 30.0, 10.0, size.width + 40.0, 40.0);
+        rect(&mut app, outer);
+        let printed = print_sheets(&app, &st);
+        let on_page = rects(&printed, 2);
+        assert!(
+            on_page.contains(&outer),
+            "kept past the spread's edge: {on_page:?}"
+        );
     }
 
     /// A blend prints as it is drawn when the print moves or recolours
     /// its objects: with Fit to page (the end object running off the
-    /// page), with the selection printed as the page, and as a negative,
+    /// page, left where it is), with the selection printed as the page,
+    /// and as a negative,
     /// the steps lie between the start and the end as printed and their
     /// colours run between the printed colours. The steps were evaluated
     /// from the copy of the end object the blend keeps, which the print
@@ -5451,16 +6163,13 @@ mod tests {
                 end.1
             );
         };
+        // Fit to page scales the page, so the end stays where it is.
         let fit = PrintState {
             fit_to_page: true,
             ..PrintState::default()
         };
         let p = printed_blend(&print_sheets(&app, &fit));
-        assert!(
-            p.1 .0.x1 <= 210.0 + 1e-6,
-            "shrunk onto the page: {:?}",
-            p.1 .0
-        );
+        assert!(p.1 .0.x1 > 210.0, "left where drawn: {:?}", p.1 .0);
         between(&p);
         let selection = PrintState {
             range: 3,
@@ -5586,6 +6295,251 @@ mod tests {
         assert_eq!(doc.inks, vec![ink]);
         let text = String::from_utf8_lossy(&tracedraw_io::pdf::document_to_pdf(&doc)).to_string();
         assert!(text.contains("/Separation /Spot_1_W "), "no separation");
+    }
+
+    /// The colour models a printed sheet still holds, wherever it keeps a
+    /// colour.
+    fn colour_models(pages: &[tracedraw_core::document::Page]) -> Vec<String> {
+        fn walk(v: &serde_json::Value, out: &mut Vec<String>) {
+            match v {
+                serde_json::Value::Array(a) => a.iter().for_each(|x| walk(x, out)),
+                serde_json::Value::Object(m) => {
+                    if let Some(serde_json::Value::String(s)) = m.get("model") {
+                        out.push(s.clone());
+                    }
+                    m.values().for_each(|x| walk(x, out));
+                }
+                _ => {}
+            }
+        }
+        let mut out = Vec::new();
+        walk(&serde_json::to_value(pages).unwrap(), &mut out);
+        out.sort();
+        out.dedup();
+        out
+    }
+
+    /// A drawing for the print options: one 100 mm page, the app on it.
+    fn print_app(build: &dyn Fn(&mut tracedraw_core::Document)) -> crate::app::App {
+        let mut doc =
+            tracedraw_core::Document::new("Print", tracedraw_core::Size::new(100.0, 100.0));
+        build(&mut doc);
+        let mut app = crate::app::App::headless();
+        app.engine = tracedraw_core::Engine::new(doc);
+        if let Some(p) = app.doc().pages.first() {
+            app.page = p.id;
+        }
+        app
+    }
+
+    fn square(
+        doc: &mut tracedraw_core::Document,
+        c: tracedraw_core::Color,
+    ) -> tracedraw_core::Shape {
+        let mut s = tracedraw_core::Shape::new(
+            doc.ids_mut().shape(),
+            tracedraw_core::ShapeKind::Rect {
+                rect: tracedraw_core::Rect::new(10.0, 10.0, 30.0, 30.0),
+                radius: 0.0,
+                corners: None,
+            },
+        );
+        s.fill = tracedraw_core::Fill::Solid(c);
+        s.stroke = None;
+        s
+    }
+
+    fn orange(doc: &mut tracedraw_core::Document) -> tracedraw_core::Color {
+        let ink = tracedraw_core::document::Ink {
+            id: 7,
+            name: "Orange".into(),
+            cmyk: [0.0, 0.5, 1.0, 0.0],
+        };
+        let c = ink.color(1.0);
+        doc.inks.push(ink);
+        c
+    }
+
+    /// Convert spot colours to CMYK reaches every spot ink that prints: on
+    /// a master layer, as the page's background, as a drop shadow's colour
+    /// and as a contour's last colour. They stayed spot inks.
+    #[test]
+    fn spot_to_cmyk_reaches_master_layers_backgrounds_and_effects() {
+        use tracedraw_core::{Color, Fill, Layer};
+        let st = crate::ui::dialogs::PrintState {
+            spot_to_cmyk: true,
+            ..Default::default()
+        };
+        let cases: Vec<(&str, Box<dyn Fn(&mut tracedraw_core::Document)>)> = vec![
+            (
+                "master layer",
+                Box::new(|d| {
+                    let c = orange(d);
+                    let s = square(d, c);
+                    let mut m = Layer::master(d.ids_mut().layer(), "Master", Default::default());
+                    m.shapes.push(s);
+                    d.master.push(m);
+                }),
+            ),
+            (
+                "background",
+                Box::new(|d| {
+                    let c = orange(d);
+                    d.pages[0].background = Some(Fill::Solid(c));
+                }),
+            ),
+            (
+                "shadow",
+                Box::new(|d| {
+                    let c = orange(d);
+                    let mut s = square(
+                        d,
+                        Color::Cmyk {
+                            c: 1.0,
+                            m: 0.0,
+                            y: 0.0,
+                            k: 0.0,
+                        },
+                    );
+                    s.shadow = Some(tracedraw_core::document::Shadow {
+                        color: c,
+                        ..Default::default()
+                    });
+                    d.pages[0].layers[0].shapes.push(s);
+                }),
+            ),
+            (
+                "contour",
+                Box::new(|d| {
+                    let c = orange(d);
+                    let mut s = square(
+                        d,
+                        Color::Cmyk {
+                            c: 1.0,
+                            m: 0.0,
+                            y: 0.0,
+                            k: 0.0,
+                        },
+                    );
+                    s.effects.push(contour_to(c));
+                    d.pages[0].layers[0].shapes.push(s);
+                }),
+            ),
+        ];
+        for (name, build) in cases {
+            let app = print_app(&*build);
+            let sheets = super::print_sheets(&app, &st);
+            let models = colour_models(&sheets.pages);
+            assert!(!models.contains(&"spot".to_string()), "{name}: {models:?}");
+        }
+    }
+
+    fn contour_to(c: tracedraw_core::Color) -> tracedraw_core::live::Effect {
+        tracedraw_core::live::Effect::Contour {
+            steps: 2,
+            offset: 2.0,
+            outside: true,
+            to_center: false,
+            both: false,
+            fill_to: c,
+            outline_to: None,
+            fill_end_to: None,
+            color_blend: 0,
+            corners: None,
+            accel_objects: 0.0,
+            accel_colors: 0.0,
+        }
+    }
+
+    /// Separations: a contour's steps and a drop shadow print as the
+    /// coverage of each plate's ink, as the object does. Their colours
+    /// were kept, so the steps blended to magenta in colour on every
+    /// plate, and the magenta plate counted no ink for them.
+    #[test]
+    fn separations_split_the_colours_of_effects() {
+        use tracedraw_core::Color;
+        let magenta = Color::Cmyk {
+            c: 0.0,
+            m: 1.0,
+            y: 0.0,
+            k: 0.0,
+        };
+        let app = print_app(&|d| {
+            let mut s = square(
+                d,
+                Color::Cmyk {
+                    c: 1.0,
+                    m: 0.0,
+                    y: 0.0,
+                    k: 0.0,
+                },
+            );
+            s.effects.push(contour_to(magenta));
+            let mut t = square(d, Color::WHITE);
+            t.transform = tracedraw_core::geometry::Affine::translate((50.0, 50.0));
+            t.shadow = Some(tracedraw_core::document::Shadow {
+                color: Color::Cmyk {
+                    c: 0.0,
+                    m: 0.0,
+                    y: 1.0,
+                    k: 0.0,
+                },
+                ..Default::default()
+            });
+            d.pages[0].layers[0].shapes.extend([s, t]);
+        });
+        let st = crate::ui::dialogs::PrintState {
+            separations: true,
+            ..Default::default()
+        };
+        let sheets = super::print_sheets(&app, &st);
+        let page = &sheets.pages[0];
+        for (plate, _) in super::plates(&sheets) {
+            let p = super::plate_page(page, plate);
+            assert_eq!(
+                colour_models(std::slice::from_ref(&p)),
+                vec!["gray"],
+                "{plate:?}"
+            );
+        }
+        // The contour's magenta and the shadow's yellow are inks of their
+        // plates.
+        assert!(super::plate_has_ink(page, super::Plate::Process(1)));
+        assert!(super::plate_has_ink(page, super::Plate::Process(2)));
+    }
+
+    /// Print all text in black reaches text on a master layer and a
+    /// character's own outline.
+    #[test]
+    fn text_in_black_reaches_master_layers_and_character_outlines() {
+        use tracedraw_core::{Color, Fill, Layer, Stroke};
+        let mut app = crate::app::App::headless();
+        tracedraw_text::install();
+        app.start_text(tracedraw_core::geometry::Point::new(10.0, 20.0), None);
+        app.text_insert("Ab");
+        let t = app.text_edit.as_ref().expect("editing").shape;
+        app.finish_text();
+        let mut doc = app.doc().clone();
+        let mut s = doc.find_shape(t).expect("text").clone();
+        s.fill = Fill::Solid(Color::rgb8(255, 0, 0));
+        if let tracedraw_core::ShapeKind::Text { spans, .. } = &mut s.kind {
+            spans[0].fill = Some(Fill::Solid(Color::rgb8(0, 0, 255)));
+            spans[0].outline = Some(Stroke::new(Color::rgb8(0, 255, 0), 0.2));
+        }
+        doc.pages[0].layers[0].shapes.clear();
+        let mut m = Layer::master(doc.ids_mut().layer(), "Master", Default::default());
+        m.shapes.push(s);
+        doc.master.push(m);
+        app.engine = tracedraw_core::Engine::new(doc);
+        let st = crate::ui::dialogs::PrintState {
+            text_black: true,
+            ..Default::default()
+        };
+        let sheets = super::print_sheets(&app, &st);
+        let json = serde_json::to_string(&sheets.pages).unwrap();
+        for colour in ["\"r\":1.0", "\"g\":1.0", "\"b\":1.0"] {
+            assert!(!json.contains(colour), "{colour} left");
+        }
     }
 }
 

@@ -100,7 +100,7 @@ pub fn dialog_topic(d: &Dialog, options: OptionsPage) -> &'static str {
         Dialog::StraightenImage(_) => "bitmaps/resample-and-straighten#straighten",
         Dialog::Resample(_) => "bitmaps/resample-and-straighten#resample",
         Dialog::InflateBitmap(_) => "bitmaps/resample-and-straighten#inflate",
-        Dialog::Trace(_) => "bitmaps/tracing",
+        Dialog::Trace(_) | Dialog::Tracing => "bitmaps/tracing",
         Dialog::Effect(_) => "effects/bitmap-effects",
         Dialog::TextDefaults { .. } => "text/fonts",
         Dialog::CopyProperties(_) => "effects/copy-and-clone#clone",
@@ -115,9 +115,10 @@ pub fn dialog_topic(d: &Dialog, options: OptionsPage) -> &'static str {
         Dialog::CustomHyphens(_) => "text/writing-tools#custom-hyphens",
         Dialog::Encode(_) => "text/writing-tools#encode",
         Dialog::BorderGrommet(_) => "printing/border-and-grommet",
-        Dialog::ColorManagement(_) | Dialog::ConvertColors(_) | Dialog::Recolor(_) => {
-            "color/color-management"
-        }
+        Dialog::ColorManagement(_)
+        | Dialog::ConvertColors(_)
+        | Dialog::Recolor(_)
+        | Dialog::ReplaceColor(_) => "color/color-management",
         Dialog::FontManager(_) => "text/fonts#font-manager",
         Dialog::TraceCut(_) => "objects/tracecut",
         Dialog::PaletteEditor(_) => "color/palettes#palette-editor",
@@ -236,6 +237,8 @@ pub fn docker_topic(t: DockerTab) -> &'static str {
         DockerTab::Coordinates => "objects/transforming#coordinates",
         DockerTab::VectorMosaic => "effects/mosaics#vector-mosaic",
         DockerTab::PictureMosaic => "effects/mosaics#picture-mosaic",
+        DockerTab::ShapeGenerator => "objects/shape-generator",
+        DockerTab::SymbolScatter => "effects/symbol-scatter",
         DockerTab::Shelf => "objects/shelf",
         DockerTab::Export => "web-graphics/export-docker",
         DockerTab::Comments => "objects/comments",

@@ -16,11 +16,19 @@
 //! Italic text whose slant TraceDraw draws from an upright font file is
 //! written upright, as the face the file holds (#1733); the member keeps
 //! that text too, so it opens italic again here.
+//!
+//! So does an object holding what the writer cannot write yet
+//! ([`not_held`]): a fill other than a solid colour or a plain fountain
+//! (written as one colour or as the nearest plain fountain), an outline
+//! with a fill of its own, arrowheads (written as curves beside the
+//! line) or overprint. It opens here as it was saved.
 
 use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
-use tracedraw_core::{document::Shape, geometry::Rect, live::Effect, Document, ShapeId, ShapeKind};
+use tracedraw_core::{
+    document::Shape, geometry::Rect, live::Effect, Arrowhead, Document, Fill, ShapeId, ShapeKind,
+};
 
 /// The package member holding the objects.
 pub const MEMBER: &str = "tracedraw/effects.json";
@@ -103,7 +111,8 @@ pub(crate) fn decode(bytes: &[u8]) -> Vec<KeptEffect> {
                     && (!k.source.effects.is_empty()
                         || k.source.raster_fx.is_some()
                         || k.source.shadow.is_some()
-                        || italic_text(&k.source))
+                        || italic_text(&k.source)
+                        || not_held(&k.source))
             })
             .collect(),
         Ok(m) => {
@@ -171,6 +180,41 @@ pub(crate) fn restore(
         n += 1;
     }
     n
+}
+
+/// Whether `s` itself (not its effects or shadow) holds what the writer
+/// cannot write yet, so the file gets a stand-in and the member the
+/// object: a fill other than none, a solid colour or a fountain that is
+/// already plain (patterns, textures, PostScript and mesh fills go out as
+/// one colour; repeats, inversion, the shaped kind, midpoints, blend
+/// settings and free nodes as the nearest plain fountain), an outline
+/// with a fill of its own, arrowheads, or overprint. Containers draw no
+/// fill or outline of their own and are not counted.
+pub(crate) fn not_held(s: &Shape) -> bool {
+    if matches!(
+        s.kind,
+        ShapeKind::Group { .. }
+            | ShapeKind::ClipFrame { .. }
+            | ShapeKind::Table(_)
+            | ShapeKind::SymbolInstance { .. }
+    ) {
+        return false;
+    }
+    let fill = match &s.fill {
+        Fill::None | Fill::Solid(_) => false,
+        Fill::Fountain(f) => f.handles.is_some() || f.to_plain(64) != *f,
+        _ => true,
+    };
+    fill || s.overprint_fill
+        || s.overprint_outline
+        || s.stroke
+            .as_ref()
+            .is_some_and(|st| st.fill.is_some() || has_arrowheads(st))
+}
+
+/// An outline with a head at either end.
+pub(crate) fn has_arrowheads(st: &tracedraw_core::Stroke) -> bool {
+    st.start_arrow != Arrowhead::None || st.end_arrow != Arrowhead::None
 }
 
 /// Text with an italic run: text written upright for a slant TraceDraw

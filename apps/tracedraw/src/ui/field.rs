@@ -44,6 +44,8 @@ pub struct NumField<'a, N: Numeric> {
     /// The wheel over the box steps it without the box having the focus
     /// (on unless turned off).
     wheel_on_hover: bool,
+    /// The box takes the keyboard focus, its text selected.
+    focus: bool,
 }
 
 /// The width of the spin arrows at the right of a field, points.
@@ -54,6 +56,83 @@ pub const DEFAULT_WIDTH: f32 = 64.0;
 
 /// The pixels of a drag on a field's arrows or label for one step.
 pub const DRAG_PX_PER_STEP: f32 = 4.0;
+
+/// How far right of a label drawn on its own (a bar's picture, a dialog's
+/// row label) a field may start and still be the field it names.
+const LABEL_REACH: f32 = 240.0;
+
+/// A label drawn apart from its field this frame, and its drag.
+#[derive(Clone, Copy)]
+struct LabelDrag {
+    id: egui::Id,
+    rect: egui::Rect,
+    delta: egui::Vec2,
+}
+
+fn pending_id() -> egui::Id {
+    egui::Id::new("num_field_label_drags")
+}
+
+fn matched_id() -> egui::Id {
+    egui::Id::new("num_field_labels_matched")
+}
+
+/// A label drawn apart from the number field after it, such as a bar's
+/// picture or a dialog's row label: a drag on it slides that field's
+/// value as a drag on a field's own label does (#3044, #1303). `resp`
+/// must sense drags. The field takes it up when it is laid out on the
+/// same line, just right of the label; a label with no field after it
+/// does nothing and shows no slide cursor.
+pub fn label_slides(ui: &Ui, resp: &Response) {
+    let frame = ui.ctx().cumulative_frame_nr();
+    let matched = ui.ctx().data(|d| {
+        d.get_temp::<std::collections::HashSet<egui::Id>>(matched_id())
+            .is_some_and(|m| m.contains(&resp.id))
+    });
+    if matched && (resp.hovered() || resp.dragged()) {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+    }
+    let delta = if resp.dragged() && !crate::ui::overflow::finger_sliding(ui.ctx()) {
+        resp.drag_delta()
+    } else {
+        egui::Vec2::ZERO
+    };
+    ui.ctx().data_mut(|d| {
+        let list = d.get_temp_mut_or_default::<(u64, Vec<LabelDrag>)>(pending_id());
+        if list.0 != frame {
+            *list = (frame, Vec::new());
+        }
+        list.1.push(LabelDrag {
+            id: resp.id,
+            rect: resp.rect,
+            delta,
+        });
+    });
+}
+
+/// The drag of the label drawn apart just left of a field at `field`,
+/// taken up so no other field takes it.
+fn take_label_drag(ui: &Ui, field: egui::Rect) -> Option<egui::Vec2> {
+    let frame = ui.ctx().cumulative_frame_nr();
+    let found = ui.ctx().data_mut(|d| {
+        let list = d.get_temp_mut_or_default::<(u64, Vec<LabelDrag>)>(pending_id());
+        if list.0 != frame {
+            return None;
+        }
+        let at = list.1.iter().rposition(|l| {
+            let gap = field.left() - l.rect.right();
+            (-1.0..=LABEL_REACH).contains(&gap)
+                && l.rect.top() < field.bottom()
+                && field.top() < l.rect.bottom()
+        })?;
+        Some(list.1.remove(at))
+    })?;
+    ui.ctx().data_mut(|d| {
+        d.get_temp_mut_or_default::<std::collections::HashSet<egui::Id>>(matched_id())
+            .insert(found.id);
+    });
+    Some(found.delta)
+}
 
 impl<'a, N: Numeric> NumField<'a, N> {
     pub fn new(value: &'a mut N) -> Self {
@@ -70,6 +149,7 @@ impl<'a, N: Numeric> NumField<'a, N> {
             step: 1.0,
             fine_step: None,
             wheel_on_hover: true,
+            focus: false,
         }
     }
 
@@ -79,6 +159,14 @@ impl<'a, N: Numeric> NumField<'a, N> {
         if step.is_finite() && step > 0.0 {
             self.fine_step = Some(step);
         }
+        self
+    }
+
+    /// The box takes the keyboard focus now, its text selected to be
+    /// typed over (the Guidelines panel after a double click on a
+    /// guideline, #2883).
+    pub fn focus(mut self, on: bool) -> Self {
+        self.focus = on;
         self
     }
 
@@ -228,7 +316,25 @@ impl<N: Numeric> NumField<'_, N> {
         let id = ui.next_auto_id().with("num_field");
         let shown = self.text();
         // While typing, the text lives in memory until it is applied.
-        let stored = ui.data(|d| d.get_temp::<String>(id));
+        let mut stored = ui.data(|d| d.get_temp::<String>(id));
+        // A box focused and not typed into follows its value: in Bitmaps >
+        // Resample, a width typed and left for the percent box changed
+        // the percent after that box took the focus, which kept the old
+        // percent and put it back when left (#3332).
+        let shown_id = id.with("shown");
+        let was_shown = ui.data(|d| d.get_temp::<String>(shown_id));
+        if stored.is_some() && stored == was_shown && was_shown.as_ref() != Some(&shown) {
+            stored = Some(shown.clone());
+            ui.data_mut(|d| d.insert_temp(shown_id, shown.clone()));
+            if let Some(mut state) = TextEdit::load_state(ui.ctx(), id) {
+                let all = egui::text::CCursorRange::two(
+                    egui::text::CCursor::new(0),
+                    egui::text::CCursor::new(shown.chars().count()),
+                );
+                state.cursor.set_char_range(Some(all));
+                state.store(ui.ctx(), id);
+            }
+        }
         let mut buf = stored.clone().unwrap_or_else(|| shown.clone());
         // A drag on the label slides the value (#1303). The label is no
         // stop for Tab, which goes from box to box (#1537).
@@ -254,6 +360,9 @@ impl<N: Numeric> NumField<'_, N> {
                 .vertical_align(egui::Align::Center)
                 .desired_width(width),
         );
+        if self.focus {
+            resp.request_focus();
+        }
         // The arrows: up over down, each half the box's height. They take
         // clicks and drags but no focus: Tab from the box goes to the next
         // box, not to the arrows beside it (#1537).
@@ -316,14 +425,17 @@ impl<N: Numeric> NumField<'_, N> {
         // steps nothing (#1997).
         let drag_id = id.with("drag");
         let drags = [Some(&spin_resp), label_resp.as_ref()];
-        let dragging = drags.iter().flatten().any(|r| r.dragged())
-            && !crate::ui::overflow::finger_sliding(ui.ctx());
+        // A label drawn apart just left of the box (#3044).
+        let apart = take_label_drag(ui, resp.rect).filter(|d| *d != egui::Vec2::ZERO);
+        let dragging = (drags.iter().flatten().any(|r| r.dragged())
+            && !crate::ui::overflow::finger_sliding(ui.ctx()))
+            || apart.is_some();
         if dragging {
             ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
             let d = drags
                 .iter()
                 .flatten()
-                .fold(egui::Vec2::ZERO, |a, r| a + r.drag_delta());
+                .fold(apart.unwrap_or_default(), |a, r| a + r.drag_delta());
             let acc = ui.data(|m| m.get_temp::<f32>(drag_id)).unwrap_or(0.0) + d.x - d.y;
             let steps = (acc / DRAG_PX_PER_STEP).trunc();
             ui.data_mut(|m| m.insert_temp(drag_id, acc - steps * DRAG_PX_PER_STEP));
@@ -403,9 +515,13 @@ impl<N: Numeric> NumField<'_, N> {
         resp.flags.set(egui::response::Flags::CHANGED, false);
         select_all_when_focused(ui, &resp, stored.is_none(), &buf);
         if resp.has_focus() {
+            if stored.is_none() {
+                ui.data_mut(|d| d.insert_temp(shown_id, shown.clone()));
+            }
             ui.data_mut(|d| d.insert_temp(id, buf.clone()));
         } else if stored.is_some() || resp.lost_focus() {
             ui.data_mut(|d| d.remove::<String>(id));
+            ui.data_mut(|d| d.remove::<String>(shown_id));
             let escaped = ui.input(|i| i.key_pressed(egui::Key::Escape));
             if !escaped && buf != shown {
                 if let Some(mut v) = parse(&buf, self.unit_mm) {
@@ -1509,6 +1625,91 @@ mod tests {
         assert!(v < after - 1.0, "{v}");
         drag(&mut v, label, -400.0);
         assert_eq!(v, 0.0, "clamped to the range");
+    }
+
+    /// A label drawn apart from its field, as a dialog's row label or a
+    /// bar's picture is, slides the field after it on the same line
+    /// (#3044); a label on another line, with no field after it, slides
+    /// nothing.
+    #[test]
+    fn a_label_drawn_apart_slides_its_field() {
+        let ctx = crate::theme::ui_context();
+        let mut v = (10.0f64, 10.0f64);
+        let origin = egui::pos2(100.0, 100.0);
+        let fields = std::cell::Cell::new((egui::Rect::NOTHING, egui::Rect::NOTHING));
+        let mut run = |v: &mut (f64, f64), events: Vec<egui::Event>| {
+            let mut out = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(600.0, 400.0),
+                    )),
+                    events,
+                    ..Default::default()
+                },
+                |ui| {
+                    egui::Area::new(egui::Id::new("apart"))
+                        .fixed_pos(origin)
+                        .show(ui.ctx(), |ui| {
+                            crate::ui::options::grid("apart_grid").show(ui, |ui| {
+                                crate::ui::options::row_label(ui, "Width:");
+                                let a = ui.add(NumField::new(&mut v.0).range(0.0..=20.0)).rect;
+                                ui.end_row();
+                                crate::ui::options::row_label(ui, "Nothing here:");
+                                ui.label("text");
+                                ui.end_row();
+                                crate::ui::options::row_label(ui, "Height:");
+                                let b = ui.add(NumField::new(&mut v.1).range(0.0..=20.0)).rect;
+                                ui.end_row();
+                                fields.set((a, b));
+                            });
+                        });
+                },
+            );
+            out.textures_delta.clear();
+        };
+        run(&mut v, Vec::new());
+        run(&mut v, Vec::new());
+        let drag = |run: &mut dyn FnMut(&mut (f64, f64), Vec<egui::Event>),
+                    v: &mut (f64, f64),
+                    from: egui::Pos2,
+                    dx: f32| {
+            run(v, vec![egui::Event::PointerMoved(from)]);
+            run(
+                v,
+                vec![egui::Event::PointerButton {
+                    pos: from,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: egui::Modifiers::NONE,
+                }],
+            );
+            for i in 1..=4 {
+                let p = from + egui::vec2(dx * i as f32 / 4.0, 0.0);
+                run(v, vec![egui::Event::PointerMoved(p)]);
+            }
+            run(
+                v,
+                vec![egui::Event::PointerButton {
+                    pos: from + egui::vec2(dx, 0.0),
+                    button: egui::PointerButton::Primary,
+                    pressed: false,
+                    modifiers: egui::Modifiers::NONE,
+                }],
+            );
+            run(v, Vec::new());
+        };
+        // The first row's label: its text ends just left of the field.
+        let (a, b) = fields.get();
+        let label = egui::pos2(a.left() - 12.0, a.center().y);
+        drag(&mut run, &mut v, label, 30.0);
+        assert!(v.0 > 12.0, "the width slid up: {v:?}");
+        assert_eq!(v.1, 10.0, "the height stays");
+        // The middle row's label has no field: the height stays.
+        let before = v;
+        let middle = egui::pos2(a.left() - 12.0, (a.bottom() + b.top()) / 2.0);
+        drag(&mut run, &mut v, middle, 30.0);
+        assert_eq!(v, before, "a label without a field slides nothing");
     }
 
     #[test]

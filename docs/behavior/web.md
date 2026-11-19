@@ -12,7 +12,7 @@ refuse to load modules from `file://`).
 
 | Feature | Desktop | Browser |
 |---|---|---|
-| Open, Import, scripts, palettes, CSV, ICC profiles, thesaurus | system file dialog | the browser's file picker; the file is read into memory under `/upload/<name>` and opened from there |
+| Open, Import, scripts, palettes, CSV, ICC profiles, thesaurus | system file dialog | the browser's file picker; the file is read into memory under `/upload/<name>` and opened from there, and kept while an import still reads it (waiting for its place, or a PDF's question open), then freed (#3231, `files::tests::an_upload_stays_while_an_import_still_reads_it`) |
 | Save, Save As | the Save Drawing dialog with folders, name, type, `.cdr` version and properties (`files.md`) | the same dialog without folders (name, type, version, properties), then a download under that name |
 | Export, Export as PDF, Save as Template, palette and script saves | system save dialog | a download named after the document |
 | Print | PDF opened in the system viewer | PDF downloaded; print it from the browser's viewer |

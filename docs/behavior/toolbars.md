@@ -69,7 +69,9 @@ default) shows the pictures alone, the name in the tab's tip (#2902,
 `ui::dockers::tests::tabs_keep_their_names_unless_icons_only_is_chosen`). The open panel's tab
 `#B2B2B2`; the three-dot button under the tabs lists every panel in the
 groups of Window > Panels with a box ticked at each one in the column
-(ticking opens the panel in front, unticking closes it). The pointer
+(ticking opens the panel in front, unticking closes it). Both that
+list and Window > Panels show each panel's tab picture before its name
+(#3221, `ui::menus::tests::window_panels_show_the_panels_pictures`). The pointer
 over a tab shows a close cross in a slot at the tab's top; a click on
 it closes that panel (as the title bar's close and the tab's menu do),
 a click lower on the tab brings the panel to the front
@@ -268,6 +270,13 @@ left-right cursor), slides the value: one step every 4 pixels, right or
 up higher, left or down lower, with the same Shift and Ctrl steps,
 within the range (#1303,
 `ui::field::tests::dragging_the_arrows_or_the_label_slides_the_value`).
+A label drawn apart from its field slides it the same way: a bar's
+picture before a field (the outline width, the angle), a short text
+label before one ("X:") and a dialog's row label in the column left of
+its field; the field takes up the drag of the label just left of it on
+its line. A label with no number field after it slides nothing and
+shows no left-right cursor (#3044,
+`ui::field::tests::a_label_drawn_apart_slides_its_field`).
 The wheel steps once a notch; parts of a notch from a touchpad or a fine
 wheel add up to one step. The wheel over a field (or the outline width
 box, the font list, the page tabs) belongs to it: the bar or panel
@@ -332,8 +341,11 @@ for sliders stepped with the wheel (`step_merge::tests`).
   unit), line style, start and end arrowheads; then To Front, To Back and
   Convert to Curves. The mouse wheel over the closed width box steps the
   selection's outline to the next width of the list up (wheel up) or
-  down, stopping at None and at the widest; a width between two of the
-  list goes to the one above or below. One step per notch: a wheel event
+  down, stopping at None; past the list's widest width it goes on in
+  steps of the list's last gap (16, 20, 24 pt and on) up to 1000 mm,
+  where it stopped at the widest, so wider outlines had to be typed
+  (#3050). A width between two of the list goes to the one above or
+  below. One step per notch: a wheel event
   of a notch or more counts as one notch whatever its size (browsers send
   a notch as 100 points or 3 lines), parts of a notch from a touchpad or
   a fine wheel add up until they make one (50 points make a notch), and
@@ -601,7 +613,9 @@ bar move (`ui/bars.rs`).
   line marks the gap it would go to, and on release it moves there (along
   its bar or to the other one) or, released off both bars, goes away.
   Commands and tools dragged from the Commands page join the bar at the
-  gap; a command already on that bar only moves. Added buttons show the
+  gap; a command already on that bar only moves. The docked toolbox
+  takes them too, after its tools (see "Commands on the toolbox" in
+  `toolbox.md`, #3211). Added buttons show the
   command's menu picture (its name when it has none) and run it as its
   menu item would; a tool's button selects the tool and stays pushed in
   while it is the tool. Reset (Command Bars page) and Reset Bar Positions

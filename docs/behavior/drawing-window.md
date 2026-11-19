@@ -65,7 +65,8 @@ From the left, after the ruler's width:
 1. The document navigator: insert page before, first page, previous
    page, "n of m", next page, last page, insert page after. The insert
    buttons add a page of the current size next to the current page and
-   make it current. After them, in the space before the page tabs, the
+   make it current, in one undo step (it was two: the page added at the
+   end, then moved). After them, in the space before the page tabs, the
    Multipage View button (four small pages) turns that view on and off
    like View > Multipage View; it is lit while the view is on (#1019,
    `pick_drag_tests::the_page_bar_turns_the_multipage_view_on_and_off`).

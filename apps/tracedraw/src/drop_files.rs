@@ -237,8 +237,23 @@ impl App {
     /// would go (the drawing window, or the whole window) and what a drop
     /// there would do.
     pub fn draw_drop_hint(&self, ctx: &egui::Context) {
-        let hovered: Vec<Option<PathBuf>> =
-            ctx.input(|i| i.raw.hovered_files.iter().map(|f| f.path.clone()).collect());
+        let listed: Vec<PathBuf> = ctx.input(|i| {
+            i.raw
+                .hovered_files
+                .iter()
+                .filter_map(|f| f.path.clone())
+                .collect()
+        });
+        // Without the files of a lost drop still listed (#2940).
+        let stale = listed.len() - self.file_drag.fresh(&listed).len();
+        let hovered: Vec<Option<PathBuf>> = ctx.input(|i| {
+            i.raw
+                .hovered_files
+                .iter()
+                .skip(stale)
+                .map(|f| f.path.clone())
+                .collect()
+        });
         if hovered.is_empty() || !drag_held() || !self.file_drag.showing() {
             return;
         }
@@ -306,6 +321,11 @@ pub struct FileDrag {
     over: bool,
     /// The files last let go for a lost drop, and when.
     lost: Option<(Vec<PathBuf>, f64)>,
+    /// The files listed as hovered when a drop was lost: the windowing
+    /// layer keeps listing them, ahead of a later drag's own, until a drop
+    /// or a leave does reach the program. They belong to a drag that is
+    /// over and are not let go again (#2940).
+    stale: Vec<PathBuf>,
 }
 
 impl FileDrag {
@@ -323,7 +343,11 @@ impl FileDrag {
             self.files.clear();
             self.released = None;
             self.over = false;
+            self.stale.clear();
             return Vec::new();
+        }
+        if !hovered.starts_with(&self.stale) {
+            self.stale.clear();
         }
         if hovered != self.files.as_slice() {
             self.files = hovered.to_vec();
@@ -342,8 +366,21 @@ impl FileDrag {
             return Vec::new();
         }
         self.over = true;
-        self.lost = Some((self.files.clone(), now));
-        self.files.clone()
+        let files = self.fresh(hovered).to_vec();
+        self.stale = hovered.to_vec();
+        if files.is_empty() {
+            return files;
+        }
+        self.lost = Some((files.clone(), now));
+        files
+    }
+
+    /// The files of `hovered` that belong to the drag going on: without
+    /// those of an earlier lost drop still listed ahead of them. Before,
+    /// they counted again, and a file dropped, then deleted, came back
+    /// with every later drop until TraceDraw was restarted (#2940).
+    pub fn fresh<'a>(&self, hovered: &'a [PathBuf]) -> &'a [PathBuf] {
+        hovered.strip_prefix(self.stale.as_slice()).unwrap_or(hovered)
     }
 
     /// The drop frame shows: a drag goes on with a button held.
@@ -801,6 +838,39 @@ mod tests {
         let b = vec![PathBuf::from("b.png")];
         assert!(d.step(&b, false, true, 0.7).is_empty());
         assert!(d.showing());
+    }
+
+    /// #2940: after a lost drop its files stay listed as hovered, ahead of
+    /// the next drag's own, until a drop or a leave reaches the program.
+    /// They are not let go again: a file dropped and then deleted came
+    /// back with every later drop until TraceDraw was restarted.
+    #[test]
+    fn a_lost_drops_files_still_listed_do_not_come_back_with_the_next() {
+        let a = PathBuf::from("a.svg");
+        let b = PathBuf::from("b.png");
+        let mut d = FileDrag::default();
+        d.step(&[a.clone()], false, true, 0.0);
+        d.step(&[a.clone()], false, false, 0.1);
+        assert_eq!(d.step(&[a.clone()], false, false, 1.0), [a.clone()]);
+        // Still listed alone: no frame, nothing let go.
+        assert!(d.step(&[a.clone()], false, true, 2.0).is_empty());
+        assert!(!d.showing());
+        // The next drag lists its file after the old one.
+        let both = vec![a.clone(), b.clone()];
+        assert!(d.step(&both, false, true, 3.0).is_empty());
+        assert!(d.showing());
+        assert_eq!(d.fresh(&both), [b.clone()]);
+        d.step(&both, false, false, 3.1);
+        assert_eq!(d.step(&both, false, false, 4.0), [b.clone()]);
+        // A third drag, of the first file again, lets that go.
+        let again = vec![a.clone(), b.clone(), a.clone()];
+        d.step(&again, false, true, 5.0);
+        assert!(d.showing());
+        d.step(&again, false, false, 5.1);
+        assert_eq!(d.step(&again, false, false, 6.0), [a.clone()]);
+        // A drop that reaches the program ends it all.
+        assert!(d.step(&again, true, false, 7.0).is_empty());
+        assert_eq!(d.fresh(&again), again.as_slice());
     }
 
     /// #2686: the files of a lost drop let go over the drawing window are

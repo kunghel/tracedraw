@@ -1,17 +1,45 @@
 //! The Vector Mosaic docker (Effects > Vector Mosaic): density, scale and
 //! screen angle with Keep original source, Limit colors, the Tracking
 //! section (method, merge adjacent, weld adjacent overlap), the tile shape
-//! with Select for a custom curve and its preview, and a full-width
-//! Apply.
+//! with Select for a custom curve and its preview (Glyphs: random symbols
+//! and their seed; Characters: the character set; both: invert tones), One
+//! color, and a full-width Apply.
 
 use crate::app::App;
 use crate::i18n::tr;
 use crate::theme::Tokens;
 use crate::ui::docker_form::{indented, row, section};
 use crate::ui::tips::RichTip;
-use crate::vector_mosaic::{unit_tile, TileShape, TrackMethod};
+use crate::vector_mosaic::{tone_set, unit_tile, TileShape, TrackMethod};
 use egui::{Color32, Sense, Stroke, Ui, Vec2};
-use tracedraw_core::geometry::{Affine, Shape as _};
+use tracedraw_core::geometry::{Affine, BezPath, Shape as _};
+
+/// A unit tile (y up) filled at `c`, `side` points across, turned by
+/// `angle` degrees.
+fn paint_unit(painter: &egui::Painter, unit: &BezPath, c: egui::Pos2, side: f32, angle: f64) {
+    let m = Affine::translate((c.x as f64, c.y as f64))
+        * Affine::scale_non_uniform(side as f64, -(side as f64))
+        * Affine::rotate(angle.to_radians());
+    let path = m * unit.clone();
+    let mut rings: Vec<Vec<egui::Pos2>> = Vec::new();
+    tracedraw_core::geometry::flatten(&path, 0.2, &mut |el| match el {
+        tracedraw_core::geometry::PathEl::MoveTo(p) => {
+            rings.push(vec![egui::pos2(p.x as f32, p.y as f32)])
+        }
+        tracedraw_core::geometry::PathEl::LineTo(p) => {
+            if let Some(r) = rings.last_mut() {
+                r.push(egui::pos2(p.x as f32, p.y as f32));
+            }
+        }
+        _ => {}
+    });
+    for r in rings.into_iter().filter(|r| r.len() > 2) {
+        painter.add(egui::Shape::closed_line(
+            r,
+            Stroke::new(1.2, Color32::from_gray(0x40)),
+        ));
+    }
+}
 
 /// The tile's preview: the shape at the screen angle in a small box.
 fn preview(ui: &mut Ui, app: &App) {
@@ -61,6 +89,20 @@ fn preview(ui: &mut Ui, app: &App) {
                 painter.add(egui::Shape::closed_line(pts, Stroke::new(1.5, fill)));
             }
         }
+        (TileShape::Glyphs | TileShape::Characters, _) => {
+            // The set, light to dark, in rows of four.
+            let set = tone_set(s);
+            let shown: Vec<&BezPath> = set.iter().take(12).collect();
+            let cell = r.width() / 4.0;
+            for (k, unit) in shown.iter().enumerate() {
+                let (col, line) = ((k % 4) as f32, (k / 4) as f32);
+                let at = egui::pos2(
+                    r.left() + cell * (col + 0.5),
+                    r.top() + cell * (line + 0.5) + (r.height() - cell * 3.0) / 2.0,
+                );
+                paint_unit(&painter, unit, at, cell * 0.8, 0.0);
+            }
+        }
         (TileShape::Custom, None) => {
             painter.text(
                 c,
@@ -107,6 +149,18 @@ pub fn vector_mosaic(app: &mut App, ui: &mut Ui) {
             .rich_tip(crate::ui::tips::keyed("docker.vector_mosaic_keep_original"));
         });
         section(ui, None);
+        ui.horizontal(|ui| {
+            ui.checkbox(&mut s.mono, tr("docker.vector_mosaic_mono"))
+                .rich_tip(crate::ui::tips::keyed("docker.vector_mosaic_mono"));
+            let mut rgb = s.mono_color;
+            if ui
+                .add_enabled_ui(s.mono, |ui| ui.color_edit_button_srgb(&mut rgb))
+                .inner
+                .changed()
+            {
+                s.mono_color = rgb;
+            }
+        });
         ui.horizontal(|ui| {
             ui.checkbox(&mut s.limit_colors, tr("docker.vector_mosaic_limit_colors"))
                 .rich_tip(crate::ui::tips::keyed("docker.vector_mosaic_limit_colors"));
@@ -167,6 +221,38 @@ pub fn vector_mosaic(app: &mut App, ui: &mut Ui) {
             .rich_tip(tr("docker.vector_mosaic_select_tip"))
             .clicked();
     });
+    {
+        let s = &mut app.vector_mosaic;
+        match s.shape {
+            TileShape::Glyphs => {
+                indented(ui, |ui| {
+                    ui.horizontal(|ui| {
+                        ui.checkbox(&mut s.random_glyphs, tr("docker.vector_mosaic_random"))
+                            .rich_tip(crate::ui::tips::keyed("docker.vector_mosaic_random"));
+                        ui.add_enabled(
+                            s.random_glyphs,
+                            crate::ui::field::NumField::new(&mut s.seed).range(0..=9999),
+                        )
+                        .rich_tip(crate::ui::tips::keyed("docker.vector_mosaic_seed"))
+                        .rich_disabled_tip(crate::ui::tips::keyed("docker.vector_mosaic_seed"));
+                    });
+                });
+            }
+            TileShape::Characters => {
+                row(ui, &tr("docker.vector_mosaic_chars"), |ui| {
+                    ui.add(egui::TextEdit::singleline(&mut s.chars).desired_width(140.0))
+                        .rich_tip(crate::ui::tips::keyed("docker.vector_mosaic_chars"));
+                });
+            }
+            _ => {}
+        }
+        if s.shape.picks_by_tone() {
+            indented(ui, |ui| {
+                ui.checkbox(&mut s.invert_tone, tr("docker.vector_mosaic_invert"))
+                    .rich_tip(crate::ui::tips::keyed("docker.vector_mosaic_invert"));
+            });
+        }
+    }
     indented(ui, |ui| preview(ui, app));
     if select {
         let tile = app

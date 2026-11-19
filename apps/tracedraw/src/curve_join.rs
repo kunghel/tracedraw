@@ -319,9 +319,12 @@ impl App {
         }
     }
 
-    /// The join distance in page millimetres.
+    /// The join distance in page millimetres: as far as the end node
+    /// takes a press (the Pen with automatic adding and deleting reaches
+    /// as far as a node is picked), so a press that misses the end by a
+    /// few pixels goes on from it instead of deleting it (#2988).
     fn join_tolerance(&self) -> f64 {
-        self.settings.curves.join_px() / f64::from(self.view.zoom.max(1e-6))
+        self.curve_end_reach_px() / f64::from(self.view.zoom.max(1e-6))
     }
 
     /// `p` (page) is on an end node of the selected open curve, where a new

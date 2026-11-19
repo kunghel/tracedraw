@@ -70,11 +70,18 @@ follows no path. A bitmap effect on the start object keeps the blend drawn.
 ## Blending along a path {#path}
 
 1. Select the blend.
-2. Click **New path** in the [[docker.blend]] panel and click a curve.
+2. Click [[docker.new_path]] in the [[docker.blend]] panel or on the Blend
+   tool's property bar, and click a curve.
 
 The steps follow the curve. **Rotate all objects** turns each step along the
 curve, and [[docker.blend_full_path]] places the first and last steps at the
 ends of the curve.
+
+The blend stays a blend: its steps, spacing, acceleration, rotation and
+colours still change it. To put the start and end objects anywhere along the
+curve, set [[docker.blend_path_start]] and [[docker.blend_path_end]], in % of
+the curve's length: each object moves there and the steps run between them.
+[[docker.detach_path]] takes the blend off the curve, a straight blend again.
 
 ## Removing or splitting a blend {#clear}
 

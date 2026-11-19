@@ -325,17 +325,27 @@ impl App {
         }
     }
 
-    /// The selected balloons, with where their space sits on the page.
+    /// The selected balloons, with where their space sits on the page:
+    /// those inside selected groups too, as a balloon grouped with its
+    /// words is picked as the group (#3352).
     pub fn selected_balloons(&self) -> Vec<(ShapeId, Balloon, Affine)> {
-        self.selected_shapes()
-            .iter()
-            .filter_map(|s| {
-                let b = Balloon::of(s)?;
-                let parent = self
-                    .doc()
-                    .parent_transform(s.id)
-                    .unwrap_or(Affine::IDENTITY);
-                Some((s.id, b, parent * s.transform))
+        fn walk(s: &Shape, out: &mut Vec<(ShapeId, Balloon)>) {
+            if let Some(b) = Balloon::of(s) {
+                out.push((s.id, b));
+            } else if let ShapeKind::Group { children } = &s.kind {
+                children.iter().for_each(|c| walk(c, out));
+            }
+        }
+        let mut found = Vec::new();
+        for s in self.selected_shapes() {
+            walk(&s, &mut found);
+        }
+        found
+            .into_iter()
+            .filter_map(|(id, b)| {
+                let s = self.doc().find_shape(id)?;
+                let parent = self.doc().parent_transform(id).unwrap_or(Affine::IDENTITY);
+                Some((id, b, parent * s.transform))
             })
             .collect()
     }
@@ -554,5 +564,43 @@ mod tests {
         let mut odd = s.clone();
         odd.data = vec![(DATA_KEY.into(), "not json".into())];
         assert!(Balloon::of(&odd).is_none());
+    }
+    /// #3352: a balloon grouped with its words is picked as the group;
+    /// a style chosen on the bar still turns the balloon in it, and the
+    /// words are left as they are.
+    #[test]
+    fn a_style_reaches_a_balloon_grouped_with_its_words() {
+        let mut app = App::headless();
+        app.tool = Tool::Balloon;
+        app.create_box_shape(Point::new(10.0, 50.0), Point::new(50.0, 70.0));
+        let (id, before, _) = app.selected_balloons()[0];
+        let words = app
+            .new_shape(ShapeKind::Rect {
+                rect: Rect::new(20.0, 55.0, 40.0, 65.0),
+                radius: 0.0,
+                corners: None,
+            })
+            .expect("words stand-in");
+        app.select(vec![id, words]);
+        app.group_selection();
+        assert_eq!(app.selection.len(), 1);
+        assert_ne!(app.selection[0], id, "the group is selected");
+        app.set_balloon_settings(|st, _, _| *st = BalloonStyle::Shout);
+        let s = app.doc().find_shape(id).expect("balloon in the group");
+        let after = Balloon::of(s).expect("still a balloon");
+        assert_eq!(after.style, BalloonStyle::Shout);
+        assert_eq!(after.body, before.body);
+        assert_eq!(after.tip, before.tip);
+        assert!(matches!(
+            app.doc().find_shape(words).map(|w| &w.kind),
+            Some(ShapeKind::Rect { .. })
+        ));
+        app.undo();
+        let s = app.doc().find_shape(id).expect("balloon");
+        assert_eq!(
+            Balloon::of(s).unwrap().style,
+            BalloonStyle::Speech,
+            "one undo"
+        );
     }
 }

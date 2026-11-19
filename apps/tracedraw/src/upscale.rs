@@ -152,6 +152,12 @@ fn finish(key: u64, e: Arc<Enlarged>) {
     JOB_DONE.notify_all();
 }
 
+/// Whether [`enlarged`] enlarges `img` (it is small enough).
+pub fn would_enlarge(img: &RgbaImage) -> bool {
+    let (w, h) = img.dimensions();
+    factor_for(w, h).is_some()
+}
+
 /// `img` enlarged for tracing ([`factor_for`]), by the model when it is
 /// downloaded and the picture small enough, else sharpened; the same
 /// picture again gets the enlargement made before. While the model
@@ -212,6 +218,13 @@ pub fn enlarged(img: &RgbaImage, cancel: Option<&Cancel>) -> Prep {
         }
         if crate::trace::cancelled(cancel) {
             return Prep::Cancelled;
+        }
+        if let Some(part) = enlarging() {
+            crate::trace_progress::report(
+                cancel,
+                crate::trace_progress::Step::Enlarge,
+                part.into(),
+            );
         }
         jobs = match JOB_DONE.wait_timeout(jobs, std::time::Duration::from_millis(50)) {
             Ok((g, _)) => g,

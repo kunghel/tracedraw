@@ -27,6 +27,18 @@ pub(crate) const HISTORY_LEN: usize = 10;
 /// version being built.
 pub(crate) const RELEASES: &[Release] = &[
     Release {
+        version: "0.49.0",
+        date: "2026-11-19",
+        title: "welcome.news.v0_49_0_title",
+        body: "welcome.news.v0_49_0_body",
+    },
+    Release {
+        version: "0.48.0",
+        date: "2026-11-16",
+        title: "welcome.news.v0_48_0_title",
+        body: "welcome.news.v0_48_0_body",
+    },
+    Release {
         version: "0.47.0",
         date: "2026-11-16",
         title: "welcome.news.v0_47_0_title",
@@ -74,18 +86,6 @@ pub(crate) const RELEASES: &[Release] = &[
         title: "welcome.news.v0_44_title",
         body: "welcome.news.v0_44_body",
     },
-    Release {
-        version: "0.43.0",
-        date: "2026-11-08",
-        title: "welcome.news.v0_43_title",
-        body: "welcome.news.v0_43_body",
-    },
-    Release {
-        version: "0.42.1",
-        date: "2026-11-08",
-        title: "welcome.news.v0_42_1_title",
-        body: "welcome.news.v0_42_1_body",
-    },
 ];
 
 /// The GitHub release page of `version`, with its full list of changes.
@@ -104,6 +104,10 @@ pub(crate) fn news_row_id(version: &str) -> egui::Id {
 }
 
 pub fn welcome_screen(app: &mut App, ui: &mut Ui) {
+    // A start page, not a document: its title, captions and headings
+    // are not text to select, and a drag over them selects nothing
+    // (#3206). What's New's paragraphs stay selectable to copy.
+    ui.style_mut().interaction.selectable_labels = false;
     ui.add_space(8.0);
     // The tabs go on to a second line on a narrow screen (#1691).
     ui.horizontal_wrapped(|ui| {
@@ -226,7 +230,7 @@ fn get_started(app: &mut App, ui: &mut Ui) {
         return;
     }
     ui.horizontal_top(|ui| {
-        ui.add_space(24.0);
+        ui.add_space(WELCOME_SIDE_MARGIN);
         ui.vertical(|ui| {
             ui.set_width(260.0);
             start_buttons(app, ui);
@@ -236,7 +240,12 @@ fn get_started(app: &mut App, ui: &mut Ui) {
             return;
         }
         ui.add_space(40.0);
-        ui.vertical(|ui| recent_documents(app, ui, false));
+        // As far from the window's right edge as the buttons are from its
+        // left, so the table and its scroll bar do not touch it (#2867).
+        ui.vertical(|ui| {
+            ui.set_max_width((ui.available_width() - WELCOME_SIDE_MARGIN).max(0.0));
+            recent_documents(app, ui, false);
+        });
     });
 }
 
@@ -370,6 +379,9 @@ pub(crate) fn remove_recent_id(path: &std::path::Path) -> egui::Id {
     egui::Id::new(("welcome_recent_remove", path))
 }
 
+/// The room left of the start buttons and right of the recent documents
+/// on a desktop (#2867).
+const WELCOME_SIDE_MARGIN: f32 = 24.0;
 /// The size of a recent document's row (the narrow list's).
 const RECENT_ROW: egui::Vec2 = egui::vec2(380.0, 56.0);
 /// The recent documents' thumbnail.
@@ -696,7 +708,7 @@ fn news(ui: &mut Ui) -> Option<String> {
                     .id_salt(news_row_id(r.version))
                     .default_open(i == 0)
                     .show(ui, |ui| {
-                        ui.label(tr(r.body));
+                        ui.add(egui::Label::new(tr(r.body)).selectable(true));
                         ui.add_space(2.0);
                         let url = release_page(r.version);
                         if ui
@@ -884,6 +896,12 @@ mod tests {
             .expect("the row")
             .rect;
         assert!(row.width() > 600.0, "{row:?}");
+        // #2867: and stop short of the window's right edge, as far from
+        // it as the buttons are from the left.
+        assert!(
+            row.right() <= 1200.0 - WELCOME_SIDE_MARGIN,
+            "the table touches the right edge: {row:?}"
+        );
         // The size and date stand in their columns, right of the name.
         let cols = table_columns(row.left(), row.right());
         assert!(cols[2].0 > cols[1].0 && cols[3].0 > cols[2].0);
@@ -1212,6 +1230,57 @@ mod tests {
         assert_eq!(
             news_click(&ctx, link.center()),
             Some(release_page(r.version))
+        );
+    }
+
+    /// #3206: the welcome screen's title and captions are not text to
+    /// select (no text cursor over them, a drag selects nothing); a
+    /// What's New paragraph still is, to copy from.
+    #[test]
+    fn the_title_is_not_selectable_text() {
+        let mut app = App::headless();
+        app.show_welcome = true;
+        let ctx = crate::theme::ui_context();
+        let frame = |app: &mut App, events: Vec<egui::Event>| {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1200.0, 2000.0),
+                )),
+                events,
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(input, |ui| {
+                egui::CentralPanel::default().show(ui, |ui| welcome_screen(app, ui));
+            });
+            out.textures_delta.clear();
+            let texts: Vec<(String, egui::Rect)> = out
+                .shapes
+                .iter()
+                .filter_map(|c| match &c.shape {
+                    egui::Shape::Text(t) => Some((
+                        t.galley.text().to_string(),
+                        t.galley.rect.translate(t.pos.to_vec2()),
+                    )),
+                    _ => None,
+                })
+                .collect();
+            (out.platform_output.cursor_icon, texts)
+        };
+        let cursor_over = |app: &mut App, text: &str| {
+            let (_, texts) = frame(app, Vec::new());
+            let at = find(&texts, text).expect(text).center();
+            frame(app, vec![egui::Event::PointerMoved(at)]);
+            frame(app, vec![egui::Event::PointerMoved(at)]).0
+        };
+        for tab in [WelcomeTab::GetStarted, WelcomeTab::Learn] {
+            app.welcome_tab = tab;
+            assert_ne!(cursor_over(&mut app, "TraceDraw"), egui::CursorIcon::Text);
+        }
+        app.welcome_tab = WelcomeTab::News;
+        assert_eq!(
+            cursor_over(&mut app, &tr(RELEASES[0].body)),
+            egui::CursorIcon::Text
         );
     }
 }

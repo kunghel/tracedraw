@@ -53,7 +53,7 @@ was changed on every tab (#633).
 | General | On start-up: Welcome Screen, Start a new document, Open last edited document; Show New Document dialog box (on); Show the splash screen at start-up (on); Use hardware acceleration and the graphics card (from the next start); Undo levels, Regular (150). The splash, hardware acceleration and Global > General's AI agents section are shown on the desktop only: on Android and in the browser they do nothing and are hidden (`ui::options::DesktopOnly`, #1415) |
 | Display | Proof colors; Show tooltips (on); Hide bounding box for curve tools (off); Enable node tracking (off, see `pick-tool.md`); Full-screen preview: Show page border (on); Default action for mouse wheel: Zoom or Scroll; View when a drawing opens (below); Ruler calibration (below); Screen margins (Android only, see `android.md`, #1917) |
 | Edit | Constrain angle (15 degrees: Ctrl while rotating); Drawing precision (3 decimal places: at most that many in the property bars' length fields, at least one, trailing zeros dropped; that many in the status bar) |
-| Nodes and Handles | Node size Small, Medium, Large (7, 9, 11 px); Handle size Small, Medium, Large (6, 8, 10 px, Large by default; the Pick tool's selection handles, #1285, see `pick-tool.md`); node shape per type (cusp square, smooth circle, symmetrical diamond); Show curve direction (an arrow after the first node, secondary colour); main colour (selected nodes and handles, blue) and secondary colour (red); Show unselected nodes with fill (on, Ctrl+Shift+G); Pick distance (6 px, nodes and handles) and, on the same row, Object click distance (3 px by default, 0 to 20): how far from an object's outline a click still picks it with the Pick tool and the other tools that pick objects by a click (`App::object_pick_tol`, `pick_drag_tests::the_object_click_distance_is_a_setting`, #1679); control handle arrow heads are as long as the node size (#1643) |
+| Nodes and Handles | Node size Small, Medium, Large (7, 9, 11 px); Handle size Small, Medium, Large (6, 8, 10 px, Large by default; the Pick tool's selection handles, #1285, see `pick-tool.md`, and the Shape tool's control handle heads: Small 60 %, Medium 80 %, Large their full length, #3003); node shape per type (cusp square, smooth circle, symmetrical diamond); Show curve direction (the first node of each part and the last of an open part are triangles turned along the curve, #3038); main colour (selected nodes and handles, blue) and secondary colour (red); Show unselected nodes with fill (on, Ctrl+Shift+G); Pick distance (6 px, nodes and handles) and, on the same row, Object click distance (3 px by default, 0 to 20): how far from an object's outline a click still picks it with the Pick tool and the other tools that pick objects by a click (`App::object_pick_tol`, `pick_drag_tests::the_object_click_distance_is_a_setting`, #1679); control handle arrow heads are as long as the node size (#1643) |
 | clip frame | Auto-center new content: when it lies completely outside the frame (default), always, never; Show lines in empty clip frame frames (on, on screen) |
 | Snapping | Snap to objects, page, guidelines, grid, baseline grid, pixels; snapping radius (10 px); show snap location marks and the screen tip (on); the modes, each with its mark (all on), Select All, Deselect All |
 | Alignment Guides | On or off; guides for the selection as one or each object; edges, centres, the page, equal spacing, equal sizes; margins with offset and inset; colour and line style; Reset (see `live-guides.md`) |
@@ -102,7 +102,9 @@ when zooming with the mouse wheel, off: a wheel notch first brings the
 spot under the pointer to the middle of the canvas and moves the pointer
 there (not in the browser, which cannot move it), then zooms about the
 middle, plain wheel or Ctrl+wheel as the mouse wheel action says
-(`settings.wheel_zoom_centers`); mouse wheel action; Calibrate Zoom... opens the ruler
+(`settings.wheel_zoom_centers`); mouse wheel action, and under it Ctrl+wheel
+zooms (off: Ctrl+wheel scrolls sideways while the wheel zooms; on, it
+zooms too, #3473, `settings.ctrl_wheel_zooms`); Calibrate Zoom... opens the ruler
 calibration on the Display page; Pan tool section: right mouse button of
 the Pan tool, zoom out or context menu (at first,
 `settings.pan_right_click_out`)), Freehand/Bézier (Freehand
@@ -224,6 +226,17 @@ once the last is in, everything the files brought is selected together
 (`App::import_picked_many`, `App::advance_import_queue`,
 `pick_drag_tests::several_imported_files_are_placed_one_after_another`,
 `pick_drag_tests::several_imported_files_come_in_at_once_without_the_cursor`).
+
+Link imported pictures to their files (`import_link_pictures`, on): a
+picture File > Import brings in remembers its file, so Image > Update
+from Link reads it again and a change to the file is read again by
+itself. Off, the picture is embedded only, as after Image > Break Link,
+and those two items stay pale for it. The drawing keeps the whole
+picture either way, so it shows and prints at its full resolution with
+no low resolution preview. The choice sits here because the Import
+dialog is the system's own file dialog, which takes no options of ours
+(#3089,
+`clipboard::tests::imported_pictures_are_linked_unless_the_option_is_off`).
 
 Imported objects go (File > Import with the import cursor off, Ctrl+I):
 where the file has them (the default), or centred in the middle of the
@@ -485,3 +498,15 @@ system within seconds and no frame waits for the system:
 
 Menus, lists and dialogs appear at once, without fading in.
 
+## Page shadow and border look
+
+(#3078, `ui/dialogs.rs` `page_look_editor`, `Settings::page_look`) Under
+Show page border and Show page shadow in the page size options, "Page
+shadow and border look" sets how both look on screen (never in print or
+exports): the shadow's colour with its opacity, its offset right and
+down (-40 to 40 px), its softness (0 to 40 px, 0 a hard edge), the
+border's colour with its opacity and its width (0.5 to 8 px). Colours
+left unset follow the theme; Theme default puts everything back. The
+look applies to every page shown, the pages beside the current one in
+the Multipage View too, and is kept with the settings
+(`canvas::tests::the_page_shadow_and_border_look_as_options_set`).

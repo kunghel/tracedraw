@@ -147,7 +147,9 @@ impl Session {
     /// A clean exit: the marker and this session's auto-backups go.
     pub fn end(&self) {
         for b in &self.marker.backups {
-            let _ = crate::files::remove(self.dir.join(b));
+            let path = self.dir.join(b);
+            let _ = crate::files::remove(&path);
+            remove_empty_folders(&path, &self.dir);
         }
         let _ = crate::files::remove(self.path());
     }
@@ -243,6 +245,18 @@ pub fn find(dir: &Path, now: u64, own: Option<&str>) -> Vec<Found> {
     out
 }
 
+/// The folders between `file` and `root` that are left empty (a
+/// session's folder of backups once they are gone) go; `root` stays.
+pub fn remove_empty_folders(file: &Path, root: &Path) {
+    let mut at = file.parent();
+    while let Some(dir) = at.filter(|d| *d != root && d.starts_with(root)) {
+        if crate::files::WEB || std::fs::remove_dir(dir).is_err() {
+            break;
+        }
+        at = dir.parent();
+    }
+}
+
 /// Forget what a gone session left: its marker, and with `with_backups`
 /// its backups too.
 pub fn dismiss(found: &[Found], with_backups: bool) {
@@ -250,6 +264,9 @@ pub fn dismiss(found: &[Found], with_backups: bool) {
         if with_backups {
             for b in &f.backups {
                 let _ = crate::files::remove(b);
+                if let Some(dir) = f.marker.parent() {
+                    remove_empty_folders(b, dir);
+                }
             }
         }
         let _ = crate::files::remove(&f.marker);

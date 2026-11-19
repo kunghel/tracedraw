@@ -211,6 +211,9 @@ pub fn parse(bytes: &[u8], ids: &mut IdSource) -> Result<Imported, String> {
                     s.opacity = l.opacity;
                     s.visible = l.visible;
                     s.name = Some(l.name);
+                    if let Some(inks) = l.inks {
+                        cmyk_inks(&mut s, w, h, inks);
+                    }
                     shapes.push(s);
                 }
             }
@@ -233,7 +236,7 @@ pub fn parse(bytes: &[u8], ids: &mut IdSource) -> Result<Imported, String> {
             version,
         ) {
             Some(planes) => {
-                let rgba = to_rgba(
+                let (rgba, inks) = to_rgba(
                     &planes,
                     &header,
                     palette.as_deref(),
@@ -254,6 +257,9 @@ pub fn parse(bytes: &[u8], ids: &mut IdSource) -> Result<Imported, String> {
                 );
                 s.fill = Fill::None;
                 s.stroke = None;
+                if let Some(inks) = inks {
+                    cmyk_inks(&mut s, width, height, inks);
+                }
                 shapes.push(s);
             }
             None => return Err("image data could not be decoded".into()),
@@ -305,6 +311,8 @@ struct LayerOut {
     opacity: f64,
     visible: bool,
     png: Option<(Vec<u8>, u32, u32)>,
+    /// The ink planes of a CMYK file (see [`cmyk_inks`]).
+    inks: Option<Vec<u8>>,
 }
 
 struct ChannelInfo {
@@ -520,7 +528,7 @@ fn parse_layers(
         if let Some(a) = alpha {
             color.push(a);
         }
-        let mut rgba = to_rgba(&color, h, palette, w, hgt, has_alpha);
+        let (mut rgba, inks) = to_rgba(&color, h, palette, w, hgt, has_alpha);
         // Layer mask: multiply alpha where the mask covers the layer.
         if let (Some((_, mask)), Some((mt, ml, mb, mr, default))) =
             (planes.iter().find(|(i, _)| *i == -2), rec.mask)
@@ -552,6 +560,7 @@ fn parse_layers(
             opacity: rec.opacity as f64 / 255.0,
             visible: !rec.hidden,
             png: Some((png, w, hgt)),
+            inks,
         });
     }
     // Layers are stored bottom to top already.
@@ -689,7 +698,31 @@ fn unpack_bits(packed: &[u8], out: &mut Vec<u8>, limit: usize) {
     out.resize(start + limit, 0);
 }
 
-/// Planes to RGBA8 per the colour mode.
+/// A CMYK bitmap keeps its inks: `inks` are the cyan, magenta, yellow
+/// and black coverages (0 = no ink) of its `w` by `h` pixels, one plane
+/// under the other, as `PictureInks` keeps them. A CMYK file came in
+/// as RGB (#3025).
+fn cmyk_inks(s: &mut Shape, w: u32, h: u32, inks: Vec<u8>) {
+    let ShapeKind::Bitmap { png, .. } = &s.kind else {
+        return;
+    };
+    let Some(planes) = h
+        .checked_mul(4)
+        .and_then(|h4| image::GrayImage::from_raw(w, h4, inks))
+    else {
+        return;
+    };
+    let mut out = std::io::Cursor::new(Vec::new());
+    if planes.write_to(&mut out, image::ImageFormat::Png).is_err() {
+        return;
+    }
+    let inks = tracedraw_core::picture_inks::PictureInks::cmyk(png, out.into_inner().into());
+    s.cmyk_bitmap = true;
+    s.picture_inks = Some(Box::new(inks));
+}
+
+/// Planes to RGBA8 per the colour mode, and for a CMYK file its ink
+/// planes (see [`cmyk_inks`]).
 fn to_rgba(
     planes: &[Vec<u8>],
     h: &Header,
@@ -697,9 +730,14 @@ fn to_rgba(
     w: u32,
     hgt: u32,
     has_alpha: bool,
-) -> Vec<u8> {
+) -> (Vec<u8>, Option<Vec<u8>>) {
     let n = (w * hgt) as usize;
     let mut out = Vec::with_capacity(n * 4);
+    let mut inks = (h.mode == Mode::Cmyk).then(|| vec![0u8; n * 4]);
+    let mut shown: std::collections::HashMap<[u8; 4], [u8; 3]> = std::collections::HashMap::new();
+    // 1-bit rows start on a whole byte (#3025: a picture whose width is
+    // not a multiple of 8 came in slanted).
+    let row_bytes = (w as usize).div_ceil(8);
     let bps = bytes_per_sample(h.depth);
     let nc = h.mode.channels();
     let alpha_plane = if has_alpha { planes.get(nc) } else { None };
@@ -708,9 +746,10 @@ fn to_rgba(
             match planes.get(c) {
                 Some(p) => {
                     if h.depth == 1 {
-                        let byte = p.get(i / 8).copied().unwrap_or(0);
+                        let (x, y) = (i % w as usize, i / w as usize);
+                        let byte = p.get(y * row_bytes + x / 8).copied().unwrap_or(0);
                         // 1 = black in bitmap mode.
-                        if (byte >> (7 - (i % 8))) & 1 == 1 {
+                        if (byte >> (7 - (x % 8))) & 1 == 1 {
                             0
                         } else {
                             255
@@ -725,15 +764,26 @@ fn to_rgba(
         let (r, g, b) = match h.mode {
             Mode::Rgb => (s(0), s(1), s(2)),
             Mode::Cmyk => {
-                // Photoshop stores CMYK inverted (0 = full ink).
-                let (c, m, y, k) = (
-                    s(0) as f32 / 255.0,
-                    s(1) as f32 / 255.0,
-                    s(2) as f32 / 255.0,
-                    s(3) as f32 / 255.0,
-                );
-                let q = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
-                (q(c * k), q(m * k), q(y * k))
+                // Photoshop stores CMYK inverted (0 = full ink). The
+                // inks are kept, and shown as a CMYK colour of the
+                // drawing shows (through the colour management).
+                let ink = [255 - s(0), 255 - s(1), 255 - s(2), 255 - s(3)];
+                if let Some(planes) = inks.as_mut() {
+                    for (k, v) in ink.iter().enumerate() {
+                        planes[k * n + i] = *v;
+                    }
+                }
+                let rgb = *shown.entry(ink).or_insert_with(|| {
+                    let f = |v: u8| f32::from(v) / 255.0;
+                    tracedraw_core::Color::Cmyk {
+                        c: f(ink[0]),
+                        m: f(ink[1]),
+                        y: f(ink[2]),
+                        k: f(ink[3]),
+                    }
+                    .to_rgb8()
+                });
+                (rgb[0], rgb[1], rgb[2])
             }
             Mode::Indexed => {
                 let idx = s(0) as usize * 3;
@@ -758,7 +808,7 @@ fn to_rgba(
         };
         out.extend_from_slice(&[r, g, b, a]);
     }
-    out
+    (out, inks)
 }
 
 #[cfg(test)]
@@ -810,6 +860,49 @@ mod tests {
         }
         // 72 ppi: 2 px = 2 pt.
         assert!((imp.size.width - 2.0 * PX_MM).abs() < 1e-9);
+    }
+
+    /// #3025: a 1-bit (Bitmap mode) file whose width is not a multiple
+    /// of 8 starts each row on a whole byte; read as one run of bits, it
+    /// came in slanted.
+    #[test]
+    fn a_one_bit_composite_reads_row_by_row() {
+        // 10x2: the first row black at x = 0 and x = 9, the second at
+        // x = 1; each row is two bytes, 1 = black.
+        let mut img = 0u16.to_be_bytes().to_vec();
+        img.extend_from_slice(&[0b1000_0000, 0b0100_0000, 0b0100_0000, 0]);
+        let mut bytes = psd(10, 2, 0, 1, &[], &img);
+        bytes[22..24].copy_from_slice(&1u16.to_be_bytes());
+        let imp = parse(&bytes, &mut IdSource::default()).expect("parse");
+        let ShapeKind::Bitmap { png, .. } = &imp.shapes[0].kind else {
+            panic!("bitmap");
+        };
+        let pm = tiny_skia::Pixmap::decode_png(png).unwrap();
+        let black: Vec<usize> = (0..20).filter(|&i| pm.pixels()[i].red() == 0).collect();
+        assert_eq!(black, [0, 9, 11]);
+    }
+
+    /// #3025: a CMYK file keeps its inks (stored inverted: 255 = no ink)
+    /// and the CMYK mode; it came in as RGB.
+    #[test]
+    fn a_cmyk_composite_keeps_its_inks() {
+        // 2x1: pure cyan, then 50 % black.
+        let mut img = 0u16.to_be_bytes().to_vec();
+        img.extend_from_slice(&[0, 255, 255, 255, 255, 255, 255, 127]);
+        let bytes = psd(2, 1, 4, 4, &[], &img);
+        let imp = parse(&bytes, &mut IdSource::default()).expect("parse");
+        let s = &imp.shapes[0];
+        assert!(s.cmyk_bitmap);
+        let inks = s.picture_inks.as_deref().expect("inks");
+        let ShapeKind::Bitmap { png, .. } = &s.kind else {
+            panic!("bitmap");
+        };
+        assert!(inks.fits(png));
+        let planes = image::load_from_memory(&inks.png).unwrap().into_luma8();
+        assert_eq!((planes.width(), planes.height()), (2, 4));
+        // Cyan plane, then magenta, yellow, black.
+        let v: Vec<u8> = planes.pixels().map(|p| p[0]).collect();
+        assert_eq!(v, [255, 0, 0, 0, 0, 0, 0, 128]);
     }
 
     #[test]
@@ -938,14 +1031,8 @@ pub fn page_to_psd(doc: &Document, page_index: usize, dpi: f64) -> Option<Vec<u8
     let page_id = page.id;
     let max_dpi = (MAX_WRITE_PX / page.size.width.max(page.size.height) * 25.4).max(1.0);
     let dpi = dpi.clamp(1.0, max_dpi);
-    let zoom = dpi / 25.4;
-    let w = (page.size.width * zoom).ceil().max(1.0) as u32;
-    let h = (page.size.height * zoom).ceil().max(1.0) as u32;
-    let view = tracedraw_render::ViewTransform {
-        zoom,
-        origin_x: 0.0,
-        origin_y: h as f64,
-    };
+    let (w, h, view) =
+        tracedraw_render::ViewTransform::whole_page(page.size.width, page.size.height, dpi / 25.4);
     let opts = || tracedraw_render::RenderOptions {
         width: w,
         height: h,

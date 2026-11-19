@@ -7,8 +7,18 @@ Each running TraceDraw keeps a small marker, `session-<id>.json`, in the
 auto-backup folder (`TraceDraw` in the temporary folder unless Options >
 Save names another). It holds the time the session last checked in
 (once a minute) and the names of the auto-backups it wrote
-(`AutoBackup_of_<name>.tdraw`, every 20 minutes by default, see
-`options.md`).
+(`<id>/AutoBackup_of_<name>.tdraw`, every 20 minutes by default, see
+`options.md`). Each session writes its backups in a folder of its own,
+named by its id, so two TraceDraws running at once never write over each
+other's backups: both used the same name (`AutoBackup_of_Untitled-1.tdraw`
+for each one's first new drawing), the second overwrote the first's, and
+the one that closed cleanly then deleted the backup the other still
+counted on (`app::tests::two_programs_at_once_keep_their_own_backups`).
+The folder goes when its last backup does. Two open drawings of the same
+name (files of one name in two folders, `logo.tdraw` beside `logo.cdr`)
+each get a backup, the later ones numbered (`AutoBackup_of_logo (2).tdraw`;
+they shared one file, so only one was recovered,
+`app::tests::two_drawings_of_one_name_get_a_backup_each`).
 
 - Closing TraceDraw normally deletes the marker and the auto-backups that
   session wrote (unsaved drawings were already asked about).
@@ -27,7 +37,9 @@ Save names another). It holds the time the session last checked in
   when complete, so a backup cut short never replaces a whole one. The
   status line says "Auto-backup saved" on the frame the thread is done; a
   clean exit waits for a backup still being written and then removes it
-  with the others. Save (`.tdraw`) also writes straight to the file.
+  with the others. Save (`.tdraw` and `.cdr`) also writes the whole new
+  file under a `.part` name first and only then puts it in the old
+  one's place (see `files.md`).
 - A drawing that has not changed since its last auto-backup is not
   written again.
 - Backing up at once (`App::backup_now`): eframe's `App::save` writes the
@@ -90,6 +102,8 @@ site (`web::backups`, `files::WEB_BACKUP_DIR`, the path `/backup`):
 - `app::tests::a_program_quit_without_asking_keeps_its_unsaved_drawings_for_the_next_start`
 - `app::tests::a_clean_exit_leaves_no_backup_behind`
 - `app::tests::backing_up_at_once_writes_changed_drawings_and_drops_saved_ones`
+- `app::tests::two_programs_at_once_keep_their_own_backups`
+- `app::tests::two_drawings_of_one_name_get_a_backup_each`
 - `recovery::tests::a_marker_kept_alive_or_marked_gone_keeps_its_backups`
 - `recovery::tests::a_session_forgets_the_backup_of_a_saved_drawing`
 - `app::tests::saving_over_a_file_keeps_a_backup_and_auto_backup_saves_dirty_drawings`

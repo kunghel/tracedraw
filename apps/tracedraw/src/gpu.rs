@@ -928,6 +928,27 @@ fn args_with(next: Mode, args: &[String]) -> Vec<String> {
     rest
 }
 
+/// A start with another renderer asked for once this one has exited
+/// (Help > Benchmark, to measure with and without the graphics card).
+static RESTART_AFTER_EXIT: std::sync::Mutex<Option<Mode>> = std::sync::Mutex::new(None);
+
+/// Start again with `next` once the window has closed (`None`: not).
+pub fn restart_after_exit(next: Option<Mode>) {
+    match RESTART_AFTER_EXIT.lock() {
+        Ok(mut g) => *g = next,
+        Err(p) => *p.into_inner() = next,
+    }
+}
+
+/// The renderer to start again with, once; `None` when no start was
+/// asked for.
+pub fn take_restart_after_exit() -> Option<Mode> {
+    match RESTART_AFTER_EXIT.lock() {
+        Ok(mut g) => g.take(),
+        Err(p) => p.into_inner().take(),
+    }
+}
+
 /// Run TraceDraw again with `next`, the other arguments kept, until it
 /// ends; false when it did not start.
 pub fn restart_with(next: Mode, args: &[String]) -> bool {

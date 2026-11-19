@@ -1,12 +1,14 @@
-//! The Help > Benchmark window: runs the tests of `crate::benchmark`
-//! (the processor ones on a thread of their own, the graphics one over a
-//! few frames of the window), shows a score for each part and the
-//! overall one, warns when the computer is slow for large drawings
-//! (and turns on Light zoom then), and keeps the result with hardware
-//! acceleration on and off side by side.
+//! The Help > Benchmark window: a quick test (the processor, the memory
+//! and the graphics, some seconds) or an advanced one (the same, then
+//! real tasks on two large drawings, a minute or more), all in this
+//! window. It shows the time of each task with a coloured bar, about how
+//! many objects stay comfortable, a score for each part, suggests the
+//! zoom that suits the computer (smooth, as in CorelDRAW, or light) and
+//! measures with and without the graphics card, starting TraceDraw again
+//! the other way when there is a card. See docs/behavior/benchmark.md.
 
 use crate::app::App;
-use crate::benchmark::{self as bench, Measured};
+use crate::benchmark::{self as bench, Level, Measured, Rating, Task, ZoomStyle};
 use crate::i18n::{tr, trf};
 use crate::theme::Tokens;
 use crate::ui::tips::RichTip;
@@ -16,26 +18,45 @@ use egui::{Color32, ColorImage, Context, RichText, TextureHandle, TextureOptions
 /// made, the window settled).
 const WARM_FRAMES: usize = 5;
 
-/// The colour of a low score and of the warning, readable on light
-/// and dark themes.
+/// The colour of a low score, a slow task and the warning, readable on
+/// light and dark themes.
 const WARN: Color32 = Color32::from_rgb(0xD8, 0x3B, 0x2B);
+/// A task that feels at once.
+const GOOD: Color32 = Color32::from_rgb(0x2E, 0x9E, 0x4F);
+/// A task that takes a moment.
+const FAIR: Color32 = Color32::from_rgb(0xD9, 0x9A, 0x1B);
+
+/// What the measuring thread tells the window.
+enum Msg {
+    /// A task begins: its key, and how many steps were done of how many.
+    Step(&'static str, usize, usize),
+    /// All measured: all cores, one core, memory, and the tasks.
+    Done((f64, f64, f64), Vec<Task>),
+}
 
 /// Where a run stands.
 #[derive(Default)]
 enum Phase {
     #[default]
     Idle,
-    /// The processor and memory tests running on their thread.
+    /// The processor, memory and (advanced) task tests running on their
+    /// thread, with the step it is at.
     #[cfg(not(target_arch = "wasm32"))]
-    Processor(std::sync::mpsc::Receiver<(f64, f64, f64)>),
+    Processor {
+        rx: std::sync::mpsc::Receiver<Msg>,
+        level: Level,
+        step: Option<(&'static str, usize, usize)>,
+    },
     /// The graphics test: frames of the window, each handing it new
     /// pictures.
     Graphics(Box<Graphics>),
 }
 
 struct Graphics {
+    level: Level,
     /// What the processor tests measured: all cores, one core, memory.
     cpu: (f64, f64, f64),
+    tasks: Vec<Task>,
     /// Frames shown so far.
     frames: usize,
     /// When the timed frames began, and the last frame.
@@ -78,30 +99,108 @@ fn test_image(odd: bool) -> ColorImage {
     img
 }
 
+/// Steps of a run on the measuring thread, to show how far it is.
+fn steps(level: Level, card: bool) -> usize {
+    match level {
+        Level::Quick => 1,
+        Level::Advanced => 1 + 6 * bench::ADVANCED_SIZES.len() + if card { 2 } else { 0 },
+    }
+}
+
+/// Whether the graphics card can blur shadows in this start, so the
+/// advanced test compares it with the processor.
+fn card_blurs() -> bool {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        crate::gpu_fx::available()
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        false
+    }
+}
+
+/// Everything the measuring thread does: the processor and the memory,
+/// then for the advanced test the tasks on the large drawings and the
+/// shadows with and without the card.
+fn measure(level: Level, card: bool, tell: &mut dyn FnMut(&'static str, usize, usize)) -> Msg {
+    let total = steps(level, card);
+    let mut done = 0;
+    tell("benchmark.measuring_processor", done, total);
+    let (all, one) = bench::time_drawing();
+    let memory = bench::time_memory();
+    done += 1;
+    let mut tasks = Vec::new();
+    if level == Level::Advanced {
+        for n in bench::ADVANCED_SIZES {
+            tasks.extend(bench::time_tasks(n, &mut |key| {
+                tell(key, done, total);
+                done += 1;
+            }));
+        }
+        if card {
+            tasks.extend(bench::time_shadows(
+                &mut |on| {
+                    #[cfg(not(target_arch = "wasm32"))]
+                    crate::gpu_fx::force(Some(on));
+                    let _ = on;
+                },
+                &mut |key| {
+                    tell(key, done, total);
+                    done += 1;
+                },
+            ));
+            #[cfg(not(target_arch = "wasm32"))]
+            crate::gpu_fx::force(None);
+        }
+    }
+    Msg::Done((all, one, memory), tasks)
+}
+
 /// Start a run.
-pub fn start(app: &mut App) {
+pub fn start(app: &mut App, level: Level) {
     app.benchmark.done = None;
     app.benchmark.light_zoom_turned_on = false;
+    let card = level == Level::Advanced && card_blurs();
     #[cfg(not(target_arch = "wasm32"))]
     {
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::spawn(move || {
-            let (all, one) = bench::time_drawing();
-            let _ = tx.send((all, one, bench::time_memory()));
+            let step = tx.clone();
+            let done = measure(level, card, &mut |key, done, total| {
+                let _ = step.send(Msg::Step(key, done, total));
+            });
+            let _ = tx.send(done);
         });
-        app.benchmark.phase = Phase::Processor(rx);
+        app.benchmark.phase = Phase::Processor {
+            rx,
+            level,
+            step: None,
+        };
     }
     // No threads in the browser: measured in this frame.
     #[cfg(target_arch = "wasm32")]
-    {
-        let (all, one) = bench::time_drawing();
-        app.benchmark.phase = graphics((all, one, bench::time_memory()));
+    if let Msg::Done(cpu, tasks) = measure(level, card, &mut |_, _, _| {}) {
+        app.benchmark.phase = graphics(level, cpu, tasks);
     }
 }
 
-fn graphics(cpu: (f64, f64, f64)) -> Phase {
+/// TraceDraw started again with or without the graphics card for the
+/// benchmark: open it and run the test asked for.
+pub fn resume(app: &mut App) {
+    let Some(level) = app.settings.benchmark_resume.take() else {
+        return;
+    };
+    app.settings.save();
+    app.dialog = crate::ui::dialogs::Dialog::Benchmark;
+    start(app, level);
+}
+
+fn graphics(level: Level, cpu: (f64, f64, f64), tasks: Vec<Task>) -> Phase {
     Phase::Graphics(Box::new(Graphics {
+        level,
         cpu,
+        tasks,
         frames: 0,
         started: None,
         last: None,
@@ -111,23 +210,54 @@ fn graphics(cpu: (f64, f64, f64)) -> Phase {
     }))
 }
 
-/// A run's frame: the processor tests polled, or a frame of the graphics
-/// test (its pictures shown small in `ui`). Ends the run once all is
-/// measured.
+/// What is being measured, with a bar of how far the run is.
+fn progress(ui: &mut Ui, key: &str, done: usize, total: usize) {
+    ui.label(tr(key));
+    let share = if total > 0 {
+        done as f32 / total as f32
+    } else {
+        0.0
+    };
+    ui.add(egui::ProgressBar::new(share).desired_width(320.0));
+}
+
+/// A run's frame: the measuring thread polled, or a frame of the
+/// graphics test (its pictures shown small in `ui`). Ends the run once
+/// all is measured.
 fn step(app: &mut App, ui: &mut Ui) {
     let ctx = ui.ctx().clone();
     match &mut app.benchmark.phase {
         Phase::Idle => return,
         #[cfg(not(target_arch = "wasm32"))]
-        Phase::Processor(rx) => match rx.try_recv() {
-            Ok(cpu) => app.benchmark.phase = graphics(cpu),
-            Err(std::sync::mpsc::TryRecvError::Empty) => {
-                ui.label(tr("benchmark.measuring_processor"));
+        Phase::Processor { rx, level, step } => {
+            let level = *level;
+            let mut next = None;
+            loop {
+                match rx.try_recv() {
+                    Ok(Msg::Step(key, done, total)) => *step = Some((key, done, total)),
+                    Ok(Msg::Done(cpu, tasks)) => {
+                        next = Some(graphics(level, cpu, tasks));
+                        break;
+                    }
+                    Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                    Err(_) => {
+                        next = Some(Phase::Idle);
+                        break;
+                    }
+                }
             }
-            Err(_) => app.benchmark.phase = Phase::Idle,
-        },
+            match next {
+                Some(p) => app.benchmark.phase = p,
+                None => {
+                    let (key, done, total) =
+                        step.unwrap_or(("benchmark.measuring_processor", 0, 1));
+                    progress(ui, key, done, total);
+                }
+            }
+        }
         Phase::Graphics(g) => {
-            ui.label(tr("benchmark.measuring_graphics"));
+            let total = bench::GRAPHICS_FRAMES + WARM_FRAMES;
+            progress(ui, "benchmark.measuring_graphics", g.frames, total);
             let now = web_time::Instant::now();
             if g.frames == WARM_FRAMES {
                 g.started = Some(now);
@@ -155,7 +285,7 @@ fn step(app: &mut App, ui: &mut Ui) {
                 }
             });
             g.frames += 1;
-            if g.frames >= WARM_FRAMES + bench::GRAPHICS_FRAMES {
+            if g.frames >= total {
                 let timed = (g.frames - WARM_FRAMES - 1) as f64;
                 let secs = g
                     .started
@@ -173,6 +303,8 @@ fn step(app: &mut App, ui: &mut Ui) {
                     fps,
                     worst_frame: g.worst,
                     when: bench::now(),
+                    level: g.level,
+                    tasks: std::mem::take(&mut g.tasks),
                 };
                 app.benchmark.phase = Phase::Idle;
                 finish(app, m);
@@ -262,10 +394,218 @@ fn scores(ui: &mut Ui, m: &Measured) {
     });
 }
 
+fn rating_color(r: Rating) -> Color32 {
+    match r {
+        Rating::Good => GOOD,
+        Rating::Fair => FAIR,
+        Rating::Slow => WARN,
+    }
+}
+
+/// A bar as long as the task's share of the time that feels slow, in
+/// the colour of how it feels.
+fn bar(ui: &mut Ui, task: &Task) {
+    let rating = bench::rating(&task.key, task.seconds);
+    let slow_at = match rating_limit(&task.key) {
+        l if l > 0.0 => l,
+        _ => 1.0,
+    };
+    let share = (task.seconds / slow_at).clamp(0.02, 1.0) as f32;
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(140.0, 12.0), egui::Sense::hover());
+    let painter = ui.painter_at(rect);
+    painter.rect_filled(rect, 3.0, Tokens::text_dim().gamma_multiply(0.25));
+    let mut fill = rect;
+    fill.set_width(rect.width() * share);
+    painter.rect_filled(fill, 3.0, rating_color(rating));
+}
+
+/// Seconds from which a task is slow (the end of its bar).
+fn rating_limit(key: &str) -> f64 {
+    if bench::rating(key, 1.01) == Rating::Slow {
+        1.0
+    } else {
+        4.0
+    }
+}
+
+/// The tasks of the advanced test, a row each: what, on how many
+/// objects, its bar and its time.
+fn tasks(ui: &mut Ui, m: &Measured) {
+    if m.tasks.is_empty() {
+        return;
+    }
+    ui.add_space(6.0);
+    ui.label(RichText::new(tr("benchmark.tasks")).strong());
+    egui::Grid::new("benchmark_tasks")
+        .num_columns(4)
+        .spacing([14.0, 4.0])
+        .show(ui, |ui| {
+            for t in &m.tasks {
+                ui.label(tr(&t.key));
+                ui.label(
+                    RichText::new(trf("benchmark.objects", &[("n", &group(t.objects as u64))]))
+                        .color(Tokens::text_dim()),
+                );
+                bar(ui, t);
+                ui.label(format!("{:.2} s", t.seconds));
+                ui.end_row();
+            }
+        });
+}
+
+/// A count with its thousands apart by a narrow space, which every
+/// language reads (10 000, 50 000).
+fn group(n: u64) -> String {
+    let digits = n.to_string();
+    let mut out = String::new();
+    for (i, c) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i) % 3 == 0 {
+            out.push('\u{202F}');
+        }
+        out.push(c);
+    }
+    out
+}
+
+/// The results of the run just finished.
+fn results(app: &App, ui: &mut Ui, m: &Measured) {
+    let comfortable = m.comfortable_objects();
+    if comfortable > 0 {
+        let color = if m.slow() { WARN } else { GOOD };
+        ui.label(
+            RichText::new(trf("benchmark.comfortable", &[("n", &group(comfortable))]))
+                .size(16.0)
+                .strong()
+                .color(color),
+        );
+        ui.add_space(4.0);
+    }
+    scores(ui, m);
+    if m.slow() {
+        ui.add_space(4.0);
+        ui.label(
+            RichText::new(trf(
+                "benchmark.slow",
+                &[
+                    ("score", &format!("{:.1}", m.overall())),
+                    ("limit", &format!("{:.1}", bench::SLOW_SCORE)),
+                    ("part", &tr(m.weakest())),
+                ],
+            ))
+            .color(WARN),
+        );
+        if m.software && m.graphics() < bench::SLOW_SCORE {
+            ui.label(tr("benchmark.slow_software"));
+        }
+    } else {
+        ui.label(tr("benchmark.fast"));
+    }
+    if app.benchmark.light_zoom_turned_on {
+        ui.label(RichText::new(tr("benchmark.light_zoom_turned_on")).strong());
+    }
+    tasks(ui, m);
+}
+
+/// The zoom styles, the one in use picked and the one that suits this
+/// computer marked once a run has measured it; a click uses it.
+fn zoom(app: &mut App, ui: &mut Ui) {
+    ui.label(RichText::new(tr("benchmark.zoom_title")).strong());
+    let current = ZoomStyle::of(&app.settings);
+    let suggested = app.benchmark.done.as_ref().map(|m| m.suggested_zoom());
+    for style in ZoomStyle::ALL {
+        ui.horizontal(|ui| {
+            let tip = format!("{}_tip", style.key());
+            if ui
+                .radio(current == style, tr(style.key()))
+                .rich_tip(crate::ui::tips::pair(style.key(), &tip))
+                .clicked()
+                && current != style
+            {
+                style.apply(&mut app.settings);
+                app.settings.save();
+            }
+            if suggested == Some(style) {
+                ui.label(
+                    RichText::new(tr("benchmark.recommended"))
+                        .strong()
+                        .color(GOOD),
+                );
+            }
+        });
+    }
+    if let Some(s) = suggested {
+        let why = if s == ZoomStyle::Light {
+            "benchmark.zoom_why_light"
+        } else {
+            "benchmark.zoom_why_corel"
+        };
+        ui.label(RichText::new(tr(why)).color(Tokens::text_dim()));
+    }
+}
+
+/// With and without the graphics card: the results of both kept, and a
+/// button that starts TraceDraw again the other way and runs the quick
+/// test there, when there is a card.
+fn card(app: &mut App, ui: &mut Ui, close: &mut bool) {
+    ui.label(RichText::new(tr("benchmark.compare")).strong());
+    for on in [true, false] {
+        let found = app
+            .settings
+            .benchmarks
+            .iter()
+            .find(|r| r.acceleration == on);
+        let label = tr(if on {
+            "benchmark.with_acceleration"
+        } else {
+            "benchmark.without_acceleration"
+        });
+        let value = found.map_or_else(
+            || tr("benchmark.not_measured"),
+            |r| {
+                trf(
+                    "benchmark.compare_value",
+                    &[
+                        ("score", &format!("{:.1}", r.overall())),
+                        ("graphics", &format!("{:.1}", r.graphics())),
+                    ],
+                )
+            },
+        );
+        ui.label(format!("{label}: {value}"));
+    }
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let Some(name) = crate::gpu::card_found() else {
+            ui.label(RichText::new(tr("benchmark.no_card")).color(Tokens::text_dim()));
+            return;
+        };
+        let software = gpu_software();
+        let (key, mode) = if software {
+            ("benchmark.test_with_card", crate::gpu::Mode::Hardware)
+        } else {
+            ("benchmark.test_without_card", crate::gpu::Mode::Software)
+        };
+        let running = app.benchmark.running();
+        if ui
+            .add_enabled(!running, egui::Button::new(trf(key, &[("name", name)])))
+            .rich_tip_always(crate::ui::tips::pair(key, "benchmark.restart_tip"))
+            .clicked()
+        {
+            app.settings.benchmark_resume = Some(Level::Quick);
+            app.settings.save();
+            crate::gpu::restart_after_exit(Some(mode));
+            app.request_exit();
+            *close = true;
+        }
+    }
+    #[cfg(target_arch = "wasm32")]
+    let _ = close;
+}
+
 /// The window.
 pub fn dialog(app: &mut App, ctx: &Context, close: &mut bool) {
     crate::ui::dialogs::window(ctx, tr("benchmark.title")).show(ctx, |ui| {
-        ui.set_max_width(560.0);
+        ui.set_max_width(600.0);
         ui.label(tr("benchmark.intro"));
         ui.add_space(6.0);
         let window_by = gpu_in_use().map(|n| n.to_string());
@@ -278,81 +618,55 @@ pub fn dialog(app: &mut App, ctx: &Context, close: &mut bool) {
             ui.label(RichText::new(trf(key, &[("name", &name)])).color(Tokens::text_dim()));
         }
         ui.separator();
+        let running = app.benchmark.running();
+        ui.horizontal(|ui| {
+            if ui
+                .add_enabled(!running, egui::Button::new(tr("benchmark.quick")))
+                .rich_tip_always(crate::ui::tips::pair(
+                    "benchmark.quick",
+                    "benchmark.quick_tip",
+                ))
+                .clicked()
+            {
+                start(app, Level::Quick);
+            }
+            // The browser has no thread to measure on: the advanced test
+            // would hold the page for a minute.
+            if cfg!(not(target_arch = "wasm32"))
+                && ui
+                    .add_enabled(!running, egui::Button::new(tr("benchmark.advanced")))
+                    .rich_tip_always(crate::ui::tips::pair(
+                        "benchmark.advanced",
+                        "benchmark.advanced_tip",
+                    ))
+                    .clicked()
+            {
+                start(app, Level::Advanced);
+            }
+        });
+        if cfg!(not(target_arch = "wasm32")) {
+            ui.label(
+                RichText::new(tr("benchmark.advanced_warning"))
+                    .color(Tokens::text_dim())
+                    .size(11.0),
+            );
+        }
+        ui.add_space(4.0);
         if app.benchmark.running() {
             ui.horizontal(|ui| {
                 ui.spinner();
                 ui.vertical(|ui| step(app, ui));
             });
         } else if let Some(m) = app.benchmark.done.clone() {
-            scores(ui, &m);
-            if m.slow() {
-                ui.add_space(4.0);
-                ui.label(
-                    RichText::new(trf(
-                        "benchmark.slow",
-                        &[
-                            ("score", &format!("{:.1}", m.overall())),
-                            ("limit", &format!("{:.1}", bench::SLOW_SCORE)),
-                            ("part", &tr(m.weakest())),
-                        ],
-                    ))
-                    .color(WARN),
-                );
-                if m.software && m.graphics() < bench::SLOW_SCORE {
-                    ui.label(tr("benchmark.slow_software"));
-                }
-            } else {
-                ui.label(tr("benchmark.fast"));
-            }
-            if app.benchmark.light_zoom_turned_on {
-                ui.label(RichText::new(tr("benchmark.light_zoom_turned_on")).strong());
-            }
+            results(app, ui, &m);
         }
-        ui.add_space(4.0);
-        if ui
-            .checkbox(&mut app.settings.light_zoom, tr("options.light_zoom"))
-            .rich_tip(crate::ui::tips::pair(
-                "options.light_zoom",
-                "options.light_zoom_tip",
-            ))
-            .changed()
-        {
-            app.settings.save();
-        }
-        // With hardware acceleration and without, to compare.
         ui.separator();
-        ui.label(RichText::new(tr("benchmark.compare")).strong());
-        for on in [true, false] {
-            let found = app
-                .settings
-                .benchmarks
-                .iter()
-                .find(|r| r.acceleration == on);
-            let label = tr(if on {
-                "benchmark.with_acceleration"
-            } else {
-                "benchmark.without_acceleration"
-            });
-            let value = found.map_or_else(
-                || tr("benchmark.not_measured"),
-                |r| format!("{:.1}", r.overall()),
-            );
-            ui.label(format!("{label}: {value}"));
-        }
-        ui.label(RichText::new(tr("benchmark.compare_how")).color(Tokens::text_dim()));
+        zoom(app, ui);
+        ui.separator();
+        card(app, ui, close);
         ui.add_space(8.0);
         ui.horizontal(|ui| {
             let running = app.benchmark.running();
-            if ui
-                .add_enabled(!running, egui::Button::new(tr("benchmark.run")))
-                .rich_tip_always(crate::ui::tips::pair(
-                    "benchmark.run",
-                    "menu.help.benchmark_tip",
-                ))
-                .clicked()
-            {
-                start(app);
-            }
             let report = app
                 .benchmark
                 .done
@@ -371,15 +685,19 @@ pub fn dialog(app: &mut App, ctx: &Context, close: &mut bool) {
                     app.status = tr("benchmark.copied");
                 }
             }
+            // Options takes the place of this window: the dialogs show
+            // one at a time, and a window left open would put itself back
+            // over the one it opened (#3351).
             if ui
-                .button(tr("menu.tools.options"))
+                .add_enabled(!running, egui::Button::new(tr("menu.tools.options")))
                 .rich_tip(crate::ui::tips::pair(
                     "menu.tools.options",
-                    "benchmark.compare_how",
+                    "benchmark.options_tip",
                 ))
                 .clicked()
             {
                 app.open_options_page(crate::ui::dialogs::OptionsPage::General);
+                *close = true;
             }
             if ui
                 .add_enabled(!running, egui::Button::new(tr("dialog.close")))
@@ -484,7 +802,7 @@ mod tests {
         assert!(matches!(app.dialog, crate::ui::dialogs::Dialog::Benchmark));
         // The graphics test straight away (the processor one is slow in
         // a debug build).
-        app.benchmark.phase = graphics((0.4, 0.8, 4.0));
+        app.benchmark.phase = graphics(Level::Quick, (0.4, 0.8, 4.0), Vec::new());
         run(&mut app, &ctx, WARM_FRAMES + bench::GRAPHICS_FRAMES + 1);
         assert!(!app.benchmark.running());
         let m = app.benchmark.done.clone().expect("measured");
@@ -493,16 +811,85 @@ mod tests {
         // The scores and the comparison show.
         run(&mut app, &ctx, 2);
         assert!(app.settings.benchmarks.iter().any(|r| r == &m));
-        // The processor tests' answer from their thread starts the
-        // graphics test (the tests themselves are slow in a debug build).
+        // The thread's steps show, then its answer starts the graphics
+        // test (the tests themselves are slow in a debug build).
         let (tx, rx) = std::sync::mpsc::channel();
-        app.benchmark.phase = Phase::Processor(rx);
+        app.benchmark.phase = Phase::Processor {
+            rx,
+            level: Level::Advanced,
+            step: None,
+        };
         run(&mut app, &ctx, 1);
-        assert!(matches!(app.benchmark.phase, Phase::Processor(_)));
-        tx.send((0.2, 0.4, 8.0)).unwrap();
+        assert!(matches!(app.benchmark.phase, Phase::Processor { .. }));
+        tx.send(Msg::Step(bench::TASK_ZOOM, 3, 13)).unwrap();
+        run(&mut app, &ctx, 1);
+        assert!(matches!(
+            app.benchmark.phase,
+            Phase::Processor {
+                step: Some((bench::TASK_ZOOM, 3, 13)),
+                ..
+            }
+        ));
+        let tasks = vec![Task {
+            key: bench::TASK_REDRAW.into(),
+            objects: 50_000,
+            seconds: 2.5,
+        }];
+        tx.send(Msg::Done((0.2, 0.4, 8.0), tasks.clone())).unwrap();
         run(&mut app, &ctx, 1);
         assert!(matches!(app.benchmark.phase, Phase::Graphics(_)));
         run(&mut app, &ctx, WARM_FRAMES + bench::GRAPHICS_FRAMES + 1);
-        assert_eq!(app.benchmark.done.as_ref().unwrap().all_cores(), 6.0);
+        let m = app.benchmark.done.clone().unwrap();
+        assert_eq!(m.all_cores(), 6.0);
+        assert_eq!(m.level, Level::Advanced);
+        assert_eq!(m.tasks, tasks);
+        // 50 000 objects in 2.5 s: 5 000 in a quarter of a second.
+        assert_eq!(m.comfortable_objects(), 5_000);
+        run(&mut app, &ctx, 2);
+    }
+
+    /// The zoom styles in the window: the one in use picked; a click on
+    /// another sets the zoom options it stands for.
+    #[test]
+    fn a_zoom_style_is_used_from_the_window() {
+        let mut app = App::headless();
+        app.settings.smooth_zoom = true;
+        app.settings.light_zoom = false;
+        assert_eq!(ZoomStyle::of(&app.settings), ZoomStyle::Smooth);
+        ZoomStyle::Corel.apply(&mut app.settings);
+        assert!(!app.settings.smooth_zoom && !app.settings.light_zoom);
+        assert_eq!(ZoomStyle::of(&app.settings), ZoomStyle::Corel);
+        ZoomStyle::Light.apply(&mut app.settings);
+        assert_eq!(ZoomStyle::of(&app.settings), ZoomStyle::Light);
+        // A slow computer is told Light, the others as in CorelDRAW.
+        let mut m = slow_run();
+        assert_eq!(m.suggested_zoom(), ZoomStyle::Light);
+        m.all_cores_seconds = 0.1;
+        m.one_core_seconds = 0.2;
+        m.memory_gbs = 16.0;
+        m.fps = 60.0;
+        assert_eq!(m.suggested_zoom(), ZoomStyle::Corel);
+    }
+
+    /// TraceDraw started again for the benchmark opens it and runs the
+    /// test asked for, once.
+    #[test]
+    fn a_start_for_the_benchmark_runs_it() {
+        let ctx = crate::theme::ui_context();
+        let mut app = App::headless();
+        app.settings.benchmark_resume = Some(Level::Quick);
+        app.show_welcome = false;
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1200.0, 800.0),
+            )),
+            ..Default::default()
+        };
+        let mut out = ctx.run_ui(input, |ui| crate::ui::root(&mut app, ui));
+        out.textures_delta.clear();
+        assert!(app.settings.benchmark_resume.is_none());
+        assert!(matches!(app.dialog, crate::ui::dialogs::Dialog::Benchmark));
+        assert!(app.benchmark.running());
     }
 }

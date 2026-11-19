@@ -105,6 +105,18 @@ constrain angle (15 degrees at first, #1661);
 dragging a palette colour onto a stop recolours it; dragging a colour
 onto the fill line adds a stop.
 
+On an object with a pattern fill (two-colour, vector or bitmap) the
+Interactive Fill tool edits the tiles instead of putting a gradient in
+their place (#3379, `pattern_fill_tool.rs`): the first tile shows as a
+dashed frame with a square node at its corner, which moves the tiles,
+and round nodes at the ends of its bottom side, which turns them and
+scales them with their proportions kept, and of its left side, which
+changes their height only. Each drag is one undo step "Fill". A drag
+across the object elsewhere lays the tiles from the press point, turned
+along the drag and as wide as it is long
+(`pattern_fill_tool::tests::a_drag_on_a_pattern_fill_keeps_it`). With
+Transform with object on, the nodes follow the object's transform.
+
 Property bar (Interactive Fill): the fill type (None, Uniform, Gradient,
 Pattern, Texture, Mesh), then the type's fields: the colour for a
 uniform fill; for a gradient the kind (Linear, Radial, Conical, Square),

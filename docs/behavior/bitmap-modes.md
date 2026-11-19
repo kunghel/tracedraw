@@ -14,7 +14,7 @@ kept in every mode.
 
 | Item | Result |
 |---|---|
-| Black and White (1-bit)... | dialog below |
+| Black and White (1-bit)... | dialog below; the result is stored as a 1-bit grey PNG (a grey PNG with alpha marked by a `tEXt` chunk "TraceDraw color mode" = "BlackWhite" when some pixels are see-through), so the status line names it Black and White (1-bit) and the item is ticked while every selected bitmap is; it is no longer CMYK nor keeps ink channels. Up to 0.47 the result stayed an RGB picture. Drawn larger than its pixels it keeps their hard edges, black or white, with no grey rims; a PDF takes it as one grey channel, so it prints with black ink only (#2922, `ops2::tests::image_mode_black_and_white_stores_a_one_bit_bitmap`, `bitmap_fx::tests::black_and_white_bitmaps_are_one_bit_pngs`). Convert to Bitmap in Black and White stores the same kind of bitmap |
 | Grayscale (8-bit) | luminance `0.299 R + 0.587 G + 0.114 B`, stored as an 8-bit grayscale PNG (with alpha when the bitmap has transparency); the bitmap is no longer CMYK nor keeps ink channels, so the status line names it Grayscale. Ticked while every selected bitmap is grayscale (#2330, `ops2::tests::image_mode_grayscale_converts_the_bitmap`) |
 | Duotone (8-bit)... | dialog below |
 | Indexed (8-bit)... | dialog below; the result is stored as an indexed PNG (a palette of up to 256 colours with their opacity), so the status line names it Indexed and the item is ticked while every selected bitmap is indexed; a bitmap left with more than 256 colours and opacities stays RGB. It is no longer CMYK nor keeps ink channels (#2607, `ops2::tests::image_mode_lab_and_indexed_convert_the_bitmap`) |
@@ -31,8 +31,17 @@ Conversion methods:
 - Ordered: an 8 x 8 Bayer matrix.
 - Halftone (default): a screen of Round, Line or Square dots at Angle
   (default 45°) and Lines per inch (default 60) at the bitmap's
-  resolution; the threshold field of round dots is
-  `(cos u + cos v) / 4 + 0.5` in the screen's rotated cell coordinates.
+  resolution. Each pixel's place in its cell of the turned screen (u, v
+  from -1 to 1) gives a spot value: round dots `1 - (u² + v²) / 2` while
+  `|u| + |v| <= 1`, else `((1 - |u|)² + (1 - |v|)²) / 2` (circles that
+  touch as squares at half tone and leave round white holes beyond it);
+  square dots `1 - max(|u|, |v|)`; lines `1 - |v|`. The pixel is black
+  while the share of the cell with a higher spot value is below the
+  tone's darkness, so every grey covers its share of the paper (20 %
+  black is a fifth of it in dots). Up to 0.47 the threshold field was
+  `(cos u + cos v) / 4 + 0.5`, whose coverage did not follow the tone (60
+  % came out as a checkerboard) and whose dots were notched squares
+  (#2922, `bitmap_modes::tests::halftone_dots_cover_as_much_as_the_tone_is_dark`).
 - Cardinality-Distribution: a fixed per-pixel random threshold (a
   textured look).
 - Jarvis, Stucki, Floyd-Steinberg: error diffusion with those kernels

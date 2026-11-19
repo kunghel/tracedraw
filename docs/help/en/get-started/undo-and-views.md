@@ -33,6 +33,9 @@ later step to go forward again. Open it from
   step; [[menu.view.zoom_to_fit]] (<kbd>F4</kbd>) shows all objects,
   [[menu.view.zoom_to_page]] (<kbd>Shift+F4</kbd>) the page and
   [[menu.view.zoom_to_selected]] (<kbd>Shift+F2</kbd>) the selection.
+- [[menu.view > menu.view.zoom_1to1]] shows the drawing at its real size
+  (100%), as it will print. It has no key at first: give it one in
+  [Keyboard shortcuts](../reference/keyboard-shortcuts.md).
 - A trackpad pinch zooms, and on a touch screen two fingers pan and pinch
   with any tool.
 
@@ -54,7 +57,9 @@ Double-click the tool's button to zoom to fit all objects.
 
 - Hold the middle mouse button and drag, with any tool.
 - Choose the [[tool.pan]] tool (<kbd>H</kbd>) and drag.
-- <kbd>Ctrl</kbd>+wheel scrolls up and down, <kbd>Alt</kbd>+wheel sideways.
+- <kbd>Ctrl</kbd>+wheel and <kbd>Shift</kbd>+wheel scroll sideways,
+  <kbd>Alt</kbd>+wheel up and down. To zoom with <kbd>Ctrl</kbd>+wheel
+  instead, tick [[options.ctrl_wheel_zooms]] on the [[options.zoom_pan]] page.
 - Use the scroll bars, which cover the page and one page size around it.
 - While you drag (moving objects, drawing, a selection frame, nodes), bring
   the pointer to the edge of the drawing window: the view scrolls that way,

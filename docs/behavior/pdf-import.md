@@ -313,6 +313,17 @@ their own crypt filter and signature contents are left alone.
   `pictures_are_reduced_only_when_asked_on_the_desktop`.
 - Garbage and truncated input return an error, never a panic.
 
+- Hebrew and Arabic read in Text mode come back in the order they are
+  typed. A PDF draws such text as it shows, its glyphs left to right on
+  the page, and the text kept that order, so "שלום" came in as "םולש",
+  from TraceDraw's own PDF exports too. A line that holds letters written
+  right to left goes through the Unicode bidirectional algorithm: its
+  Hebrew and Arabic words turn around, the Latin words and numbers among
+  them read as before, and a letter keeps the points or vowel marks after
+  it. Text that an `ActualText` gives is in typed order already and stays
+  as it is (`pdf_import::tests::hebrew_and_arabic_from_a_pdf_come_back_in_typed_order`).
+  A line of right-to-left text that starts with a Latin word on the page
+  is taken as left-to-right text, as other PDF readers take it.
 - Devanagari text (Hindi, Marathi, Nepali, ...) read in Text mode comes
   back in the order it is typed: a PDF draws the short i sign (ि) before
   the consonant cluster it belongs to and the reph (र्) after its
@@ -350,6 +361,15 @@ their own crypt filter and signature contents are left alone.
   An empty `ActualText` or one of soft hyphens leaves the glyphs (a
   hyphen drawn at a line end) their own characters
   (`pdf_import::tests::hindi_drawn_apart_or_with_actual_text_comes_in_as_typed_words`).
+  An `ActualText` that starts with a tab or space, over a space glyph and
+  then a letter the tab stop moved on, keeps its letter: the space stays
+  in the first text and the rest goes to the letter's text, so पृष्ठ after
+  a tab no longer came in as िृष्ठ. A short i sign right after a letter
+  an `ActualText` gave is typed after that letter and stays there: a word
+  processor's Hindi PDF that gives some letters by `ActualText` and the
+  rest in typed order showed निदेशालय, विभाग and अनिल as नदिेशालय, वभिाग
+  and अनलि (#3177,
+  `pdf_import::tests::hindi_typed_after_an_actual_text_letter_keeps_its_i_signs`).
 - Hindi written by Export as PDF with its font comes back as the typed
   words, shaped to the glyphs of the original: all 59 words of the
   Devanagari corpus (35 came back wrong before, with letters doubled,

@@ -348,6 +348,31 @@ impl App {
         self.apply_color_settings();
     }
 
+    /// The import policy's warnings, after a `.cdr` file was imported:
+    /// it carries no CMYK profile, or one other than this drawing's. The
+    /// two boxes of Import and Paste were kept but never told anything.
+    pub fn warn_import_profile(&mut self, carried: Option<&tracedraw_core::DocumentProfile>) {
+        let c = &self.settings.color;
+        let doc = self.doc();
+        let ours = doc
+            .cmyk_profile
+            .as_ref()
+            .map(|p| p.name.clone())
+            .unwrap_or_else(|| doc.metadata.cmyk_profile.clone());
+        match carried {
+            None if c.warn_import_missing => {
+                self.status = crate::i18n::tr("color_mgmt.warn_missing");
+            }
+            Some(p) if c.warn_import_mismatch && p.name != ours => {
+                self.status = crate::i18n::trf(
+                    "color_mgmt.warn_mismatch",
+                    &[("doc", &p.name), ("default", &ours)],
+                );
+            }
+            _ => {}
+        }
+    }
+
     /// The import policy for shapes coming from a drawing that carries
     /// `profile`: converted to the active drawing's CMYK profile, or kept
     /// as they are (assigned).
@@ -442,6 +467,31 @@ mod tests {
             panic!("group");
         };
         assert_eq!(children[0].fill, Fill::Solid(Color::rgb8(255, 0, 0)));
+    }
+
+    /// The two warning boxes of Import and Paste: a `.cdr` file imported
+    /// without a CMYK profile, or with one other than the drawing's, is
+    /// told in the status bar when its box is on, and not when it is off.
+    #[test]
+    fn importing_warns_of_a_missing_or_other_profile_when_asked() {
+        let mut app = App::headless();
+        let ours = app.doc().metadata.cmyk_profile.clone();
+        let other = tracedraw_core::DocumentProfile::new("Other press", tp::mba_cmyk_profile());
+        let same = tracedraw_core::DocumentProfile::new(&ours, tp::mba_cmyk_profile());
+        app.warn_import_profile(None);
+        app.warn_import_profile(Some(&other));
+        assert!(app.status.is_empty(), "boxes off: {}", app.status);
+        app.settings.color.warn_import_missing = true;
+        app.warn_import_profile(None);
+        assert_eq!(app.status, crate::i18n::tr("color_mgmt.warn_missing"));
+        app.status.clear();
+        app.warn_import_profile(Some(&other));
+        assert!(app.status.is_empty(), "mismatch box off: {}", app.status);
+        app.settings.color.warn_import_mismatch = true;
+        app.warn_import_profile(Some(&same));
+        assert!(app.status.is_empty(), "the same profile: {}", app.status);
+        app.warn_import_profile(Some(&other));
+        assert!(app.status.contains("Other press"), "{}", app.status);
     }
 
     #[test]

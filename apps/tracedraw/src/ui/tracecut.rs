@@ -131,6 +131,7 @@ fn tool_list(app: &mut App, ui: &mut Ui, st: &mut TraceCutState) {
                 st.worked = None;
                 st.preset_edit = false;
                 st.preset_name.clear();
+                st.load_shown_preset();
                 app.settings.tracecut.tool = t;
             }
         }
@@ -1226,6 +1227,26 @@ mod tests {
         assert_eq!(app.engine.history_labels().0.len(), before + 1);
         app.open_tracecut();
         assert!(matches!(&app.dialog, Dialog::TraceCut(st) if st.settings.tray == kept));
+    }
+
+    /// d#3234: the preset list shows the preset chosen last, and its
+    /// settings are the ones loaded, when the window opens on a tool and
+    /// when another tool is picked. They stayed the defaults.
+    #[test]
+    fn the_preset_shown_is_the_one_loaded() {
+        let mut st = TraceCutState::new(ToolId::FindDuplicates);
+        let mut s = crate::tracecut::ToolSettings::default();
+        s.tray.width = 1234.0;
+        assert!(st.presets.save_preset(ToolId::FoldedTray, "Shop", &s));
+        st.tool = ToolId::FoldedTray;
+        assert_ne!(st.settings.tray.width, 1234.0);
+        st.load_shown_preset();
+        assert_eq!(st.settings.tray.width, 1234.0);
+        // A tool with no preset chosen keeps its settings.
+        let before = st.settings.clone();
+        st.tool = ToolId::FindDuplicates;
+        st.load_shown_preset();
+        assert_eq!(st.settings, before);
     }
 
     #[test]

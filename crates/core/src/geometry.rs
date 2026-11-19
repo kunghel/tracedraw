@@ -73,7 +73,12 @@ pub fn ellipse_arc_path(rect: Rect, start_deg: f64, end_deg: f64, pie: bool) -> 
     } else {
         path.move_to(start);
     }
-    arc.append_iter(0.1).for_each(|el| path.push(el));
+    // A tolerance of 0.1 mm, or a millionth of the radius on a huge arc:
+    // the number of pieces grows with radius over tolerance, so an arc
+    // with a radius of 1e300 from a damaged file asked for more pieces
+    // than memory holds (#3338).
+    let tolerance = (radii.x.abs().max(radii.y.abs()) * 1e-6).max(0.1);
+    arc.append_iter(tolerance).for_each(|el| path.push(el));
     if pie {
         path.close_path();
     }
@@ -112,6 +117,71 @@ pub fn twisted_polygon_path(rect: Rect, points: u32, sharpness: f64, twist: f64)
     path
 }
 
+/// [`twisted_polygon_path`] with every side bent the same way (#2451):
+/// each side from one point to the next becomes a curve whose control
+/// points stand off the side's thirds by `bend` times the side's length,
+/// away from the inside of the outline (towards it when negative). Every
+/// side gets the same curve, so a polygon or star keeps its mirror
+/// symmetry. The curves are made in the unit circle and then stretched
+/// to `rect`, as the points are.
+pub fn bent_polygon_path(
+    rect: Rect,
+    points: u32,
+    sharpness: f64,
+    twist: f64,
+    bend: f64,
+) -> BezPath {
+    let bend = if bend.is_finite() {
+        bend.clamp(-MAX_POLYGON_BEND, MAX_POLYGON_BEND)
+    } else {
+        0.0
+    };
+    if bend == 0.0 {
+        return twisted_polygon_path(rect, points, sharpness, twist);
+    }
+    let c = rect.center();
+    let (rx, ry) = (rect.width() / 2.0, rect.height() / 2.0);
+    let page = |x: f64, y: f64| Point::new(c.x + rx * x, c.y + ry * y);
+    let unit: Vec<(f64, f64)> = polygon_unit_vertices(points, sharpness, twist).collect();
+    let mut path = BezPath::new();
+    let Some(&(x0, y0)) = unit.first() else {
+        return path;
+    };
+    path.move_to(page(x0, y0));
+    // Which side is out: the way the points go round.
+    let area: f64 = (0..unit.len())
+        .map(|i| {
+            let (ax, ay) = unit[i];
+            let (bx, by) = unit[(i + 1) % unit.len()];
+            ax * by - bx * ay
+        })
+        .sum();
+    let out = if area < 0.0 { -bend } else { bend };
+    for i in 0..unit.len() {
+        let (ax, ay) = unit[i];
+        let (bx, by) = unit[(i + 1) % unit.len()];
+        let (dx, dy) = (bx - ax, by - ay);
+        let (nx, ny) = (dy * out, -dx * out);
+        path.curve_to(
+            page(ax + dx / 3.0 + nx, ay + dy / 3.0 + ny),
+            page(bx - dx / 3.0 + nx, by - dy / 3.0 + ny),
+            page(bx, by),
+        );
+    }
+    path.close_path();
+    path
+}
+
+/// The points a polygon or star's outline goes through, in the unit
+/// circle (y down, centre at 0), in order: its vertices and, on a star,
+/// the points between them.
+pub fn polygon_unit_points(points: u32, sharpness: f64, twist: f64) -> Vec<(f64, f64)> {
+    polygon_unit_vertices(points, sharpness, twist).collect()
+}
+
+/// The most a polygon's sides bend either way, as a part of their length.
+pub const MAX_POLYGON_BEND: f64 = 2.0;
+
 /// Whether `sharpness` makes a polygon a star: any finite value but 0
 /// (a negative one an inverted star).
 pub fn is_star_sharpness(sharpness: f64) -> bool {
@@ -149,6 +219,9 @@ pub fn star_sharpness_for_ratio(ratio: f64) -> f64 {
     }
 }
 
+/// The most points a polygon or star has (the tools' limit too).
+pub const POLYGON_MAX_POINTS: u32 = 500;
+
 /// The fewest points a complex star has.
 pub const COMPLEX_STAR_MIN_POINTS: u32 = 5;
 
@@ -165,7 +238,7 @@ pub fn complex_star_max_sharpness(points: u32) -> u32 {
 /// the count the star is several closed subpaths (two triangles for six
 /// points). Filled even-odd, the middle stays empty.
 pub fn complex_star_path(rect: Rect, points: u32, sharpness: u32) -> BezPath {
-    let n = points.clamp(COMPLEX_STAR_MIN_POINTS, 500) as usize;
+    let n = points.clamp(COMPLEX_STAR_MIN_POINTS, POLYGON_MAX_POINTS) as usize;
     let step = sharpness.clamp(1, complex_star_max_sharpness(n as u32)) as usize + 1;
     let verts: Vec<Point> = {
         let c = rect.center();
@@ -203,7 +276,10 @@ fn polygon_unit_vertices(
     sharpness: f64,
     twist: f64,
 ) -> impl Iterator<Item = (f64, f64)> {
-    let points = points.max(3) as usize;
+    // The tools and bars go to 500 points; a file or a macro giving
+    // millions (or 4 billion) made drawing it take minutes or ask for more
+    // memory than there is, ending the program.
+    let points = points.clamp(3, POLYGON_MAX_POINTS) as usize;
     let twist = if twist.is_finite() {
         twist.clamp(-std::f64::consts::PI, std::f64::consts::PI)
     } else {
@@ -511,6 +587,67 @@ fn open_bspline_path(points: &[Point]) -> BezPath {
 mod tests {
     use super::*;
 
+    /// #2451: a polygon's sides bent alike bow out (in when negative) by
+    /// the same curve each, as far at every side's middle; unbent it is
+    /// the plain polygon, and the bend is kept in a native file only when
+    /// it is not 0.
+    #[test]
+    fn bent_polygon_sides_all_take_the_same_curve() {
+        let r = Rect::new(-10.0, -10.0, 10.0, 10.0);
+        assert_eq!(
+            bent_polygon_path(r, 6, 0.0, 0.0, 0.0),
+            twisted_polygon_path(r, 6, 0.0, 0.0)
+        );
+        let mid = |bend: f64| -> Vec<f64> {
+            bent_polygon_path(r, 6, 0.0, 0.0, bend)
+                .segments()
+                .map(|s| kurbo::ParamCurve::eval(&s, 0.5).to_vec2().hypot())
+                .collect()
+        };
+        let flat = mid(0.0);
+        let out = mid(0.2);
+        let inward = mid(-0.2);
+        assert_eq!(out.len(), 6);
+        for k in 0..6 {
+            assert!((out[k] - out[0]).abs() < 1e-9 && (inward[k] - inward[0]).abs() < 1e-9);
+        }
+        // A side 10 long, its middle 0.75 * 0.2 * 10 = 1.5 further out.
+        assert!((out[0] - flat[0] - 1.5).abs() < 1e-6, "{out:?} {flat:?}");
+        assert!(
+            (flat[0] - inward[0] - 1.5).abs() < 1e-6,
+            "{inward:?} {flat:?}"
+        );
+        // A star's sides bend alike too: its outline stays mirror symmetric.
+        let star: Vec<f64> = bent_polygon_path(r, 5, 0.5, 0.0, 0.3)
+            .segments()
+            .map(|s| kurbo::ParamCurve::eval(&s, 0.5).to_vec2().hypot())
+            .collect();
+        for k in 0..10 {
+            assert!((star[k] - star[0]).abs() < 1e-9, "{star:?}");
+        }
+        let kind = crate::document::ShapeKind::Polygon {
+            rect: r,
+            points: 6,
+            sharpness: 0.0,
+            complex: None,
+            twist: 0.0,
+            bend: 0.0,
+        };
+        assert!(!serde_json::to_string(&kind).unwrap().contains("bend"));
+        let bent = crate::document::ShapeKind::Polygon {
+            rect: r,
+            points: 6,
+            sharpness: 0.0,
+            complex: None,
+            twist: 0.0,
+            bend: 0.25,
+        };
+        let json = serde_json::to_string(&bent).unwrap();
+        assert!(json.contains("\"bend\":0.25"), "{json}");
+        let back: crate::document::ShapeKind = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, bent);
+    }
+
     /// The corner points of a closed polygon path, in order.
     fn corners(p: &BezPath) -> Vec<Point> {
         p.elements()
@@ -811,6 +948,19 @@ mod tests {
     }
 
     #[test]
+    fn polygons_of_billions_of_points_draw_the_most_points() {
+        // A file or a macro asked for 4 billion points: drawing the
+        // polygon ran out of memory and ended the program.
+        let r = Rect::new(0.0, 0.0, 10.0, 10.0);
+        for (sharpness, twist, per_point) in [(0.0, 0.0, 1), (0.5, 0.0, 2), (0.0, 0.3, 2)] {
+            let p = twisted_polygon_path(r, u32::MAX, sharpness, twist);
+            let n = POLYGON_MAX_POINTS as usize * per_point;
+            assert_eq!(p.elements().len(), n + 1, "{sharpness} {twist}");
+        }
+        assert_eq!(polygon_path(r, 7, 0.0).elements().len(), 8);
+    }
+
+    #[test]
     fn complex_stars_cross_their_sides() {
         let r = Rect::new(0.0, 0.0, 10.0, 10.0);
         let count =
@@ -861,5 +1011,29 @@ mod tests {
                 "{n} {sharp}: {b:?}"
             );
         }
+    }
+
+    /// An arc with a huge radius, as a damaged file gives, is a handful of
+    /// curves: the pieces once grew with the radius and an arc of 1e300
+    /// asked for more than memory holds. An arc of drawing size keeps its
+    /// pieces as they were.
+    #[test]
+    fn an_arc_of_huge_radius_is_a_handful_of_curves() {
+        for r in [1e300, 1e60, f64::INFINITY, f64::NAN] {
+            let p = ellipse_arc_path(Rect::new(-r, -r, r, r), 0.0, 270.0, false);
+            assert!(p.elements().len() < 64, "{r}: {}", p.elements().len());
+        }
+        let small = ellipse_arc_path(Rect::new(-50.0, -50.0, 50.0, 50.0), 0.0, 270.0, false);
+        let pieces = |r: f64| {
+            let arc = kurbo::Arc::new(
+                Point::ZERO,
+                kurbo::Vec2::new(r, r),
+                0.0,
+                1.5 * std::f64::consts::PI,
+                0.0,
+            );
+            arc.append_iter(0.1).count()
+        };
+        assert_eq!(small.elements().len(), 1 + pieces(50.0));
     }
 }

@@ -63,6 +63,108 @@ impl crate::app::App {
     }
 }
 
+impl crate::app::App {
+    /// Lens docker Apply with Frozen: each selected object with a lens
+    /// keeps what the lens shows now, as a picture placed inside it (a
+    /// clip frame), and loses the lens, so it can be moved and keeps the
+    /// look. Flattening the lens instead dropped it, and the object went
+    /// back to its own fill (#3097). The picture is what lies beneath
+    /// seen through the lens, without what lies above the object.
+    pub fn freeze_lens(&mut self) {
+        use tracedraw_core::live::Effect;
+        use tracedraw_core::{Command, Fill, Shape, ShapeKind};
+        const DPI: f64 = 300.0;
+        let page = self.page;
+        let layers: Vec<_> = self.page_layers().iter().map(|l| l.id).collect();
+        let mut cmds = Vec::new();
+        for id in self.selection.clone() {
+            let doc = self.doc();
+            // Objects on a layer only: one inside a group keeps its lens.
+            let Ok((lid, i)) = doc.locate(id) else {
+                continue;
+            };
+            let Some(s) = doc.find_shape(id).cloned() else {
+                continue;
+            };
+            if !s.effects.iter().any(|e| matches!(e, Effect::Lens(_))) {
+                continue;
+            }
+            let Some(li) = layers.iter().position(|l| *l == lid) else {
+                continue;
+            };
+            // The page up to the object: the layers above it and the
+            // objects above it on its layer left out. Its outline stays
+            // on the frame, so the picture leaves it out.
+            let mut tmp = doc.clone();
+            for (k, l) in layers.iter().enumerate() {
+                let Ok(layer) = tmp.layer_mut(*l) else {
+                    continue;
+                };
+                if k > li {
+                    layer.shapes.clear();
+                } else if k == li {
+                    layer.shapes.truncate(i + 1);
+                    if let Some(me) = layer.shapes.last_mut() {
+                        me.stroke = None;
+                        me.extra_strokes.clear();
+                    }
+                }
+            }
+            let area = s.bounds();
+            let Some(pm) = tracedraw_render::render_area_image(&tmp, page, area, DPI) else {
+                continue;
+            };
+            let Ok(png) = pm.encode_png() else {
+                continue;
+            };
+            let pic = self.engine.new_shape_id();
+            let mut bitmap = Shape::new(
+                pic,
+                ShapeKind::Bitmap {
+                    rect: area,
+                    width_px: pm.width(),
+                    height_px: pm.height(),
+                    png: png.into(),
+                    fx: None,
+                },
+            );
+            bitmap.fill = Fill::None;
+            bitmap.stroke = None;
+            let effects: Vec<Effect> = s
+                .effects
+                .iter()
+                .filter(|e| !matches!(e, Effect::Lens(_)))
+                .cloned()
+                .collect();
+            cmds.extend([
+                Command::SetEffectStack {
+                    shape: id,
+                    effects,
+                    parked: s.parked_effects.clone(),
+                },
+                Command::SetFill {
+                    shapes: vec![id],
+                    fill: Fill::None,
+                },
+                Command::AddShape {
+                    layer: lid,
+                    shape: bitmap,
+                },
+                Command::PlaceInside {
+                    contents: vec![pic],
+                    frame: id,
+                },
+            ]);
+        }
+        if cmds.is_empty() {
+            return;
+        }
+        if let Err(e) = self.engine.run_batch("Freeze Lens", &cmds) {
+            self.status = e.to_string();
+        }
+    }
+}
+
 impl LensSettings {
     pub fn to_lens(&self) -> Option<Lens> {
         Some(match self.kind {
@@ -201,6 +303,70 @@ mod tests {
             }
         );
         assert_eq!(LensSettings::from_lens(&lens), s);
+    }
+
+    /// #3097: Apply with Frozen keeps what the lens shows, also once the
+    /// object is moved off what was beneath it.
+    #[test]
+    fn a_frozen_lens_keeps_what_it_showed() {
+        use tracedraw_core::{Color, Command, Fill, Rect, Shape, ShapeKind};
+        let mut app = crate::app::App::headless();
+        let layer = app.active_layer().expect("a layer");
+        let rect = |app: &mut crate::app::App, r: Rect, fill: Color| {
+            let id = app.engine.new_shape_id();
+            let mut s = Shape::new(
+                id,
+                ShapeKind::Rect {
+                    rect: r,
+                    radius: 0.0,
+                    corners: None,
+                },
+            );
+            s.fill = Fill::Solid(fill);
+            s.stroke = None;
+            app.run(Command::AddShape { layer, shape: s });
+            id
+        };
+        rect(
+            &mut app,
+            Rect::new(0.0, 0.0, 40.0, 40.0),
+            Color::rgb8(0, 0, 255),
+        );
+        let lens = rect(
+            &mut app,
+            Rect::new(10.0, 10.0, 30.0, 30.0),
+            Color::rgb8(0, 255, 0),
+        );
+        app.select(vec![lens]);
+        app.push_effect(Effect::Lens(Lens::Invert), true);
+        let px = |app: &crate::app::App, x: f64, y: f64| {
+            let pm = tracedraw_render::render_area_image(
+                app.doc(),
+                app.page,
+                Rect::new(x - 0.5, y - 0.5, x + 0.5, y + 0.5),
+                25.4,
+            )
+            .expect("a picture");
+            let c = pm.pixels()[0].demultiply();
+            (c.red(), c.green(), c.blue())
+        };
+        let live = px(&app, 20.0, 20.0);
+        assert!(live.0 > 200 && live.1 > 200 && live.2 < 50, "{live:?}");
+        app.freeze_lens();
+        let s = app.doc().find_shape(lens).expect("the object").clone();
+        assert!(
+            matches!(s.kind, ShapeKind::ClipFrame { .. }),
+            "{:?}",
+            s.kind
+        );
+        assert!(!s.effects.iter().any(|e| matches!(e, Effect::Lens(_))));
+        assert_eq!(px(&app, 20.0, 20.0), live);
+        // Moved off the blue square: the frozen look goes with it.
+        app.run(Command::TransformShapes {
+            shapes: vec![lens],
+            transform: tracedraw_core::geometry::Affine::translate((60.0, 0.0)),
+        });
+        assert_eq!(px(&app, 80.0, 20.0), live);
     }
 
     #[test]

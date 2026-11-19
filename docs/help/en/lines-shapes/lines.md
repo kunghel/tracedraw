@@ -21,13 +21,13 @@ smoothing (0 to 100, 50 at first) on the property bar sets how much: a
 higher value gives fewer nodes and a softer line. When you are zoomed in,
 the line keeps more detail.
 
-To draw a straight line with this tool, click where the line starts and
-click again where it ends. Hold <kbd>Ctrl</kbd> to keep the line to steps of
-15 degrees. <kbd>Esc</kbd> drops the first click.
-
-To draw a line of several straight segments, click where it starts, then
-double-click at each corner, and click once where it ends. <kbd>Space</kbd>,
-<kbd>Enter</kbd> or <kbd>Esc</kbd> ends it at the last corner.
+To draw straight lines with this tool, click where the line starts, click
+once at each corner, and double-click where it ends: each click adds a node
+and the line goes on, and the double-click ends it there. For a single
+straight line, click where it starts and double-click where it ends. Hold
+<kbd>Ctrl</kbd> to keep each segment to steps of 15 degrees. <kbd>Space</kbd>,
+<kbd>Enter</kbd> or <kbd>Esc</kbd> ends the line at the last node, and
+<kbd>Esc</kbd> drops a lone first click.
 
 With a graphics tablet, the pen's pressure sets the width of the line along
 it; see [Drawing with a graphics tablet](pen-pressure.md).

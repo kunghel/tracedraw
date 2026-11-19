@@ -13,6 +13,7 @@ perilaku palet warna.
 - [[options.center_dialogs]]: kotak dialog terbuka di tengah jendela; bila
   nonaktif, kotak dialog terbuka di tempat terakhir Anda meninggalkannya.
 - [[options.ui_shadows]] (bayangan yang lebih sedikit membantu grafis yang
+- [[options.translucent_menus]]: open menus let the drawing show through them, at the [[options.menu_opacity]] beside the box (off by default).
   lebih lambat).
 - [[options.colored_icons]]: setiap kelompok alat mendapat warnanya sendiri.
 - [[options.docker_tabs_icons_only]]: tab panel di sisi jendela hanya

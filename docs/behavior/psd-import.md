@@ -8,9 +8,18 @@ file has no layers.
 
 - Header: 8 and 16 bits per channel (32-bit float is sampled to 8),
   Bitmap, Grayscale, Indexed (planar palette from the colour mode
-  data), RGB, CMYK (stored inverted, converted naively), Duotone (as
-  gray) and Lab modes. The resolution resource (0x03ED) sets the page
-  size; 72 ppi otherwise.
+  data), RGB, CMYK, Duotone (as gray) and Lab modes. The bitmaps keep
+  the file's mode: Bitmap gives Black and White (1-bit), Grayscale and
+  Duotone give Grayscale, Indexed gives Indexed (8-bit), and CMYK gives
+  a CMYK picture with its inks (stored inverted, 255 is no ink), shown
+  through the colour management as the drawing's CMYK colours show.
+  Before, all came in as RGB (#3025,
+  `bitmap_file::tests::photoshop_bitmaps_keep_the_files_mode`,
+  `psd::tests::a_cmyk_composite_keeps_its_inks`). The rows of a 1-bit
+  file each start on a whole byte; read as one run of bits, a picture
+  whose width is not a multiple of 8 came in slanted
+  (`psd::tests::a_one_bit_composite_reads_row_by_row`). The resolution
+  resource (0x03ED) sets the page size; 72 ppi otherwise.
 - Layers: bounds, name (Unicode `luni` wins over the Pascal name),
   opacity, visibility; channels 0..n, alpha (-1) and the layer mask (-2,
   applied as alpha with its default colour outside the mask bounds);

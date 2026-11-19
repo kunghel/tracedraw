@@ -207,7 +207,7 @@ fn pick_cursor(app: &App, pos: Option<Pos2>) -> Option<ToolCursor> {
     if app.grab_turn_point(p).is_some() {
         return Some(ToolCursor::Rotate);
     }
-    // A guideline over a picture that is not selected takes the press,
+    // A guideline over an object that is not selected takes the press,
     // so its arrows show there (#2640).
     let guides = app.page_guides();
     let guide = app
@@ -220,7 +220,6 @@ fn pick_cursor(app: &App, pos: Option<Pos2>) -> Option<ToolCursor> {
     // Over an object: the move arrows only where a press would move what
     // is selected already (the object or one of its parts); over another
     // object the plain arrow, as a press there picks it first (#885).
-    // Objects win a press over guidelines, so no guideline arrows there.
     if let Some(selected) = app.over_selection(p) {
         return selected.then_some(moving);
     }
@@ -433,10 +432,14 @@ pub fn for_tool_with_ctrl(
         Tool::InteractiveFill | Tool::Transparency
             if matches!(
                 app.drag,
-                Drag::FountainHandle { .. } | Drag::FountainLine { .. }
+                Drag::FountainHandle { .. }
+                    | Drag::FountainLine { .. }
+                    | Drag::PatternHandle { .. }
             ) || pos.is_some_and(|s| {
                 let p = app.view.to_page(s);
-                app.fountain_handle_at(p).is_some() || app.fountain_on_line(p)
+                app.fountain_handle_at(p).is_some()
+                    || app.fountain_on_line(p)
+                    || app.pattern_handle_at(p).is_some()
             }) =>
         {
             ToolCursor::System(egui::CursorIcon::Move)
@@ -720,6 +723,9 @@ thread_local! {
 #[derive(Default)]
 struct Bitmaps {
     ctx: Option<egui::Context>,
+    /// The textures `ctx` has sent, kept with it: egui sends each once
+    /// (#2871).
+    tex: crate::soft_canvas::Textures,
     made: Vec<(BitmapKey, Option<egui::CustomCursorImage>)>,
 }
 
@@ -756,6 +762,7 @@ pub fn bitmap(cursor: ToolCursor, ppp: f32) -> Option<egui::CustomCursorImage> {
         }
         // The interface's own font, for a sign with a letter in it; the
         // system's fonts (slow to load) have no part in a pointer.
+        let b = &mut *b;
         let ctx = b
             .ctx
             .get_or_insert_with(|| {
@@ -764,7 +771,7 @@ pub fn bitmap(cursor: ToolCursor, ppp: f32) -> Option<egui::CustomCursorImage> {
                 ctx
             })
             .clone();
-        let image = draw_bitmap(&ctx, cursor, ppp);
+        let image = draw_bitmap(&ctx, &mut b.tex, cursor, ppp);
         if b.made.len() >= BITMAPS_KEPT {
             b.made.remove(0);
         }
@@ -776,6 +783,7 @@ pub fn bitmap(cursor: ToolCursor, ppp: f32) -> Option<egui::CustomCursorImage> {
 /// [`bitmap`], drawn anew.
 fn draw_bitmap(
     ctx: &egui::Context,
+    tex: &mut crate::soft_canvas::Textures,
     cursor: ToolCursor,
     ppp: f32,
 ) -> Option<egui::CustomCursorImage> {
@@ -789,8 +797,9 @@ fn draw_bitmap(
     // The hot spot on the middle of a pixel, as the pointer is.
     let hot = (BITMAP_REACH * ppp).floor() as usize;
     let at = Pos2::new((hot as f32 + 0.5) / ppp, (hot as f32 + 0.5) / ppp);
-    let canvas =
-        crate::soft_canvas::rasterise(ctx, side, side, ppp, |painter| paint(painter, cursor, at));
+    let canvas = crate::soft_canvas::rasterise(ctx, tex, side, side, ppp, |painter| {
+        paint(painter, cursor, at)
+    });
     // What is drawn, and the hot spot.
     let (mut x0, mut y0, mut x1, mut y1) = (hot, hot, hot + 1, hot + 1);
     let mut any = false;
@@ -2066,6 +2075,37 @@ mod tests {
                     let path = format!("{dir}/pointer-{i:02}-{ppp}.png");
                     img.save(path).expect("saved");
                 }
+            }
+        }
+    }
+
+    /// A pointer's bitmap is the same whichever pointer was drawn before
+    /// it: the Pen's nib, whose tip dots egui draws from its font atlas,
+    /// drawn after another pointer came out with square dots, so the Pen
+    /// pointer changed from one start to the next (#2871).
+    #[test]
+    fn a_pointer_bitmap_does_not_depend_on_the_pointer_drawn_before() {
+        let fresh = || {
+            let ctx = egui::Context::default();
+            ctx.set_fonts(crate::theme::bundled_font_definitions());
+            (ctx, crate::soft_canvas::Textures::default())
+        };
+        for ppp in [1.0f32, 2.5] {
+            for cursor in [
+                ToolCursor::PenNib(None),
+                ToolCursor::PenNib(Some(CurveMark::Close)),
+                ToolCursor::Badge(Tool::Text),
+            ] {
+                let (ctx, mut tex) = fresh();
+                let first = draw_bitmap(&ctx, &mut tex, cursor, ppp).expect("first");
+                let (ctx, mut tex) = fresh();
+                for before in [ToolCursor::Cross, ToolCursor::Badge(Tool::Rectangle)] {
+                    draw_bitmap(&ctx, &mut tex, before, ppp).expect("before");
+                }
+                let after = draw_bitmap(&ctx, &mut tex, cursor, ppp).expect("after");
+                assert_eq!(first.size, after.size, "{cursor:?} at {ppp}");
+                assert_eq!(first.hotspot, after.hotspot, "{cursor:?} at {ppp}");
+                assert!(first.rgba[..] == after.rgba[..], "{cursor:?} at {ppp}");
             }
         }
     }

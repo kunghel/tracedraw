@@ -355,6 +355,93 @@ impl App {
         true
     }
 
+    /// Every chosen envelope node of the object of the chosen one: that
+    /// node first, then those chosen with it by Shift+click or a marquee
+    /// (#3001).
+    pub fn selected_envelope_nodes(&self) -> Option<(ShapeId, Vec<usize>)> {
+        let (id, i) = self.selected_envelope_node()?;
+        let count = self.editable_envelope(id).map_or(0, |(_, _, f)| f.len());
+        let mut out = vec![i];
+        if let Some((key, more)) = &self.envelope_more_nodes {
+            if *key == (id, i) {
+                for &k in more {
+                    if k < count && !out.contains(&k) {
+                        out.push(k);
+                    }
+                }
+            }
+        }
+        Some((id, out))
+    }
+
+    /// Choose the envelope nodes `nodes` of object `id`, the first the one
+    /// whose handles show; none chooses no node.
+    pub fn choose_envelope_nodes(&mut self, id: ShapeId, nodes: &[usize]) {
+        let Some((&first, more)) = nodes.split_first() else {
+            self.selected_effect_node = None;
+            self.envelope_more_nodes = None;
+            return;
+        };
+        self.selected_effect_node = Some((id, first));
+        self.envelope_more_nodes = Some(((id, first), more.to_vec()));
+    }
+
+    /// Shift+click (or Ctrl+Shift+click) on envelope node `i` of object
+    /// `id`: it joins the chosen nodes, or leaves them when it was
+    /// chosen. A node of another object starts a new choice (#3001).
+    pub fn toggle_envelope_node(&mut self, id: ShapeId, i: usize) {
+        let mut nodes = match self.selected_envelope_nodes() {
+            Some((sid, nodes)) if sid == id => nodes,
+            _ => Vec::new(),
+        };
+        match nodes.iter().position(|&k| k == i) {
+            Some(at) => {
+                nodes.remove(at);
+            }
+            None => nodes.push(i),
+        }
+        self.choose_envelope_nodes(id, &nodes);
+    }
+
+    /// The envelope nodes of the selected objects inside `area` (page
+    /// space): a marquee with the Envelope tool chooses them, with `add`
+    /// (Shift) they join those chosen. The first object with nodes inside
+    /// wins (#3001).
+    pub fn choose_envelope_nodes_in(&mut self, area: Rect, add: bool) {
+        let found = self.enveloped_selection().into_iter().find_map(|(s, f)| {
+            let inside: Vec<usize> = f
+                .nodes
+                .iter()
+                .enumerate()
+                .filter(|(_, n)| area.contains(s.transform * **n))
+                .map(|(i, _)| i)
+                .collect();
+            (!inside.is_empty()).then_some((s.id, inside))
+        });
+        let Some((id, inside)) = found else {
+            if !add {
+                self.choose_envelope_nodes(ShapeId(0), &[]);
+            }
+            return;
+        };
+        let mut nodes = match self.selected_envelope_nodes() {
+            Some((sid, nodes)) if add && sid == id => nodes,
+            _ => Vec::new(),
+        };
+        for i in inside {
+            if !nodes.contains(&i) {
+                nodes.push(i);
+            }
+        }
+        self.choose_envelope_nodes(id, &nodes);
+    }
+
+    /// Whether object `id`'s envelope node `i` is among the chosen ones.
+    pub fn envelope_node_chosen(&self, id: ShapeId, i: usize) -> bool {
+        self.selected_envelope_nodes()
+            .is_some_and(|(sid, nodes)| sid == id && nodes.contains(&i))
+    }
+
     /// The selected envelope node, if it is one of a selected object.
     pub fn selected_envelope_node(&self) -> Option<(ShapeId, usize)> {
         let (id, i) = self.selected_effect_node?;
@@ -391,7 +478,11 @@ impl App {
             stepped: false,
         });
         if let Part::Node(i) = part {
-            self.selected_effect_node = Some((id, i));
+            // A node of the chosen ones moves them all (#3001); another
+            // node is chosen alone.
+            if !self.envelope_node_chosen(id, i) {
+                self.choose_envelope_nodes(id, &[i]);
+            }
         }
     }
 
@@ -409,7 +500,21 @@ impl App {
         };
         let d = local_delta(page.transform, p - drag.start);
         match drag.part {
-            Part::Node(i) => f.move_node(i, d, self.envelope_mode),
+            // The chosen nodes move together, the one dragged first
+            // (#3001).
+            Part::Node(i) => {
+                let mut all = vec![i];
+                if let Some((sid, nodes)) = self.selected_envelope_nodes() {
+                    if sid == drag.shape && nodes.contains(&i) {
+                        all.extend(nodes.into_iter().filter(|&k| k != i));
+                    }
+                }
+                for k in all {
+                    if k < f.len() {
+                        f.move_node(k, d, self.envelope_mode);
+                    }
+                }
+            }
             Part::Handle { seg, end } => f.move_handle(seg, end, d),
             Part::Segment { seg, t } => f.bend_segment(seg, t, d),
         }
@@ -465,7 +570,13 @@ impl App {
         if response.clicked_by(PointerButton::Primary) {
             match self.envelope_part_at(p) {
                 Some((id, Part::Node(i))) => {
-                    self.selected_effect_node = Some((id, i));
+                    // Shift (or Ctrl+Shift) adds the node to the chosen
+                    // ones or takes it out (#3001).
+                    if response.ctx.input(|i| i.modifiers.shift) {
+                        self.toggle_envelope_node(id, i);
+                    } else {
+                        self.choose_envelope_nodes(id, &[i]);
+                    }
                     return true;
                 }
                 Some((_, Part::Handle { .. } | Part::Segment { .. })) => return true,
@@ -481,6 +592,20 @@ impl App {
     /// the selection.
     pub fn envelope_tool_input(&mut self, response: &Response, p: Point) {
         if self.envelope_input(response, p) {
+            return;
+        }
+        // A drag from outside the frame of a selected object: a marquee
+        // that chooses the envelope nodes inside it, Shift adding them
+        // (#3001; it ends in `finish_node_marquee`).
+        if response.drag_started_by(PointerButton::Primary) && !self.enveloped_selection().is_empty()
+        {
+            let start = response
+                .ctx
+                .input(|i| i.pointer.press_origin())
+                .map(|o| self.view.to_page(o))
+                .unwrap_or(p);
+            self.node_lasso_keeps = response.ctx.input(|i| i.modifiers.shift);
+            self.drag = crate::app::Drag::NodeMarquee { start, current: p };
             return;
         }
         if response.clicked_by(PointerButton::Primary) {
@@ -787,6 +912,62 @@ mod tests {
     fn bounds(app: &App, id: ShapeId) -> Rect {
         let s = app.doc().shape_on_page(id).expect("shape");
         tracedraw_core::live::evaluate(&s).main.bounds()
+    }
+
+    /// Several envelope nodes can be chosen, by Shift+click or a marquee
+    /// of the Envelope tool, and a drag on one of them moves them all,
+    /// in one undo step (#3001).
+    #[test]
+    fn several_envelope_nodes_move_together() {
+        let mut app = App::headless();
+        let id = rect(&mut app, 0.0, 0.0, 40.0, 20.0);
+        app.select(vec![id]);
+        app.add_new_envelope();
+        app.envelope_mode = Mode::Unconstrained;
+        let nodes = |app: &App| app.envelope_of(id).expect("envelope").1.nodes.clone();
+        let page = |app: &App, i: usize| {
+            let s = app.doc().shape_on_page(id).expect("shape");
+            s.transform * nodes(app)[i]
+        };
+        let before = nodes(&app);
+        // Nodes 0 and 4 (two corners) chosen, then a third added and
+        // taken out again.
+        app.choose_envelope_nodes(id, &[0]);
+        app.toggle_envelope_node(id, 4);
+        app.toggle_envelope_node(id, 2);
+        app.toggle_envelope_node(id, 2);
+        assert_eq!(app.selected_envelope_nodes(), Some((id, vec![0, 4])));
+        let depth = app.engine.history_labels().0.len();
+        let from = page(&app, 0);
+        app.begin_envelope_drag(id, Part::Node(0), from);
+        app.envelope_drag_to(from + Vec2::new(3.0, 0.0));
+        app.envelope_drag_to(from + Vec2::new(5.0, 2.0));
+        app.envelope_drag = None;
+        let after = nodes(&app);
+        for i in [0, 4] {
+            let d = after[i] - before[i];
+            assert!((d.hypot() - Vec2::new(5.0, 2.0).hypot()).abs() < 1e-6, "node {i}: {d:?}");
+        }
+        assert_eq!(after[2], before[2], "a node not chosen stays");
+        assert_eq!(app.engine.history_labels().0.len(), depth + 1, "one undo step");
+        // A marquee round the bottom side chooses its three nodes; with
+        // Shift it adds to them.
+        let s = app.doc().shape_on_page(id).expect("shape");
+        let low: Vec<Point> = [1, 2].iter().map(|&i| s.transform * after[i]).collect();
+        let r = Rect::from_points(low[0], low[1]).inflate(1.0, 1.0);
+        app.choose_envelope_nodes_in(r, false);
+        assert_eq!(app.selected_envelope_nodes(), Some((id, vec![1, 2])));
+        let r0 = Rect::from_points(s.transform * after[0], s.transform * after[0]).inflate(1.0, 1.0);
+        app.choose_envelope_nodes_in(r0, true);
+        assert_eq!(app.selected_envelope_nodes(), Some((id, vec![1, 2, 0])));
+        // A drag on a node not chosen chooses it alone.
+        let p6 = page(&app, 6);
+        app.begin_envelope_drag(id, Part::Node(6), p6);
+        app.envelope_drag = None;
+        assert_eq!(app.selected_envelope_nodes(), Some((id, vec![6])));
+        // An empty marquee chooses nothing.
+        app.choose_envelope_nodes_in(Rect::new(500.0, 500.0, 501.0, 501.0), false);
+        assert_eq!(app.selected_envelope_nodes(), None);
     }
 
     /// A drag moves a node the chosen way from where the drag began, the

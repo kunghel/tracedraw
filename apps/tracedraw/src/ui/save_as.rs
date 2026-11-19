@@ -526,7 +526,51 @@ pub fn version_choices() -> Vec<u16> {
 impl App {
     /// File > Save As: the Save Drawing dialog.
     pub fn save_as_dialog(&mut self) {
+        if self.settings.system_save_dialog && !files::WEB && !files::ANDROID {
+            self.system_save_as();
+            return;
+        }
         self.dialog = crate::ui::dialogs::Dialog::SaveAs(SaveAsState::new(self));
+    }
+
+    /// Save As through the system's save dialog (#2965): the folder and
+    /// name the Save Drawing dialog would offer, TraceDraw and CorelDRAW
+    /// as the types (the drawing's own first), the versions the Options
+    /// set; the system asks before replacing a file.
+    fn system_save_as(&mut self) {
+        let mut st = SaveAsState::new(self);
+        let tdraw = ("TraceDraw (*.tdraw)", TDRAW);
+        let cdr = ("CorelDRAW (*.cdr)", CDR);
+        let (first, second) = if st.cdr { (cdr, tdraw) } else { (tdraw, cdr) };
+        let mut d = files::Dialog::new()
+            .add_filter(first.0, &[first.1])
+            .add_filter(second.0, &[second.1])
+            .set_file_name(st.file_name());
+        if files::is_dir(&st.dir) {
+            d = d.set_directory(st.dir.clone());
+        }
+        d.save_file(self, move |app, path| {
+            let ext = path
+                .extension()
+                .and_then(|e| e.to_str())
+                .unwrap_or("")
+                .to_ascii_lowercase();
+            if ext == CDR || ext == TDRAW {
+                st.cdr = ext == CDR;
+            }
+            if let Some(dir) = path.parent() {
+                st.dir = dir.to_path_buf();
+                st.dir_text = st.dir.display().to_string();
+            }
+            st.name = path
+                .file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_default();
+            // The system dialog asked about replacing already.
+            st.package = false;
+            st.replace = Some(st.target());
+            app.finish_save_as(&mut st);
+        });
     }
 
     /// The dialog's Save: check the name and the folder, ask before
@@ -761,6 +805,10 @@ fn place_name(place: Place, path: &Path) -> String {
         Place::Pictures => tr("dialog.place_pictures"),
         Place::Root => path.display().to_string(),
         Place::Drive => files::drive_name(path),
+        Place::Cloud => path
+            .file_name()
+            .map(|n| n.to_string_lossy().to_string())
+            .unwrap_or_else(|| path.display().to_string()),
     }
 }
 
@@ -904,7 +952,8 @@ fn folder_bar(ui: &mut Ui, st: &mut SaveAsState) {
                 st.open_dir(up);
             }
         }
-        let width = ui.available_width() - 120.0;
+        // Room at the right for New folder and Browse.
+        let width = ui.available_width() - 220.0;
         let bar = ui.add(
             egui::TextEdit::singleline(&mut st.dir_text)
                 .id(egui::Id::new("save_as_path"))
@@ -920,6 +969,19 @@ fn folder_bar(ui: &mut Ui, st: &mut SaveAsState) {
         }
         if ui.button(tr("dialog.new_folder")).clicked() {
             st.new_folder();
+        }
+        // The system's own folder window, for the places only it knows
+        // (Windows libraries, Quick access, cloud folders, #3416).
+        if let files::FolderAction::PickFolder(token) = files::FolderUse::SaveDrawing.action() {
+            if ui
+                .button(tr("options.browse"))
+                .rich_tip(tr("options.browse_tip"))
+                .clicked()
+            {
+                if let Some(dir) = files::pick_folder_from(token, Some(&st.dir)) {
+                    st.open_dir(dir);
+                }
+            }
         }
     });
 }
@@ -1811,6 +1873,36 @@ mod tests {
                 assert!(out.is_file(), "{name}.{ext}");
             }
         }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// With the system's save dialog chosen, Save As asks the system
+    /// (no Save Drawing dialog), saves in the type of the extension
+    /// chosen there, and goes to that folder next time (#2965).
+    #[test]
+    fn the_system_save_dialog_saves_in_the_type_chosen_there() {
+        let dir = std::env::temp_dir().join(format!("td-system-save-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("dir");
+        let mut app = App::headless();
+        app.settings.system_save_dialog = true;
+        let _ = files::test_save::asked();
+        files::test_save::answer(Some(dir.join("poster.cdr")));
+        app.save_as_dialog();
+        assert!(matches!(app.dialog, crate::ui::dialogs::Dialog::None));
+        let asked = files::test_save::asked();
+        assert_eq!(asked.len(), 1);
+        let exts: Vec<String> = asked[0].filters().iter().flat_map(|(_, e)| e.clone()).collect();
+        assert_eq!(exts, ["tdraw", "cdr"]);
+        let bytes = std::fs::read(dir.join("poster.cdr")).expect("saved");
+        // A CorelDRAW file: its RIFF data, alone or in its zip package.
+        let corel = b"application/x-vnd.corel";
+        assert!(bytes.starts_with(b"RIFF") || bytes.windows(corel.len()).any(|w| w == corel));
+        assert_eq!(app.settings.last_dir.as_deref(), Some(dir.as_path()));
+        // Cancel saves nothing.
+        files::test_save::answer(None);
+        app.save_as_dialog();
+        assert!(matches!(app.dialog, crate::ui::dialogs::Dialog::None));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

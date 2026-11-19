@@ -82,6 +82,20 @@ pub fn install_saved(prefs: &FontManagerPrefs) -> Vec<String> {
     install_saved_in(tracedraw_text::fonts(), prefs)
 }
 
+/// [`install_saved`] off the interface's thread, when there is something
+/// to install: a library of tens of thousands of fonts kept the window
+/// from opening for a minute (d#3200). The receiver gets the families
+/// added.
+pub fn install_saved_in_background(
+    prefs: &FontManagerPrefs,
+) -> Option<mpsc::Receiver<Vec<String>>> {
+    if prefs.installed.is_empty() && prefs.folders.is_empty() {
+        return None;
+    }
+    let prefs = prefs.clone();
+    Some(spawn(move || install_saved(&prefs)))
+}
+
 fn install_saved_in(fonts: &tracedraw_text::FontSystem, prefs: &FontManagerPrefs) -> Vec<String> {
     // The font list's filter lists these folders, not their subfolders (#867).
     fonts.set_font_roots(&prefs.folders);
@@ -298,11 +312,11 @@ fn remove_folder_fonts(
         .cloned()
         .chain(folder_files(prefs))
         .collect();
-    catalog::font_files(dir)
+    let gone: Vec<PathBuf> = catalog::font_files(dir)
         .into_iter()
         .filter(|p| !keep.contains(p))
-        .filter(|p| fonts.uninstall_path(p))
-        .count()
+        .collect();
+    fonts.uninstall_paths(&gone)
 }
 
 /// The library the list shows.
@@ -917,15 +931,21 @@ fn run(app: &mut App, st: &mut FontManagerState, a: Action) {
                         prefs.folders.push(dir.clone());
                     }
                     fonts.set_font_roots(&prefs.folders);
-                    // Its fonts are usable at once, without Install (#866).
+                    // Its fonts are usable without Install (#866), once
+                    // they are in: they come in off the interface's
+                    // thread, as a folder of tens of thousands of fonts
+                    // froze the window for hours (d#2166).
                     let files = catalog::font_files(&dir);
-                    let added = fonts.install_paths(&files);
-                    log::info!("fonts of {}: {}", dir.display(), added.join(", "));
                     st.note = Some(trf(
                         "font_manager.installed_n",
                         &[("n", &files.len().to_string())],
                     ));
-                    app.font_families = fonts.available_families();
+                    let shown = dir.clone();
+                    app.font_installs.push(spawn(move || {
+                        let added = tracedraw_text::fonts().install_paths(&files);
+                        log::info!("fonts of {}: {}", shown.display(), added.len());
+                        added
+                    }));
                     st.library = Library::Folder(dir);
                     app.save_settings();
                 }
@@ -971,17 +991,22 @@ fn run(app: &mut App, st: &mut FontManagerState, a: Action) {
             app.save_settings();
         }
         Action::Uninstall(faces) => {
-            let mut n = 0;
+            // All at once: one by one went over every face for each file
+            // (d#2166).
+            let installed: BTreeSet<PathBuf> = prefs.installed.iter().cloned().collect();
+            let mut gone: BTreeSet<PathBuf> = BTreeSet::new();
             for r in &faces {
                 let Some(p) = &r.path else { continue };
-                if r.system || !prefs.installed.contains(p) {
-                    continue;
+                if !r.system && installed.contains(p) {
+                    gone.insert(p.clone());
                 }
-                prefs.installed.retain(|q| q != p);
-                if fonts.uninstall_path(p) {
-                    n += 1;
-                }
-                forget_kept(p, kept_fonts_dir().as_deref());
+            }
+            prefs.installed.retain(|q| !gone.contains(q));
+            let gone: Vec<PathBuf> = gone.into_iter().collect();
+            let n = fonts.uninstall_paths(&gone);
+            let kept = kept_fonts_dir();
+            for p in &gone {
+                forget_kept(p, kept.as_deref());
             }
             st.note = Some(trf("font_manager.uninstalled_n", &[("n", &n.to_string())]));
             app.font_families = fonts.available_families();
@@ -2453,6 +2478,28 @@ mod tests {
             system: false,
             handle: None,
         }
+    }
+
+    /// The saved fonts are installed off the interface's thread, and
+    /// only when there are some (d#3200).
+    #[test]
+    fn saved_fonts_are_installed_off_the_interface_thread() {
+        const SELAWIK: &[u8] = include_bytes!("../../assets/fonts/Selawik-Regular.ttf");
+        assert!(install_saved_in_background(&FontManagerPrefs::default()).is_none());
+        let dir = std::env::temp_dir().join(format!("tracedraw-bg-fonts-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("Selawik-Regular.ttf");
+        std::fs::write(&path, SELAWIK).expect("written");
+        let prefs = FontManagerPrefs {
+            installed: vec![path.clone()],
+            ..Default::default()
+        };
+        let job = install_saved_in_background(&prefs).expect("a job");
+        job.recv_timeout(std::time::Duration::from_secs(60))
+            .expect("done");
+        assert!(tracedraw_text::fonts().installed_paths().contains(&path));
+        tracedraw_text::fonts().uninstall_path(&path);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

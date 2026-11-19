@@ -232,6 +232,11 @@ pub(crate) mod pointer_filter;
 // (vendor/README.md).
 #[cfg(android_platform)]
 pub(crate) mod android_mouse;
+// TraceDraw: a custom pointer's pixels and scale on Linux, the same on
+// every start (vendor/README.md, #2871).
+#[cfg(any(x11_platform, wayland_platform))]
+#[allow(dead_code)]
+pub(crate) mod cursor_pixels;
 // TraceDraw: files dragged over a window on Wayland (vendor/README.md).
 #[cfg(wayland_platform)]
 pub(crate) mod file_drop;

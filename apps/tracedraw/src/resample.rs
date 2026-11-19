@@ -69,6 +69,10 @@ pub struct ResampleState {
     /// The first selected bitmap's pixel size and size on the page (mm).
     pub orig: (u32, u32),
     pub size_mm: (f64, f64),
+    /// The size the bitmap gets on the page (mm) and the unit the dialog
+    /// shows it in (#3138). The resolution is worked out at this size.
+    pub size_to: (f64, f64),
+    pub unit: crate::app::Units,
     pub w: u32,
     pub h: u32,
     pub keep_aspect: bool,
@@ -259,6 +263,8 @@ impl ResampleState {
         ResampleState {
             orig: (orig.0.max(1), orig.1.max(1)),
             size_mm,
+            size_to: size_mm,
+            unit: crate::app::Units::Millimeters,
             w: orig.0.max(1),
             h: orig.1.max(1),
             keep_aspect: true,
@@ -304,16 +310,50 @@ impl ResampleState {
 
     /// The resolution the new width gives at the size on the page.
     pub fn dpi(&self) -> f64 {
-        self.w as f64 / (self.size_mm.0 / 25.4).max(1e-6)
+        self.w as f64 / (self.size_to.0 / 25.4).max(1e-6)
     }
 
     pub fn set_dpi(&mut self, dpi: f64) {
         let dpi = dpi.clamp(1.0, 4800.0);
-        self.w = ((self.size_mm.0 / 25.4 * dpi).round() as u32).clamp(1, 20_000);
-        self.h = ((self.size_mm.1 / 25.4 * dpi).round() as u32).clamp(1, 20_000);
+        self.w = ((self.size_to.0 / 25.4 * dpi).round() as u32).clamp(1, 20_000);
+        self.h = ((self.size_to.1 / 25.4 * dpi).round() as u32).clamp(1, 20_000);
         if self.keep_aspect {
             self.set_w(self.w);
         }
+    }
+
+    /// Set the width on the page (mm), keeping the resolution: the
+    /// pixels follow, and with the aspect kept so does the height.
+    pub fn set_size_w(&mut self, mm: f64) {
+        let dpi = self.dpi();
+        self.size_to.0 = mm.clamp(0.01, 100_000.0);
+        if self.keep_aspect {
+            self.size_to.1 = self.size_to.0 * self.size_mm.1 / self.size_mm.0.max(1e-9);
+        }
+        self.set_dpi(dpi);
+    }
+
+    pub fn set_size_h(&mut self, mm: f64) {
+        let dpi = self.dpi();
+        self.size_to.1 = mm.clamp(0.01, 100_000.0);
+        if self.keep_aspect {
+            self.size_to.0 = self.size_to.1 * self.size_mm.0 / self.size_mm.1.max(1e-9);
+        }
+        self.set_dpi(dpi);
+    }
+
+    /// Make the bitmap as big as fits on a paper (mm), turned the way
+    /// the picture is, keeping its shape and the resolution.
+    pub fn fit_paper(&mut self, paper: (f64, f64)) {
+        let (sw, sh) = (self.size_mm.0.max(1e-9), self.size_mm.1.max(1e-9));
+        let (mut pw, mut ph) = paper;
+        if (sw >= sh) != (pw >= ph) {
+            std::mem::swap(&mut pw, &mut ph);
+        }
+        let k = (pw / sw).min(ph / sh);
+        let dpi = self.dpi();
+        self.size_to = (sw * k, sh * k);
+        self.set_dpi(dpi);
     }
 
     /// Memory of the new picture, bytes (4 per pixel).
@@ -333,29 +373,40 @@ impl App {
         let Some((_, rect, w, h, _)) = self.bitmap_shapes().into_iter().next() else {
             return;
         };
-        self.dialog = crate::ui::dialogs::Dialog::Resample(ResampleState::new(
-            (w, h),
-            (rect.width(), rect.height()),
-        ));
+        let mut st = ResampleState::new((w, h), (rect.width(), rect.height()));
+        st.unit = self.units;
+        self.dialog = crate::ui::dialogs::Dialog::Resample(st);
     }
 
     /// Resample every selected bitmap by the dialog's scale (the first
-    /// one gets exactly the size typed), keeping its place and size on
-    /// the page. One undo step per bitmap.
+    /// one gets exactly the size typed), keeping its place on the page.
+    /// A new size on the page scales each bitmap about its centre by the
+    /// same amount (#3138). One undo step per bitmap.
     pub fn resample_bitmaps(&mut self, st: &ResampleState) {
         let sx = st.w as f64 / st.orig.0 as f64;
         let sy = st.h as f64 / st.orig.1 as f64;
+        let kx = st.size_to.0 / st.size_mm.0.max(1e-9);
+        let ky = st.size_to.1 / st.size_mm.1.max(1e-9);
+        let resize = (kx - 1.0).abs() > 1e-9 || (ky - 1.0).abs() > 1e-9;
         for (id, rect, w, h, png) in self.bitmap_shapes() {
             let Some(img) = crate::bitmap_fx::decode(&png) else {
                 continue;
             };
             let nw = ((w.max(1) as f64 * sx).round() as u32).max(1);
             let nh = ((h.max(1) as f64 * sy).round() as u32).max(1);
-            if (nw, nh) == (img.width(), img.height()) && st.method != Method::Detail {
+            let same_px = (nw, nh) == (img.width(), img.height()) && st.method != Method::Detail;
+            if same_px && !resize {
                 continue;
             }
-            let out = resample(&img, nw, nh, st.method);
-            self.replace_bitmap(id, rect, &out);
+            let out = if same_px {
+                img
+            } else {
+                resample(&img, nw, nh, st.method)
+            };
+            let c = rect.center();
+            let (hw, hh) = (rect.width() * kx / 2.0, rect.height() * ky / 2.0);
+            let to = kurbo::Rect::new(c.x - hw, c.y - hh, c.x + hw, c.y + hh);
+            self.replace_bitmap(id, to, &out);
         }
     }
 }
@@ -377,7 +428,7 @@ impl App {
     /// The size the file would have now (`None`: no bitmap).
     pub fn resample_file_size(&self, st: &ResampleState) -> Option<u64> {
         let img = self.resampled_first(st)?;
-        encode_file(&img, st.format, st.quality, st.size_mm).map(|f| f.len() as u64)
+        encode_file(&img, st.format, st.quality, st.size_to).map(|f| f.len() as u64)
     }
 
     /// Fit the file under the target size: the dialog takes the quality
@@ -390,7 +441,7 @@ impl App {
             return false;
         };
         let target = (st.target_kb.max(0.0) * 1024.0) as u64;
-        match fit_target(&img, (st.w, st.h), st.method, st.format, target, st.size_mm) {
+        match fit_target(&img, (st.w, st.h), st.method, st.format, target, st.size_to) {
             Some((w, h, quality, bytes)) => {
                 let keep = st.keep_aspect;
                 st.keep_aspect = false;
@@ -410,7 +461,7 @@ impl App {
         let Some(img) = self.resampled_first(st) else {
             return;
         };
-        let Some(bytes) = encode_file(&img, st.format, st.quality, st.size_mm) else {
+        let Some(bytes) = encode_file(&img, st.format, st.quality, st.size_to) else {
             self.status = crate::i18n::tr("resample.save_failed");
             return;
         };
@@ -453,6 +504,46 @@ mod tests {
         assert_eq!(st.bytes(), 40 * 40 * 4);
         st.set_w(0);
         assert_eq!(st.w, 1);
+    }
+
+    /// #3138: a size on the page in any unit, or the size of a paper,
+    /// keeps the resolution and so changes the pixels; OK scales the
+    /// bitmap on the page about its centre.
+    #[test]
+    fn a_page_size_or_a_paper_sets_the_size_and_pixels() {
+        let mut st = ResampleState::new((1000, 500), (100.0, 50.0));
+        let dpi = st.dpi();
+        st.set_size_w(200.0);
+        assert_eq!(st.size_to, (200.0, 100.0));
+        assert_eq!((st.w, st.h), (2000, 1000));
+        assert!((st.dpi() - dpi).abs() < 1e-6);
+        st.set_size_h(25.0);
+        assert_eq!(st.size_to, (50.0, 25.0));
+        assert_eq!((st.w, st.h), (500, 250));
+        // A landscape picture on A4 turns the paper and fills its width.
+        st.fit_paper((210.0, 297.0));
+        assert!((st.size_to.0 - 297.0).abs() < 1e-9);
+        assert!((st.size_to.1 - 148.5).abs() < 1e-9);
+        assert_eq!((st.w, st.h), (2970, 1485));
+        // The resolution field works at the new size.
+        st.set_dpi(100.0);
+        assert_eq!(st.w, (297.0f64 / 25.4 * 100.0).round() as u32);
+
+        let mut app = App::headless();
+        app.paste_as_bitmap(RgbaImage::from_pixel(
+            40,
+            20,
+            image::Rgba([10, 20, 30, 255]),
+        ));
+        let (_, rect, w, h, _) = app.bitmap_shapes().remove(0);
+        let mut st = ResampleState::new((w, h), (rect.width(), rect.height()));
+        st.set_size_w(rect.width() * 2.0);
+        app.resample_bitmaps(&st);
+        let (_, after, nw, nh, _) = app.bitmap_shapes().remove(0);
+        assert!((after.width() - rect.width() * 2.0).abs() < 1e-6);
+        assert!((after.height() - rect.height() * 2.0).abs() < 1e-6);
+        assert!((after.center() - rect.center()).hypot() < 1e-6);
+        assert_eq!((nw, nh), (w * 2, h * 2));
     }
 
     #[test]

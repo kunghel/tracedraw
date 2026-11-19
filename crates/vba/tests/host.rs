@@ -261,3 +261,34 @@ End Sub
     r.result.unwrap();
     assert_eq!(r.lines, vec!["two           two           two"]);
 }
+
+/// A member the object lacks is looked up under the host's other name
+/// for it (`__member_alias`) before error 438 (#2968); a name with no
+/// other name still raises it.
+#[test]
+fn a_member_is_found_under_the_hosts_other_name_for_it() {
+    let src = r##"
+Sub Main()
+    Dim s As Shape
+    Set s = ActiveLayer.Shapes.Item("A")
+    Debug.Print s.Breadth, s.NAME
+    s.Shift 1, 2
+    Debug.Print s.PositionX & "," & s.PositionY
+    Debug.Print s.Nothing
+End Sub
+"##;
+    let alias = r##"
+globalThis.__member_alias = function (name) {
+  return { breadth: "SizeWidth", shift: "Move", nothing: "Nothing" }[String(name).toLowerCase()];
+};
+"##;
+    let r = run_modules(
+        &[Module::new("Module1", ModuleKind::Standard, src)],
+        "Module1",
+        "Main",
+        alias,
+    );
+    assert_eq!(r.lines, vec!["10            A", "1,2"]);
+    let err = r.result.expect_err("no member, no other name");
+    assert!(err.contains("438") || err.contains("doesn't support"), "{err}");
+}

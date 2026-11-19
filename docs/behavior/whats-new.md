@@ -32,3 +32,4 @@
 
 - `ui::menus::tests::menu_commands_are_listed_and_run_by_key` (every
   marked row is in the menus; marks show only while the item is on)
+- The Welcome Screen is a start page, not a document: its title, captions and headings are not text to select, and a drag over them selects nothing; the What's New paragraphs stay selectable to copy (#3206, `ui::welcome::tests::the_title_is_not_selectable_text`).

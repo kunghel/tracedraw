@@ -1875,11 +1875,12 @@ fn editor(app: &mut App, ctx: &Context) {
     let mut open = true;
     let mut act: Option<&str> = None;
     let mut switch_to: Option<String> = None;
+    let mut goto: Option<(String, u32)> = None;
     let ed = app.macros.editor.as_mut().expect("checked");
     egui::Window::new(title)
         .id(egui::Id::new("macro_editor"))
         .open(&mut open)
-        .default_size(Vec2::new(860.0, 560.0))
+        .default_size(Vec2::new(1100.0, 600.0))
         .resizable(true)
         .collapsible(false)
         .show(ctx, |ui| {
@@ -1915,6 +1916,86 @@ fn editor(app: &mut App, ctx: &Context) {
                     ui.label(RichText::new(tr("macros.protected")).color(Tokens::text_dim()));
                 }
             });
+            // Converting: the check, the fixes and the JavaScript tab.
+            ui.horizontal_wrapped(|ui| {
+                if ui
+                    .selectable_label(!ed.js_tab, "VBA")
+                    .rich_tip(tr("convert.vba_tab_hint"))
+                    .clicked()
+                {
+                    ed.js_tab = false;
+                }
+                if ui
+                    .selectable_label(ed.js_tab, "JavaScript")
+                    .rich_tip(tr("convert.js_tab_hint"))
+                    .clicked()
+                    && !ed.js_tab
+                {
+                    act = Some("js_tab");
+                }
+                ui.separator();
+                if ui
+                    .selectable_label(ed.show_report, tr("convert.check"))
+                    .rich_tip(tr("convert.check_hint"))
+                    .clicked()
+                {
+                    act = Some(if ed.show_report { "hide_report" } else { "check" });
+                }
+                if ui
+                    .button(tr("convert.fix"))
+                    .rich_tip(tr("convert.fix_hint"))
+                    .clicked()
+                {
+                    act = Some("fix");
+                }
+                if ed.js_tab {
+                    ui.separator();
+                    if ui
+                        .button(tr("convert.convert_again"))
+                        .rich_tip(tr("convert.convert_again_hint"))
+                        .clicked()
+                    {
+                        act = Some("convert");
+                    }
+                    let entries = tracedraw_vba::convert::js_entries(&ed.js);
+                    if !entries.is_empty() && !entries.contains(&ed.js_run) {
+                        ed.js_run = entries[0].clone();
+                    }
+                    egui::ComboBox::from_id_salt("macro_js_run")
+                        .selected_text(ed.js_run.clone())
+                        .show_ui(ui, |ui| {
+                            for e in &entries {
+                                ui.selectable_value(&mut ed.js_run, e.clone(), e);
+                            }
+                        })
+                        .response
+                        .rich_tip(tr("convert.run_which_hint"));
+                    if ui
+                        .add_enabled(
+                            !running && !ed.js_run.is_empty(),
+                            egui::Button::new(tr("convert.run_js")),
+                        )
+                        .rich_tip(tr("convert.run_js_hint"))
+                        .clicked()
+                    {
+                        act = Some("run_js");
+                    }
+                    if ui
+                        .add_enabled(!ed.js.is_empty(), egui::Button::new(tr("convert.save_js")))
+                        .rich_tip(tr("convert.save_js_hint"))
+                        .clicked()
+                    {
+                        act = Some("save_js");
+                    }
+                    if ui
+                        .add_enabled(!ed.js.is_empty(), egui::Button::new(tr("convert.to_scripts")))
+                        .rich_tip(tr("convert.to_scripts_hint"))
+                        .clicked()
+                    {
+                        act = Some("to_scripts");
+                    }
+                }
+            });
             if let Some(m) = &ed.message {
                 ui.label(RichText::new(m).color(Tokens::text_dim()));
             }
@@ -1941,7 +2022,24 @@ fn editor(app: &mut App, ctx: &Context) {
                         });
                 });
                 ui.separator();
-                code_area(ui, ed);
+                let report_w = if ed.show_report { 280.0 } else { 0.0 };
+                let code_w = (ui.available_width() - report_w).max(200.0);
+                ui.vertical(|ui| {
+                    ui.set_width(code_w);
+                    if ed.js_tab {
+                        js_area(ui, ed);
+                    } else {
+                        code_area(ui, ed);
+                    }
+                });
+                if ed.show_report {
+                    ui.separator();
+                    if let Some(r) = &ed.report {
+                        if let Some(at) = report_panel(ui, r, &ed.module) {
+                            goto = Some(at);
+                        }
+                    }
+                }
             });
         });
     // The keys work while the code has the focus.
@@ -1957,6 +2055,19 @@ fn editor(app: &mut App, ctx: &Context) {
     }
     if f5 && !running {
         act = Some("run");
+    }
+    if let Some((m, line)) = goto {
+        let ed = app.macros.editor.as_mut().expect("open");
+        ed.js_tab = false;
+        if m.eq_ignore_ascii_case(&ed.module) {
+            ed.goto_line = Some(line.max(1));
+        } else {
+            if ed.dirty {
+                app.save_macro_editor();
+            }
+            app.edit_macro(pi, &m, Some(line.max(1)));
+        }
+        return;
     }
     if let Some(m) = switch_to {
         if ed.dirty {
@@ -1975,6 +2086,30 @@ fn editor(app: &mut App, ctx: &Context) {
     match act {
         Some("save") => app.save_macro_editor(),
         Some("stop") => app.stop_macro(),
+        Some("check") => app.check_macro_editor(),
+        Some("hide_report") => {
+            if let Some(ed) = &mut app.macros.editor {
+                ed.show_report = false;
+            }
+        }
+        Some("fix") => app.fix_macro_editor(),
+        Some("js_tab") => {
+            if app.macros.editor.as_ref().is_some_and(|e| e.js.is_empty()) {
+                app.convert_macro_editor();
+            }
+            if let Some(ed) = &mut app.macros.editor {
+                ed.js_tab = true;
+            }
+        }
+        Some("convert") => app.convert_macro_editor(),
+        Some("run_js") => {
+            if let Some(ed) = &app.macros.editor {
+                let (js, name) = (ed.js.clone(), ed.js_run.clone());
+                app.run_macro_js(&js, &name, "Scripts".into());
+            }
+        }
+        Some("save_js") => app.save_macro_js(),
+        Some("to_scripts") => app.macro_js_to_scripts(),
         Some("find") => {
             let ed = app.macros.editor.as_mut().expect("open");
             let hay = ed.source.to_lowercase();
@@ -2018,6 +2153,113 @@ fn editor(app: &mut App, ctx: &Context) {
         }
         _ => {}
     }
+}
+
+/// The colour of a compatibility level.
+fn level_color(l: crate::macro_convert::Level) -> Color32 {
+    use crate::macro_convert::Level;
+    match l {
+        Level::Ok => Color32::from_rgb(46, 160, 67),
+        Level::Warn => Color32::from_rgb(210, 153, 34),
+        Level::Error => Color32::from_rgb(207, 34, 46),
+    }
+}
+
+fn level_dot(ui: &mut Ui, l: crate::macro_convert::Level) {
+    let (r, _) = ui.allocate_exact_size(Vec2::splat(12.0), Sense::hover());
+    ui.painter().circle_filled(r.center(), 4.5, level_color(l));
+}
+
+/// The compatibility panel: each macro with its colour, then the issues;
+/// a click on one gives its module and line.
+fn report_panel(
+    ui: &mut Ui,
+    r: &crate::macro_convert::Report,
+    module: &str,
+) -> Option<(String, u32)> {
+    use crate::macro_convert::Level;
+    let mut out = None;
+    ui.vertical(|ui| {
+        ui.set_width(270.0);
+        ui.label(RichText::new(tr("convert.report_title")).strong());
+        ui.label(
+            RichText::new(trf(
+                "convert.summary",
+                &[
+                    ("ok", &r.count(Level::Ok).to_string()),
+                    ("warn", &r.count(Level::Warn).to_string()),
+                    ("err", &r.count(Level::Error).to_string()),
+                ],
+            ))
+            .color(Tokens::text_dim()),
+        );
+        egui::ScrollArea::vertical()
+            .id_salt("macro_report")
+            .auto_shrink([false, false])
+            .show(ui, |ui| {
+                for m in &r.macros {
+                    ui.horizontal(|ui| {
+                        level_dot(ui, m.level);
+                        let label = format!("{}.{}", m.module, m.name);
+                        if ui
+                            .add(egui::Button::selectable(false, label))
+                            .rich_tip(match m.level {
+                                Level::Ok => tr("convert.level_ok"),
+                                Level::Warn => tr("convert.level_warn"),
+                                Level::Error => tr("convert.level_error"),
+                            })
+                            .clicked()
+                        {
+                            out = Some((m.module.clone(), m.line));
+                        }
+                    });
+                }
+                if r.issues.is_empty() {
+                    ui.label(RichText::new(tr("convert.no_issues")).color(Tokens::text_dim()));
+                    return;
+                }
+                ui.separator();
+                // The module on screen first.
+                let mut issues: Vec<&crate::macro_convert::Issue> = r.issues.iter().collect();
+                issues.sort_by_key(|i| !i.module.eq_ignore_ascii_case(module));
+                for i in issues {
+                    ui.horizontal_top(|ui| {
+                        level_dot(ui, i.level);
+                        let place = if i.line > 0 {
+                            format!("{} {}: ", i.module, i.line)
+                        } else {
+                            format!("{}: ", i.module)
+                        };
+                        let text = format!("{place}{}", i.text);
+                        if ui
+                            .add(egui::Label::new(text).wrap().sense(Sense::click()))
+                            .rich_tip(tr("convert.goto_hint"))
+                            .clicked()
+                        {
+                            out = Some((i.module.clone(), i.line));
+                        }
+                    });
+                }
+            });
+    });
+    out
+}
+
+/// The JavaScript tab's text.
+fn js_area(ui: &mut Ui, ed: &mut crate::macros::Editor) {
+    egui::ScrollArea::both()
+        .id_salt("macro_js")
+        .auto_shrink([false, false])
+        .show(ui, |ui| {
+            ui.add(
+                egui::TextEdit::multiline(&mut ed.js)
+                    .id(egui::Id::new("macro_js_edit"))
+                    .code_editor()
+                    .desired_width(f32::INFINITY)
+                    .desired_rows(30)
+                    .lock_focus(true),
+            );
+        });
 }
 
 const EDITOR_GUTTER: f32 = 44.0;

@@ -70,12 +70,19 @@ mantiene la mezcla dibujada.
 ## Mezclar a lo largo de un trayecto {#path}
 
 1. Seleccione la mezcla.
-2. Haga clic en **Nuevo trayecto** en el panel [[docker.blend]] y haga clic en
-   una curva.
+2. Haga clic en [[docker.new_path]] en el panel [[docker.blend]] o en la barra
+   de propiedades de la herramienta Mezcla, y haga clic en una curva.
 
 Los pasos siguen la curva. **Girar todos los objetos** orienta cada paso a lo
 largo de la curva, y [[docker.blend_full_path]] coloca el primer y el último
 paso en los extremos de la curva.
+
+La mezcla sigue siendo una mezcla: los pasos, el espaciado, la aceleración, la
+rotación y los colores la siguen cambiando. Para colocar los objetos inicial y
+final en cualquier punto de la curva, ajuste [[docker.blend_path_start]] y
+[[docker.blend_path_end]], en % de la longitud de la curva: cada objeto va allí
+y los pasos corren entre ellos. [[docker.detach_path]] quita la mezcla de la
+curva, de nuevo una mezcla recta.
 
 ## Quitar o separar una mezcla {#clear}
 

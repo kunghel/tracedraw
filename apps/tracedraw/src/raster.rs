@@ -34,8 +34,10 @@ pub const SETTLE_SECONDS: f64 = 0.12;
 /// enough for the notches of one turn of the wheel to make one render.
 pub const LIGHT_SETTLE_SECONDS: f64 = 0.3;
 
-/// A render that took longer than this, seconds, makes the next ones
-/// run on a thread of their own.
+/// In tests, a render that took longer than this, seconds, makes the
+/// next ones run on a thread of their own; the program draws every
+/// picture after the first on its thread (#3440).
+#[cfg(test)]
 const SLOW_RENDER: f64 = 0.03;
 
 /// How long the page's picture must have been the one asked for, seconds,
@@ -102,6 +104,9 @@ struct Job {
     incoming: Option<TextureHandle>,
     /// The picture's size, pixels.
     size: (u32, u32),
+    /// How the picture is laid on screen: document pixels (the Pixels
+    /// view) as blocks.
+    filter: TextureOptions,
 }
 
 /// Turns to render on a thread: one page job runs at a time in the whole
@@ -293,6 +298,10 @@ pub struct Raster {
     /// Every render counts as slow, for tests.
     #[cfg(test)]
     always_slow: bool,
+    /// Every picture after the first drawn on its thread, as the program
+    /// does, for tests (#3440).
+    #[cfg(test)]
+    threaded: bool,
     /// A lock a render on its thread takes before drawing, for tests that
     /// hold a render while the view moves on.
     #[cfg(test)]
@@ -633,8 +642,9 @@ impl Raster {
                 }
             }
         }
-        // The browser draws on its one thread: never set there.
-        #[cfg(target_arch = "wasm32")]
+        // The browser draws on its one thread: never set there; the
+        // program draws on a thread whatever the zoom (#3440).
+        #[cfg(any(target_arch = "wasm32", not(test)))]
         let _ = zoom_now;
         if self.defer {
             ctx.request_repaint();
@@ -650,11 +660,13 @@ impl Raster {
                 zoom: dpi / 25.4,
                 origin_x: -(win.ix0 as f64),
                 origin_y: win.iy1 as f64,
+                stretch_y: 1.0,
             },
             _ => ViewTransform {
                 zoom: (view.zoom * ppp) as f64,
                 origin_x: ((view.origin.x - rect.min.x) * ppp) as f64,
                 origin_y: ((view.origin.y - rect.min.y) * ppp) as f64,
+                stretch_y: 1.0,
             },
         };
         let opts = RenderOptions {
@@ -674,27 +686,41 @@ impl Raster {
                 .get_or_insert_with(|| std::sync::Arc::new(ProofLut::new()))
                 .clone()
         });
-        let page_rect = (window.is_none()).then(|| {
-            tracedraw_core::geometry::Rect::new(
-                -vt.origin_x / vt.zoom,
-                (vt.origin_y - h as f64) / vt.zoom,
-                (w as f64 - vt.origin_x) / vt.zoom,
-                vt.origin_y / vt.zoom,
-            )
-        });
-        // A slow page, with a picture to show meanwhile: drawn on a
-        // thread of its own, the window answering all along. A page
-        // beside the current one always is: many of them come due in the
-        // same moment, once a zoom rests (#903).
+        let picture_rect = tracedraw_core::geometry::Rect::new(
+            -vt.origin_x / vt.zoom,
+            (vt.origin_y - h as f64) / vt.zoom,
+            (w as f64 - vt.origin_x) / vt.zoom,
+            vt.origin_y / vt.zoom,
+        );
+        let page_rect = window.is_none().then_some(picture_rect);
+        // Document pixels are blown up as blocks, the way they will look.
+        let filter = if window.is_some() {
+            TextureOptions::NEAREST
+        } else {
+            TextureOptions::LINEAR
+        };
+        // With a picture to show meanwhile, the page is drawn on a
+        // thread of its own, the window answering all along: every
+        // change and every step of the Pixels view too, not only a page
+        // that drew slowly, which a quick page that a change made slow
+        // (and every edit of a page just under that) held the frame for
+        // (#3440). A page beside the current one always was: many of
+        // them come due in the same moment, once a zoom rests (#903).
         #[cfg(test)]
         if self.always_slow {
             self.last_seconds = 1.0;
         }
+        #[cfg(test)]
+        let threaded = self.threaded
+            || (window.is_none()
+                && (self.last_seconds > SLOW_RENDER || self.follows_zoom || zoom_now));
+        #[cfg(not(test))]
+        let threaded = true;
         #[cfg(not(target_arch = "wasm32"))]
-        if window.is_none()
-            && (self.last_seconds > SLOW_RENDER || self.follows_zoom || zoom_now)
-            && self.texture.is_some()
-        {
+        if threaded && self.texture.is_some() {
+            // The Pixels view's picture shows where its document pixels
+            // now are while the next one is drawn.
+            let page_rect = Some(picture_rect);
             // Another page's job (or a stale one) is running: the last
             // picture shows meanwhile, and the job holding the turn
             // repaints when it ends. A page beside the current one
@@ -706,7 +732,7 @@ impl Raster {
                 }
                 return self.shown_meanwhile(view, screen);
             };
-            let (doc, stale) = match self.snapshot.take() {
+            let (doc, stale) = match self.snapshot.clone() {
                 Some(shared) => (shared, None),
                 None => self.copy_of(doc, key.revision),
             };
@@ -758,6 +784,7 @@ impl Raster {
                 bands,
                 incoming: None,
                 size: (w, h),
+                filter,
             });
             return self.shown_meanwhile(view, screen);
         }
@@ -766,12 +793,6 @@ impl Raster {
         let pixmap = render_page(doc, page, &opts)?;
         let image = to_image(&pixmap, lut.as_deref());
         self.last_seconds = t.elapsed().as_secs_f64();
-        // Document pixels are blown up as blocks, the way they will look.
-        let filter = if window.is_some() {
-            TextureOptions::NEAREST
-        } else {
-            TextureOptions::LINEAR
-        };
         match &mut self.texture {
             Some(t) => t.set(image, filter),
             None => self.texture = Some(ctx.load_texture("page", image, filter)),
@@ -898,6 +919,7 @@ impl Raster {
                             zoom: scale,
                             origin_x: -area.x0 * scale,
                             origin_y: area.y1 * scale,
+                            stretch_y: 1.0,
                         },
                         preview: None,
                         wireframe,
@@ -918,9 +940,13 @@ impl Raster {
                             .get_or_insert_with(|| std::sync::Arc::new(ProofLut::new()))
                             .clone()
                     });
-                    // The copy a zoom's renders share: made here, at rest,
-                    // it is there for the first step of the next zoom.
-                    let (doc, stale) = self.copy_of(doc, revision);
+                    // The drawing shared by the caller, or the copy a
+                    // zoom's renders share: made here, at rest, it is
+                    // there for the first step of the next zoom.
+                    let (doc, stale) = match self.snapshot.clone() {
+                        Some(shared) => (shared, None),
+                        None => self.copy_of(doc, revision),
+                    };
                     let (tx, rx) = std::sync::mpsc::channel();
                     let wake = ctx.clone();
                     std::thread::spawn(move || {
@@ -1055,11 +1081,8 @@ impl Raster {
                 if let Some((image, seconds)) = result {
                     self.last_seconds = seconds;
                     match &mut self.texture {
-                        Some(t) => t.set(image, TextureOptions::LINEAR),
-                        None => {
-                            self.texture =
-                                Some(ctx.load_texture("page", image, TextureOptions::LINEAR))
-                        }
+                        Some(t) => t.set(image, job.filter),
+                        None => self.texture = Some(ctx.load_texture("page", image, job.filter)),
                     }
                     self.key = Some(job.key);
                     self.page_rect = job.page_rect;
@@ -1096,14 +1119,15 @@ impl Job {
             if rows.size[0] != w || y0 + rows.size[1] > h {
                 continue;
             }
+            let filter = self.filter;
             let t = self.incoming.get_or_insert_with(|| {
                 ctx.load_texture(
                     "page-bands",
                     ColorImage::filled([w, h], egui::Color32::TRANSPARENT),
-                    TextureOptions::LINEAR,
+                    filter,
                 )
             });
-            t.set_partial([0, y0], rows, TextureOptions::LINEAR);
+            t.set_partial([0, y0], rows, filter);
         }
     }
 }
@@ -1581,6 +1605,91 @@ mod tests {
         }
         assert!(done, "the picture from the thread was taken");
         assert!(raster.last_seconds < 1.0, "its time measured");
+    }
+
+    /// #3440: every picture after the first is drawn on its thread, as
+    /// the program does: a change shows the last picture meanwhile, and
+    /// once the changes stop the picture is of the latest one, never of
+    /// one before it. The Pixels view goes the same way.
+    #[test]
+    fn every_change_draws_on_a_thread_and_ends_on_the_latest() {
+        static TURNS: Turns = Turns::new();
+        let ctx = Context::default();
+        let doc = Document::new("t", Size::new(100.0, 50.0));
+        let page = doc.pages[0].id;
+        let rect = Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(320.0, 200.0));
+        let view = View {
+            zoom: 40.0,
+            origin: egui::pos2(0.0, 400.0),
+        };
+        let mut raster = Raster {
+            turns: Some(&TURNS),
+            threaded: true,
+            ..Default::default()
+        };
+        let mut pass_at = |raster: &mut Raster, revision: u64, dpi: Option<f64>| {
+            let mut out = None;
+            let mut full = ctx.run_ui(egui::RawInput::default(), |ui| {
+                out = raster.texture(
+                    ui.ctx(),
+                    &doc,
+                    page,
+                    &view,
+                    rect,
+                    None,
+                    revision,
+                    false,
+                    false,
+                    false,
+                    false,
+                    None,
+                    dpi,
+                );
+            });
+            full.textures_delta.clear();
+            out.expect("texture")
+        };
+        pass_at(&mut raster, 1, None);
+        assert!(raster.job.is_none(), "the first picture is drawn at once");
+        assert_eq!(raster.key.as_ref().map(|k| k.revision), Some(1));
+        // Changes one after another: each frame answers with the last
+        // picture while the next is drawn on its thread.
+        for revision in 2..=6 {
+            let (_, at) = pass_at(&mut raster, revision, None);
+            assert_eq!(at, rect);
+            assert!(raster.job.is_some(), "revision {revision}: on its thread");
+            assert_ne!(raster.key.as_ref().map(|k| k.revision), Some(revision));
+        }
+        let mut settled = false;
+        for _ in 0..500 {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+            pass_at(&mut raster, 6, None);
+            if raster.job.is_none() && raster.key.as_ref().map(|k| k.revision) == Some(6) {
+                settled = true;
+                break;
+            }
+        }
+        assert!(settled, "the picture of the latest change comes");
+        // The Pixels view: drawn on its thread too, as blocks once there.
+        let win = pixel_window(&view, rect, 96.0, 1.0).expect("window");
+        pass_at(&mut raster, 6, Some(96.0));
+        assert!(raster.job.is_some(), "the Pixels view on its thread");
+        let mut there = None;
+        for _ in 0..500 {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+            let (_, at) = pass_at(&mut raster, 6, Some(96.0));
+            if raster.job.is_none() && raster.key.as_ref().is_some_and(|k| k.pixels.is_some()) {
+                there = Some(at);
+                break;
+            }
+        }
+        let at = there.expect("the Pixels view's picture comes");
+        assert!((at.min - win.screen.min).length() < 1e-3, "{at:?} {:?}", win.screen);
+        assert!((at.max - win.screen.max).length() < 1e-3, "{at:?} {:?}", win.screen);
+        assert_eq!(
+            raster.texture.as_ref().map(|t| t.size()),
+            Some([win.w as usize, win.h as usize])
+        );
     }
 
     /// The whole page is drawn small once the picture has rested, on a

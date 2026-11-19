@@ -67,10 +67,10 @@ pub use icc::{Intent as RenderingIntent, Profile as IccProfile, Transform as Icc
 pub use id::{LayerId, PageId, ShapeId};
 pub use paragraphs::ParagraphFormat;
 pub use style::{
-    arrowhead_paths, Arrowhead, ArrowheadPlacement, ColorBlend, Fill, Fountain, FountainKind,
-    FountainRepeat, LineCap, LineJoin, Mesh, MeshHandle, MeshNode, OutlinePosition, Pattern,
-    PatternTile, Procedural, ProceduralParam, ProceduralParams, ProceduralPattern, Stop, Stroke,
-    Texture, TextureKind, WidthNode,
+    arrowhead_paths, arrowhead_stroke_path, Arrowhead, ArrowheadPlacement, ColorBlend, Fill,
+    Fountain, FountainKind, FountainRepeat, LineCap, LineJoin, Mesh, MeshHandle, MeshNode,
+    OutlinePosition, Pattern, PatternTile, Procedural, ProceduralParam, ProceduralParams,
+    ProceduralPattern, Stop, Stroke, Texture, TextureKind, WidthNode,
 };
 pub use table::{BorderSet, CellBorders, CellMargins, CellSide, EdgeBorder, TableHit};
 pub use text_flow::{TextWrap, WrapMode, WrapSide};

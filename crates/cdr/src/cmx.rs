@@ -466,12 +466,12 @@ fn start_head(head: Arrowhead) -> Arrowhead {
 /// Arrowhead units (`rarw`) per outline width: 127 000 units (half an inch
 /// of 1/254 000) are one outline width. Measured on a public sample file
 /// against the preview picture it carries (see `docs/cmx-format.md`).
-const HEAD_UNITS_PER_WIDTH: f64 = 127_000.0;
+pub(crate) const HEAD_UNITS_PER_WIDTH: f64 = 127_000.0;
 
 /// `path` with every open subpath replaced by the area a round pen of
 /// `width` sweeps along it; closed subpaths are kept, turned to one
 /// orientation.
-fn stroke_open_subpaths(path: &BezPath, width: f64) -> BezPath {
+pub(crate) fn stroke_open_subpaths(path: &BezPath, width: f64) -> BezPath {
     use tracedraw_core::geometry::PathEl;
     let mut out = BezPath::new();
     let mut sub: Vec<PathEl> = Vec::new();

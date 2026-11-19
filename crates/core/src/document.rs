@@ -160,6 +160,10 @@ pub mod text_outline {
         pub text: String,
         /// The span it belongs to.
         pub span: usize,
+        /// The number of the first character it stands for among the
+        /// characters of the whole text (in the order they are typed;
+        /// glyphs come in the order they are drawn, left to right).
+        pub char_idx: usize,
         /// Its outline as drawn, layout space (mm).
         pub path: BezPath,
         /// False when the drawn outline is not the font's own glyph
@@ -1097,7 +1101,10 @@ pub enum ShapeKind {
     /// counter-clockwise): a twisted star. `sharpness` 0 is a polygon,
     /// 0 to 1 a star whose inner points come in toward the centre, 0 to
     /// -1 an inverted star whose inner points lie past it
-    /// (`geometry::star_inner_ratio`).
+    /// (`geometry::star_inner_ratio`). `bend` curves every side the same
+    /// way, so the shape keeps its symmetry: each side bows out to its
+    /// left (outward on a polygon) by `bend` times its length, inward
+    /// when negative (`geometry::bent_polygon_path`, #2451).
     Polygon {
         rect: Rect,
         points: u32,
@@ -1106,6 +1113,8 @@ pub enum ShapeKind {
         complex: Option<u32>,
         #[serde(default, skip_serializing_if = "is_zero")]
         twist: f64,
+        #[serde(default, skip_serializing_if = "is_zero")]
+        bend: f64,
     },
     /// Free path (lines and cubic Beziers) in local space.
     Path { path: BezPath, closed: bool },
@@ -4085,9 +4094,10 @@ impl Shape {
                 sharpness,
                 complex,
                 twist,
+                bend,
             } => match complex {
                 Some(k) => geometry::complex_star_path(*rect, *points, *k),
-                None => geometry::twisted_polygon_path(*rect, *points, *sharpness, *twist),
+                None => geometry::bent_polygon_path(*rect, *points, *sharpness, *twist, *bend),
             },
             ShapeKind::Path { path, .. } => path.clone(),
             ShapeKind::Text {
@@ -4361,15 +4371,40 @@ impl Shape {
             }
             // A B-spline keeps its outline; the control points go.
             ShapeKind::Path { .. } => Some(self.kind.clone()),
+            // Characters with a fill or outline of their own: a group of
+            // curves, one a look, each in its own colours. All took the
+            // object's fill (#3107).
+            ShapeKind::Text { .. } if self.text_parts().is_some() => {
+                let children: Vec<Shape> = self
+                    .text_parts()
+                    .unwrap_or_default()
+                    .into_iter()
+                    .filter_map(|p| {
+                        let path = crate::shaping::nonzero_as_even_odd(&p.local_path());
+                        if path.elements().is_empty() {
+                            return None;
+                        }
+                        let mut c = Shape::new(next_id(), ShapeKind::Path { path, closed: true });
+                        c.fill = p.fill;
+                        c.stroke = p.stroke;
+                        c.overprint_fill = p.overprint_fill;
+                        c.overprint_outline = p.overprint_outline;
+                        Some(c)
+                    })
+                    .collect();
+                Some(ShapeKind::Group { children })
+            }
             // Text fills with the nonzero rule, curves with even-odd: the
             // overlapping strokes of a glyph would leave holes (#800).
             ShapeKind::Text { .. } => Some(ShapeKind::Path {
                 path: crate::shaping::nonzero_as_even_odd(&self.local_path()),
                 closed: true,
             }),
+            // An open arc stays an open curve, its arrowheads with it; it
+            // was closed and lost them (#2983).
             _ => Some(ShapeKind::Path {
                 path: self.local_path(),
-                closed: true,
+                closed: !self.kind.is_open_curve(),
             }),
         }
     }
@@ -4630,6 +4665,39 @@ impl Shape {
     }
 
     pub fn bounds(&self) -> Rect {
+        self.bounds_under(Affine::IDENTITY)
+    }
+
+    /// [`Shape::bounds`] with `outer` applied on top of the shape's own
+    /// transformation. A group passes its transformation down instead of
+    /// copying each member with it: the copy took the member's whole
+    /// subtree, so groups nested deep were copied once per level, which
+    /// on a drawing of a million nested objects ran out of memory (#3340).
+    fn bounds_under(&self, outer: Affine) -> Rect {
+        match &self.kind {
+            ShapeKind::Group { children } => {
+                // A member that draws nothing (an empty curve, such as a
+                // dimension's arrowheads when it has none) takes no room:
+                // its box would stretch the group's to the origin (#996).
+                let t = outer * self.transform;
+                children
+                    .iter()
+                    .filter(|c| !c.is_empty_path())
+                    .map(|c| c.bounds_under(t))
+                    .reduce(|a, b| a.union(b))
+                    .unwrap_or_else(|| (outer * self.page_path()).bounding_box())
+            }
+            _ if outer == Affine::IDENTITY => self.own_bounds(),
+            _ => {
+                let mut c = self.clone();
+                c.transform = outer * c.transform;
+                c.own_bounds()
+            }
+        }
+    }
+
+    /// [`Shape::bounds`] of an object that is not a group.
+    fn own_bounds(&self) -> Rect {
         match &self.kind {
             ShapeKind::Text {
                 origin,
@@ -4656,19 +4724,6 @@ impl Shape {
             }
             ShapeKind::Text { .. } => self
                 .text_bounds()
-                .unwrap_or_else(|| self.page_path().bounding_box()),
-            // A member that draws nothing (an empty curve, such as a
-            // dimension's arrowheads when it has none) takes no room:
-            // its box would stretch the group's to the origin (#996).
-            ShapeKind::Group { children } => children
-                .iter()
-                .filter(|c| !c.is_empty_path())
-                .map(|c| {
-                    let mut c = c.clone();
-                    c.transform = self.transform * c.transform;
-                    c.bounds()
-                })
-                .reduce(|a, b| a.union(b))
                 .unwrap_or_else(|| self.page_path().bounding_box()),
             _ => self.page_path().bounding_box(),
         }
@@ -5126,6 +5181,82 @@ pub fn draws_symbol(shape: &Shape, index: usize, symbols: &[Symbol]) -> bool {
     walk(shape, index, symbols, &mut seen)
 }
 
+/// The most objects one symbol stands for, the objects of the symbols
+/// it draws counted in: more is a file built to never finish drawing.
+pub const SYMBOL_MAX_OBJECTS: u64 = 1_000_000;
+
+/// The most symbols one symbol draws inside one another.
+pub const SYMBOL_MAX_NESTING: usize = 64;
+
+impl Document {
+    /// Turn every instance in a symbol that would draw without end, or
+    /// far past what any drawing holds, into an empty group in its place.
+    /// A file whose symbol drew itself (directly or through another one)
+    /// overflowed the stack and ended the program when drawn, and one of
+    /// 40 symbols each drawing the one before twice stood for a trillion
+    /// objects and never finished. Edit Symbol already refuses a symbol
+    /// drawing itself; this mends a file made elsewhere.
+    pub fn break_symbol_loops(&mut self) {
+        const OPEN: u64 = u64::MAX;
+        // Objects each symbol stands for; OPEN while it is being walked.
+        let mut size: Vec<Option<u64>> = vec![None; self.symbols.len()];
+        fn symbol(i: usize, syms: &mut [Symbol], size: &mut [Option<u64>], depth: usize) -> u64 {
+            if let Some(n) = size[i] {
+                return n;
+            }
+            size[i] = Some(OPEN);
+            let mut shape = std::mem::replace(
+                &mut syms[i].shape,
+                Shape::new(
+                    ShapeId(0),
+                    ShapeKind::Group {
+                        children: Vec::new(),
+                    },
+                ),
+            );
+            let n = walk(&mut shape, syms, size, depth);
+            syms[i].shape = shape;
+            size[i] = Some(n);
+            n
+        }
+        fn walk(s: &mut Shape, syms: &mut [Symbol], size: &mut [Option<u64>], depth: usize) -> u64 {
+            let n = match &mut s.kind {
+                ShapeKind::SymbolInstance { index } => {
+                    let i = *index;
+                    if i >= syms.len() {
+                        return 1;
+                    }
+                    let n = match size[i] {
+                        Some(OPEN) => OPEN,
+                        _ if depth >= SYMBOL_MAX_NESTING => OPEN,
+                        _ => symbol(i, syms, size, depth + 1),
+                    };
+                    if n > SYMBOL_MAX_OBJECTS {
+                        s.kind = ShapeKind::Group {
+                            children: Vec::new(),
+                        };
+                        return 1;
+                    }
+                    n
+                }
+                ShapeKind::Group { children } => children
+                    .iter_mut()
+                    .fold(0u64, |a, c| a.saturating_add(walk(c, syms, size, depth))),
+                ShapeKind::ClipFrame { frame, contents } => contents
+                    .iter_mut()
+                    .fold(walk(frame, syms, size, depth), |a, c| {
+                        a.saturating_add(walk(c, syms, size, depth))
+                    }),
+                _ => 0,
+            };
+            n.saturating_add(1)
+        }
+        for i in 0..self.symbols.len() {
+            symbol(i, &mut self.symbols, &mut size, 0);
+        }
+    }
+}
+
 /// Document properties (File > Document Properties).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 #[serde(default)]
@@ -5336,6 +5467,18 @@ impl PrimaryColorMode {
         match self {
             PrimaryColorMode::Cmyk => crate::Color::cmyk_pct(0.0, 0.0, 0.0, 100.0),
             PrimaryColorMode::Rgb => crate::Color::BLACK,
+        }
+    }
+
+    /// A grey of `k` % black in this mode: `k` % K in CMYK, the RGB grey
+    /// that light in RGB (#3006).
+    pub fn gray(self, k: f32) -> crate::Color {
+        match self {
+            PrimaryColorMode::Cmyk => crate::Color::cmyk_pct(0.0, 0.0, 0.0, k),
+            PrimaryColorMode::Rgb => {
+                let v = (1.0 - k / 100.0).clamp(0.0, 1.0);
+                crate::Color::Rgb { r: v, g: v, b: v }
+            }
         }
     }
 }
@@ -5868,6 +6011,76 @@ pub struct Document {
     /// Review comments pinned to the pages (never printed or exported).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub comments: Vec<Comment>,
+    /// Where the object found last by its id lay, so looking up the
+    /// objects of a selection one after the other does not walk the
+    /// whole drawing for each (never saved, never compared).
+    #[serde(skip)]
+    pub find_hint: FindHint,
+}
+
+/// The layer (counted as [`Document::all_layers`] gives them) and the
+/// place among its objects of the object [`Document::find_shape`] found
+/// last. Only a hint: a lookup checks the object there first and walks
+/// the drawing when it is not the one, so a stale hint costs nothing.
+///
+/// It also keeps where each object on a layer was when the drawing was
+/// last walked ([`FindHint::tops`]), checked on use like the hint: the
+/// objects of a large selection looked up out of drawing order
+/// (Distribute, Align) each walked the drawing again.
+#[derive(Debug, Default)]
+pub struct FindHint(
+    std::sync::atomic::AtomicU64,
+    std::sync::Mutex<std::collections::HashMap<ShapeId, (u32, u32)>>,
+);
+
+impl FindHint {
+    fn get(&self) -> (usize, usize) {
+        let v = self.0.load(std::sync::atomic::Ordering::Relaxed);
+        ((v >> 32) as usize, (v & 0xffff_ffff) as usize)
+    }
+
+    fn set(&self, layer: usize, index: usize) {
+        let v = ((layer as u64 & 0xffff_ffff) << 32) | (index as u64 & 0xffff_ffff);
+        self.0.store(v, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+impl FindHint {
+    /// Where the object on a layer `id` was last seen, if it was.
+    fn top(&self, id: ShapeId) -> Option<(usize, usize)> {
+        let map = self.1.lock().ok()?;
+        map.get(&id).map(|&(k, i)| (k as usize, i as usize))
+    }
+
+    /// Note where each object on the layers `layers` is now.
+    fn note_tops<'a>(&self, layers: impl Iterator<Item = &'a Layer>) {
+        let Ok(mut map) = self.1.lock() else {
+            return;
+        };
+        map.clear();
+        for (k, layer) in layers.enumerate() {
+            for (i, s) in layer.shapes.iter().enumerate() {
+                map.insert(s.id, (k as u32, i as u32));
+            }
+        }
+    }
+}
+
+impl Clone for FindHint {
+    fn clone(&self) -> Self {
+        FindHint(
+            std::sync::atomic::AtomicU64::new(self.0.load(std::sync::atomic::Ordering::Relaxed)),
+            Default::default(),
+        )
+    }
+}
+
+/// A hint is no part of the drawing: two drawings are equal whatever
+/// their hints.
+impl PartialEq for FindHint {
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
 }
 
 /// What a comment points at on its page (page millimetres).
@@ -6133,6 +6346,21 @@ impl TimeTracker {
     }
 }
 
+/// `s` itself when it is `id`, or the object `id` in it (in its groups
+/// and clip frames).
+fn find_in(s: &Shape, id: ShapeId) -> Option<&Shape> {
+    if s.id == id {
+        return Some(s);
+    }
+    match &s.kind {
+        ShapeKind::Group { children } => children.iter().find_map(|c| find_in(c, id)),
+        ShapeKind::ClipFrame { frame, contents } => {
+            find_in(frame, id).or_else(|| contents.iter().find_map(|c| find_in(c, id)))
+        }
+        _ => None,
+    }
+}
+
 impl Default for Document {
     fn default() -> Self {
         Document::new("Untitled", paper::A4)
@@ -6176,6 +6404,7 @@ impl Document {
             cmyk_profile: None,
             inks: Vec::new(),
             comments: Vec::new(),
+            find_hint: FindHint::default(),
         }
     }
 
@@ -6426,50 +6655,141 @@ impl Document {
 
     /// Find a top-level shape and the layer holding it.
     pub fn shape(&self, id: ShapeId) -> Result<(&Layer, &Shape)> {
-        for layer in self.all_layers() {
-            if let Some(s) = layer.shapes.iter().find(|s| s.id == id) {
-                return Ok((layer, s));
-            }
-        }
-        Err(Error::ShapeNotFound(id))
+        let (k, i) = self.locate_on_layer(id).ok_or(Error::ShapeNotFound(id))?;
+        let layer = self.all_layers().nth(k).ok_or(Error::ShapeNotFound(id))?;
+        Ok((layer, &layer.shapes[i]))
     }
 
     pub fn shape_mut(&mut self, id: ShapeId) -> Result<&mut Shape> {
-        for layer in self.all_layers_mut() {
-            if let Some(s) = layer.shapes.iter_mut().find(|s| s.id == id) {
-                return Ok(s);
+        let (k, i) = self.locate_on_layer(id).ok_or(Error::ShapeNotFound(id))?;
+        self.all_layers_mut()
+            .nth(k)
+            .and_then(|l| l.shapes.get_mut(i))
+            .ok_or(Error::ShapeNotFound(id))
+    }
+
+    /// The layer number and place of the object `id` lying on a layer
+    /// (not in a group), trying where the last lookup found its object,
+    /// and the places next to it, first (see [`FindHint`]).
+    fn locate_on_layer(&self, id: ShapeId) -> Option<(usize, usize)> {
+        let (k, i) = self.find_hint.get();
+        if let Some(layer) = self.all_layers().nth(k) {
+            for j in [i, i + 1, i.wrapping_sub(1)] {
+                if layer.shapes.get(j).is_some_and(|s| s.id == id) {
+                    self.find_hint.set(k, j);
+                    return Some((k, j));
+                }
             }
         }
-        Err(Error::ShapeNotFound(id))
+        for (k, layer) in self.all_layers().enumerate() {
+            if let Some(i) = layer.shapes.iter().position(|s| s.id == id) {
+                self.find_hint.set(k, i);
+                return Some((k, i));
+            }
+        }
+        None
     }
 
     /// Position of a shape: (layer id, index inside the layer).
     pub fn locate(&self, id: ShapeId) -> Result<(LayerId, usize)> {
-        for layer in self.all_layers() {
-            if let Some(i) = layer.shapes.iter().position(|s| s.id == id) {
-                return Ok((layer.id, i));
-            }
-        }
-        Err(Error::ShapeNotFound(id))
+        let (k, i) = self.locate_on_layer(id).ok_or(Error::ShapeNotFound(id))?;
+        let layer = self.all_layers().nth(k).ok_or(Error::ShapeNotFound(id))?;
+        Ok((layer.id, i))
     }
 
     /// Find any shape, including children of groups and clip frames.
     pub fn find_shape(&self, id: ShapeId) -> Option<&Shape> {
-        fn walk(s: &Shape, id: ShapeId) -> Option<&Shape> {
-            if s.id == id {
-                return Some(s);
+        let (k, i) = self.locate_top(id)?;
+        let top = self.all_layers().nth(k)?.shapes.get(i)?;
+        find_in(top, id)
+    }
+
+    /// The layer number and the place on it of the object on a layer
+    /// that is `id` or holds it (in a group or clip frame), trying where
+    /// the last lookup found its object, and the places next to it,
+    /// first (each object of a selection of thousands walked the
+    /// whole drawing to be found, so moving them all took seconds).
+    fn locate_top(&self, id: ShapeId) -> Option<(usize, usize)> {
+        let (k, i) = self.find_hint.get();
+        if let Some(layer) = self.all_layers().nth(k) {
+            if layer
+                .shapes
+                .get(i)
+                .is_some_and(|s| find_in(s, id).is_some())
+            {
+                return Some((k, i));
             }
-            match &s.kind {
-                ShapeKind::Group { children } => children.iter().find_map(|c| walk(c, id)),
-                ShapeKind::ClipFrame { frame, contents } => {
-                    walk(frame, id).or_else(|| contents.iter().find_map(|c| walk(c, id)))
+            for j in [i + 1, i.wrapping_sub(1)] {
+                if layer.shapes.get(j).is_some_and(|s| s.id == id) {
+                    self.find_hint.set(k, j);
+                    return Some((k, j));
                 }
-                _ => None,
             }
         }
-        self.all_layers()
-            .flat_map(|l| &l.shapes)
-            .find_map(|s| walk(s, id))
+        // Where it was when the drawing was last walked, if it is still
+        // there.
+        if let Some((k, i)) = self.find_hint.top(id) {
+            if self
+                .all_layers()
+                .nth(k)
+                .and_then(|l| l.shapes.get(i))
+                .is_some_and(|s| s.id == id)
+            {
+                self.find_hint.set(k, i);
+                return Some((k, i));
+            }
+        }
+        for (k, layer) in self.all_layers().enumerate() {
+            if let Some(i) = layer.shapes.iter().position(|s| find_in(s, id).is_some()) {
+                self.find_hint.set(k, i);
+                // An object on a layer that was not where it was last
+                // seen: note where they all are now, for the next ones.
+                if layer.shapes[i].id == id {
+                    self.find_hint.note_tops(self.all_layers());
+                }
+                return Some((k, i));
+            }
+        }
+        None
+    }
+
+    /// Keep in `ids` only the objects still in the drawing (on a layer or
+    /// inside a group or clip frame), in their order. A long list is
+    /// checked against one walk of the drawing: looking up thousands of
+    /// objects that are gone (after Undo of a Duplicate) walked it once
+    /// for each.
+    pub fn retain_existing(&self, ids: &mut Vec<ShapeId>) {
+        if ids.len() <= 16 {
+            ids.retain(|id| self.find_shape(*id).is_some());
+            return;
+        }
+        let mut all = std::collections::HashSet::new();
+        fn walk(s: &Shape, all: &mut std::collections::HashSet<ShapeId>, depth: usize) {
+            all.insert(s.id);
+            if depth > 512 {
+                return;
+            }
+            match &s.kind {
+                ShapeKind::Group { children } => {
+                    for c in children {
+                        walk(c, all, depth + 1);
+                    }
+                }
+                ShapeKind::ClipFrame { frame, contents } => {
+                    walk(frame, all, depth + 1);
+                    for c in contents {
+                        walk(c, all, depth + 1);
+                    }
+                }
+                _ => {}
+            }
+        }
+        for layer in self.all_layers() {
+            for s in &layer.shapes {
+                walk(s, &mut all, 0);
+            }
+        }
+        ids.retain(|id| all.contains(id));
     }
 
     /// Find any shape to change it, including children of groups and clip
@@ -6487,9 +6807,9 @@ impl Document {
                 _ => None,
             }
         }
-        self.all_layers_mut()
-            .flat_map(|l| &mut l.shapes)
-            .find_map(|s| walk(s, id))
+        let (k, i) = self.locate_top(id)?;
+        let top = self.all_layers_mut().nth(k)?.shapes.get_mut(i)?;
+        walk(top, id)
     }
 
     /// The transform taking the space of `id` to the page: the product of
@@ -6509,9 +6829,9 @@ impl Document {
                 _ => None,
             }
         }
-        self.all_layers()
-            .flat_map(|l| &l.shapes)
-            .find_map(|s| walk(s, id, Affine::IDENTITY))
+        let (k, i) = self.locate_top(id)?;
+        let top = self.all_layers().nth(k)?.shapes.get(i)?;
+        walk(top, id, Affine::IDENTITY)
     }
 
     /// A copy of any object, nested ones too, whose transform takes it
@@ -6548,13 +6868,17 @@ impl Document {
             }
             found
         }
+        // Only the object on a layer that holds it is walked: walking the
+        // drawing from its start for each of thousands of objects (Convert
+        // to Curves before Combine) took seconds.
+        let Some((k, i)) = self.locate_top(id) else {
+            return Vec::new();
+        };
         let mut path = Vec::new();
-        for s in self.all_layers().flat_map(|l| &l.shapes) {
-            if walk(s, id, &mut path) {
-                return path;
-            }
+        match self.all_layers().nth(k).and_then(|l| l.shapes.get(i)) {
+            Some(top) if walk(top, id, &mut path) => path,
+            _ => Vec::new(),
         }
-        Vec::new()
     }
 
     /// The object lies inside a group or a clip frame (not on a layer).
@@ -6565,20 +6889,8 @@ impl Document {
     /// The object on a layer that holds `id` (itself when it lies on a
     /// layer).
     pub fn top_level_of(&self, id: ShapeId) -> Option<ShapeId> {
-        fn holds(s: &Shape, id: ShapeId) -> bool {
-            s.id == id
-                || match &s.kind {
-                    ShapeKind::Group { children } => children.iter().any(|c| holds(c, id)),
-                    ShapeKind::ClipFrame { frame, contents } => {
-                        holds(frame, id) || contents.iter().any(|c| holds(c, id))
-                    }
-                    _ => false,
-                }
-        }
-        self.all_layers()
-            .flat_map(|l| &l.shapes)
-            .find(|s| holds(s, id))
-            .map(|s| s.id)
+        let (k, i) = self.locate_top(id)?;
+        self.all_layers().nth(k)?.shapes.get(i).map(|s| s.id)
     }
 
     /// Union of all shape bounds on a page, or None when the page is empty.
@@ -6721,7 +7033,16 @@ impl Document {
     /// further at each group inside a group, so a curve node took 0.5 to
     /// 1.3 KB and a drawing with many nodes in nested groups ran to
     /// hundreds of megabytes. Every reader takes either layout.
-    pub fn write_json_version<W: std::io::Write>(&self, w: W, version: u32) -> Result<()> {
+    pub fn write_json_version<W: std::io::Write>(&self, mut w: W, version: u32) -> Result<()> {
+        if self.nesting() <= SHALLOW_NESTING {
+            return self.write_json_here(w, version);
+        }
+        let json = self.deep_json(|d, buf| d.write_json_here(buf, version))?;
+        w.write_all(&json).map_err(serde_json::Error::io)?;
+        Ok(())
+    }
+
+    fn write_json_here<W: std::io::Write>(&self, w: W, version: u32) -> Result<()> {
         use crate::finite::{Finite, FiniteSerializer};
         if (version as usize) >= DOWN_STEPS.len() {
             #[derive(Serialize)]
@@ -6766,14 +7087,83 @@ impl Document {
             return self.write_json_version(w, version);
         }
         let mut gz = flate2::write::GzEncoder::new(w, flate2::Compression::new(TDRAW_GZIP_LEVEL));
-        self.write_packed(&mut gz)?;
+        if self.nesting() <= SHALLOW_NESTING {
+            self.write_packed_here(&mut gz)?;
+        } else {
+            let json = self.deep_json(|d, buf| d.write_packed_here(buf))?;
+            use std::io::Write as _;
+            gz.write_all(&json).map_err(serde_json::Error::io)?;
+        }
         gz.finish().map_err(serde_json::Error::io)?;
         Ok(())
     }
 
+    /// The JSON `write` makes of a deeply nested drawing (groups inside
+    /// groups past [`SHALLOW_NESTING`]), made on a thread with room for
+    /// it ([`on_deep_stack`]): any thread's stack has room for a shallow
+    /// one, not for a few thousand groups inside groups. A drawing nested
+    /// deeper than a file may be ([`MAX_JSON_DEPTH`]) is not written:
+    /// the error says so, instead of a file that would refuse to open.
+    fn deep_json(
+        &self,
+        write: impl FnOnce(&Document, &mut Vec<u8>) -> Result<()> + Send,
+    ) -> Result<Vec<u8>> {
+        let json = on_deep_stack(|| {
+            let mut buf = Vec::new();
+            write(self, &mut buf).map(|()| buf)
+        })?;
+        let depth = json_depth_of(&json);
+        if depth > MAX_JSON_DEPTH {
+            return Err(<serde_json::Error as serde::ser::Error>::custom(format!(
+                "the drawing nests {depth} levels deep (groups inside groups); a file holds at most {MAX_JSON_DEPTH}, so it would not open again: ungroup some of it"
+            ))
+            .into());
+        }
+        Ok(json)
+    }
+
+    /// How deep objects nest in the drawing: 1 for objects on a layer, one
+    /// more for each group or clip frame they are inside.
+    pub fn nesting(&self) -> usize {
+        let mut deepest = 0;
+        let mut stack: Vec<(&Shape, usize)> = Vec::new();
+        let layers = self
+            .pages
+            .iter()
+            .flat_map(|p| &p.layers)
+            .chain(&self.master);
+        for l in layers {
+            stack.extend(l.shapes.iter().map(|s| (s, 1)));
+        }
+        stack.extend(self.symbols.iter().map(|sym| (&sym.shape, 1)));
+        while let Some((s, d)) = stack.pop() {
+            deepest = deepest.max(d);
+            match &s.kind {
+                ShapeKind::Group { children } => {
+                    stack.extend(children.iter().map(|c| (c, d + 1)));
+                }
+                ShapeKind::ClipFrame { frame, contents } => {
+                    stack.push((frame, d + 1));
+                    stack.extend(contents.iter().map(|c| (c, d + 1)));
+                }
+                _ => {}
+            }
+        }
+        deepest
+    }
+
     /// The packed JSON of the current format, uncompressed: the drawing
     /// with references for its pictures and fonts, then their table.
-    pub fn write_packed<W: std::io::Write>(&self, w: W) -> Result<()> {
+    pub fn write_packed<W: std::io::Write>(&self, mut w: W) -> Result<()> {
+        if self.nesting() <= SHALLOW_NESTING {
+            return self.write_packed_here(w);
+        }
+        let json = self.deep_json(|d, buf| d.write_packed_here(buf))?;
+        w.write_all(&json).map_err(serde_json::Error::io)?;
+        Ok(())
+    }
+
+    fn write_packed_here<W: std::io::Write>(&self, w: W) -> Result<()> {
         use crate::finite::FiniteSerializer;
         #[derive(Serialize)]
         struct Packed<'a> {
@@ -6806,6 +7196,17 @@ impl Document {
     /// date by [`migrate`]; newer ones are read as far as this version
     /// knows them (fields it does not know are left out).
     pub fn from_json(s: &str) -> Result<Self> {
+        // Reading nests a few large stack frames per level of the file:
+        // a drawing of a couple of hundred nested groups, which the file
+        // may hold (MAX_JSON_DEPTH), overflowed the stack and ended the
+        // program. A deep file is read on a thread of its own with room.
+        if json_depth(s) > SHALLOW_JSON_DEPTH {
+            return on_deep_stack(|| Self::from_json_here(s));
+        }
+        Self::from_json_here(s)
+    }
+
+    fn from_json_here(s: &str) -> Result<Self> {
         let mut v: serde_json::Value = json_value(s)?;
         let from = tdraw_version(&v);
         migrate(&mut v, from);
@@ -6832,6 +7233,7 @@ impl Document {
         // What text wraps around is not saved: work it out again.
         doc.refresh_text_flow();
         doc.refit_text_meshes();
+        doc.break_symbol_loops();
         Ok(doc)
     }
 
@@ -6871,13 +7273,43 @@ impl Document {
 }
 
 /// How many brackets (`{` and `[`) of a `.tdraw` file may be open at
-/// once. A group inside a group nests four levels, so this is some 250
-/// groups inside groups, far beyond what a drawing holds (the `.cdr`
-/// reader stops at 64) and read, migrated and drawn well within the
-/// stack of every platform. The JSON reader's own limit is 128 levels,
-/// about 30 groups inside groups, which drawings do reach: such a
-/// drawing saved and then refused to open, and was lost.
-pub const MAX_JSON_DEPTH: usize = 1024;
+/// once. A group inside a group nests three levels, so this is some
+/// 5,000 groups inside groups, read on a thread with room for it
+/// ([`DEEP_STACK`]). The JSON reader's own limit is 128 levels, about 30
+/// groups inside groups, which drawings do reach: such a drawing saved
+/// and then refused to open, and was lost. The limit was then 1024
+/// levels, some 330 groups inside groups, which the Group command goes
+/// past as easily: the drawing saved and would not open again. A drawing
+/// nested past this one is not saved (see `Document::deep_json`).
+pub const MAX_JSON_DEPTH: usize = 16384;
+
+/// Objects nested no deeper than this ([`Document::nesting`]) are
+/// written on the caller's thread: some 30 groups inside groups, within
+/// [`SHALLOW_JSON_DEPTH`].
+const SHALLOW_NESTING: usize = 30;
+
+/// JSON nested no deeper than this is read on the caller's thread; any
+/// thread's stack (1 MB at the least) has room for it.
+const SHALLOW_JSON_DEPTH: usize = 96;
+
+/// Stack for reading or writing a deeply nested drawing: room for
+/// [`MAX_JSON_DEPTH`] levels with plenty to spare (only the part used is
+/// ever taken from memory).
+const DEEP_STACK: usize = 512 * 1024 * 1024;
+
+/// `f` run on a thread of its own with a [`DEEP_STACK`], its result (or
+/// its panic) passed back.
+pub fn on_deep_stack<T: Send>(f: impl FnOnce() -> T + Send) -> T {
+    std::thread::scope(|scope| {
+        std::thread::Builder::new()
+            .name("deep-drawing".into())
+            .stack_size(DEEP_STACK)
+            .spawn_scoped(scope, f)
+            .expect("a thread to read a deeply nested drawing")
+            .join()
+            .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
+    })
+}
 
 /// The JSON of a `.tdraw` text as a value, with the reader's nesting
 /// limit lifted and [`MAX_JSON_DEPTH`] in its place.
@@ -6900,10 +7332,15 @@ fn json_value(s: &str) -> Result<serde_json::Value> {
 /// once, brackets inside strings not counted. Text that is not JSON
 /// gives some number; the reader then says what is wrong with it.
 fn json_depth(s: &str) -> usize {
+    json_depth_of(s.as_bytes())
+}
+
+/// [`json_depth`] of JSON bytes.
+fn json_depth_of(s: &[u8]) -> usize {
     let (mut depth, mut deepest) = (0usize, 0usize);
     let mut in_string = false;
     let mut escaped = false;
-    for b in s.bytes() {
+    for &b in s {
         if in_string {
             match b {
                 _ if escaped => escaped = false,
@@ -7152,6 +7589,154 @@ mod index_keys {
 
 #[cfg(test)]
 mod tests {
+    /// Objects are found by id from where the last one was found (a
+    /// selection of thousands was looked up one after the other, walking
+    /// the whole drawing for each): whatever the hint, including one left
+    /// stale by objects removed or moved to another page, a lookup finds
+    /// the right object, in groups too, and nothing for an id that is gone.
+    #[test]
+    fn objects_are_found_whatever_the_last_lookup_left() {
+        use super::{Document, Layer, Page, Shape, ShapeKind};
+        use crate::geometry::{Affine, Rect, Size};
+        let mut doc = Document::new("Find", Size::new(100.0, 100.0));
+        let mut ids = doc.ids().clone();
+        let rect = |ids: &mut crate::id::IdSource| {
+            Shape::new(
+                ids.shape(),
+                ShapeKind::Rect {
+                    rect: Rect::new(0.0, 0.0, 1.0, 1.0),
+                    radius: 0.0,
+                    corners: None,
+                },
+            )
+        };
+        let flat: Vec<Shape> = (0..50).map(|_| rect(&mut ids)).collect();
+        let flat_ids: Vec<_> = flat.iter().map(|s| s.id).collect();
+        let inner = rect(&mut ids);
+        let inner_id = inner.id;
+        let mut group = Shape::new(
+            ids.shape(),
+            ShapeKind::Group {
+                children: vec![inner],
+            },
+        );
+        group.transform = Affine::translate((5.0, 7.0));
+        let group_id = group.id;
+        doc.pages[0].layers[0].shapes = flat;
+        doc.pages.push(Page {
+            id: ids.page(),
+            name: "2".into(),
+            size: Size::new(100.0, 100.0),
+            layers: vec![Layer::new(ids.layer(), "L")],
+            guides: Vec::new(),
+            background: None,
+        });
+        doc.pages[1].layers[0].shapes.push(group);
+        doc.set_ids(ids);
+        // Forwards, backwards, and jumping about.
+        for &id in flat_ids.iter().chain(flat_ids.iter().rev()) {
+            assert_eq!(doc.find_shape(id).map(|s| s.id), Some(id));
+            assert_eq!(doc.shape(id).map(|(_, s)| s.id).ok(), Some(id));
+        }
+        for k in 0..50 {
+            let id = flat_ids[(k * 17) % 50];
+            assert_eq!(doc.locate(id).ok().map(|(_, i)| i), Some((k * 17) % 50));
+        }
+        // In a group on another page.
+        assert_eq!(doc.find_shape(inner_id).map(|s| s.id), Some(inner_id));
+        assert!(doc.shape(inner_id).is_err());
+        assert_eq!(doc.top_level_of(inner_id), Some(group_id));
+        assert_eq!(
+            doc.parent_transform(inner_id),
+            Some(Affine::translate((5.0, 7.0)))
+        );
+        // The hint left on the last object; objects before it removed,
+        // so everything shifts down, and the group moved to page 1.
+        assert!(doc.find_shape(flat_ids[49]).is_some());
+        doc.pages[0].layers[0].shapes.drain(0..10);
+        let moved = doc.pages[1].layers[0].shapes.remove(0);
+        doc.pages[0].layers[0].shapes.insert(3, moved);
+        assert_eq!(
+            doc.find_shape(flat_ids[49]).map(|s| s.id),
+            Some(flat_ids[49])
+        );
+        assert_eq!(doc.locate(flat_ids[49]).ok().map(|(_, i)| i), Some(40));
+        assert_eq!(doc.find_shape(inner_id).map(|s| s.id), Some(inner_id));
+        assert!(doc.find_shape(flat_ids[0]).is_none());
+        assert!(doc.find_shape_mut(flat_ids[5]).is_none());
+        doc.find_shape_mut(inner_id).expect("found to change").name = Some("x".into());
+        assert_eq!(
+            doc.find_shape(inner_id).and_then(|s| s.name.clone()),
+            Some("x".into())
+        );
+        // A hint is no part of the drawing.
+        let other = doc.clone();
+        assert!(doc.find_shape(flat_ids[20]).is_some());
+        assert_eq!(doc, other);
+    }
+
+    /// A drawing of more groups nested in one another than a thread's
+    /// stack had room for opens (it ended the program), one of 1,500
+    /// saves and opens again, and one nested past the most a file may
+    /// hold is not saved and says so.
+    #[test]
+    fn deeply_nested_groups_open() {
+        use super::{Document, Shape, ShapeKind, MAX_JSON_DEPTH};
+        use crate::geometry::{Rect, Size};
+        let nested = |depth: usize| {
+            let mut doc = Document::new("Deep", Size::new(100.0, 100.0));
+            let mut ids = doc.ids().clone();
+            let mut s = Shape::new(
+                ids.shape(),
+                ShapeKind::Rect {
+                    rect: Rect::new(0.0, 0.0, 1.0, 1.0),
+                    radius: 0.0,
+                    corners: None,
+                },
+            );
+            for _ in 0..depth {
+                s = Shape::new(ids.shape(), ShapeKind::Group { children: vec![s] });
+            }
+            doc.pages[0].layers[0].shapes.push(s);
+            doc.set_ids(ids);
+            doc
+        };
+        // Written and read on a small stack, as on any worker thread.
+        let small = |f: Box<dyn FnOnce() -> Option<usize> + Send>| {
+            std::thread::Builder::new()
+                .stack_size(1024 * 1024)
+                .spawn(f)
+                .unwrap()
+                .join()
+                .unwrap()
+        };
+        let doc = nested(300);
+        let json = small(Box::new(move || {
+            let json = doc.to_json().ok()?;
+            Document::from_json(&json).ok()?;
+            Some(json.len())
+        }));
+        assert!(json.is_some());
+        // A drawing of 1,500 groups inside groups, which the Group command
+        // makes, saves and opens again, packed too: past 330 or so it saved
+        // and would not open (the file nested past the 1024 levels read).
+        let doc = nested(1500);
+        let opened = small(Box::new(move || {
+            let mut packed = Vec::new();
+            doc.write_tdraw_version(&mut packed, super::TDRAW_FORMAT_VERSION)
+                .ok()?;
+            let back = Document::from_tdraw_bytes(&packed).ok()?;
+            Some(back.nesting())
+        }));
+        assert_eq!(opened, Some(1501));
+        // Nested past what a file holds: not written, and the error says why.
+        let doc = nested(MAX_JSON_DEPTH / 3 + 10);
+        let err = super::on_deep_stack(|| doc.to_json().expect_err("too deep").to_string());
+        assert!(err.contains("would not open again"), "{err}");
+        let mut packed = Vec::new();
+        assert!(doc.write_tdraw_version(&mut packed, 2).is_err());
+    }
+
     /// Bullet numbers (#1443): written as numbers, letters or Roman
     /// numerals; a run of numbered paragraphs counts on from its start
     /// and a paragraph without bullets ends it.
@@ -7249,6 +7834,69 @@ mod tests {
         assert_eq!(group.visual_bounds(), group.bounds());
         group.transform = Affine::translate((-20.0, 5.0));
         assert_eq!(group.bounds(), Rect::new(80.0, 305.0, 130.0, 315.0));
+    }
+
+    /// The box of groups nested deep takes each level's transformation
+    /// and is worked out without copying the members: each level copied
+    /// all of its members, so a drawing of a million objects in blocks
+    /// nested fifteen deep ran out of memory on opening.
+    #[test]
+    fn the_box_of_groups_nested_deep_is_quick_and_right() {
+        use crate::geometry::{Affine, Rect};
+        let square = |id: u64, x: f64| {
+            Shape::new(
+                ShapeId(id),
+                ShapeKind::Rect {
+                    rect: Rect::new(x, 0.0, x + 1.0, 1.0),
+                    radius: 0.0,
+                    corners: None,
+                },
+            )
+        };
+        let mut id = 0;
+        let mut inner = square(0, 0.0);
+        for _ in 0..200 {
+            let mut children: Vec<Shape> = (0..50)
+                .map(|i| {
+                    id += 1;
+                    square(id, f64::from(i))
+                })
+                .collect();
+            children.push(inner);
+            id += 1;
+            inner = Shape::new(ShapeId(id), ShapeKind::Group { children });
+            inner.transform = Affine::translate((1.0, 2.0));
+        }
+        let t = std::time::Instant::now();
+        let b = inner.bounds();
+        assert!(t.elapsed().as_secs() < 2, "{:?}", t.elapsed());
+        // The innermost row moved 200 times, the outermost once.
+        assert_eq!(b, Rect::new(1.0, 2.0, 250.0, 401.0));
+        // Scaled and turned levels compose as before.
+        let mut outer = Shape::new(
+            ShapeId(9_000),
+            ShapeKind::Group {
+                children: vec![square(9_001, 0.0)],
+            },
+        );
+        outer.transform = Affine::scale(2.0);
+        let mut top = Shape::new(
+            ShapeId(9_002),
+            ShapeKind::Group {
+                children: vec![outer],
+            },
+        );
+        top.transform =
+            Affine::translate((10.0, 0.0)) * Affine::rotate(std::f64::consts::FRAC_PI_2);
+        let b = top.bounds();
+        assert!(
+            (b.x0 - 8.0).abs() < 1e-9 && (b.x1 - 10.0).abs() < 1e-9,
+            "{b:?}"
+        );
+        assert!(
+            (b.y0 - 0.0).abs() < 1e-9 && (b.y1 - 2.0).abs() < 1e-9,
+            "{b:?}"
+        );
     }
 
     #[test]
@@ -7596,6 +8244,49 @@ mod tests {
             deep.len(),
             flat.len()
         );
+    }
+
+    /// An open arc converted to curves stays an open curve, so its
+    /// arrowheads stay; it came out closed, without them (#2983).
+    #[test]
+    fn an_open_arc_converted_to_curves_keeps_its_arrowheads() {
+        let mut arc = Shape::new(
+            ShapeId(1),
+            ShapeKind::Ellipse {
+                rect: Rect::new(0.0, 0.0, 40.0, 30.0),
+                arc: Some(EllipseArc {
+                    start_deg: 0.0,
+                    end_deg: 200.0,
+                    pie: false,
+                }),
+            },
+        );
+        let mut st = crate::style::Stroke::new(crate::Color::BLACK, 1.0);
+        st.end_arrow = crate::style::Arrowhead::Arrow;
+        arc.stroke = Some(st.clone());
+        let heads = crate::style::arrowhead_paths(&arc.page_path(), &st).len();
+        assert_eq!(heads, 1);
+        let got = arc
+            .converted_to_curves(&[], &mut || ShapeId(2))
+            .expect("converted");
+        assert!(
+            matches!(got.kind, ShapeKind::Path { closed: false, .. }),
+            "{:?}",
+            got.kind
+        );
+        assert_eq!(
+            crate::style::arrowhead_paths(&got.page_path(), &st).len(),
+            heads
+        );
+        // A pie stays closed.
+        let mut pie = arc.clone();
+        if let ShapeKind::Ellipse { arc: Some(a), .. } = &mut pie.kind {
+            a.pie = true;
+        }
+        let got = pie
+            .converted_to_curves(&[], &mut || ShapeId(3))
+            .expect("pie");
+        assert!(matches!(got.kind, ShapeKind::Path { closed: true, .. }));
     }
 
     /// Variable font axis values (#870) are set, replaced and taken off
@@ -9077,6 +9768,7 @@ mod tests {
             sharpness: 0.0,
             complex: Some(3),
             twist: 0.0,
+            bend: 0.0,
         };
         let back: ShapeKind = serde_json::from_str(&serde_json::to_string(&k).unwrap()).unwrap();
         assert_eq!(back, k);
@@ -9088,6 +9780,7 @@ mod tests {
             sharpness: 0.4,
             complex: None,
             twist: 0.25,
+            bend: 0.0,
         };
         let json = serde_json::to_string(&twisted).unwrap();
         assert!(json.contains("twist"));
@@ -9101,6 +9794,7 @@ mod tests {
             sharpness: -0.3,
             complex: None,
             twist: 0.0,
+            bend: 0.0,
         };
         let json = serde_json::to_string(&inverted).unwrap();
         assert!(json.contains("\"sharpness\":-0.3"), "{json}");
@@ -9330,6 +10024,75 @@ mod tests {
             shown.contains("Press") && shown.contains("bytes: 4"),
             "{shown}"
         );
+    }
+
+    #[test]
+    fn symbols_drawing_themselves_or_trillions_open_mended() {
+        let inst =
+            |id: u64, index: usize| Shape::new(ShapeId(id), ShapeKind::SymbolInstance { index });
+        let group = |children: Vec<Shape>| Shape::new(ShapeId(0), ShapeKind::Group { children });
+        let sym = |shape: Shape| Symbol {
+            name: "s".into(),
+            shape,
+        };
+        let empty =
+            |s: &Shape| matches!(&s.kind, ShapeKind::Group { children } if children.is_empty());
+        // 0 draws itself; 1 and 2 draw each other (the loop is cut where
+        // it closes, in 2); 2 also draws 0, which stays; 3 draws 2.
+        let mut doc = Document {
+            symbols: vec![
+                sym(group(vec![inst(1, 0)])),
+                sym(inst(2, 2)),
+                sym(group(vec![inst(3, 1), inst(4, 0)])),
+                sym(inst(5, 2)),
+            ],
+            ..Default::default()
+        };
+        doc.pages[0].layers[0].shapes = vec![inst(9, 3)];
+        let back = Document::from_json(&doc.to_json().expect("json")).expect("load");
+        let ShapeKind::Group { children } = &back.symbols[0].shape.kind else {
+            panic!()
+        };
+        assert!(empty(&children[0]));
+        assert!(matches!(
+            back.symbols[1].shape.kind,
+            ShapeKind::SymbolInstance { index: 2 }
+        ));
+        let ShapeKind::Group { children } = &back.symbols[2].shape.kind else {
+            panic!()
+        };
+        assert!(empty(&children[0]));
+        assert!(matches!(
+            children[1].kind,
+            ShapeKind::SymbolInstance { index: 0 }
+        ));
+        assert!(matches!(
+            back.symbols[3].shape.kind,
+            ShapeKind::SymbolInstance { index: 2 }
+        ));
+        assert_eq!(
+            back.pages[0].layers[0].shapes,
+            doc.pages[0].layers[0].shapes
+        );
+
+        // Each symbol draws the one before twice: 2^40 objects.
+        let mut bomb = Document::default();
+        bomb.symbols.push(sym(group(Vec::new())));
+        for i in 1..40 {
+            bomb.symbols
+                .push(sym(group(vec![inst(1, i - 1), inst(2, i - 1)])));
+        }
+        bomb.break_symbol_loops();
+        let kept = |s: &Symbol| match &s.shape.kind {
+            ShapeKind::Group { children } => children.iter().all(|c| !empty(c)),
+            _ => true,
+        };
+        // Symbol k stands for about 2^(k+2) objects: 18 is the first past
+        // a million, so 19 loses its instances of it, and 20 draws the
+        // little left of 19.
+        assert!(bomb.symbols[..19].iter().all(kept));
+        assert!(!kept(&bomb.symbols[19]));
+        assert!(kept(&bomb.symbols[20]));
     }
 
     #[test]

@@ -590,6 +590,18 @@ pub(crate) fn faces(
         };
         let edges = if closed { n } else { n - 1 };
         for (u0, r0, u1, r1) in bands {
+            // The bevel band (a band one bevel deep, by more than a
+            // rounding error) is one colour: under a shade, the colour the
+            // sides meet it in, the object's for back bodies and the
+            // copy's for front ones (#3229). A front band took the
+            // object's colour, and as len - (len - b) can come out a hair
+            // over b, it could be shaded the wrong way: a seam of the two
+            // colours.
+            let bevel_band = b > 0.0 && u1 - u0 <= b + 1e-9;
+            let band_from = match body.coloring {
+                Coloring::Shade(..) if bevel_band && dir >= 0.0 => to,
+                _ => from,
+            };
             // Outward faces: [a0, a1, b1, b0] for back bodies (a0 nearer),
             // the other way round for front ones.
             let mut shown: Vec<Option<ShownFace>> = Vec::with_capacity(edges);
@@ -644,18 +656,41 @@ pub(crate) fn faces(
                     path: poly(&proj, true),
                     closed: true,
                 };
-                let side_from = from;
+                let side_from = band_from;
                 let (fill, edge) = match body.coloring {
                     // The bevel band is one colour; the sides shade.
-                    Coloring::Shade(..) if u1 - u0 > b || b <= 0.0 => {
-                        let m0 = proj[0].midpoint(proj[3]);
-                        let m1 = proj[1].midpoint(proj[2]);
-                        let (start, end) = if dir < 0.0 { (m0, m1) } else { (m1, m0) };
-                        let run = end - start;
-                        let ang = run.y.atan2(run.x).to_degrees();
+                    Coloring::Shade(..) if !bevel_band => {
+                        // From the face's edge at the object to its edge
+                        // at the copy, square to them: the two are
+                        // parallel (the copy is the outline moved, or
+                        // scaled toward the vanishing point), so each edge
+                        // is one colour, the one its neighbours have
+                        // there. A fountain spread over each face's box
+                        // put the colours at other places on each narrow
+                        // face of a curved side, in bands (#3229).
+                        // proj: back [a0, a1, b1, b0]; front [a0, b0, b1, a1].
+                        let (n0, n1, far) = if dir < 0.0 {
+                            (proj[0], proj[3], proj[1].midpoint(proj[2]))
+                        } else {
+                            (proj[0], proj[1], proj[3].midpoint(proj[2]))
+                        };
+                        let near = n0.midpoint(n1);
+                        let e = n1 - n0;
+                        let square = if e.hypot() > 1e-12 {
+                            let n = Vec2::new(-e.y, e.x) / e.hypot();
+                            near + n * (far - near).dot(n)
+                        } else {
+                            far
+                        };
+                        let edge = scale(lerp_color(side_from, to, 0.5), light);
                         (
-                            Fill::linear(scale(side_from, light), scale(to, light), ang),
-                            scale(lerp_color(side_from, to, 0.5), light),
+                            crate::extrude::fountain_between(
+                                &poly(&proj, true),
+                                (near, scale(side_from, light)),
+                                (square, scale(to, light)),
+                            )
+                            .unwrap_or(Fill::Solid(edge)),
+                            edge,
                         )
                     }
                     _ => {
@@ -667,7 +702,11 @@ pub(crate) fn faces(
                     }
                 };
                 s.fill = fill;
-                s.stroke = Some(crate::Stroke::hairline(edge));
+                // A hairline of the face's colour closes the seams; a
+                // shaded face has no one colour, and a line of its middle
+                // colour drew a stripe across the side at each seam (#3229).
+                s.stroke =
+                    (!matches!(s.fill, Fill::Fountain(_))).then(|| crate::Stroke::hairline(edge));
                 let z = quad.iter().map(|q| depth_key(run, *q)).sum::<f64>() / 4.0;
                 let mid = proj[0].midpoint(proj[2]);
                 shown.push(Some((z, flat_key(mid), s, proj)));
@@ -758,8 +797,8 @@ pub(crate) fn faces(
                         };
                         if let Some(fill) = crate::extrude::fountain_between(
                             &poly(proj, true),
-                            (ma, scale(from, la)),
-                            (mb, scale(from, lb)),
+                            (ma, scale(band_from, la)),
+                            (mb, scale(band_from, lb)),
                         ) {
                             s.fill = fill;
                         }
@@ -923,7 +962,7 @@ pub(crate) fn faces(
 mod tests {
     use super::*;
     use crate::extrude::Coloring;
-    use crate::geometry::Rect;
+    use crate::geometry::{PathEl, Rect};
     use crate::ShapeId;
 
     fn square() -> Shape {
@@ -1099,6 +1138,73 @@ mod tests {
             "{:?}",
             f.above.iter().map(|s| s.bounds()).collect::<Vec<_>>()
         );
+    }
+
+    /// #3229: a shade on the sides of a bevelled round object came in
+    /// bands, each narrow face's fountain spread over its own box. Each
+    /// face now runs from its edge at the object to its edge at the copy,
+    /// so neighbours meet in about the same colour where they join.
+    #[test]
+    fn a_bevelled_shade_on_a_round_side_has_no_bands() {
+        let mut c = square();
+        c.kind = ShapeKind::Ellipse {
+            rect: Rect::new(0.0, 0.0, 200.0, 120.0),
+            arc: None,
+        };
+        // Toward a vanishing point and shallow, as the reporter's letters.
+        for kind in [ExtrudeKind::SmallBack, ExtrudeKind::SmallFront] {
+            let mut b = body(kind, Solid::default(), 1.0);
+            b.vanishing = Point::new(320.0, 300.0);
+            b.depth = 0.05;
+            b.coloring = Coloring::Shade(Color::rgb8(255, 255, 0), Color::rgb8(0, 160, 255));
+            let f = b.faces(&c);
+            // Colour of each face at each of its corners, as the renderer
+            // lays a linear fountain over the face's box.
+            let mut corners: Vec<(Point, [u8; 3])> = Vec::new();
+            let mut shaded = 0;
+            for s in f.below.iter().chain(&f.above) {
+                let (Fill::Fountain(fo), ShapeKind::Path { path, .. }) = (&s.fill, &s.kind) else {
+                    continue;
+                };
+                shaded += 1;
+                // The sides shade from yellow to blue (the bevel band, one
+                // colour lit along the curve, keeps its hairline).
+                let (y, c) = (
+                    fo.stops[0].color.to_rgb8(),
+                    fo.stops[fo.stops.len() - 1].color.to_rgb8(),
+                );
+                if (y[2] as i32 - c[2] as i32).abs() > 100 {
+                    assert!(
+                        s.stroke.is_none(),
+                        "a shaded face drew a line of one colour"
+                    );
+                }
+                let dir = Vec2::new(fo.angle.to_radians().cos(), fo.angle.to_radians().sin());
+                let bb = kurbo::Shape::bounding_box(path);
+                let half = (bb.width() * dir.x.abs() + bb.height() * dir.y.abs()) / 2.0;
+                for el in path.elements() {
+                    if let PathEl::MoveTo(p) | PathEl::LineTo(p) = el {
+                        let t =
+                            (((*p - bb.center()).dot(dir) + half) / (2.0 * half)).clamp(0.0, 1.0);
+                        corners.push((*p, crate::style::sample_stops(&fo.stops, t).to_rgb8()));
+                    }
+                }
+            }
+            assert!(shaded > 20, "{kind:?}: {shaded} shaded faces");
+            let mut worst = 0;
+            for (i, (p, a)) in corners.iter().enumerate() {
+                for (q, b) in &corners[i + 1..] {
+                    if (*p - *q).hypot() < 1e-6 {
+                        let d = (0..3)
+                            .map(|k| (a[k] as i32 - b[k] as i32).abs())
+                            .max()
+                            .unwrap_or(0);
+                        worst = worst.max(d);
+                    }
+                }
+            }
+            assert!(worst <= 24, "{kind:?}: neighbours differ by {worst}");
+        }
     }
 
     /// #2706: the sides of a bevelled round object were a row of flat

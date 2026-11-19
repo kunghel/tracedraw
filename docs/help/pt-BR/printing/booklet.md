@@ -48,6 +48,11 @@ da guia [[print.tab_general]] antes.
 - [[print.booklet_gap]] (de 0 a 100 mm, 0 de início): o espaço entre as duas
   páginas de uma página dupla, centralizado na dobra. Numa folha do tamanho
   das páginas, a folha cresce com o espaço.
+- [[print.booklet_up]]: 2 de início. Escolha 4 ou 8 para imprimir uma folha
+  grande de offset com 4 ou 8 páginas em cada lado. A folha impressa se dobra
+  num caderno de 8 ou 16 páginas, por isso as páginas da fileira de cima saem
+  de cabeça para baixo. Com [[print.saddle_stitch]] os cadernos vão um dentro
+  do outro; com [[print.perfect_bound]] ficam empilhados em ordem.
 
 ## Páginas em branco e as contagens {#counts}
 

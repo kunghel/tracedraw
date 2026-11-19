@@ -27,9 +27,17 @@ Abra o painel [[docker.vector_mosaic]] com
    - **Mesclar vizinhos**: junta até esse número de ladrilhos vizinhos de uma
      mesma cor; **Soldar sobreposição de vizinhos**: uma curva por cor em vez
      de um objeto por ladrilho.
-   - **Forma**: círculo (de início), quadrado ou personalizada. Para um
-     ladrilho personalizado, selecione uma curva fechada e clique em
-     **Selecionar**.
+   - **Forma**: círculo (de início), quadrado, personalizada, **Glifos** ou
+     **Caracteres**. Para um ladrilho personalizado, selecione uma curva
+     fechada e clique em **Selecionar**. **Glifos** desenha um símbolo
+     embutido em cada ladrilho, de um ponto onde a imagem é clara a um
+     quadrado cheio onde é escura, ou ao acaso com **Símbolos aleatórios** e
+     a sua semente. **Caracteres** desenha uma letra do **Conjunto de
+     caracteres** (a mais clara primeiro; um espaço deixa a célula vazia),
+     para uma imagem feita de texto. **Inverter tons** troca as pontas, para
+     um mosaico claro sobre fundo escuro.
+   - **Uma cor**: todos os ladrilhos na cor ao lado em vez das cores da
+     imagem.
 3. Clique em [[docker.apply]].
 
 O mosaico é um grupo colocado por cima da seleção, e fica selecionado.

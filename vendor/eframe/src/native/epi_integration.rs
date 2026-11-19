@@ -403,7 +403,9 @@ impl EpiIntegration {
         new_input: egui::RawInput,
     ) -> egui::RawInput {
         let mut raw_input = core::mem::take(&mut self.pending_raw_input);
-        raw_input.append(new_input); // The new input wins where they overlap
+        // The new input wins where they overlap. TraceDraw: the files
+        // hovered are its list whole (#3058).
+        super::pending_input::append_pending(&mut raw_input, new_input);
 
         raw_input.time = Some(self.beginning.elapsed().as_secs_f64());
 

@@ -17,6 +17,7 @@
 //! See docs/behavior/vba.md.
 
 mod ast;
+pub mod convert;
 mod builtins;
 mod codegen;
 mod lexer;

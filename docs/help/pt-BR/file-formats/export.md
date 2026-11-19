@@ -55,6 +55,7 @@ novo:
 | Formato | Opções |
 |---|---|
 | PNG, WebP, GIF | resolução (ou o tamanho em pixels), fundo transparente; WebP também qualidade |
+| JPEG XL | resolução (ou o tamanho em pixels), fundo transparente; sempre sem perdas |
 | JPEG | resolução, qualidade (1 a 100) |
 | BMP, TIFF, PSD | resolução |
 | PDF | padrão (PDF 1.4, PDF/X-1a, PDF/X-3 ou PDF/X-4), sangria, condição de saída para PDF/X |

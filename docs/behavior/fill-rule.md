@@ -36,9 +36,14 @@ mixed.
 - `.tdraw`: saved as `fill_rule` (left out for even-odd).
 - `.cdr`: read from version 16 on, from the object style string's
   `fill.winding` ("1" nonzero, "0" or left out even-odd), and written there
-  for a nonzero object. Before version 16 no file seen holds a fill rule:
-  a nonzero curve is written as the even-odd outline of the area it fills,
-  so it looks the same. See `docs/cdr-format.md`.
+  for a nonzero object. A nonzero curve (and the outline of a text that
+  goes out as a curve) is written, in every version, as the even-odd
+  outline of the area it fills, so it looks the same wherever it opens:
+  before version 16 no file seen holds a fill rule, and from 16 CorelDRAW
+  still filled such curves even-odd, with holes where their parts
+  overlapped, although the style string held the winding (#2733,
+  `write::tests::a_nonzero_curve_goes_out_as_the_area_it_fills`). See
+  `docs/cdr-format.md`.
 
 ## Tests
 

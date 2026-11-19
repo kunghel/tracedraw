@@ -663,7 +663,7 @@ pub enum MessageIcon {
 
 /// Paint a 32 px message icon at `rect`: a blue disc with a white
 /// question mark or "i".
-fn paint_message_icon(ui: &Ui, rect: Rect, icon: MessageIcon) {
+pub(crate) fn paint_message_icon(ui: &Ui, rect: Rect, icon: MessageIcon) {
     let p = ui.painter();
     let c = rect.center();
     let r = rect.width().min(rect.height()) / 2.0;

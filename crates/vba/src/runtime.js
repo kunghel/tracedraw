@@ -514,7 +514,7 @@ function protoKeys(p) {
   return m;
 }
 // The real name of a member, matched without regard to case.
-function findKey(o, name) {
+function findKey(o, name, aliased) {
   if (name in o) return name;
   const l = name.toLowerCase();
   for (const k of Object.getOwnPropertyNames(o)) if (k.toLowerCase() === l) return k;
@@ -522,6 +522,11 @@ function findKey(o, name) {
   if (p) {
     const k = protoKeys(p).get(l);
     if (k !== undefined) return k;
+  }
+  // The host's other name for a member (`__member_alias`), if it has one.
+  if (!aliased && typeof G.__member_alias === "function") {
+    const a = G.__member_alias(name);
+    if (typeof a === "string" && a.toLowerCase() !== l) return findKey(o, a, true);
   }
   return null;
 }

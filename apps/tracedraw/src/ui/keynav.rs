@@ -589,6 +589,11 @@ fn alt_alone(ctx: &Context, st: &mut State) -> bool {
                 }
                 st.alt_down = m.alt;
             }
+            // Alt itself arrives as a key press too (after the change of
+            // the modifiers on Windows): it is not another key.
+            Event::Key {
+                key, pressed: true, ..
+            } if crate::shortcuts::is_modifier(*key) => {}
             Event::Key { pressed: true, .. }
             | Event::PointerButton { pressed: true, .. }
             | Event::MouseWheel { .. }
@@ -643,11 +648,13 @@ fn bar_keys(ctx: &Context, st: &mut State, titles: &Titles, at: usize) {
             }
             open(st, i);
         } else if ctx.input(|i| {
-            i.events
-                .iter()
-                .any(|e| matches!(e, Event::Key { pressed: true, .. }))
+            i.events.iter().any(|e| {
+                matches!(e, Event::Key { key, pressed: true, .. }
+                    if !crate::shortcuts::is_modifier(*key))
+            })
         }) {
-            // Any other key (a shortcut) leaves the bar and does its work.
+            // Any other key (a shortcut) leaves the bar and does its work;
+            // Shift, Ctrl or Alt alone do not.
             st.bar = None;
         }
     }
@@ -1389,6 +1396,32 @@ mod tests {
         assert!(!egui::Popup::is_any_open(&ctx));
     }
 
+    /// Alt arrives as a key press of its own too, after the change of the
+    /// modifiers (Windows): pressed and let go alone it still lights the
+    /// menu bar, and Shift alone does not let the bar go (#3198).
+    #[test]
+    fn alt_as_a_key_press_still_lights_the_menu_bar() {
+        let ctx = crate::theme::ui_context();
+        let mut app = app_with_shapes();
+        keys(&ctx, &mut app, Vec::new());
+        window(
+            &ctx,
+            &mut app,
+            vec![press(Key::AltLeft, Modifiers::ALT)],
+            Modifiers::ALT,
+        );
+        window(&ctx, &mut app, Vec::new(), Modifiers::NONE);
+        assert_eq!(bar_focus(&ctx), Some(0));
+        window(
+            &ctx,
+            &mut app,
+            vec![press(Key::ShiftLeft, Modifiers::SHIFT)],
+            Modifiers::SHIFT,
+        );
+        window(&ctx, &mut app, Vec::new(), Modifiers::NONE);
+        assert_eq!(bar_focus(&ctx), Some(0), "Shift alone keeps the bar lit");
+    }
+
     /// On a window too narrow for the whole menu bar, Alt and the access
     /// key of a menu under » open » with that menu open in it, its first
     /// row lit, as on a wide bar.
@@ -1520,6 +1553,34 @@ mod tests {
         // With the menu closed the arrows nudge again.
         key(&ctx, &mut app, Key::ArrowRight);
         assert_ne!(app.selection_bounds(), before);
+    }
+
+    /// Alt+E opens the Edit menu like the other titles' letters (Alt+E,
+    /// N clones); it edits a symmetry only while an object with one is
+    /// selected (#2881).
+    #[test]
+    fn alt_e_opens_the_edit_menu() {
+        let ctx = crate::theme::ui_context();
+        let mut app = app_with_shapes();
+        keys(&ctx, &mut app, Vec::new());
+        let e = titles(&ctx).keys[1];
+        assert_eq!(e, 'e', "Edit's access key");
+        keys(&ctx, &mut app, vec![press(Key::E, Modifiers::ALT)]);
+        assert_eq!(open_menu(&ctx), Some(1), "Edit");
+        assert!(app.symmetry_edit.is_none());
+        key(&ctx, &mut app, Key::Escape);
+        key(&ctx, &mut app, Key::Escape);
+        assert_eq!(open_menu(&ctx), None);
+        // With a symmetry selected Alt+E edits it and opens no menu.
+        app.create_symmetry();
+        app.finish_symmetry_edit();
+        assert!(app.selected_symmetry().is_some());
+        assert!(app.symmetry_edit.is_none());
+        keys(&ctx, &mut app, Vec::new());
+        assert_eq!(open_menu(&ctx), None, "before");
+        keys(&ctx, &mut app, vec![press(Key::E, Modifiers::ALT)]);
+        assert_eq!(open_menu(&ctx), None);
+        assert!(app.symmetry_edit.is_some());
     }
 
     /// The arrows never nudge the selection while a menu of the bar is

@@ -124,6 +124,13 @@ objetos em volta ficam como estão.
 O novo objeto vai para o topo da camada ativa e fica selecionado. Um clique em
 um contorno, ou em uma área que nada cerca, não cria nada.
 
+Com **Até a borda do contorno** ligado na barra de propriedades, os contornos
+contam com a largura com que são desenhados: a área para nas bordas internas
+deles, e linhas que só se tocam pela largura ainda a fecham.
+
+Dentro de uma [simetria](../objects/symmetry.md), um clique numa cópia preenche
+a mesma área em todas as cópias: o novo objeto passa a fazer parte da simetria.
+
 ## Preenchimentos de malha {#mesh-fill}
 
 Um preenchimento de malha é uma grade de nós sobre um objeto, cada nó com cor e
@@ -143,6 +150,12 @@ A barra de propriedades também tem **Cor suave**, que mistura as cores com mais
 suavidade, a **transparência** do nó selecionado e **Limpar malha**, que remove
 o preenchimento de malha. Mudar as linhas e colunas de uma malha mantém as
 cores.
+
+Para um fundo colorido rápido, escolha um conjunto na lista **Cores**
+(Aurora, Pôr do sol, Oceano, Doce, Floresta, Neon ou a paleta do documento)
+e clique em **Embaralhar**: cada objeto selecionado ganha uma malha aleatória
+com essas cores, com os nós deslocados da grade. Clique de novo para outra
+mistura, ou desfaça para voltar.
 
 ## Preenchimentos de padrão e textura {#pattern-texture}
 

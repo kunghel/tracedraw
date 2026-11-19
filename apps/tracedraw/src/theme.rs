@@ -247,6 +247,51 @@ pub fn shadow(s: egui::epaint::Shadow) -> egui::epaint::Shadow {
     }
 }
 
+/// Customization > Appearance > Translucent menus: the opacity of open
+/// menus' bodies, 0 to 255 (255 is solid, the default). Each test thread
+/// keeps its own, as with the theme.
+#[cfg(not(test))]
+static MENU_ALPHA: AtomicU8 = AtomicU8::new(255);
+#[cfg(test)]
+thread_local! {
+    static MENU_ALPHA: AtomicU8 = const { AtomicU8::new(255) };
+}
+
+/// The most see-through a translucent menu may be, so its rows stay
+/// readable over any drawing.
+pub const MENU_OPACITY_MIN: f32 = 0.5;
+
+/// Open menus solid (`None`) or at `opacity` (0.5 to 1).
+pub fn set_menu_opacity(opacity: Option<f32>) {
+    let a = match opacity {
+        Some(o) if o.is_finite() => (o.clamp(MENU_OPACITY_MIN, 1.0) * 255.0).round() as u8,
+        _ => 255,
+    };
+    #[cfg(not(test))]
+    MENU_ALPHA.store(a, Ordering::Relaxed);
+    #[cfg(test)]
+    MENU_ALPHA.with(|m| m.store(a, Ordering::Relaxed));
+}
+
+/// The opacity of open menus' bodies, 0 to 255.
+pub fn menu_alpha() -> u8 {
+    #[cfg(not(test))]
+    let a = MENU_ALPHA.load(Ordering::Relaxed);
+    #[cfg(test)]
+    let a = MENU_ALPHA.with(|m| m.load(Ordering::Relaxed));
+    a
+}
+
+/// `c` at the open menus' opacity (the body and its gutter).
+pub fn menu_fill(c: Color32) -> Color32 {
+    let a = menu_alpha();
+    if a == 255 {
+        c
+    } else {
+        Color32::from_rgba_unmultiplied(c.r(), c.g(), c.b(), a)
+    }
+}
+
 /// The theme in use.
 pub fn theme() -> Theme {
     #[cfg(not(test))]
@@ -1396,6 +1441,23 @@ mod shadow_tests {
         assert_eq!(visuals().window_shadow, egui::epaint::Shadow::NONE);
         set_shadows(true);
         assert_eq!(shadow(s), s);
+    }
+
+    #[test]
+    fn translucent_menus_are_off_by_default_and_kept_readable() {
+        let c = Color32::from_rgb(0x4B, 0x4B, 0x4B);
+        assert_eq!(menu_fill(c), c);
+        set_menu_opacity(Some(0.85));
+        assert_eq!(menu_fill(c).a(), 217);
+        let u = menu_fill(c).to_srgba_unmultiplied();
+        assert_eq!(&u[..3], &[0x4B, 0x4B, 0x4B]);
+        // Never below half, whatever the setting says.
+        set_menu_opacity(Some(0.1));
+        assert_eq!(menu_alpha(), 128);
+        set_menu_opacity(Some(f32::NAN));
+        assert_eq!(menu_alpha(), 255);
+        set_menu_opacity(None);
+        assert_eq!(menu_fill(c), c);
     }
 }
 

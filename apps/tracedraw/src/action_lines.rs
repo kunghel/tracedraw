@@ -11,7 +11,8 @@
 use tracedraw_core::geometry::{Affine, BezPath, Point, Rect, Vec2};
 
 /// How a filled line ends.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Taper {
     /// The same width all along.
     None,
@@ -35,7 +36,8 @@ impl Taper {
 }
 
 /// Which side of the box parallel lines start from.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum Anchor {
     /// They end at the right edge, starting at random distances (as
     /// before this setting).
@@ -58,7 +60,8 @@ impl Anchor {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
 pub struct ActionLines {
     /// 2 to 500.
     pub count: u32,

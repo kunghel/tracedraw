@@ -15,7 +15,7 @@ the right.
 | Master layer for odd or even pages | as a layer, followed by "Odd pages" or "Even pages" in small grey; dimmed on the pages it does not show on |
 | Master layer in front of the page's layers | as a layer, followed by "In front" in small grey (after "Odd pages" or "Even pages" if it has one); it stays listed under the Master Page (#1132) |
 | Guides | open or close arrow (when it has guidelines), eye (show or hide the guidelines), a pale printer (guidelines never print), padlock (locks or unlocks all of the page's guidelines; shut when they all are) |
-| Guideline, two steps in (Guides row open) | eye (hides this guideline alone: it is not drawn, picked or snapped to, and stays hidden in the file), padlock (locks it), its kind and position ("Vertical 105.000 mm"); dimmed while hidden; a click selects it on the page, its set becoming the one edited (#1775) |
+| Guideline, two steps in (Guides row open) | eye (hides this guideline alone: it is not drawn, picked or snapped to, and stays hidden in the file), padlock (locks it), its kind and position ("Vertical 105.000 mm"); dimmed while hidden; a click selects it on the page, its set becoming the one edited (#1775). A guideline selected in the edited set (dragged out of a ruler, picked on the page or added in Guidelines Setup) opens its Guides row and scrolls to its row, highlighted, so a new guideline shows here; a row closed by hand stays closed until another guideline is selected (#2882). A selected guideline goes with Delete; a right-click on its row opens Delete, Cut, Copy, Paste, Lock or Unlock and Hide or Show, acting on the selected guidelines when the row is one of them, else on its own; a locked one is not deleted or cut (#3012, `a_guideline_row_deletes_and_has_a_menu`) |
 | Document Grid | eye (show or hide the grid), a pale printer and a pale shut padlock (the grid never prints and cannot be edited) |
 | Object, two steps in | thumbnail: the object itself drawn small (its shape, fill, outline and effects) on a white tile, then its name, or what it is when it has none ("Rectangle", "Curve with 8 nodes", "Paragraph Text: ...") |
 | Group | as an object, with an arrow that opens it to its objects, one step further in (16 px) |
@@ -62,6 +62,31 @@ the right.
   (`Layer::desktop`), and in `.cdr` files goes on the master page's
   desktop layer
   (`ui::objects_docker::tests::a_new_drawing_has_a_desktop_shared_by_every_page`).
+- The Desktop layer's menu has "Objects put beside the page go here"
+  (off by default, kept after TraceDraw is closed; #3100). On, an object
+  moved with the Pick tool or pasted so that it lies wholly beside the
+  page goes onto the Desktop layer, in the move's or paste's own undo
+  step, so pictures pasted together can wait beside the pages and be
+  taken from any of them; an object of the Desktop moved onto the page
+  goes back to the page's active layer. Objects dropped into a PowerClip,
+  pasted while its contents are edited, or moved onto another page of
+  the Multipage View go where they did before
+  (`pick_drag_tests::objects_put_beside_the_page_go_on_the_desktop_when_it_takes_them`).
+- PowerClips (#3053): a PowerClip's row has an arrow, as a group's,
+  that opens it to its contents, one step further in, front first. A
+  click on a content's row takes the contents out for editing (Edit
+  Contents, as Object > PowerClip > Edit Contents does) with that object
+  selected, so it can be moved, edited or put in another order among the
+  contents in the list; Finish Editing puts them back. A row dragged and
+  let go in the middle third of another object's row puts the objects it
+  carries inside that object as a PowerClip, as Place Inside Frame does
+  (the object becomes the frame; a PowerClip takes them into its
+  contents), one undo step, the PowerClip selected and opened in the
+  list; the row is framed while the drop would do so. The upper and
+  lower parts of the row still put them in front or behind, a group's
+  middle still takes them into the group, and a locked object, a group
+  or an object inside a group takes none
+  (`ui::objects_docker::drag_tests::a_row_dropped_in_the_middle_of_another_powerclips_it`).
 - Double-click a layer to rename it; double-click an object to name it
   (Rename Object; an empty name goes back to the description).
 - Double-click the page node, or pick Rename in its context menu, to
@@ -98,6 +123,9 @@ the right.
   layer, or a page's object onto the master page (#1477)
   (`objects_docker::drag_tests::a_right_click_on_an_object_row_opens_the_drawings_object_menu`,
   `objects_docker::drag_tests::an_object_rows_menu_is_the_full_object_menu_with_rename_and_move`).
+  On a touch screen a finger held still on the row and lifted there
+  opens this menu; up to 0.47 it opened under the finger while it was
+  still held (#2948).
 - A layer's object row dragged along the list (live test of 0.41): while
   the button is held a line marks where it goes; let go on the upper
   half of another object's row it goes in front of that object, on the
@@ -117,7 +145,12 @@ the right.
   group's object let go on an object of a layer comes out of its group.
   Each object keeps its place on the page whatever group it goes into
   (`Command::PlaceBeside`, `Command::PlaceInGroup`); a group left empty
-  goes, and a group never goes into itself. Checks:
+  goes, and a group never goes into itself. On a touch screen a finger
+  held on a row (0.8 s) and then moved drags it the same way, and a
+  finger lifted ends the drag where it last was; up to 0.47 the hold
+  ended the drag, so a row could not be dragged by finger or stylus
+  (#2948, `ui::objects_docker::drag_tests::a_finger_held_on_a_row_drags_it_or_opens_its_menu`).
+  Checks:
   `ui::objects_docker::drag_tests::a_row_dragged_along_the_list_changes_the_stacking_order`,
   `ui::objects_docker::drag_tests::a_row_dragged_onto_another_layer_moves_the_object_there`,
   `ui::objects_docker::drag_tests::rows_go_into_groups_and_change_places_inside_them`,
@@ -200,3 +233,14 @@ the right.
 - `object_thumbs::tests::the_least_recently_shown_pictures_go_first`
 - `object_thumbs::tests::sizes_are_clamped`
 - `command::tests::master_layers_reorder_and_delete_down_to_none` (core)
+
+## Object Data
+
+The Object Data docker lists the fields of the first selected object
+(name and value), edits, adds and removes them. With several objects
+selected, Copy to Selection (#3262) gives the first object's fields to
+the others as one undo step ("Copy Object Data"): a field they have of
+the same name takes the value, their other fields stay, and the fields
+TraceDraw keeps for itself (names with a dot, `connector`, `hinting`)
+are not copied
+(`ui::dockers2::object_data_copy_tests::copy_to_selection_gives_the_fields_in_one_step`).

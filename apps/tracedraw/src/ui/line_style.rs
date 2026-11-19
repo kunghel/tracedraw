@@ -170,8 +170,13 @@ pub fn preview(ui: &mut Ui, dash: &[f64], width: f32) -> egui::Response {
     let mut x = rect.left();
     let mut i = 0usize;
     while x < rect.right() && i < 400 {
-        let len = (dash[i % dash.len()].max(0.0) as f32 * unit).max(0.5);
-        if i.is_multiple_of(2) {
+        let raw = dash[i % dash.len()].max(0.0) as f32 * unit;
+        let len = raw.max(0.5);
+        if i.is_multiple_of(2) && raw <= 0.0 {
+            // A dash of no length: a round dot (#3404).
+            ui.painter()
+                .circle_filled(egui::pos2(x, y), unit * 0.75, color);
+        } else if i.is_multiple_of(2) {
             let x1 = (x + len).min(rect.right());
             ui.painter().line_segment(
                 [egui::pos2(x, y), egui::pos2(x1, y)],

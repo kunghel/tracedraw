@@ -216,10 +216,53 @@ fn resized_table(s: &Shape, t: Affine) -> Option<ShapeKind> {
     Some(ShapeKind::Table(table))
 }
 
+/// The kind of `s` (a text fitted to a path) with its letters scaled by
+/// the scale `t` instead of the text and its path (#2962): the path stays
+/// where it is, so the text stays on the curve it was fitted to, bigger or
+/// smaller, as far from it in proportion. A side handle's scale is the
+/// letters' scale; a corner's (or any scale on both axes) gives the
+/// geometric mean of the two.
+fn resized_fitted_text(s: &Shape, t: Affine) -> Option<ShapeKind> {
+    let (sx, sy) = axis_scale(t)?;
+    let ShapeKind::Text {
+        spans,
+        origin,
+        frame,
+        align,
+        para,
+        on_path: Some(on_path),
+    } = &s.kind
+    else {
+        return None;
+    };
+    let k = if (sx - 1.0).abs() < 1e-9 {
+        sy
+    } else if (sy - 1.0).abs() < 1e-9 {
+        sx
+    } else {
+        (sx * sy).sqrt()
+    };
+    if !(k.is_finite() && k > 1e-6) || (k - 1.0).abs() < 1e-9 {
+        return None;
+    }
+    let mut on_path = on_path.clone();
+    on_path.distance *= k;
+    Some(ShapeKind::Text {
+        spans: scale_letters(spans, k, k),
+        origin: *origin,
+        frame: *frame,
+        align: *align,
+        para: para.clone(),
+        on_path: Some(on_path),
+    })
+}
+
 /// The kind `t` gives `s` in place of a scale: a paragraph text's new
-/// frame or a table's new rows and columns.
+/// frame, a table's new rows and columns, or a fitted text's letters.
 fn resized_any(s: &Shape, t: Affine) -> Option<ShapeKind> {
-    resized_kind(s, t).or_else(|| resized_table(s, t))
+    resized_kind(s, t)
+        .or_else(|| resized_table(s, t))
+        .or_else(|| resized_fitted_text(s, t))
 }
 
 /// A drag of a side handle with Alt held: paragraph texts and tables
@@ -330,15 +373,45 @@ impl App {
             .is_some_and(|(_, s)| resized_kind(s, t).is_some())
     }
 
+    /// `t` (page space) scales the letters of text `id`, fitted to a path,
+    /// instead of the text and its path (#2962): `t` an axis-aligned
+    /// scale by positive amounts, and no other kind of object among
+    /// `shapes` (a curve scaled along with its text takes the text with
+    /// it, as before).
+    pub fn resizes_fitted_text(&self, id: ShapeId, t: Affine, shapes: &[ShapeId]) -> bool {
+        let fitted = |id: &ShapeId| {
+            self.doc().shape(*id).ok().is_some_and(|(_, s)| {
+                matches!(
+                    s.kind,
+                    ShapeKind::Text {
+                        on_path: Some(_),
+                        ..
+                    }
+                )
+            })
+        };
+        fitted(&id)
+            && shapes.iter().all(fitted)
+            && self
+                .doc()
+                .shape(id)
+                .ok()
+                .is_some_and(|(_, s)| resized_fitted_text(s, t).is_some())
+    }
+
     /// Apply `t` to the selection as one undo step: paragraph texts that
-    /// take it as a new frame get it so, the rest are transformed.
-    /// Returns false when no paragraph frame was involved (the caller
-    /// transforms as usual).
+    /// take it as a new frame get it so, texts fitted to a path take it in
+    /// their letters, the rest are transformed. Returns false when none of
+    /// these was involved (the caller transforms as usual).
     pub(crate) fn transform_with_frames(&mut self, shapes: &[ShapeId], t: Affine) -> bool {
         let frames: Vec<ShapeId> = shapes
             .iter()
             .copied()
-            .filter(|id| self.resizes_text_frame(*id, t) || self.resizes_table(*id, t))
+            .filter(|id| {
+                self.resizes_text_frame(*id, t)
+                    || self.resizes_table(*id, t)
+                    || self.resizes_fitted_text(*id, t, shapes)
+            })
             .collect();
         if frames.is_empty() {
             return false;
@@ -359,8 +432,15 @@ impl App {
             let Ok((_, s)) = self.doc().shape(*id) else {
                 continue;
             };
+            let fitted = matches!(
+                s.kind,
+                ShapeKind::Text {
+                    on_path: Some(_),
+                    ..
+                }
+            );
             if let Some(kind) = resized_any(s, t) {
-                let kind = if self.glyph_scale {
+                let kind = if self.glyph_scale && !fitted {
                     with_scaled_letters(kind, t)
                 } else {
                     kind
@@ -794,8 +874,10 @@ mod tests {
                 from_center: false,
                 steps: false,
                 free: true,
+                even: false,
             },
             snapped: (false, false),
+            start_geometry: None,
         };
         assert!(glyph_scale_drag(&drag));
         let t = app.preview_transform_of(&drag).expect("a scale");

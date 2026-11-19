@@ -96,7 +96,8 @@ edits them in their own way:
   to make an arc.
 - **Polygon or star**: drag a point to move all the points in or out;
   drag a node between points in or out to sharpen the star, or round the
-  centre to twist it.
+  centre to twist it; drag a side out or in to curve every side the same
+  way.
 
 To edit them as free curves, use **Convert to Curves** (`Ctrl+Q`).
 **Convert outline to object** (`Ctrl+Shift+Q`) turns an outline into a

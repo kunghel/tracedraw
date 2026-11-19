@@ -4,7 +4,8 @@
 //! that runs the width of the window. The Welcome Screen tab closes to its
 //! house alone, which shows the Welcome Screen again (#677). A drawing's
 //! tab dragged along the strip takes the drawing to another place among
-//! the tabs (#2903).
+//! the tabs (#2903); dragged out of the window it gets a window of its own
+//! (#2904, `detached.rs`), and its tab leaves the strip.
 
 use crate::app::App;
 use crate::i18n::tr;
@@ -29,6 +30,8 @@ enum Action {
     New,
     /// A drawing's tab dragged to another place among the tabs.
     Move(usize, usize),
+    /// A drawing's tab let go out of the window, at this desktop point.
+    Detach(usize, Option<Pos2>),
 }
 
 pub fn document_tabs(app: &mut App, ui: &mut Ui) {
@@ -37,6 +40,10 @@ pub fn document_tabs(app: &mut App, ui: &mut Ui) {
     #[cfg(test)]
     ui.ctx()
         .data_mut(|d| d.insert_temp(egui::Id::new("document_tabs_strip"), strip));
+    // A drawing's window of its own puts it back when its tab is let go
+    // here.
+    crate::ui::detached::note_tab_strip(ui.ctx(), strip);
+    let can_detach = crate::ui::detached::can_detach(ui.ctx());
     // Nothing below the line: the strip ends where it does.
     ui.spacing_mut().item_spacing.y = 0.0;
     // The active tab, when it changed since the last frame: the strip
@@ -66,21 +73,28 @@ pub fn document_tabs(app: &mut App, ui: &mut Ui) {
         // it. While it is held the other tabs slide aside to show where
         // it will land and it follows the pointer; let go, the drawing
         // takes that place.
+        // Drawings in windows of their own have no tab here (#2904).
         let n = app.docs.len();
+        let shown = crate::ui::detached::main_tabs(app);
         let titles: Vec<String> = (0..n).map(|i| app.document_tab_title(i)).collect();
         let widths: Vec<f32> = titles.iter().map(|t| doc_tab_width(ui, t)).collect();
         let drag_key = egui::Id::new("doc_tab_drag");
-        let (pointer_x, released, down) = ui.input(|inp| {
+        let last_key = egui::Id::new("doc_tab_drag_last");
+        let (pointer, released, down) = ui.input(|inp| {
             (
-                inp.pointer.latest_pos().map(|p| p.x),
+                inp.pointer.latest_pos(),
                 inp.pointer.any_released(),
                 inp.pointer.any_down(),
             )
         });
+        let pointer_x = pointer.map(|p| p.x);
         let mut held = ui
             .ctx()
             .data(|d| d.get_temp::<(usize, f32)>(drag_key))
-            .filter(|(from, _)| *from < n);
+            .filter(|(from, _)| shown.contains(from));
+        if let (Some(_), Some(p)) = (held, pointer) {
+            ui.ctx().data_mut(|d| d.insert_temp(last_key, p));
+        }
         if held.is_some() && !down && !released {
             // A drag that ended without its tab seeing it (the tab went).
             ui.ctx()
@@ -89,10 +103,13 @@ pub fn document_tabs(app: &mut App, ui: &mut Ui) {
         }
         let gap = ui.spacing().item_spacing.x;
         let start_x = ui.cursor().min.x;
+        // Positions among the tabs shown: `from`'s and the slot it would
+        // land in.
         let held_to = held.zip(pointer_x).map(|((from, grab), px)| {
-            let others: Vec<f32> = (0..n)
-                .filter(|j| *j != from)
-                .map(|j| widths[j] + gap)
+            let others: Vec<f32> = shown
+                .iter()
+                .filter(|j| **j != from)
+                .map(|&j| widths[j] + gap)
                 .collect();
             // The dragged tab's middle decides, not the pointer's spot.
             let mid = px - grab + widths[from] / 2.0;
@@ -101,9 +118,15 @@ pub fn document_tabs(app: &mut App, ui: &mut Ui) {
                 crate::ui::window_bars::tab_drop_slot(&others, start_x, mid),
             )
         });
-        let order = match held_to {
-            Some((from, to)) => crate::ui::window_bars::tab_order(n, from, to),
-            None => (0..n).collect(),
+        let order: Vec<usize> = match held_to {
+            Some((from, slot)) => {
+                let at = shown.iter().position(|&j| j == from).unwrap_or(0);
+                crate::ui::window_bars::tab_order(shown.len(), at, slot)
+                    .into_iter()
+                    .map(|k| shown[k])
+                    .collect()
+            }
+            None => shown.clone(),
         };
         for i in order {
             let active = !app.show_welcome && i == app.active_doc;
@@ -122,7 +145,17 @@ pub fn document_tabs(app: &mut App, ui: &mut Ui) {
             if tab.drag_stopped {
                 ui.ctx()
                     .data_mut(|d| d.remove_temp::<(usize, f32)>(drag_key));
-                if let Some((from, to)) = held_to.filter(|(from, _)| *from == i) {
+                let last = ui
+                    .ctx()
+                    .data_mut(|d| d.remove_temp::<Pos2>(last_key))
+                    .or(pointer);
+                let window = ui.ctx().content_rect();
+                if can_detach && held.is_some() && !last.is_some_and(|p| window.contains(p)) {
+                    // Let go out of the window: a window of its own there.
+                    let at = last.and_then(|p| crate::ui::detached::desktop_point(ui.ctx(), p));
+                    action = Some(Action::Detach(i, at));
+                } else if let Some((from, slot)) = held_to.filter(|(from, _)| *from == i) {
+                    let to = drop_index(&shown, from, slot);
                     if to != from {
                         action = Some(Action::Move(from, to));
                     }
@@ -168,7 +201,38 @@ pub fn document_tabs(app: &mut App, ui: &mut Ui) {
         }
         Some(Action::New) => app.request_new_document(),
         Some(Action::Move(from, to)) => app.move_document(from, to),
+        Some(Action::Detach(i, at)) => {
+            let size = crate::ui::detached::default_size(ui.ctx());
+            // The window's top left a little up and left of the pointer,
+            // so the pointer is over its tab.
+            let at = at.map(|p| p - Vec2::new(40.0, 12.0));
+            crate::ui::detached::detach(app, i, at, size);
+        }
         None => {}
+    }
+}
+
+/// The place among all the drawings' tabs (`App::move_document`) of the
+/// tab of drawing `from` let go at `slot` among the `shown` tabs other
+/// than it (the tabs of drawings in windows of their own are not shown).
+fn drop_index(shown: &[usize], from: usize, slot: usize) -> usize {
+    let others: Vec<usize> = shown.iter().copied().filter(|&j| j != from).collect();
+    match (others.get(slot), others.last()) {
+        (Some(&t), _) => {
+            if from < t {
+                t - 1
+            } else {
+                t
+            }
+        }
+        (None, Some(&t)) => {
+            if from < t {
+                t
+            } else {
+                t + 1
+            }
+        }
+        (None, None) => from,
     }
 }
 
@@ -376,12 +440,10 @@ fn doc_tab(
             egui::StrokeKind::Inside,
         );
         ui.ctx().request_repaint();
-        ui.painter()
-            .clone()
-            .with_layer_id(egui::LayerId::new(
-                egui::Order::Foreground,
-                egui::Id::new("doc_tab_dragged"),
-            ))
+        ui.painter().clone().with_layer_id(egui::LayerId::new(
+            egui::Order::Foreground,
+            egui::Id::new("doc_tab_dragged"),
+        ))
     } else {
         ui.painter().clone()
     };
@@ -405,7 +467,11 @@ fn doc_tab(
     let drag_started = resp.drag_started_by(egui::PointerButton::Primary)
         && !crate::ui::overflow::finger_sliding(ui.ctx());
     let drag_stopped = resp.drag_stopped();
-    let resp = resp.rich_tip(format!("{title}\n{}", tr("tabs.drawing_desc")));
+    let resp = resp.rich_tip(format!(
+        "{title}\n{} {}",
+        tr("tabs.drawing_desc"),
+        tr("tabs.drag_out_desc")
+    ));
     let click = if close_resp.clicked() || resp.middle_clicked() {
         TabClick::Close
     } else if resp.clicked() {

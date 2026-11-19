@@ -13,6 +13,7 @@ görüneceğini ve renk paletinin nasıl davranacağını ayarlar.
 - [[options.center_dialogs]]: iletişim kutuları pencerenin ortasında açılır;
   kapalıyken onları bıraktığınız yerde açılırlar.
 - [[options.ui_shadows]] (daha az gölge yavaş grafik donanımına yardımcı
+- [[options.translucent_menus]]: open menus let the drawing show through them, at the [[options.menu_opacity]] beside the box (off by default).
   olur).
 - [[options.colored_icons]]: her araç grubu kendi rengini alır.
 - [[options.docker_tabs_icons_only]]: pencerenin kenarlarındaki panel

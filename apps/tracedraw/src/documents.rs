@@ -51,6 +51,8 @@ pub struct DocSlot {
     pub cdr_unsaved_version: Option<u16>,
     pub tdraw_version: Option<u32>,
     pub fit_pending: bool,
+    /// Each page's view in this window (`App::page_views`).
+    pub page_views: std::collections::HashMap<PageId, View>,
     /// The view of Options > Display > View when a drawing opens is
     /// still to be set (#1134).
     pub open_view_pending: bool,
@@ -95,6 +97,7 @@ impl Default for DocSlot {
             cdr_unsaved_version: None,
             tdraw_version: None,
             fit_pending: false,
+            page_views: Default::default(),
             open_view_pending: false,
             page_numbers: PageNumberSettings::default(),
             missing_fonts: Vec::new(),
@@ -126,6 +129,7 @@ impl App {
         std::mem::swap(&mut self.view, &mut slot.view);
         std::mem::swap(&mut self.selection, &mut slot.selection);
         std::mem::swap(&mut self.fit_pending, &mut slot.fit_pending);
+        std::mem::swap(&mut self.page_views, &mut slot.page_views);
         std::mem::swap(&mut self.open_view_pending, &mut slot.open_view_pending);
         std::mem::swap(&mut self.picked_layer, &mut slot.picked_layer);
         std::mem::swap(self.raster.get_mut(), &mut slot.raster);
@@ -256,6 +260,10 @@ impl App {
         if self.symmetry_edit.is_some() {
             self.finish_symmetry_edit();
         }
+        // A picture being edited keeps what was done to it.
+        if self.pixel_edit.is_some() {
+            self.finish_pixel_edit();
+        }
         self.drag = Drag::None;
         self.curve = None;
         self.curve_steps.clear();
@@ -285,6 +293,7 @@ impl App {
         self.effect_node_drag = None;
         self.selected_effect_node = None;
         self.mesh_more_nodes = None;
+        self.envelope_more_nodes = None;
         self.mesh_eyedropper = false;
         self.lens_synced_to = None;
         self.bevel_synced_to = None;
@@ -667,6 +676,12 @@ impl App {
             self.quit_after_closing = false;
             // Cancel also cancels Restart after an update.
             self.installer.disarm();
+            // And the benchmark's start with or without the graphics card.
+            #[cfg(not(target_arch = "wasm32"))]
+            if crate::gpu::take_restart_after_exit().is_some() {
+                self.settings.benchmark_resume = None;
+                self.settings.save();
+            }
         }
     }
 

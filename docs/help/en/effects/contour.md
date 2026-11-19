@@ -21,7 +21,8 @@ With the panel:
 
 ![The Contour panel](../../img/effects-contour.png)
 
-Groups and bitmaps cannot take a contour.
+A group takes one contour round all its objects together, in the colours of
+its first object. Bitmaps cannot take a contour.
 
 An open curve's contour runs round both sides of it: each step is a closed
 band, cut straight across at the curve's ends.
@@ -47,7 +48,8 @@ The contour follows while you drag, and each drag is one step to undo.
 The property bar and the panel show the settings of the selected contour and
 change it at once.
 
-- **To center**, **Inside** or **Outside** (at first).
+- **To center**, **Inside**, **Outside** (at first) or **Both**, inside and
+  outside at once.
 - **Steps**: 3 at first, up to 999, set with a slider or typed in its box.
   To center makes as many as fit.
 - **Offset**: the distance between steps (2 mm at first).
@@ -59,7 +61,8 @@ change it at once.
 - **Object acceleration** and **color acceleration** (-100 to 100%) crowd the
   steps or the colors towards the object or towards the last step.
 
-Outside steps are drawn behind the object, inside steps in front of it.
+Outside steps are drawn behind the object, inside steps in front of it; with
+**Both** you get the two at once.
 
 **Clear contour** removes the contour; **Break apart** turns the steps into
 objects, grouped beside the object. [[menu.object > menu.object.break_contour_apart]]

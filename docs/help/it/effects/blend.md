@@ -71,12 +71,19 @@ mantiene la fusione disegnata.
 ## Fondere lungo un tracciato {#path}
 
 1. Seleziona la fusione.
-2. Fai clic su **Nuovo tracciato** nel pannello [[docker.blend]] e fai clic su
-   una curva.
+2. Fai clic su [[docker.new_path]] nel pannello [[docker.blend]] o nella barra
+   delle proprietà dello strumento Fusione, e fai clic su una curva.
 
 I passaggi seguono la curva. **Ruota tutti gli oggetti** ruota ogni passaggio
 lungo la curva e [[docker.blend_full_path]] posiziona il primo e l'ultimo
 passaggio alle estremità della curva.
+
+La fusione resta una fusione: passaggi, spaziatura, accelerazione, rotazione e
+colori la modificano ancora. Per mettere gli oggetti iniziale e finale in un
+punto qualsiasi della curva, imposta [[docker.blend_path_start]] e
+[[docker.blend_path_end]], in % della lunghezza della curva: ogni oggetto si
+sposta lì e i passaggi corrono tra loro. [[docker.detach_path]] toglie la
+fusione dalla curva, di nuovo una fusione diritta.
 
 ## Rimuovere o dividere una fusione {#clear}
 

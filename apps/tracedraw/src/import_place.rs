@@ -200,6 +200,21 @@ impl App {
         }
     }
 
+    /// Whether `path` is read again on a later frame: the file waiting
+    /// for its place, those picked with it, or a PDF whose question
+    /// (how to read its text, its password) is open. A browser keeps an
+    /// upload while it is (#3231).
+    pub fn reads_later(&self, path: &std::path::Path) -> bool {
+        use crate::ui::dialogs::Dialog;
+        self.import_placing.as_ref().is_some_and(|p| p.path == path)
+            || self.import_queue.iter().any(|p| p == path)
+            || match &self.dialog {
+                Dialog::PdfText(st) => st.path == path,
+                Dialog::PdfPassword(st) => st.path == path,
+                _ => false,
+            }
+    }
+
     /// Whether an import is asking a question before it reads the file.
     fn import_question_open(&self) -> bool {
         use crate::ui::dialogs::Dialog;

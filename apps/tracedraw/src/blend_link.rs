@@ -45,6 +45,63 @@ fn with_blend(effects: &[Effect], b: Option<Effect>) -> Vec<Effect> {
 }
 
 impl App {
+    /// Blends among `pasted` (inside groups and clip frames too) whose end
+    /// object did not come along and is not in this drawing, the same
+    /// object, keep their steps as they are, linked to no end object.
+    /// Pasted in another drawing they named whatever object had the end's
+    /// number there and blended into it at the next change.
+    pub(crate) fn unlink_foreign_blend_ends(&self, pasted: &mut [Shape]) {
+        fn ids(s: &Shape, out: &mut Vec<ShapeId>) {
+            out.push(s.id);
+            match &s.kind {
+                ShapeKind::Group { children } => children.iter().for_each(|c| ids(c, out)),
+                ShapeKind::ClipFrame { frame, contents } => {
+                    ids(frame, out);
+                    contents.iter().for_each(|c| ids(c, out));
+                }
+                _ => {}
+            }
+        }
+        fn walk(s: &mut Shape, keep: &dyn Fn(ShapeId, &Shape) -> bool) {
+            for e in &mut s.effects {
+                if let Effect::Blend {
+                    end,
+                    end_id: Some(id),
+                    ..
+                } = e
+                {
+                    if !keep(*id, end) {
+                        if let Effect::Blend { end_id, .. } = e {
+                            *end_id = None;
+                        }
+                    }
+                }
+            }
+            match &mut s.kind {
+                ShapeKind::Group { children } => children.iter_mut().for_each(|c| walk(c, keep)),
+                ShapeKind::ClipFrame { frame, contents } => {
+                    walk(frame, keep);
+                    contents.iter_mut().for_each(|c| walk(c, keep));
+                }
+                _ => {}
+            }
+        }
+        let mut along = Vec::new();
+        for s in pasted.iter() {
+            ids(s, &mut along);
+        }
+        let keep = |id: ShapeId, end: &Shape| {
+            along.contains(&id)
+                || self
+                    .doc()
+                    .find_shape(id)
+                    .is_some_and(|here| here.uid.is_some() && here.uid == end.uid)
+        };
+        for s in pasted.iter_mut() {
+            walk(s, &keep);
+        }
+    }
+
     /// Whether `a` is drawn below `b` on the page: an earlier layer, or
     /// earlier in the order the page is painted, at any depth (inside
     /// groups and clip frames too, the frame before its contents). False
@@ -160,6 +217,95 @@ impl App {
         self.effect_edit_step = Some((self.engine.revision(), ids, label.to_string()));
     }
 
+    /// Place the selected blends' start and end objects `from` and `to`
+    /// of the way along their paths (shares of its length, 0 to 1): each
+    /// object's centre goes onto the path there and the steps run between
+    /// them along it, one undo step for a run of changes (#2946).
+    pub fn set_blend_path_ends(&mut self, from: f64, to: f64) {
+        let label = "Blend Path Ends";
+        let range = [from.clamp(0.0, 1.0), to.clamp(0.0, 1.0)];
+        // A run of changes is one step: the last one is taken back first,
+        // and the objects move from where they stood before the run.
+        let ids_now: Vec<ShapeId> = self.selected_blends().iter().map(|(id, _)| *id).collect();
+        let key = (self.engine.revision(), ids_now, label.to_string());
+        if self.engine.undo_label() == Some(label) && self.effect_edit_step.as_ref() == Some(&key) {
+            let _ = self.engine.undo();
+            self.blends_checked = self.engine.revision();
+        }
+        let mut cmds = Vec::new();
+        for (id, e) in self.selected_blends() {
+            let Effect::Blend {
+                path: Some(path),
+                end_id,
+                options,
+                ..
+            } = &e
+            else {
+                continue;
+            };
+            let Some(start) = self.doc().find_shape(id).cloned() else {
+                continue;
+            };
+            let mut b = e.clone();
+            if let Effect::Blend { options: o, .. } = &mut b {
+                o.path_range = Some(range);
+            }
+            if options.path_range != Some(range) {
+                cmds.push(Command::SetEffects {
+                    shape: id,
+                    effects: with_blend(&start.effects, Some(b)),
+                });
+            }
+            // Each object's centre onto the path (in the space the path
+            // and the objects share: the page for objects on a layer).
+            let mut place = |shape: Option<&Shape>, share: f64| {
+                let Some(shape) = shape else {
+                    return;
+                };
+                let Some((at, _)) = tracedraw_core::live::point_along(path, share) else {
+                    return;
+                };
+                let c = shape.bounds().center();
+                let d = at - c;
+                if d.hypot() > 1e-6 {
+                    cmds.push(Command::TransformShapes {
+                        shapes: vec![shape.id],
+                        transform: tracedraw_core::Affine::translate(d),
+                    });
+                }
+            };
+            place(Some(&start), range[0]);
+            let end = end_id.and_then(|e| self.doc().find_shape(e).cloned());
+            place(end.as_ref(), range[1]);
+        }
+        if cmds.is_empty() {
+            return;
+        }
+        if let Err(e) = self.engine.run_batch(label, &cmds) {
+            self.status = e.to_string();
+            return;
+        }
+        // The blends' copies of their end objects follow now, in the same
+        // step, so the next change of the run finds the drawing as it was.
+        self.refresh_blends();
+        let ids_now: Vec<ShapeId> = self.selected_blends().iter().map(|(id, _)| *id).collect();
+        self.effect_edit_step = Some((self.engine.revision(), ids_now, label.to_string()));
+    }
+
+    /// Take the selected blends off their paths: straight blends again
+    /// (#2946).
+    pub fn detach_blend_path(&mut self) {
+        self.change_blends("Detach From Path", |e| {
+            let mut e = e.clone();
+            if let Effect::Blend { path, options, .. } = &mut e {
+                *path = None;
+                options.path_range = None;
+                options.full_path = false;
+            }
+            Some(e)
+        });
+    }
+
     /// Blends follow their end objects (see the module notes). Runs once
     /// per change of the drawing; the changes join the step that made it.
     pub fn refresh_blends(&mut self) {
@@ -259,6 +405,127 @@ mod tests {
     fn steps_of(app: &App, id: ShapeId) -> Vec<Shape> {
         let s = app.doc().find_shape(id).cloned().expect("start");
         tracedraw_core::live::evaluate(&s).above
+    }
+
+    /// A blend copied with its end object (Paste, Duplicate) ends at the
+    /// copy of the end: it named the original's end, so the copy moved
+    /// away drew its steps back to the original. Pasted in another
+    /// drawing, a blend whose end did not come along keeps its steps and
+    /// no end object: it named whatever object had that number there and
+    /// blended into it.
+    #[test]
+    fn copied_blends_end_at_their_own_copies() {
+        let end_of = |app: &App, id: ShapeId| {
+            app.doc().find_shape(id).and_then(|s| {
+                s.effects.iter().find_map(|e| match e {
+                    Effect::Blend { end_id, end, .. } => Some((*end_id, end.bounds())),
+                    _ => None,
+                })
+            })
+        };
+        let blend = |app: &mut App| {
+            let start = square(app, 0.0, Color::rgb8(250, 220, 0));
+            let end = square(app, 100.0, Color::rgb8(0, 160, 80));
+            app.select(vec![start, end]);
+            app.blend_selection(3, 0.0, 0.0, 0.0);
+            app.refresh_blends();
+            (start, end)
+        };
+        for duplicate in [false, true] {
+            let mut app = App::headless();
+            let (start, end) = blend(&mut app);
+            app.select(vec![start, end]);
+            if duplicate {
+                app.duplicate();
+            } else {
+                app.copy();
+                app.paste();
+            }
+            let copies = app.selection.clone();
+            assert_eq!(copies.len(), 2);
+            app.run(Command::TransformShapes {
+                shapes: copies.clone(),
+                transform: Affine::translate((0.0, 100.0)),
+            });
+            app.refresh_blends();
+            let (copy_start, copy_end) = (copies[0], copies[1]);
+            let (to, end_box) = end_of(&app, copy_start).expect("a blend");
+            assert_eq!(to, Some(copy_end), "duplicate {duplicate}");
+            let moved_end = app.doc().find_shape(copy_end).expect("end").bounds();
+            assert!((end_box.y0 - moved_end.y0).abs() < 1e-9, "{end_box:?}");
+            // The original is as it was.
+            assert_eq!(end_of(&app, start).expect("blend").0, Some(end));
+        }
+        // The start alone, pasted in another drawing whose objects have
+        // the same numbers.
+        let mut app = App::headless();
+        let (start, _) = blend(&mut app);
+        app.select(vec![start]);
+        app.copy();
+        app.new_document();
+        for x in [200.0, 220.0, 240.0, 260.0, 280.0] {
+            square(&mut app, x, Color::rgb8(0, 0, 0));
+        }
+        app.paste();
+        let pasted = app.selection[0];
+        let (to, end_box) = end_of(&app, pasted).expect("the steps stay");
+        assert_eq!(to, None);
+        app.refresh_blends();
+        let (to, after) = end_of(&app, pasted).expect("still there");
+        assert_eq!((to, after), (None, end_box));
+        assert!((after.x0 - 100.0).abs() < 1e-9, "{after:?}");
+    }
+
+    /// A page duplicated with its contents: the copied blend ends at the
+    /// copy of its end object, on the new page. It named the original
+    /// page's end object, so moving the copy of the end did nothing and
+    /// the copied steps followed the original instead.
+    #[test]
+    fn a_duplicated_page_blends_to_its_own_end_object() {
+        let mut app = App::headless();
+        let start = square(&mut app, 0.0, Color::rgb8(250, 220, 0));
+        let end = square(&mut app, 100.0, Color::rgb8(0, 160, 80));
+        app.select(vec![start, end]);
+        app.blend_selection(3, 0.0, 0.0, 0.0);
+        app.refresh_blends();
+        app.duplicate_page(false, true);
+        let copies: Vec<ShapeId> = app.doc().pages[1].layers[0]
+            .shapes
+            .iter()
+            .map(|s| s.id)
+            .collect();
+        let blend_of = |app: &App, id: ShapeId| {
+            app.doc().find_shape(id).and_then(|s| {
+                s.effects.iter().find_map(|e| match e {
+                    Effect::Blend { end_id, end, .. } => Some((*end_id, end.bounds())),
+                    _ => None,
+                })
+            })
+        };
+        let copy_start = copies
+            .iter()
+            .copied()
+            .find(|id| blend_of(&app, *id).is_some())
+            .expect("the copied blend");
+        let copy_end = copies
+            .iter()
+            .copied()
+            .find(|id| *id != copy_start)
+            .expect("the copied end");
+        assert_eq!(
+            blend_of(&app, copy_start).map(|b| b.0),
+            Some(Some(copy_end))
+        );
+        app.run(Command::TransformShapes {
+            shapes: vec![copy_end],
+            transform: Affine::translate((0.0, 100.0)),
+        });
+        app.refresh_blends();
+        let (_, end_box) = blend_of(&app, copy_start).expect("blend");
+        assert!((end_box.y0 - 100.0).abs() < 1e-9, "{end_box:?}");
+        assert_eq!(blend_of(&app, start).map(|b| b.0), Some(Some(end)));
+        let (_, original) = blend_of(&app, start).expect("blend");
+        assert!(original.y0.abs() < 1e-9, "the original is as it was");
     }
 
     /// The steps sit between the two objects: with the end object below
@@ -414,6 +681,70 @@ mod tests {
         app.place_inside(vec![group], frame);
         app.refresh_blends();
         below(&app, "inside a frame");
+    }
+
+    /// A blend fitted to a new path, its two objects placed anywhere
+    /// along it: they move there, the steps run between them along the
+    /// path, a run of changes is one undo step, the blend's settings still
+    /// edit it, and Detach from path makes it straight again (#2946).
+    #[test]
+    fn a_blend_fitted_to_a_path_places_its_ends_anywhere_along_it() {
+        let mut app = App::headless();
+        let a = square(&mut app, 0.0, Color::rgb8(255, 0, 0));
+        let b = square(&mut app, 50.0, Color::rgb8(0, 0, 255));
+        app.select(vec![a, b]);
+        app.blend_selection(3, 0.0, 0.0, 0.0);
+        let mut line = tracedraw_core::geometry::BezPath::new();
+        line.move_to((0.0, 100.0));
+        line.line_to((200.0, 100.0));
+        let curve = app
+            .new_shape(ShapeKind::Path {
+                path: line,
+                closed: false,
+            })
+            .expect("curve");
+        // The blend picked by its end object takes the path too.
+        app.select(vec![b]);
+        app.set_blend_path(curve);
+        assert!(matches!(
+            app.selected_blends().first(),
+            Some((_, Effect::Blend { path: Some(_), .. }))
+        ));
+        let depth = app.engine.history_labels().0.len();
+        for to in [0.6, 0.7, 0.8] {
+            app.set_blend_path_ends(0.2, to);
+        }
+        assert_eq!(app.engine.history_labels().0.len(), depth + 1, "one step");
+        let centre = |app: &App, id: ShapeId| app.doc().find_shape(id).expect("object").bounds().center();
+        let (ca, cb) = (centre(&app, a), centre(&app, b));
+        assert!((ca.x - 40.0).abs() < 0.01 && (ca.y - 100.0).abs() < 0.01, "{ca:?}");
+        assert!((cb.x - 160.0).abs() < 0.01 && (cb.y - 100.0).abs() < 0.01, "{cb:?}");
+        let xs: Vec<f64> = steps_of(&app, a).iter().map(|s| s.bounds().center().x).collect();
+        for (x, want) in xs.iter().zip([70.0, 100.0, 130.0]) {
+            assert!((x - want).abs() < 0.5, "{xs:?}");
+        }
+        // The steps still change with the blend's settings.
+        app.change_blends("Blend", |e| {
+            let mut e = e.clone();
+            if let Effect::Blend { steps, .. } = &mut e {
+                *steps = 5;
+            }
+            Some(e)
+        });
+        assert_eq!(steps_of(&app, a).len(), 5);
+        app.engine.undo().expect("undo");
+        app.engine.undo().expect("undo");
+        let back = centre(&app, a);
+        assert!((back.x - 5.0).abs() < 0.01, "{back:?}");
+        app.engine.redo().expect("redo");
+        app.engine.redo().expect("redo");
+        app.detach_blend_path();
+        assert!(matches!(
+            app.selected_blends().first(),
+            Some((_, Effect::Blend { path: None, options, .. })) if options.path_range.is_none()
+        ));
+        let ys: Vec<f64> = steps_of(&app, a).iter().map(|s| s.bounds().center().y).collect();
+        assert!(ys.iter().all(|y| (y - 100.0).abs() < 0.5), "{ys:?}");
     }
 
     #[test]

@@ -231,7 +231,7 @@ or the moon button at the right of the status bar).
     </td>
     <td width="33%" valign="top">
       <h4>The everyday essentials</h4>
-      Undo and redo with a history panel &middot; duplicate, clone and repeat copies &middot; align, distribute and order &middot; object and colour styles &middot; find and replace &middot; customisable shortcuts and workspaces &middot; an interface size setting &middot; Options with every preference &middot; a splash screen and a welcome screen with recent drawings and templates.
+      Undo and redo with a history panel &middot; duplicate, clone and repeat copies &middot; align, distribute and order &middot; object and colour styles &middot; find and replace &middot; customisable shortcuts and workspaces &middot; toolbars of your own &middot; an interface size setting &middot; Options with every preference &middot; a splash screen and a welcome screen with recent drawings and templates.
     </td>
   </tr>
 </table>
@@ -344,7 +344,7 @@ see [`docs/behavior/ai-drawing.md`](docs/behavior/ai-drawing.md).
 - **Runs in the browser:** the whole editor compiles to WebAssembly.
 - **Clean-room:** format support from public notes and owned files only;
   no proprietary code or assets.
-- **Tested:** about 2,200 tests, including format round trips,
+- **Tested:** about 5,000 tests, including format round trips,
   malformed-input tests, effect geometry and interface drawing, plus
   headless visual checks that drive the real app.
 
@@ -450,7 +450,6 @@ For the newest fixes, take the installer below.
 | Windows 10 (32-bit) | `tracedraw-<version>-windows-x86-setup.exe` (for 32-bit Windows; on 64-bit Windows it asks first and the x64 files are better), `tracedraw-<version>-windows-x86-portable.zip`. Not in the Microsoft Store. A 32-bit program can use at most 2 GB of memory, so very large drawings are better opened on 64-bit Windows |
 | macOS (Apple silicon, Intel) | `tracedraw-<version>-macos-arm64.dmg`, `tracedraw-<version>-macos-x86_64.dmg` (unsigned for now: right-click, Open) |
 | Linux (x86_64, arm64) | `.deb` (`_amd64` or `_arm64`), `tracedraw-<version>-linux-amd64.AppImage` or `-linux-arm64.AppImage`, `tracedraw-<version>-linux-x86_64.tar.gz` or `-linux-arm64.tar.gz`, `tracedraw-<version>-linux-x86_64.flatpak` (`flatpak install --user <file>`; the release also carries the Flathub manifest). The AppImage carries its update information, so AppImageUpdate and Gear Lever update it from the release's `.AppImage.zsync` file, downloading only what changed |
-| Web | no download: [open it in the browser](https://tracedraw.github.io/tracedraw/), nothing to install |
 | Android (64-bit ARM; x86_64 Chromebooks) | `tracedraw-<version>-android-arm64-v8a-debug.apk` (`-x86_64-` for Chromebooks) in the releases and the nightly, signed with a debug key (remove the installed one before installing a build of another run); `scripts/android/build.sh` builds debug-signed APKs and an App Bundle for Google Play, and CI keeps them with each run as the `android-apk` and `android-aab` artifacts after starting the app on Android emulators (see [`docs/behavior/android.md`](docs/behavior/android.md) and [`docs/android-play.md`](docs/android-play.md)) |
 | Web | no download: [open it in the browser](https://tracedraw.github.io/tracedraw/), nothing to install; on an Android tablet, an iPad or a desktop the browser can also install the page as an app that opens full screen and starts offline (see [`docs/behavior/web.md`](docs/behavior/web.md), Installing on a tablet) |
 

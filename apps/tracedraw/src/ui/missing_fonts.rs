@@ -311,6 +311,25 @@ mod tests {
         (app, family)
     }
 
+    /// Fonts of the Font Manager still being installed off the
+    /// interface's thread (d#3200) are not reported missing; once they are
+    /// in, the drawing is checked again and the font lists are refreshed.
+    #[test]
+    fn fonts_still_coming_in_are_not_missing() {
+        let (mut app, _) = drawing_in("Nowhere Mono 3200");
+        assert_eq!(app.missing_fonts, vec!["Nowhere Mono 3200".to_string()]);
+        let (tx, rx) = std::sync::mpsc::channel();
+        app.font_installs.push(rx);
+        app.check_missing_fonts();
+        assert!(app.missing_fonts.is_empty(), "still coming in");
+        assert!(app.poll_font_installs(), "still loading");
+        assert!(app.missing_fonts.is_empty());
+        tx.send(Vec::new()).expect("sent");
+        assert!(!app.poll_font_installs(), "all in");
+        assert!(app.font_installs.is_empty());
+        assert_eq!(app.missing_fonts, vec!["Nowhere Mono 3200".to_string()]);
+    }
+
     /// A font file added from the dialog that brings a missing family
     /// takes its row away; with none left the dialog closes and the
     /// drawing has no missing font (#1989).

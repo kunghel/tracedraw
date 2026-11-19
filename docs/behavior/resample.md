@@ -1,13 +1,21 @@
 # Resample
 
 Image > Resample (also on the bitmap property bar) gives the selected
-bitmaps a new pixel size; their place and size on the page stay.
+bitmaps a new pixel size; their place on the page stays, and so does
+their size unless a new one is set (#3138).
 
 ## Fields
 
 - Pixels: the new width and height of the first selected bitmap.
 - Percent: the same as a percentage of its pixel size.
-- Resolution: the dpi the new width gives at its size on the page.
+- Resolution: the dpi the new width gives at the size on the page.
+- Size on page: the width and height the bitmap gets on the page, in
+  the unit chosen under Units (the document's unit at first). A new size
+  keeps the resolution, so the pixels follow.
+- Units: the unit of Size on page.
+- Fit to: This page or a paper (A4, Letter, A5, A3, Legal) makes the
+  bitmap as big as fits on it, the paper turned the way the picture is,
+  keeping its shape and resolution.
 - Maintain aspect ratio (on): the height follows the width, and back.
 - Method:
   - Smooth (photos), the default: Lanczos 3.
@@ -22,7 +30,8 @@ bitmaps a new pixel size; their place and size on the page stay.
   (4 bytes a pixel) are shown below.
 
 Sizes are 1 to 20000 pixels. With several bitmaps selected, each is
-scaled by the same factors as the first. One undo step per bitmap.
+scaled by the same factors as the first; a new size on the page scales
+each about its centre by the same amount. One undo step per bitmap.
 
 ## Save as file
 

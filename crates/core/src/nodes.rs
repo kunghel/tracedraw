@@ -1110,6 +1110,80 @@ pub fn to_curve(path: &BezPath, index: usize) -> BezPath {
     BezPath::from_vec(els)
 }
 
+/// Bow the segment ending at node `index` into an arc (#3335): `amount`
+/// 0 is straight and 1 a quarter circle through its two nodes, as a
+/// rectangle's Edge Bulge; a negative amount bows it the other way. On a
+/// closed subpath a positive amount bows outward, away from the inside;
+/// on an open one to the left of the way the curve runs. The segment
+/// becomes a curve first, as To Curve makes it, so a line, a curve and
+/// the closing line of a closed subpath all bow; its two nodes stay where
+/// they are. Amounts are kept to -1 to 1.
+pub fn bulge(path: &BezPath, index: usize, amount: f64) -> BezPath {
+    let curved = to_curve(path, index);
+    let mut els: Vec<PathEl> = curved.elements().to_vec();
+    let at = segment_element(&curved, index);
+    let Some(PathEl::CurveTo(_, _, end)) = els.get(at).copied() else {
+        return curved;
+    };
+    let start = prev_point(&els, at);
+    let chord = end - start;
+    let len = chord.hypot();
+    let amount = if amount.is_finite() { amount.clamp(-1.0, 1.0) } else { 0.0 };
+    if len < 1e-9 {
+        return curved;
+    }
+    let u = chord / len;
+    let left = Vec2::new(-u.y, u.x);
+    // The inside of a closed subpath lies to the left of the way it runs
+    // when its signed area is positive: outward is then to the right.
+    let out = if subpath_area(&els, at).is_some_and(|a| a > 0.0) {
+        -left
+    } else {
+        left
+    };
+    let theta = amount.abs() * std::f64::consts::FRAC_PI_2;
+    let (c1, c2) = if theta < 1e-9 {
+        (start + chord / 3.0, start + chord * (2.0 / 3.0))
+    } else {
+        let side = out * amount.signum();
+        let half = theta / 2.0;
+        let t0 = u * half.cos() + side * half.sin();
+        let t1 = u * half.cos() - side * half.sin();
+        let radius = len / (2.0 * half.sin());
+        let k = 4.0 / 3.0 * (theta / 4.0).tan() * radius;
+        (start + t0 * k, end - t1 * k)
+    };
+    els[at] = PathEl::CurveTo(c1, c2, end);
+    BezPath::from_vec(els)
+}
+
+/// The signed area of the closed subpath holding element `at`; `None`
+/// for an open one.
+fn subpath_area(els: &[PathEl], at: usize) -> Option<f64> {
+    let mut first = at.min(els.len().saturating_sub(1));
+    while first > 0 && !matches!(els[first], PathEl::MoveTo(_)) {
+        first -= 1;
+    }
+    let mut last = first + 1;
+    while last < els.len() && !matches!(els[last], PathEl::MoveTo(_) | PathEl::ClosePath) {
+        last += 1;
+    }
+    let closed = matches!(els.get(last), Some(PathEl::ClosePath))
+        || (last > first + 1 && {
+            let end = match els[last - 1] {
+                PathEl::MoveTo(p) | PathEl::LineTo(p) | PathEl::QuadTo(_, p) | PathEl::CurveTo(_, _, p) => p,
+                PathEl::ClosePath => subpath_start(els, first),
+            };
+            (end - subpath_start(els, first)).hypot() < 1e-9
+        });
+    if !closed {
+        return None;
+    }
+    let mut sub: Vec<PathEl> = els[first..last.min(els.len())].to_vec();
+    sub.push(PathEl::ClosePath);
+    Some(kurbo::Shape::area(&BezPath::from_vec(sub)))
+}
+
 /// Where a curve's direction shows (Shape tool, "Show curve direction"):
 /// for every subpath its first node with the way the curve leaves it,
 /// and for an open subpath also its last node with the way the curve
@@ -2175,6 +2249,23 @@ pub fn node_run(
     None
 }
 
+/// Every node of the subpath holding node `a`, in its order (the Shape
+/// tool's Ctrl+Shift+click). `None` when `a` is not a node of `path`.
+pub fn subpath_nodes(path: &BezPath, a: usize) -> Option<Vec<usize>> {
+    for sub in split_segments(path) {
+        let mut ring: Vec<usize> = vec![sub.start_index];
+        for (_, _, to, _) in &sub.segs {
+            if *to != sub.start_index {
+                ring.push(*to);
+            }
+        }
+        if ring.contains(&a) {
+            return Some(ring);
+        }
+    }
+    None
+}
+
 /// Join two end nodes with a straight segment (the Shape tool's Extend
 /// Curve to Close): the two ends of one open subpath close it; ends of two
 /// open subpaths make one subpath. `None` when either is not an end of an
@@ -2350,6 +2441,64 @@ fn subpath_start(els: &[PathEl], index: usize) -> Point {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Bulge (#3335): a square's four sides bowed by 1 make a circle
+    /// through its corners whichever way the square runs, outward; -1
+    /// bows them inward; an open line bows to its left.
+    #[test]
+    fn bulged_segments_bow_into_quarter_circles() {
+        let square = |ccw: bool| {
+            let mut p = BezPath::new();
+            let pts = [(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)];
+            let order: Vec<_> = if ccw { pts.to_vec() } else { pts.iter().rev().copied().collect() };
+            p.move_to(order[0]);
+            for q in &order[1..] {
+                p.line_to(*q);
+            }
+            p.close_path();
+            p
+        };
+        let centre = Point::new(5.0, 5.0);
+        let radius = 50f64.sqrt();
+        for ccw in [true, false] {
+            let mut p = square(ccw);
+            for i in (0..=4).rev() {
+                p = bulge(&p, i, 1.0);
+            }
+            let mut segs = 0;
+            for seg in p.segments() {
+                segs += 1;
+                for t in [0.25, 0.5, 0.75] {
+                    let d = (kurbo::ParamCurve::eval(&seg, t) - centre).hypot();
+                    assert!((d - radius).abs() < 0.03, "ccw {ccw}: {d}");
+                }
+            }
+            assert_eq!(segs, 4, "{p:?}");
+            let mut p = square(ccw);
+            p = bulge(&p, 1, -1.0);
+            let mid = kurbo::ParamCurve::eval(&p.segments().next().unwrap(), 0.5);
+            let inward = (mid - centre).hypot();
+            assert!(inward < 5.0, "bowed in: {inward}");
+        }
+        let mut line = BezPath::new();
+        line.move_to((0.0, 0.0));
+        line.line_to((10.0, 0.0));
+        let bowed = bulge(&line, 1, 0.5);
+        let mid = kurbo::ParamCurve::eval(&bowed.segments().next().unwrap(), 0.5);
+        assert!(mid.y > 0.5, "to the left: {mid:?}");
+        assert_eq!(bowed.elements().last(), Some(&PathEl::CurveTo(
+            match bowed.elements()[1] { PathEl::CurveTo(a, _, _) => a, _ => unreachable!() },
+            match bowed.elements()[1] { PathEl::CurveTo(_, b, _) => b, _ => unreachable!() },
+            Point::new(10.0, 0.0),
+        )), "the nodes stay");
+        // Nothing to bow: straight thirds.
+        let flat = bulge(&line, 1, 0.0);
+        let PathEl::CurveTo(a, b, _) = flat.elements()[1] else {
+            panic!("{flat:?}");
+        };
+        assert!((a - Point::new(10.0 / 3.0, 0.0)).hypot() < 1e-9, "{a:?}");
+        assert!((b - Point::new(20.0 / 3.0, 0.0)).hypot() < 1e-9, "{b:?}");
+    }
 
     /// Break Curve in the middle of a line drawn right to left: both
     /// parts keep that direction, each shown at both ends (#2578).

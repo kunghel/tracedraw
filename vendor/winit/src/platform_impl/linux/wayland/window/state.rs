@@ -24,7 +24,7 @@ use sctk::reexports::protocols::wp::text_input::zv3::client::zwp_text_input_v3::
 use sctk::reexports::protocols::wp::viewporter::client::wp_viewport::WpViewport;
 use sctk::reexports::protocols::xdg::shell::client::xdg_toplevel::ResizeEdge as XdgResizeEdge;
 
-use sctk::compositor::{CompositorState, Region, SurfaceData, SurfaceDataExt};
+use sctk::compositor::{CompositorState, Region};
 use sctk::seat::pointer::{PointerDataExt, ThemedPointer};
 use sctk::shell::xdg::window::{DecorationMode, Window, WindowConfigure};
 use sctk::shell::xdg::XdgSurface;
@@ -850,7 +850,11 @@ impl WindowState {
                 viewport.set_destination(size.width, size.height);
                 scale
             } else {
-                let scale = surface.data::<SurfaceData>().unwrap().surface_data().scale_factor();
+                // TraceDraw: the window's scale, which the image was drawn
+                // for, not the pointer surface's, which is 1 until the
+                // compositor says which output the pointer is on (#2871).
+                let scale =
+                    crate::cursor_pixels::wayland_cursor_buffer_scale(self.scale_factor());
                 surface.set_buffer_scale(scale);
                 scale as f64
             };

@@ -213,13 +213,22 @@ impl App {
                 });
                 continue;
             }
+            // New ids for the objects inside a group or a PowerClip
+            // too, as in Step and Repeat (#3066).
+            let mut round = Vec::new();
             for s in &shapes {
-                let mut c = s.clone();
-                c.id = self.engine.new_shape_id();
+                let id = self.engine.new_shape_id();
+                let mut c = crate::app::reid_pub(s.clone(), id, &mut self.engine);
                 c.transform_by(t);
                 new_sel.push(c.id);
-                cmds.push(Command::AddShape { layer, shape: c });
+                round.push(c);
             }
+            crate::textflow::relink_copies(&shapes, &mut round);
+            cmds.extend(
+                round
+                    .into_iter()
+                    .map(|shape| Command::AddShape { layer, shape }),
+            );
         }
         if sr.marks {
             let mut path = BezPath::new();
@@ -464,6 +473,86 @@ mod tests {
             .expect("a rectangle");
         app.select(vec![id]);
         (app, id)
+    }
+
+    /// Every object id in the drawing, those inside groups and
+    /// PowerClips too, and whether each is used only once.
+    fn ids_are_unique(app: &App) -> (usize, bool) {
+        fn walk(s: &tracedraw_core::Shape, ids: &mut Vec<ShapeId>) {
+            ids.push(s.id);
+            match &s.kind {
+                ShapeKind::Group { children } => children.iter().for_each(|c| walk(c, ids)),
+                ShapeKind::ClipFrame { frame, contents } => {
+                    walk(frame, ids);
+                    contents.iter().for_each(|c| walk(c, ids));
+                }
+                _ => {}
+            }
+        }
+        let mut ids = Vec::new();
+        for l in app.doc().all_layers() {
+            l.shapes.iter().for_each(|s| walk(s, &mut ids));
+        }
+        let n = ids.len();
+        ids.sort_by_key(|id| id.0);
+        ids.dedup();
+        (n, ids.len() == n)
+    }
+
+    /// Two rectangles grouped, and the group selected.
+    fn app_with_group() -> App {
+        let (mut app, a) = app_with_rect();
+        let b = app
+            .new_shape(ShapeKind::Rect {
+                rect: Rect::new(40.0, 10.0, 60.0, 20.0),
+                radius: 0.0,
+                corners: None,
+            })
+            .expect("another rectangle");
+        app.select(vec![a, b]);
+        app.group_selection();
+        assert_eq!(app.selection.len(), 1);
+        app
+    }
+
+    /// Step and Repeat and Fill page give the objects inside a copied
+    /// group new ids, as Duplicate does: they kept the original's, so
+    /// the drawing held two objects of one id (#3066).
+    #[test]
+    fn copies_of_a_group_give_its_objects_new_ids() {
+        let mut app = app_with_group();
+        app.step_repeat.copies = 2;
+        app.step_repeat.dx = 0.0;
+        app.step_repeat.dy = 30.0;
+        app.step_and_repeat_apply();
+        let (n, unique) = ids_are_unique(&app);
+        assert_eq!(n, 9, "three groups of two");
+        assert!(unique, "Step and Repeat");
+        app.undo();
+
+        let mut app = app_with_group();
+        app.step_repeat.fill = true;
+        app.step_and_repeat_apply();
+        let (n, unique) = ids_are_unique(&app);
+        assert!(n > 6, "{n}");
+        assert!(unique, "Fill page");
+    }
+
+    /// Two instances of a group symbol reverted to objects give two
+    /// groups of their own objects, not the same ids twice.
+    #[test]
+    fn reverted_symbol_instances_give_objects_of_their_own() {
+        let mut app = app_with_group();
+        app.create_symbol_from_selection();
+        let first = app.selection.clone();
+        app.insert_symbol_instance(0);
+        let second = app.selection.clone();
+        app.select(first.into_iter().chain(second).collect());
+        app.revert_symbol_instances();
+        assert_eq!(app.selection.len(), 2);
+        let (n, unique) = ids_are_unique(&app);
+        assert_eq!(n, 6, "two groups of two");
+        assert!(unique);
     }
 
     /// #1197: the preview has a copy for each one Apply makes, at the

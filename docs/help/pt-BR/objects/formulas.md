@@ -46,7 +46,8 @@ Selecione a fórmula e escolha de novo
 [[menu.object > menu.object.insert > menu.object.insert_formula]]: a janela
 abre como [[formula.edit_title]] com o texto, a fonte e o tamanho da fórmula.
 Depois do OK a fórmula muda no lugar, mantendo a cor, o contorno, o tamanho e
-a posição, num único passo de desfazer.
+a posição (o canto superior esquerdo fica onde estava), num único passo de
+desfazer.
 
 Uma fórmula convertida em curvas, separada ou combinada com outros objetos
 deixa de ser fórmula, e o item do menu insere uma nova.

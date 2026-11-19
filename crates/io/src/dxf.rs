@@ -171,7 +171,18 @@ struct Ctx<'a> {
     layer_colors: HashMap<String, i64>,
     blocks: HashMap<String, (Point, Vec<Entity>)>,
     warnings: Vec<String>,
+    /// Entities converted so far, block contents once per insert.
+    made: usize,
+    /// The most entities read (see [`MAX_OBJECTS`]).
+    max_objects: usize,
 }
+
+/// The most entities a drawing is read as, block contents counted once
+/// for every insert: a small file whose blocks insert each other ten
+/// times over, eight levels deep, stands for a hundred million objects
+/// and used up the computer's memory until the program was killed
+/// (#3045).
+const MAX_OBJECTS: usize = 1_000_000;
 
 impl Ctx<'_> {
     fn warn(&mut self, m: impl Into<String>) {
@@ -239,6 +250,15 @@ impl Ctx<'_> {
     }
 
     fn convert(&mut self, e: &Entity, depth: usize) -> Option<Shape> {
+        self.made += 1;
+        if self.made > self.max_objects {
+            let max = self.max_objects;
+            self.warn(format!(
+                "the drawing holds more than {max} objects once its blocks are placed; \
+                 the rest is left out"
+            ));
+            return None;
+        }
         match e.kind.as_str() {
             "LINE" => {
                 let a = self.pt(e, 10);
@@ -917,6 +937,11 @@ fn de_boor(ctrl: &[Point], knots: &[f64], p: usize, t: f64) -> Point {
 
 /// Parse DXF text.
 pub fn parse(text: &str, ids: &mut IdSource) -> Result<Imported, String> {
+    parse_at_most(text, ids, MAX_OBJECTS)
+}
+
+/// [`parse`] reading at most `max_objects` entities (see [`MAX_OBJECTS`]).
+fn parse_at_most(text: &str, ids: &mut IdSource, max_objects: usize) -> Result<Imported, String> {
     let all = pairs(text);
     if all.is_empty()
         || !all
@@ -1004,6 +1029,8 @@ pub fn parse(text: &str, ids: &mut IdSource) -> Result<Imported, String> {
         layer_colors: HashMap::new(),
         blocks: HashMap::new(),
         warnings: Vec::new(),
+        made: 0,
+        max_objects,
     };
     // Layer colours.
     if let Some(t) = section("TABLES") {
@@ -1642,6 +1669,10 @@ fn decode_unicode_escapes(s: &str) -> String {
 /// dictionary. Without them AutoCAD stopped at the end of the tables
 /// ("DXF read error") and Affinity refused the file (#2394).
 pub fn page_to_dxf(doc: &Document, page_index: usize) -> String {
+    // As the other vector exports see it: an open curve's fill as the
+    // screen shows it (none, unless the document fills open curves), the
+    // layers set not to print left out.
+    let doc = &*crate::for_export(doc, Some(page_index));
     let Some(page) = doc.pages.get(page_index) else {
         return String::new();
     };
@@ -2055,6 +2086,53 @@ mod tests {
         assert!((b.x0 - 5.0).abs() < 1e-6, "{b:?}");
     }
 
+    /// Blocks that insert each other ten times over, eight levels deep,
+    /// stand for a hundred million lines: reading stops at the most
+    /// objects allowed, with a warning, instead of using up the memory.
+    #[test]
+    fn blocks_inserting_each_other_stop_at_the_most_objects() {
+        let block = |name: &str, body: &str| {
+            format!("  0\nBLOCK\n  8\n0\n  2\n{name}\n 70\n0\n 10\n0\n 20\n0\n{body}  0\nENDBLK\n")
+        };
+        let insert = |name: &str| format!("  0\nINSERT\n  8\n0\n  2\n{name}\n 10\n0\n 20\n0\n");
+        let line = "  0\nLINE\n  8\n0\n 10\n0\n 20\n0\n 11\n1\n 21\n1\n";
+        let mut blocks = block("L0", line);
+        for i in 1..9 {
+            blocks += &block(&format!("L{i}"), &insert(&format!("L{}", i - 1)).repeat(10));
+        }
+        let text = format!(
+            "  0\nSECTION\n  2\nBLOCKS\n{blocks}  0\nENDSEC\n  0\nSECTION\n  2\nENTITIES\n{}  0\nENDSEC\n  0\nEOF\n",
+            insert("L8")
+        );
+        let mut ids = IdSource::default();
+        let imp = parse_at_most(&text, &mut ids, 5000).expect("parse");
+        fn count(s: &Shape) -> usize {
+            match &s.kind {
+                ShapeKind::Group { children } => 1 + children.iter().map(count).sum::<usize>(),
+                _ => 1,
+            }
+        }
+        let n: usize = imp.shapes.iter().map(count).sum();
+        assert!(n > 0 && n <= 5000, "{n}");
+        assert!(
+            imp.warnings
+                .iter()
+                .any(|w| w.contains("more than 5000 objects")),
+            "{:?}",
+            imp.warnings
+        );
+        // The same file within the limit reads whole: one insert of the
+        // lowest block and its line.
+        let small = format!(
+            "  0\nSECTION\n  2\nBLOCKS\n{}  0\nENDSEC\n  0\nSECTION\n  2\nENTITIES\n{}  0\nENDSEC\n  0\nEOF\n",
+            block("L0", line),
+            insert("L0")
+        );
+        let imp = parse(&small, &mut ids).expect("parse");
+        assert_eq!(imp.shapes.iter().map(count).sum::<usize>(), 2);
+        assert!(imp.warnings.is_empty(), "{:?}", imp.warnings);
+    }
+
     #[test]
     fn mtext_codes_are_stripped() {
         assert_eq!(
@@ -2317,5 +2395,52 @@ mod tests {
         assert_eq!(fmt(f64::NAN), "0");
         assert_eq!(fmt(f64::INFINITY), "0");
         assert_eq!(fmt(-1.5), "-1.5");
+    }
+}
+
+#[cfg(test)]
+mod export_view_tests {
+    use super::*;
+    use tracedraw_core::document::{Layer, Shape, ShapeKind};
+    use tracedraw_core::{Color, Fill};
+
+    fn curve(id: u64, closed: bool) -> Shape {
+        let mut p = tracedraw_core::BezPath::new();
+        p.move_to((20.0, 20.0));
+        p.curve_to((40.0, 80.0), (60.0, 0.0), (80.0, 50.0));
+        if closed {
+            p.close_path();
+        }
+        let mut s = Shape::new(
+            tracedraw_core::ShapeId(id),
+            ShapeKind::Path { path: p, closed },
+        );
+        s.fill = Fill::Solid(Color::rgb8(200, 30, 30));
+        s.stroke = Some(tracedraw_core::Stroke::new(Color::BLACK, 0.5));
+        s
+    }
+
+    /// A filled open curve shows no fill on screen, in SVG, PDF, EPS and
+    /// EMF; DXF filled it with a hatch. A layer set not to print is left
+    /// out, as the other exports leave it.
+    #[test]
+    fn dxf_sees_the_page_as_the_other_exports_do() {
+        let mut doc = Document::default();
+        let layer = doc.pages[0].layers[0].id;
+        doc.layer_mut(layer).unwrap().shapes.push(curve(1, false));
+        let out = page_to_dxf(&doc, 0);
+        assert!(!out.contains("HATCH"), "{out}");
+        assert!(out.contains("SPLINE") || out.contains("POLYLINE"), "{out}");
+        // With Fill open curves on, the fill is written.
+        doc.metadata.fill_open_curves = true;
+        assert!(page_to_dxf(&doc, 0).contains("HATCH"));
+        doc.metadata.fill_open_curves = false;
+        // A closed curve on a layer that does not print: not drawn.
+        let mut hidden = Layer::new(doc.ids_mut().layer(), "Notes");
+        hidden.printable = false;
+        hidden.shapes.push(curve(2, true));
+        doc.pages[0].layers.push(hidden);
+        let out = page_to_dxf(&doc, 0);
+        assert!(!out.contains("HATCH"), "{out}");
     }
 }

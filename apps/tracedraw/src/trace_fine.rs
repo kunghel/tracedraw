@@ -145,22 +145,15 @@ impl Edges {
             }
             None
         };
-        for i in 0..n {
-            if i % 65536 == 0 && cancelled(cancel) {
-                return None;
-            }
+        // The edge pixel `i` is on, if any.
+        let edge_of = |i: usize| -> Option<(u32, u32, f32)> {
             if alpha[i] < 128 {
-                continue;
-            }
-            if i % w == 0 && (i / w) % 64 == 0 && cancelled(cancel) {
                 return None;
             }
             let by = measure(i);
-            let (Some(hi), Some(lo)) = (end(i, by, true), end(i, by, false)) else {
-                continue;
-            };
+            let (hi, lo) = (end(i, by, true)?, end(i, by, false)?);
             if hi == lo {
-                continue;
+                return None;
             }
             let f = |c: [u8; 3]| [c[0] as f32, c[1] as f32, c[2] as f32];
             let (a, b, c) = (f(colors[lo]), f(colors[hi]), f(colors[i]));
@@ -168,15 +161,29 @@ impl Edges {
             let ac: [f32; 3] = std::array::from_fn(|k| c[k] - a[k]);
             let len2: f32 = ab.iter().map(|v| v * v).sum();
             if len2 < EDGE_APART * EDGE_APART {
-                continue;
+                return None;
             }
             let t = (ab.iter().zip(&ac).map(|(p, q)| p * q).sum::<f32>() / len2).clamp(0.0, 1.0);
             let off2: f32 = (0..3).map(|k| (ac[k] - t * ab[k]).powi(2)).sum();
             let slack = (0.12 * len2.sqrt()).max(16.0);
             if off2 > slack * slack {
-                continue;
+                return None;
             }
-            out.of[i] = (lo as u32, hi as u32, t);
+            Some((lo as u32, hi as u32, t))
+        };
+        // Each pixel on its own: bands of rows on the computer's cores.
+        crate::trace::par_chunks(&mut out.of, w * 64, |start, part| {
+            for (k, at) in part.iter_mut().enumerate() {
+                if k % 4096 == 0 && cancelled(cancel) {
+                    return;
+                }
+                if let Some(e) = edge_of(start + k) {
+                    *at = e;
+                }
+            }
+        });
+        if cancelled(cancel) {
+            return None;
         }
         Some(out)
     }

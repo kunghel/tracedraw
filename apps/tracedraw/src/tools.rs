@@ -412,10 +412,6 @@ impl Tool {
         })
     }
 
-    pub fn shortcut_label(self) -> &'static str {
-        self.shortcut().unwrap_or("")
-    }
-
     /// Parse a shortcut label like "Shift+F12" into (key, shift).
     pub fn parse_shortcut(label: &str) -> Option<(Key, bool)> {
         let shift = label.to_lowercase().contains("shift+");
@@ -532,7 +528,8 @@ impl Tool {
 
     /// Drawing tools whose drag from a handle of the selection resizes it
     /// instead of starting a new shape (the handles show right after a
-    /// shape is drawn).
+    /// shape is drawn). The Text tool too, so a text just typed or a
+    /// frame just drawn resizes without going to the Pick tool (#3258).
     pub fn resizes_by_handles(self) -> bool {
         self.is_box_tool()
             || matches!(
@@ -541,6 +538,7 @@ impl Tool {
                     | Tool::ThreePointEllipse
                     | Tool::Spiral
                     | Tool::CommonShapes
+                    | Tool::Text
             )
     }
 

@@ -216,8 +216,10 @@ fn options_part(app: &mut App, ui: &mut Ui, style: &DimensionStyle) {
 /// plan drawn at 1:100 measures metres in its labels while the page
 /// keeps millimetres (#2772, #1891). Picking a typical scale changes the
 /// whole drawing's scale (Document Setup > Rulers), Custom opens that
-/// page.
-fn drawing_scale_combo(app: &mut App, ui: &mut Ui) {
+/// page. The page bar (the Pick tool with nothing selected) has it too,
+/// beside Units, as the scale is the whole drawing's (#3450); `salt`
+/// keeps the two lists apart.
+pub(crate) fn drawing_scale_combo(app: &mut App, ui: &mut Ui, salt: &str) {
     use crate::drawing_scale as ds;
     let rulers = app.doc().metadata.rulers.clone();
     let current = ds::matching_preset(&rulers).map(|p| p.label);
@@ -228,7 +230,7 @@ fn drawing_scale_combo(app: &mut App, ui: &mut Ui) {
     dim(ui, tr("dimension.drawing_scale"));
     let mut pick = None;
     let mut custom = false;
-    crate::ui::keynav::ComboBox::from_id_salt("dimension_drawing_scale")
+    crate::ui::keynav::ComboBox::from_id_salt(salt)
         .selected_text(shown)
         .width(80.0)
         .height(320.0)
@@ -308,7 +310,7 @@ pub fn dimension_bar(app: &mut App, ui: &mut Ui) {
     {
         app.set_dimension_style(|s| s.show_units = show);
     }
-    drawing_scale_combo(app, ui);
+    drawing_scale_combo(app, ui, "dimension_drawing_scale");
     crate::ui::propbar::sep(ui);
     dim(ui, tr("dimension.prefix"));
     text_field(app, ui, "dimension.prefix", &style.prefix, |s, v| {

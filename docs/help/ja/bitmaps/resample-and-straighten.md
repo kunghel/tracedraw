@@ -42,6 +42,7 @@
 
 - [[menu.bitmaps.crop_bitmap]] は、[[tool.crop]] ツールでビットマップをトリミングします。[[tool.shape]] ツールでビットマップの角をドラッグしてもトリミングできます。
 - [[menu.bitmaps.edit_bitmap]] は、ビットマップを別のプログラムで開きます。
+- [[menu.bitmaps.edit_inside]] (or a double click on the picture with the Pick tool) edits its pixels in place, inside TraceDraw: selections, brush, soft eraser, clone, heal, blur, content fill, red eye and any bitmap effect inside the selection only. Enter finishes, as one undo step.
 - [[menu.bitmaps.remove_background]] は、写真の背景を透明にします。
 - [[menu.bitmaps.remove_background_local]]: [背景を削除](remove-background.md).
 - [[menu.bitmaps.break_link]] と [[menu.bitmaps.update_from_link]] は、ファイルにリンクしたビットマップに使います。

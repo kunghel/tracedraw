@@ -42,6 +42,18 @@ pub enum Error {
 
 pub type Result<T> = std::result::Result<T, Error>;
 
+/// Whether the nonzero fill rule can fill `path` differently from
+/// even-odd: only when it has more than one subpath. Importers set
+/// [`FillRule::NonZero`](tracedraw_core::shaping::FillRule) only then,
+/// so a plain shape stays as it always was.
+pub(crate) fn nonzero_matters(path: &tracedraw_core::geometry::BezPath) -> bool {
+    path.elements()
+        .iter()
+        .filter(|e| matches!(e, tracedraw_core::geometry::PathEl::MoveTo(_)))
+        .count()
+        > 1
+}
+
 /// The document as vector exports should see it: unless the document
 /// fills open curves, an open curve's fill is kept for its closed subpaths
 /// only (the curve becomes a group of the filled closed part and the
@@ -59,6 +71,53 @@ pub fn resolve_open_fills(doc: &Document) -> std::borrow::Cow<'_, Document> {
         }
     }
     fn fix(s: &mut Shape) {
+        // Objects an effect draws from the curve (contour steps, an
+        // extrusion's faces) are drawn with the curve's fill wherever they
+        // close, as on screen: they go out as objects of their own, and
+        // the fill is dropped from the curve alone. Dropped from the curve
+        // first, the steps went out empty.
+        if s.kind.is_open_curve() && !matches!(s.fill, Fill::None) && !s.effects.is_empty() {
+            let ev = tracedraw_core::live::evaluate(s);
+            if !(ev.below.is_empty() && ev.above.is_empty()) {
+                let plain = |mut c: Shape| {
+                    c.effects.clear();
+                    fix(&mut c);
+                    c
+                };
+                let mut main = ev.main;
+                // Only what the exports apply to the curve itself stays.
+                main.effects = s
+                    .effects
+                    .iter()
+                    .filter(|e| {
+                        matches!(
+                            e,
+                            tracedraw_core::live::Effect::Transparency { .. }
+                                | tracedraw_core::live::Effect::Lens(_)
+                        )
+                    })
+                    .cloned()
+                    .collect();
+                // The shadow goes once, beneath everything.
+                let shadow = main.shadow.take();
+                let mut children: Vec<Shape> = ev.below.into_iter().map(plain).collect();
+                fix(&mut main);
+                children.push(main);
+                children.extend(ev.above.into_iter().map(plain));
+                for c in &mut children {
+                    c.shadow = None;
+                }
+                let mut group = Shape::new(s.id, ShapeKind::Group { children });
+                group.name = s.name.take();
+                group.link = s.link.take();
+                group.shadow = shadow;
+                group.visible = s.visible;
+                group.fill = Fill::None;
+                group.stroke = None;
+                *s = group;
+                return;
+            }
+        }
         // An arc is an open curve: unfilled, as on screen (a live test of
         // 0.41). One whose ends meet is a whole ellipse and keeps it.
         if matches!(s.kind, ShapeKind::Ellipse { .. }) {
@@ -369,6 +428,7 @@ mod tests {
                 sharpness: -0.7,
                 complex: None,
                 twist: 0.0,
+                bend: 0.0,
             },
         );
         s.fill = Fill::Solid(Color::rgb8(255, 0, 0));
@@ -427,6 +487,69 @@ mod tests {
             resolve_open_fills(&doc),
             std::borrow::Cow::Borrowed(_)
         ));
+    }
+
+    /// The contour steps of a filled open curve close round it and show
+    /// the curve's fill blending to the contour's colour, as on screen;
+    /// the vector exports dropped the fill from the curve before drawing
+    /// its steps, so they went out empty. The curve itself stays unfilled.
+    #[test]
+    fn an_open_curve_s_contour_steps_keep_their_fill() {
+        use tracedraw_core::geometry::{BezPath, Point};
+        use tracedraw_core::live::Effect;
+        let mut doc = Document::default();
+        let layer = doc.pages[0].layers[0].id;
+        let mut path = BezPath::new();
+        path.move_to(Point::new(10.0, 10.0));
+        path.curve_to(
+            Point::new(30.0, 60.0),
+            Point::new(60.0, -10.0),
+            Point::new(90.0, 40.0),
+        );
+        let mut open = Shape::new(
+            tracedraw_core::ShapeId(5),
+            ShapeKind::Path {
+                path,
+                closed: false,
+            },
+        );
+        open.fill = Fill::Solid(Color::rgb8(255, 0, 0));
+        open.stroke = Some(Stroke::new(Color::BLACK, 0.5));
+        open.effects.push(Effect::Contour {
+            steps: 3,
+            offset: 2.0,
+            outside: true,
+            to_center: false,
+            both: false,
+            fill_to: Color::rgb8(0, 0, 255),
+            outline_to: None,
+            fill_end_to: None,
+            color_blend: 0,
+            corners: None,
+            accel_objects: 0.0,
+            accel_colors: 0.0,
+        });
+        doc.layer_mut(layer).unwrap().shapes.push(open);
+        let resolved = resolve_open_fills(&doc);
+        let ShapeKind::Group { children } = &resolved.pages[0].layers[0].shapes[0].kind else {
+            panic!("{:?}", resolved.pages[0].layers[0].shapes[0].kind);
+        };
+        let curve = children
+            .iter()
+            .find(|c| c.kind.is_open_curve())
+            .expect("the curve");
+        assert!(matches!(curve.fill, Fill::None), "{:?}", curve.fill);
+        assert!(curve.effects.is_empty());
+        let steps: Vec<_> = children
+            .iter()
+            .filter(|c| !c.kind.is_open_curve())
+            .collect();
+        assert_eq!(steps.len(), 3, "{children:#?}");
+        assert!(steps.iter().all(|c| !matches!(c.fill, Fill::None)));
+        // The outermost step is the contour colour, in every export.
+        let svg = svg::page_to_svg(&doc, 0);
+        assert!(svg.contains("fill=\"#0000ff\""), "{svg}");
+        assert!(!svg.contains("fill=\"#ff0000\""), "{svg}");
     }
 
     /// A live test of 0.41: an ellipse made an arc with the Shape tool

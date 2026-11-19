@@ -145,6 +145,7 @@ pub const EFFECTS: &[EffectSpec] = &[
         apply: wind,
         reach: wind_reach,
     },
+    super::glitch::POLAR,
 ];
 
 fn wind_reach(p: &P, _: u32, _: u32) -> u32 {

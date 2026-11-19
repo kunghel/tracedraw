@@ -7,10 +7,16 @@
 //! drawing once (#345: two or three copies per edit made every change of
 //! a large drawing slow). A delta-based history can replace it later
 //! without changing this API.
+//!
+//! The drawing and the copies are shared ([`Arc`]): a render on another
+//! thread takes the drawing as it stands for nothing
+//! ([`Engine::shared_document`]) instead of copying it on the window's
+//! thread, and the edit that follows copies it once, as it did (#3440).
 
 use crate::command::Command;
 use crate::id::ShapeId;
 use crate::{Document, Error, Result};
+use std::sync::Arc;
 
 #[derive(Debug, Clone)]
 struct HistoryEntry {
@@ -20,7 +26,7 @@ struct HistoryEntry {
     id: u64,
     /// The drawing on the other side of the step: before it on the undo
     /// stack, after it on the redo stack.
-    other: Document,
+    other: Arc<Document>,
     /// About how much memory `other` holds of its own (see
     /// [`snapshot_bytes`]), for the history's memory limit.
     bytes: usize,
@@ -28,7 +34,7 @@ struct HistoryEntry {
 
 #[derive(Debug)]
 pub struct Engine {
-    doc: Document,
+    doc: Arc<Document>,
     undo: Vec<HistoryEntry>,
     redo: Vec<HistoryEntry>,
     /// Counts applied commands, so views can cache per revision.
@@ -59,6 +65,10 @@ pub struct Engine {
     /// runs an Undo and a step per pointer move, with side effects such as
     /// a cleared link in between).
     undone_bytes: Option<usize>,
+    /// Ids minted while the drawing was shared (with a render on another
+    /// thread): counted here rather than copying the whole drawing for
+    /// a counter, and written into it at its next change (#3440).
+    ids_ahead: Option<crate::id::IdSource>,
     /// Buffers for measuring a step, kept between steps.
     measure: Measure,
 }
@@ -108,7 +118,7 @@ impl Default for Engine {
 impl Engine {
     pub fn new(doc: Document) -> Self {
         let mut e = Engine {
-            doc,
+            doc: Arc::new(doc),
             undo: Vec::new(),
             redo: Vec::new(),
             revision: 0,
@@ -122,15 +132,42 @@ impl Engine {
             preview: None,
             groups: 0,
             undone_bytes: None,
+            ids_ahead: None,
             measure: Measure::default(),
         };
-        e.doc.assign_uids(&mut e.uid_state);
-        e.doc.refresh_text_flow();
+        let uid_state = &mut e.uid_state;
+        let doc = Arc::make_mut(&mut e.doc);
+        doc.assign_uids(uid_state);
+        doc.refresh_text_flow();
         e
     }
 
     pub fn document(&self) -> &Document {
         &self.doc
+    }
+
+    /// The drawing as it stands, shared: for a render on another thread,
+    /// which then needs no copy of its own (#3440). The next edit copies
+    /// the drawing as every edit does, so the shared one never changes.
+    pub fn shared_document(&self) -> Arc<Document> {
+        Arc::clone(&self.doc)
+    }
+
+    /// The drawing to change: copied first when shared (with a step of
+    /// the history or a render).
+    fn doc_mut(&mut self) -> &mut Document {
+        let ahead = self.ids_ahead.take();
+        let doc = Arc::make_mut(&mut self.doc);
+        if let Some(ids) = ahead {
+            doc.set_ids(ids);
+        }
+        doc
+    }
+
+    /// The id counters: the drawing's, or further on when ids were
+    /// minted while it was shared.
+    pub fn ids(&self) -> &crate::id::IdSource {
+        self.ids_ahead.as_ref().unwrap_or(self.doc.ids())
     }
 
     /// This engine's identity: no other engine of this run has it, so a
@@ -159,9 +196,12 @@ impl Engine {
 
     /// Replace the document (open file, new document). Clears history.
     pub fn replace(&mut self, doc: Document) {
-        self.doc = doc;
-        self.doc.assign_uids(&mut self.uid_state);
-        self.doc.refresh_text_flow();
+        self.doc = Arc::new(doc);
+        self.ids_ahead = None;
+        let uid_state = &mut self.uid_state;
+        let doc = Arc::make_mut(&mut self.doc);
+        doc.assign_uids(uid_state);
+        doc.refresh_text_flow();
         self.undo.clear();
         self.redo.clear();
         // A preview of the drawing that went has nothing to go back to.
@@ -183,17 +223,17 @@ impl Engine {
         if cmd.outside_history() {
             // No step, no redo loss, no revision: views and the unsaved
             // marker do not change for it.
-            return cmd.apply(&mut self.doc);
+            return cmd.apply(self.doc_mut());
         }
-        let before = self.doc.clone();
-        if let Err(e) = cmd.apply(&mut self.doc) {
-            // A command that fails part-way leaves nothing behind.
+        let before = Arc::clone(&self.doc);
+        if let Err(e) = cmd.apply(self.doc_mut()) {
+            // A command that fails part-way leaves nothing behind (but
+            // ids never rewind).
+            self.ids_ahead = Some(self.doc.ids().clone());
             self.doc = before;
             return Err(e);
         }
-        self.doc.sync_linked_text(&before);
-        self.doc.assign_uids(&mut self.uid_state);
-        self.doc.refresh_text_flow();
+        self.settle_after(&before);
         let id = self.next_step;
         self.next_step += 1;
         let bytes = self.bytes_of(&before);
@@ -207,6 +247,17 @@ impl Engine {
         Ok(())
     }
 
+    /// After a change from `before`: linked texts, new objects' ids and
+    /// text flow brought up to date.
+    fn settle_after(&mut self, before: &Document) {
+        self.doc_mut();
+        let uid_state = &mut self.uid_state;
+        let doc = Arc::make_mut(&mut self.doc);
+        doc.sync_linked_text(before);
+        doc.assign_uids(uid_state);
+        doc.refresh_text_flow();
+    }
+
     fn finish_step(&mut self) {
         self.trim_history();
         self.clear_redo();
@@ -216,16 +267,15 @@ impl Engine {
 
     /// Apply several commands as one undo step.
     pub fn run_batch(&mut self, label: &'static str, cmds: &[Command]) -> Result<()> {
-        let before = self.doc.clone();
+        let before = Arc::clone(&self.doc);
         for c in cmds {
-            if let Err(e) = c.apply(&mut self.doc) {
+            if let Err(e) = c.apply(self.doc_mut()) {
+                self.ids_ahead = Some(self.doc.ids().clone());
                 self.doc = before;
                 return Err(e);
             }
         }
-        self.doc.sync_linked_text(&before);
-        self.doc.assign_uids(&mut self.uid_state);
-        self.doc.refresh_text_flow();
+        self.settle_after(&before);
         let id = self.next_step;
         self.next_step += 1;
         let bytes = self.bytes_of(&before);
@@ -245,7 +295,7 @@ impl Engine {
     /// when anything else happened since.
     pub fn amend(&mut self, cmd: &Command) -> Result<()> {
         if cmd.outside_history() {
-            return cmd.apply(&mut self.doc);
+            return cmd.apply(self.doc_mut());
         }
         if self.revision != self.step_revision {
             return self.run(cmd);
@@ -254,12 +304,16 @@ impl Engine {
             return self.run(cmd);
         }
         // The step keeps the drawing from before it; the change joins it.
-        let mut doc = self.doc.clone();
+        let mut doc = Document::clone(&self.doc);
+        if let Some(ids) = self.ids_ahead.clone() {
+            doc.set_ids(ids);
+        }
         cmd.apply(&mut doc)?;
+        self.ids_ahead = None;
         doc.sync_linked_text(&self.doc);
         doc.assign_uids(&mut self.uid_state);
         doc.refresh_text_flow();
-        self.doc = doc;
+        self.doc = Arc::new(doc);
         self.revision += 1;
         self.step_revision = self.revision;
         Ok(())
@@ -299,13 +353,17 @@ impl Engine {
         if self.revision != self.step_revision || self.undo.is_empty() {
             return self.run_batch(label, cmds);
         }
-        let mut doc = self.doc.clone();
+        let mut doc = Document::clone(&self.doc);
+        if let Some(ids) = self.ids_ahead.clone() {
+            doc.set_ids(ids);
+        }
         for c in cmds {
             c.apply(&mut doc)?;
         }
+        self.ids_ahead = None;
         doc.sync_linked_text(&self.doc);
         doc.assign_uids(&mut self.uid_state);
-        self.doc = doc;
+        self.doc = Arc::new(doc);
         self.clear_redo();
         self.revision += 1;
         self.step_revision = self.revision;
@@ -352,24 +410,44 @@ impl Engine {
 
     /// Mint a fresh shape id. Ids never rewind on undo.
     pub fn new_shape_id(&mut self) -> ShapeId {
-        self.doc.ids_mut().shape()
+        // Shared with a render: counted aside, not by copying the drawing.
+        if Arc::get_mut(&mut self.doc).is_none() {
+            let ids = self
+                .ids_ahead
+                .get_or_insert_with(|| self.doc.ids().clone());
+            return ids.shape();
+        }
+        self.doc_mut().ids_mut().shape()
     }
 
     /// Put `snapshot` in place of the drawing, keeping the id counters, the
     /// time tracker and the saved view (they never rewind); the drawing it replaced is
     /// returned, for the other stack.
-    fn swap_in(&mut self, snapshot: Document) -> Document {
-        let ids = self.doc.ids().clone();
-        let tracker = std::mem::take(&mut self.doc.time_tracker);
-        let saved_view = self.doc.saved_view.take();
-        let mut was = std::mem::replace(&mut self.doc, snapshot);
-        self.doc.set_ids(ids);
-        self.doc.time_tracker = tracker;
-        self.doc.saved_view = saved_view;
-        was.time_tracker = Default::default();
-        was.saved_view = None;
+    fn swap_in(&mut self, snapshot: Arc<Document>) -> Arc<Document> {
+        let mut slot = snapshot;
+        self.swap_slot(&mut slot);
+        slot
+    }
+
+    /// [`Self::swap_in`] with the copy in `slot`, which then holds the
+    /// drawing it replaced.
+    fn swap_slot(&mut self, slot: &mut Arc<Document>) {
+        let ids = self.ids_ahead.take().unwrap_or_else(|| self.doc.ids().clone());
+        let tracker = self.doc.time_tracker.clone();
+        let saved_view = self.doc.saved_view;
+        std::mem::swap(&mut self.doc, slot);
+        let doc = self.doc_mut();
+        doc.set_ids(ids);
+        doc.time_tracker = tracker;
+        doc.saved_view = saved_view;
+        // The copy kept for the other stack needs neither (they are put
+        // back from the drawing when it returns); one a render still
+        // shares is left as it is rather than copied for that.
+        if let Some(was) = Arc::get_mut(slot) {
+            was.time_tracker = Default::default();
+            was.saved_view = None;
+        }
         self.revision += 1;
-        was
     }
 
     /// Mark the drawing changed without an undo step (an edit of state kept
@@ -380,8 +458,7 @@ impl Engine {
 
     pub fn undo(&mut self) -> Result<&'static str> {
         let mut e = self.undo.pop().ok_or(Error::NothingToUndo)?;
-        let other = std::mem::take(&mut e.other);
-        e.other = self.swap_in(other);
+        self.swap_slot(&mut e.other);
         self.undone_bytes = Some(e.bytes);
         let label = e.label;
         self.redo.push(e);
@@ -400,8 +477,7 @@ impl Engine {
                 e
             }
         };
-        let other = std::mem::take(&mut e.other);
-        e.other = self.swap_in(other);
+        self.swap_slot(&mut e.other);
         let label = e.label;
         self.undo.push(e);
         Ok(label)
@@ -445,8 +521,7 @@ impl Engine {
                 break;
             };
             if m.redone.contains(&e.id) {
-                let other = std::mem::take(&mut e.other);
-                e.other = self.swap_in(other);
+                self.swap_slot(&mut e.other);
                 m.redo.push(e);
             } else {
                 self.swap_in(e.other);
@@ -481,9 +556,8 @@ impl Engine {
                 .map_or(self.undo.len(), |i| i + 1),
         };
         for i in first..self.undo.len() {
-            let snapshot = std::mem::take(&mut self.undo[i].other);
+            let snapshot = Arc::clone(&self.undo[i].other);
             let bytes = self.bytes_of(&snapshot);
-            self.undo[i].other = snapshot;
             self.undo[i].bytes = bytes;
         }
         self.trim_history();
@@ -715,6 +789,173 @@ mod tests {
     use super::*;
     use crate::document::{Shape, ShapeKind};
     use crate::geometry::Rect;
+
+    /// #3440: the drawing a render takes is shared, not copied, and an
+    /// edit, an undo and a redo leave it as it was taken.
+    #[test]
+    fn shared_drawing_is_not_copied_and_never_changes() {
+        let mut e = Engine::new(Document::default());
+        let a = e.shared_document();
+        assert!(Arc::ptr_eq(&a, &e.shared_document()), "nothing copied");
+        e.run(&Command::SetTitle { title: "one".into() }).unwrap();
+        let b = e.shared_document();
+        assert_eq!(e.document().title, "one");
+        assert_ne!(a.title, "one", "the shared drawing stays as taken");
+        e.undo().unwrap();
+        assert_eq!(e.document().title, a.title);
+        assert_eq!(b.title, "one");
+        e.redo().unwrap();
+        assert_eq!(e.document().title, "one");
+        assert_ne!(a.title, "one");
+        // Ids minted while shared: no copy for them, and never minted
+        // twice, before or after the next change.
+        let shared = e.shared_document();
+        let x = e.new_shape_id();
+        let y = e.new_shape_id();
+        assert!(Arc::ptr_eq(&shared, &e.shared_document()), "no copy for an id");
+        assert_ne!(x, y);
+        e.run(&Command::SetTitle { title: "two".into() }).unwrap();
+        drop(shared);
+        let z = e.new_shape_id();
+        assert!(z != x && z != y && z.0 > y.0, "{x:?} {y:?} {z:?}");
+    }
+
+    /// #3474 follow-up: an engine whose drawing renders keep taking (and
+    /// letting go) goes through edits, ids, undo, redo, amends, groups
+    /// and previews exactly as one nobody shares it with; every drawing
+    /// taken stays as it was taken, and no id is minted twice.
+    #[test]
+    fn sharing_the_drawing_changes_nothing_of_what_the_engine_does() {
+        use crate::geometry::Affine;
+        let mut shared = Engine::default();
+        let mut alone = Engine {
+            uid_state: shared.uid_state,
+            doc: Arc::new(Document::clone(&shared.doc)),
+            ..Engine::default()
+        };
+        let layer = shared.document().pages[0].layers[0].id;
+        let mut seed = 0x9e37_79b9_7f4a_7c15u64;
+        let mut next = move |n: u64| {
+            seed ^= seed << 13;
+            seed ^= seed >> 7;
+            seed ^= seed << 17;
+            seed % n
+        };
+        let mut held: Vec<(Arc<Document>, Document)> = Vec::new();
+        let mut minted = std::collections::HashSet::new();
+        let mut shapes: Vec<ShapeId> = Vec::new();
+        let mut group = None;
+        for step in 0..3000 {
+            // Renders take the drawing and let it go at random.
+            match next(4) {
+                0 => {
+                    let d = shared.shared_document();
+                    let copy = Document::clone(&d);
+                    held.push((d, copy));
+                }
+                1 if !held.is_empty() => {
+                    let i = next(held.len() as u64) as usize;
+                    let (d, copy) = held.swap_remove(i);
+                    assert!(*d == copy, "step {step}: a drawing taken changed");
+                }
+                _ => {}
+            }
+            let op = next(12);
+            match op {
+                0..=2 => {
+                    let a = shared.new_shape_id();
+                    let b = alone.new_shape_id();
+                    assert_eq!(a, b, "step {step}");
+                    assert!(minted.insert(a), "step {step}: {a:?} minted twice");
+                    let shape = Shape::new(
+                        a,
+                        ShapeKind::Rect {
+                            rect: Rect::new(0.0, 0.0, 5.0 + step as f64, 5.0),
+                            radius: 0.0,
+                            corners: None,
+                        },
+                    );
+                    let cmd = Command::AddShape { layer, shape };
+                    assert_eq!(shared.run(&cmd).is_ok(), alone.run(&cmd).is_ok());
+                    shapes.push(a);
+                }
+                3 => {
+                    // An id minted and never used.
+                    let a = shared.new_shape_id();
+                    assert_eq!(a, alone.new_shape_id());
+                    assert!(minted.insert(a), "step {step}: {a:?} minted twice");
+                }
+                4 if !shapes.is_empty() => {
+                    let id = shapes[next(shapes.len() as u64) as usize];
+                    let cmd = Command::TransformShapes {
+                        shapes: vec![id],
+                        transform: Affine::translate((1.0, 2.0)),
+                    };
+                    assert_eq!(shared.run(&cmd).is_ok(), alone.run(&cmd).is_ok());
+                }
+                5 if !shapes.is_empty() => {
+                    let id = shapes[next(shapes.len() as u64) as usize];
+                    let cmd = Command::DeleteShapes { shapes: vec![id] };
+                    assert_eq!(shared.run(&cmd).is_ok(), alone.run(&cmd).is_ok());
+                }
+                6 => {
+                    let _ = (shared.undo().is_ok(), alone.undo().is_ok());
+                }
+                7 => {
+                    let _ = (shared.redo().is_ok(), alone.redo().is_ok());
+                }
+                8 if !shapes.is_empty() => {
+                    let id = shapes[next(shapes.len() as u64) as usize];
+                    let cmd = Command::SetOpacity {
+                        shapes: vec![id],
+                        opacity: 0.5,
+                    };
+                    assert_eq!(shared.amend(&cmd).is_ok(), alone.amend(&cmd).is_ok());
+                }
+                9 => match group.take() {
+                    None => group = Some((shared.begin_group(), alone.begin_group())),
+                    Some((a, b)) => {
+                        shared.end_group(a, "Group");
+                        alone.end_group(b, "Group");
+                    }
+                },
+                10 => {
+                    if shared.in_preview() {
+                        if next(2) == 0 {
+                            shared.withdraw_preview();
+                            alone.withdraw_preview();
+                        } else {
+                            shared.keep_preview();
+                            alone.keep_preview();
+                        }
+                    } else {
+                        shared.begin_preview();
+                        alone.begin_preview();
+                    }
+                }
+                _ => {
+                    // A command that fails leaves both as they were.
+                    let cmd = Command::TransformShapes {
+                        shapes: vec![ShapeId(u64::MAX)],
+                        transform: Affine::IDENTITY,
+                    };
+                    assert_eq!(shared.run(&cmd).is_ok(), alone.run(&cmd).is_ok());
+                }
+            }
+            // The counters may sit aside (ids minted while shared) until
+            // the next change: compared through `ids()` below.
+            let mut x = Document::clone(shared.document());
+            let mut y = Document::clone(alone.document());
+            x.set_ids(shared.ids().clone());
+            y.set_ids(alone.ids().clone());
+            assert!(x == y, "step {step} (op {op})");
+            assert_eq!(shared.revision(), alone.revision(), "step {step}");
+            assert_eq!(shared.ids().peek_next(), alone.ids().peek_next(), "step {step}");
+        }
+        for (d, copy) in held {
+            assert!(*d == copy, "a drawing taken changed");
+        }
+    }
 
     /// Each step has an id of its own, kept through undo, redo and
     /// amend; a step undone and replaced by another is gone for good.

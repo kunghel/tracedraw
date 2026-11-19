@@ -137,7 +137,7 @@ pub(crate) const ARG_CLIP_CONTENTS: u32 = 8005;
 const ARG_PAGE_SIZE: u32 = 19130;
 /// A symbol definition's record in its `sytr` group's `loda`: an
 /// identifier and the symbol's name (#2177, a version 15 file).
-const ARG_SYMBOL: u32 = 19201;
+pub(crate) const ARG_SYMBOL: u32 = 19201;
 /// Master page `loda` argument holding the document's page background.
 const ARG_PAGE_BACKGROUND: u32 = 17000;
 /// Object argument 16016: 1 hides the object (version 21).
@@ -439,6 +439,9 @@ struct BitmapDef {
     cmyk: bool,
     /// A CMYK image's ink bytes, which separations print (#1659).
     inks: Option<tracedraw_core::picture_inks::PictureInks>,
+    /// A black and white (1-bit) image: its two palette colours, which
+    /// the object's outline and fill colour replace (#3410).
+    mono: Option<[[u8; 3]; 2]>,
 }
 
 // One entry of a `loda` argument table (type, payload start and end) and
@@ -484,6 +487,9 @@ struct Ctx<'a> {
     /// The metafile pictures embedded objects were last drawn as, by
     /// storage name (`ole2` chunks), for those without a picture above.
     embedded_metafiles: HashMap<String, Vec<u8>>,
+    /// Labels of embedded packages (wrapped files with no picture), by
+    /// storage name.
+    embedded_packages: HashMap<String, String>,
     /// The object just read drew a metafile: its objects need ids from
     /// the document's source.
     pending_renumber: bool,
@@ -506,6 +512,8 @@ struct Ctx<'a> {
     pending_cmyk: bool,
     /// The ink channels of the CMYK image it shows.
     pending_inks: Option<tracedraw_core::picture_inks::PictureInks>,
+    /// The palette of the 1-bit picture of the bitmap object just read.
+    pending_mono: Option<[[u8; 3]; 2]>,
     /// Groups of `LIST clpt` by their `spnd` number: the contents of clip
     /// containers.
     clip_groups: HashMap<u32, &'a Chunk>,
@@ -605,6 +613,7 @@ impl<'a> Ctx<'a> {
             bitmaps: HashMap::new(),
             embedded: HashMap::new(),
             embedded_metafiles: HashMap::new(),
+            embedded_packages: HashMap::new(),
             pending_renumber: false,
             pattern_tiles: HashMap::new(),
             vector_patterns: HashMap::new(),
@@ -615,6 +624,7 @@ impl<'a> Ctx<'a> {
             pending_crop: None,
             pending_cmyk: false,
             pending_inks: None,
+            pending_mono: None,
             clip_groups: HashMap::new(),
             pending_clip: None,
             symbol_defs: HashMap::new(),
@@ -675,8 +685,24 @@ pub(crate) fn parse_document_kept(
     kept: &[crate::kept_blends::KeptBlend],
     kept_effects: &[crate::kept_effects::KeptEffect],
 ) -> (Document, ParseReport) {
+    parse_document_kept_data(tree, main, version, cmyk_profile, (kept, kept_effects), &[])
+}
+
+/// [`parse_document_kept`] that also gives objects back the data
+/// `kept_data` holds for them (see [`crate::kept_data`]).
+pub(crate) fn parse_document_kept_data(
+    tree: &Tree,
+    main: &[u8],
+    version: Version,
+    cmyk_profile: Option<&[u8]>,
+    (kept, kept_effects): (
+        &[crate::kept_blends::KeptBlend],
+        &[crate::kept_effects::KeptEffect],
+    ),
+    kept_data: &[crate::kept_data::KeptData],
+) -> (Document, ParseReport) {
     let mut ctx = Ctx::new(main, tree, version.0);
-    if !kept.is_empty() || !kept_effects.is_empty() {
+    if !kept.is_empty() || !kept_effects.is_empty() || !kept_data.is_empty() {
         ctx.static_ids = Some(HashMap::new());
     }
     ctx.report.version = Some(version);
@@ -741,6 +767,8 @@ pub(crate) fn parse_document_kept(
             ctx.embedded.extend(pictures);
             let metafiles = crate::ole::embedded_metafiles(ctx.data(c));
             ctx.embedded_metafiles.extend(metafiles);
+            let packages = crate::ole::embedded_packages(ctx.data(c));
+            ctx.embedded_packages.extend(packages);
         }
     });
     ctx.read_bitmaps(&bitmaps);
@@ -998,6 +1026,7 @@ pub(crate) fn parse_document_kept(
                 kept.len()
             );
         }
+        crate::kept_data::restore(&mut doc, kept_data, &ids);
     }
     if !ctx.library_inks.is_empty() {
         let n = ctx.library_inks.len();
@@ -1974,7 +2003,7 @@ impl<'a> Ctx<'a> {
             };
             pts.push(Point::new(f64::from(x), f64::from(y)));
         }
-        self.add_arrowhead(id, &pts, &types);
+        self.add_placed_arrowhead(id, &pts, &types);
     }
 
     /// `arrw` of versions 3 and 4: the id (u32; version 4 a u16 and the
@@ -2045,11 +2074,30 @@ impl<'a> Ctx<'a> {
             };
             pts.push(Point::new(f64::from(x), f64::from(y)));
         }
-        self.add_arrowhead(id, &pts, &types);
+        self.add_placed_arrowhead(id, &pts, &types);
     }
 
-    /// Classifies an arrowhead outline into a preset, or keeps it as a
-    /// custom head.
+    /// An arrowhead outline in head units (versions 5 and later, `arrw`
+    /// and `arrx`): 127 000 to one outline width, the line's end at the
+    /// origin, the line coming in from -x. Kept as the file draws it, its
+    /// shape, size and place, open parts stroked one outline width wide,
+    /// as the exchange format's heads are; it was sorted into one of our
+    /// presets, redrawn at our size (#3436).
+    fn add_placed_arrowhead(&mut self, id: u32, pts: &[Point], types: &[u8]) {
+        let units = crate::cmx::HEAD_UNITS_PER_WIDTH;
+        let (path, _) = build_path(pts, types);
+        let shape = crate::cmx::stroke_open_subpaths(&path, units);
+        let head = Arrowhead::from_placed_path(&shape, format!("Arrowhead {id}"), units);
+        if head == Arrowhead::None {
+            self.report.warn(format!(
+                "arrowhead {id}: unreadable outline; drawn without arrowhead"
+            ));
+        }
+        self.arrows.insert(id, head);
+    }
+
+    /// Classifies an arrowhead outline of versions 3 and 4 (whose head
+    /// units are not known) into a preset, or keeps it as a custom head.
     fn add_arrowhead(&mut self, id: u32, pts: &[Point], types: &[u8]) {
         let (path, _) = build_path(pts, types);
         let mut head = classify_arrowhead(&path, pts, types);
@@ -2394,15 +2442,22 @@ impl<'a> Ctx<'a> {
                 // when it is another one (a version 14 file sets its
                 // Chinese titles in a 54 pt script font with Arial at
                 // 12 pt in the Latin slot, #955).
-                let pieces = match &style.asian {
-                    Some(a) if a.differs_from(&style) => text::split_scripts(&text),
-                    _ => vec![(text, false)],
+                // Arabic, Persian and Hebrew letters take its right-to-left
+                // font the same way (#2886).
+                let asian = style.asian.as_ref().is_some_and(|a| a.differs_from(&style));
+                let rtl = style.rtl.as_ref().is_some_and(|a| a.differs_from(&style));
+                let pieces = if asian || rtl {
+                    text::split_scripts(&text, asian, rtl)
+                } else {
+                    vec![(text, text::Script::Latin)]
                 };
-                for (piece, asian) in pieces {
-                    let span = if asian {
-                        self.make_span(piece, &style.for_east_asian(), object_fill)
-                    } else {
-                        self.make_span(piece, &style, object_fill)
+                for (piece, script) in pieces {
+                    let span = match script {
+                        text::Script::EastAsian => {
+                            self.make_span(piece, &style.for_east_asian(), object_fill)
+                        }
+                        text::Script::Rtl => self.make_span(piece, &style.for_rtl(), object_fill),
+                        text::Script::Latin => self.make_span(piece, &style, object_fill),
                     };
                     match spans.last_mut() {
                         Some(last)
@@ -2421,6 +2476,31 @@ impl<'a> Ctx<'a> {
                         }
                         _ => spans.push(span),
                     }
+                }
+            }
+        }
+        // Artistic text whose first lines are empty shows its first line
+        // with letters at its origin, its box that line's alone (#3215: a
+        // version 14 title starting with a paragraph break, which the
+        // same drawing saved as version 13 holds as curves on that
+        // baseline): the empty lines are dropped rather than pushing the
+        // letters down a line each.
+        if frame.is_none() && kind_code == OBJ_ARTISTIC_TEXT {
+            let lead = text::leading_breaks(&spans);
+            if lead > 0 && lead < spans.iter().map(|s| s.text.chars().count()).sum::<usize>() {
+                text::drop_leading_chars(&mut spans, lead);
+                // Paragraphs that started among the dropped lines start at
+                // the text's start; the last of them is the one shown.
+                let first = own
+                    .iter()
+                    .rposition(|(start, _, _)| *start <= lead)
+                    .unwrap_or(0);
+                own.drain(..first);
+                for (start, _, _) in own.iter_mut() {
+                    *start = start.saturating_sub(lead);
+                }
+                if let Some((_, _, fmt)) = own.first() {
+                    para_fmt = fmt.clone();
                 }
             }
         }
@@ -3331,6 +3411,28 @@ impl<'a> Ctx<'a> {
                 tracedraw_core::document::metafile::play(m, &mut ids)
             });
             let Some((mut shapes, size)) = drawn else {
+                // A package (a wrapped file, #3083) has no picture: keep
+                // its place as a grey box named after the file.
+                if let Some(label) = self.embedded_packages.get(name).cloned() {
+                    let rect = rect()?;
+                    let mut ids = tracedraw_core::id::IdSource::default();
+                    let mut b = Shape::new(
+                        ids.shape(),
+                        ShapeKind::Rect {
+                            rect,
+                            radius: 0.0,
+                            corners: None,
+                        },
+                    );
+                    b.fill = Fill::Solid(Color::rgb8(0xEE, 0xEE, 0xEE));
+                    b.stroke = Some(Stroke::hairline(Color::rgb8(0x80, 0x80, 0x80)));
+                    b.name = Some(label.clone());
+                    self.report.warn(format!(
+                        "embedded file \"{label}\" has no picture; shown as a box"
+                    ));
+                    self.pending_renumber = true;
+                    return Some(ShapeKind::Group { children: vec![b] });
+                }
                 self.report.warn(format!(
                     "embedded object \"{name}\" has no picture we can show"
                 ));
@@ -4157,6 +4259,9 @@ impl<'a> Ctx<'a> {
         let mut v15_mask_axis: Option<(Point, Point)> = None;
         // A version 16+ uniform transparency held in argument 8000 (#1706).
         let mut record_opacity: Option<f64> = None;
+        // A version 16+ transparency record read on its own, for a style
+        // string that does not say what the transparency is (#2960).
+        let mut record_transparency: Option<RecordTransparency> = None;
 
         for arg in &l.args {
             match arg.ty {
@@ -4166,6 +4271,7 @@ impl<'a> Ctx<'a> {
                     if let Some(axis) = self.read_graded_transparency_axis(d, *arg) {
                         v15_mask_axis = Some(axis);
                     }
+                    record_transparency = self.read_transparency_record_v16(d, *arg);
                     if let Some(l) = self.read_lens(d, *arg) {
                         lens = Some(l);
                     } else if let Some((o, m)) = self.read_transparency_v11(d, *arg) {
@@ -4456,6 +4562,27 @@ impl<'a> Ctx<'a> {
                 .as_deref()
                 .and_then(text::object_transparency_mask)
         });
+        // A pattern transparency in the style string (a fill type other
+        // than uniform or fountain) is the pattern its record names, not
+        // the mean of its two amounts (#2960).
+        let style_fill_type = style_string
+            .as_deref()
+            .and_then(text::object_transparency_fill_type);
+        if mask.is_none() && style_fill_type.is_some_and(|t| !matches!(t, 0..=2)) {
+            if let Some(RecordTransparency::Mask(m @ (Fill::Pattern(_), _))) = &record_transparency
+            {
+                mask = Some(m.clone());
+            }
+        }
+        // A fountain transparency the style string names without nodes
+        // this reader takes is the fountain its record names, not the
+        // mean of its two amounts drawn uniform (#3095).
+        if mask.is_none() && style_fill_type == Some(2) {
+            if let Some(RecordTransparency::Mask(m @ (Fill::Fountain(_), _))) = &record_transparency
+            {
+                mask = Some(m.clone());
+            }
+        }
         if opacity >= 1.0 && mask.is_none() {
             if let Some(o) = style_string.as_deref().and_then(text::object_opacity) {
                 opacity = o;
@@ -4467,6 +4594,23 @@ impl<'a> Ctx<'a> {
                 // The style string names a uniform transparency without its
                 // amount; the record in argument 8000 holds it (#1706).
                 opacity = o;
+            }
+        }
+        // The style string does not give the transparency (a pattern
+        // transparency, a fountain of colours other than greys, or no
+        // transparency section at all, #2960): the record's own type,
+        // amount and fill.
+        // An empty transparency section is no transparency (#1706).
+        if opacity >= 1.0
+            && mask.is_none()
+            && !style_string
+                .as_deref()
+                .is_some_and(text::object_transparency_is_empty)
+        {
+            match record_transparency {
+                Some(RecordTransparency::Mask(m)) => mask = Some(m),
+                Some(RecordTransparency::Opacity(o)) => opacity = o,
+                None => {}
             }
         }
 
@@ -4569,7 +4713,18 @@ impl<'a> Ctx<'a> {
                 },
             );
         }
-        if let Some((mask, target)) = mask {
+        if let Some((mut mask, target)) = mask {
+            // A pattern transparency's tiles start at the bottom-left
+            // corner of the object's box, at their own size (#2960: the
+            // tiles of the file's bitmap and vector patterns lie so in its
+            // page preview; from the page's corner they did not).
+            if let Fill::Pattern(p) = &mut mask {
+                use tracedraw_core::geometry::Shape as _;
+                let b = (shape.transform * shape.local_path()).bounding_box();
+                let pl = p.placement_mut();
+                pl.offset_x = b.x0;
+                pl.offset_y = b.y0;
+            }
             shape
                 .effects
                 .push(tracedraw_core::live::Effect::Transparency {
@@ -4840,6 +4995,9 @@ impl<'a> Ctx<'a> {
                             if matches!(shape.kind, ShapeKind::Bitmap { .. }) {
                                 shape.picture_inks = Some(Box::new(inks));
                             }
+                        }
+                        if let Some(palette) = self.pending_mono.take() {
+                            colour_mono_bitmap(&mut shape, palette);
                         }
                         if let Some(crop) = self.pending_crop.take() {
                             shape = crop_to_clip_frame(shape, crop, ids);
@@ -5372,6 +5530,67 @@ impl<'a> Ctx<'a> {
         Some(1.0 - percent / 100.0)
     }
 
+    /// A version 16+ object's transparency record on its own (#2960, a
+    /// version 18 file with each kind of transparency): argument 8000
+    /// holds the record tagged 1300 of 117 bytes read for versions 13 and
+    /// 15 (`read_graded_transparency_v15`), the byte 5 and the record's
+    /// number first, the transparency's type (u16) at byte 37 of the
+    /// body, its start amount in percent (f64) at 61 and a fill id at 105.
+    /// Type 0 is a uniform transparency of the start amount (the fill id
+    /// then names the object's own fill, as in version 11); otherwise the
+    /// fill id names the transparency's fill: a fountain of greys (as in
+    /// version 15), whose lightness is the opacity, or a pattern (types
+    /// 7, 9 and 10: two-colour, bitmap and vector), whose lightness runs
+    /// the transparency from the end amount (at f64 69; black) to the
+    /// start amount (white): 100 and 0 in the file of #2960, whose page
+    /// preview shows the pattern's light parts see-through and its dark
+    /// ones nearly solid, at the pattern's own tile size. Versions 16 and later
+    /// mostly say the same in the object's style string, which wins;
+    /// this is for a style string that does not. `None` for other
+    /// records.
+    fn read_transparency_record_v16(
+        &mut self,
+        d: &'a [u8],
+        arg: Arg,
+    ) -> Option<RecordTransparency> {
+        if self.v < 16 || arg.end.checked_sub(arg.off)? < 8 + 117 {
+            return None;
+        }
+        let data = d.get(..arg.end)?;
+        let mut r = self.reader_at(data, arg.off);
+        if r.u32()? != 0x514 || r.u32()? != 117 || r.u8()? != 5 {
+            return None;
+        }
+        let body = r.pos - 1;
+        let kind = self.reader_at(data, body + 37).u16()?;
+        let percent = self.reader_at(data, body + 61).f64()?;
+        let end = self.reader_at(data, body + 69).f64()?;
+        let fill_id = self.reader_at(data, body + 105).u32()?;
+        if kind == 0 {
+            return ((0.0..=100.0).contains(&percent) && percent > 0.0)
+                .then(|| RecordTransparency::Opacity(1.0 - percent / 100.0));
+        }
+        match self.fills.get(&fill_id).map(|f| &f.fill) {
+            Some(Fill::Fountain(f)) => Some(RecordTransparency::Mask((grey_mask(f), 2))),
+            Some(Fill::Pattern(p)) => {
+                let (start, end) = (percent, end);
+                if !(0.0..=100.0).contains(&start) || !(0.0..=100.0).contains(&end) {
+                    return None;
+                }
+                Some(RecordTransparency::Mask((
+                    Fill::Pattern(pattern_mask(p, start, end)),
+                    2,
+                )))
+            }
+            _ => {
+                self.report.warn(format!(
+                    "transparency of type {kind} names fill {fill_id}, not a fountain or pattern; object drawn opaque"
+                ));
+                None
+            }
+        }
+    }
+
     fn read_opacity(&mut self, d: &'a [u8], arg: Arg) -> Option<f64> {
         let data = d.get(..arg.end)?;
         let mut r = self.reader_at(data, arg.off);
@@ -5602,6 +5821,7 @@ impl<'a> Ctx<'a> {
                     sharpness,
                     complex: None,
                     twist: 0.0,
+                    bend: 0.0,
                 })
             }
             // Bitmap: two corners, 32 unknown bytes, image id, a version
@@ -5625,6 +5845,7 @@ impl<'a> Ctx<'a> {
                 };
                 self.pending_cmyk = bm.cmyk;
                 self.pending_inks = bm.inks.clone();
+                self.pending_mono = bm.mono;
                 Some(ShapeKind::Bitmap {
                     rect,
                     width_px: bm.width_px,
@@ -5679,6 +5900,7 @@ impl<'a> Ctx<'a> {
                 };
                 self.pending_cmyk = bm.cmyk;
                 self.pending_inks = bm.inks.clone();
+                self.pending_mono = bm.mono;
                 Some(ShapeKind::Bitmap {
                     rect,
                     width_px: bm.width_px,
@@ -5796,7 +6018,11 @@ fn decode_bitmap(
     let mut r = Reader::new(d, v < 6);
     r.pos = h.body;
     let mut palette: Vec<[u8; 3]> = Vec::new();
-    if bpp < 24 && h.model != 5 && h.model != 6 {
+    // Model 99 is a grey picture of one byte per pixel with no palette,
+    // as transparency bitmaps and masks are stored (#2691); a palette is
+    // only read where the chunk has room for it before the pixels.
+    let palette_room = d.len().saturating_sub(h.body) >= h.size as usize + 4;
+    if bpp < 24 && h.model != 5 && h.model != 6 && h.model != BITMAP_GREY_MASK && palette_room {
         r.skip(2);
         let n = r.u16().unwrap_or(0) as usize;
         let n = n.min(r.remaining() / 3).min(256);
@@ -5887,8 +6113,58 @@ fn decode_bitmap(
             png: png.into(),
             cmyk,
             inks,
+            mono: (bpp == 1).then(|| {
+                let at = |i: usize, dflt: u8| palette.get(i).copied().unwrap_or([dflt; 3]);
+                [at(0, 0), at(1, 255)]
+            }),
         },
     )))
+}
+
+/// A black and white (1-bit) picture takes the colours its object was
+/// given, as the other program colours such a picture: the outline
+/// colour for its dark pixels, the fill colour for its light ones, each
+/// kept from the picture when not set. Neither is drawn as an outline
+/// or a fill of its own: a coloured 1-bit picture opened black, framed
+/// by an outline of the colour it had (#3410).
+fn colour_mono_bitmap(shape: &mut Shape, palette: [[u8; 3]; 2]) {
+    let ShapeKind::Bitmap { png, .. } = &mut shape.kind else {
+        return;
+    };
+    let ink = shape.stroke.as_ref().map(|s| s.color.to_rgb8());
+    let paper = match &shape.fill {
+        Fill::Solid(c) => Some(c.to_rgb8()),
+        _ => None,
+    };
+    shape.stroke = None;
+    shape.fill = Fill::None;
+    if ink.is_none() && paper.is_none() {
+        return;
+    }
+    let luma = |c: [u8; 3]| 299 * c[0] as u32 + 587 * c[1] as u32 + 114 * c[2] as u32;
+    // The darker palette colour is the picture's ink.
+    let dark = usize::from(luma(palette[1]) < luma(palette[0]));
+    let mut to = palette;
+    if let Some(c) = ink {
+        to[dark] = c;
+    }
+    if let Some(c) = paper {
+        to[1 - dark] = c;
+    }
+    let Ok(pm) = tiny_skia::Pixmap::decode_png(png) else {
+        return;
+    };
+    let mut rgba = Vec::with_capacity(pm.data().len());
+    for p in pm.pixels() {
+        let c = p.demultiply();
+        let rgb = [c.red(), c.green(), c.blue()];
+        let near = |q: [u8; 3]| -> u32 {
+            (0..3).map(|i| (rgb[i] as i32 - q[i] as i32).unsigned_abs()).sum()
+        };
+        let i = usize::from(near(palette[1]) < near(palette[0]));
+        rgba.extend_from_slice(&[to[i][0], to[i][1], to[i][2], c.alpha()]);
+    }
+    *png = encode_png(pm.width(), pm.height(), &rgba).into();
 }
 
 /// `f` over `items` in order, on up to four threads where the platform
@@ -6051,6 +6327,10 @@ fn bitmap_mask(d: &[u8], width: u32, height: u32) -> Option<Vec<u8>> {
 
 /// The bitmap colour model of CMYK images.
 const BITMAP_CMYK: u32 = 3;
+
+/// The bitmap colour model of grey pictures with no palette: the masks
+/// of pictures and the pictures of bitmap transparencies (#2691).
+const BITMAP_GREY_MASK: u32 = 99;
 
 /// One CMYK pixel (ink bytes, 255 = full ink) as opaque RGBA: through
 /// `lut` when given, else one minus the ink times one minus the black.
@@ -6586,6 +6866,7 @@ fn contour_effect(
         offset,
         outside,
         to_center: false,
+        both: false,
         fill_to,
         outline_to,
         fill_end_to: None,
@@ -7714,6 +7995,79 @@ fn paragraph_spacing(style: &text::RunStyle, base: &ParagraphStyle) -> Paragraph
 /// A transparency mask and the part of the object it applies to.
 type Mask = (Fill, u8);
 
+/// A pattern as a transparency mask (#2960): each colour becomes the
+/// grey of its opacity, the transparency running from `end` percent for
+/// black to `start` percent for white by the colour's lightness.
+fn pattern_mask(
+    p: &tracedraw_core::style::Pattern,
+    start: f64,
+    end: f64,
+) -> tracedraw_core::style::Pattern {
+    use tracedraw_core::style::Pattern;
+    let opacity = move |light: f32| {
+        let t = end + (start - end) * f64::from(light.clamp(0.0, 1.0));
+        (1.0 - t / 100.0).clamp(0.0, 1.0) as f32
+    };
+    let lightness = |c: Color| {
+        let [r, g, b] = c.to_rgb_f32_builtin();
+        r * 0.2126 + g * 0.7152 + b * 0.0722
+    };
+    let grey = move |c: Color| Color::Gray {
+        v: opacity(lightness(c)),
+    };
+    let mut p = p.clone();
+    match &mut p {
+        Pattern::TwoColor { front, back, .. } => {
+            *front = grey(*front);
+            *back = grey(*back);
+        }
+        Pattern::Vector { shapes, .. } => {
+            for s in shapes {
+                tracedraw_core::color_convert::map_shape_colors(s, &grey);
+            }
+        }
+        Pattern::Bitmap {
+            png,
+            width_px,
+            height_px,
+            ..
+        } => {
+            if let Ok(pm) = tiny_skia::Pixmap::decode_png(png) {
+                let mut rgba = pm.data().to_vec();
+                for px in rgba.chunks_exact_mut(4) {
+                    // Premultiplied: a clear pixel lets the background through.
+                    let a = f32::from(px[3]) / 255.0;
+                    let un = |v: u8| {
+                        if a > 0.0 {
+                            f32::from(v) / 255.0 / a
+                        } else {
+                            0.0
+                        }
+                    };
+                    let l = un(px[0]) * 0.2126 + un(px[1]) * 0.7152 + un(px[2]) * 0.0722;
+                    let v = (opacity(l) * a * 255.0).round() as u8;
+                    px[0] = v;
+                    px[1] = v;
+                    px[2] = v;
+                    px[3] = 255;
+                }
+                *png = encode_png(pm.width(), pm.height(), &rgba).into();
+                *width_px = pm.width();
+                *height_px = pm.height();
+            }
+        }
+    }
+    p
+}
+
+/// What a version 16+ transparency record says on its own (#2960).
+enum RecordTransparency {
+    /// A fountain or pattern whose lightness is the opacity.
+    Mask(Mask),
+    /// A uniform transparency.
+    Opacity(f64),
+}
+
 /// A vector pattern as a transparency mask over `shape`: one tile over
 /// the shape's box on the page.
 fn pattern_mask_over(shape: &Shape, mut mask: Fill) -> tracedraw_core::live::Effect {
@@ -7745,6 +8099,54 @@ fn grey_mask(f: &tracedraw_core::Fountain) -> Fill {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+
+    /// A black and white picture coloured in the other program (yellow
+    /// outline, blue fill) opens with those colours in its pixels and no
+    /// outline round it; one with neither keeps its black and white
+    /// (#3410).
+    #[test]
+    fn a_coloured_one_bit_picture_keeps_its_colours() {
+        let png = encode_png(2, 1, &[0, 0, 0, 255, 255, 255, 255, 255]);
+        let picture = |stroke: Option<Color>, fill: Fill| {
+            let mut s = Shape::new(
+                tracedraw_core::ShapeId(1),
+                ShapeKind::Bitmap {
+                    rect: Rect::new(0.0, 0.0, 2.0, 1.0),
+                    width_px: 2,
+                    height_px: 1,
+                    png: png.clone().into(),
+                    fx: None,
+                },
+            );
+            s.stroke = stroke.map(|c| tracedraw_core::Stroke {
+                color: c,
+                ..Default::default()
+            });
+            s.fill = fill;
+            colour_mono_bitmap(&mut s, [[0, 0, 0], [255, 255, 255]]);
+            let ShapeKind::Bitmap { png, .. } = &s.kind else {
+                panic!("not a picture")
+            };
+            let pm = tiny_skia::Pixmap::decode_png(png).expect("png");
+            let px: Vec<[u8; 3]> = pm
+                .pixels()
+                .iter()
+                .map(|p| [p.red(), p.green(), p.blue()])
+                .collect();
+            (s, px)
+        };
+        let yellow = Color::rgb8(255, 230, 0);
+        let blue = Color::rgb8(0, 0, 200);
+        let (s, px) = picture(Some(yellow), Fill::Solid(blue));
+        assert_eq!(px, vec![[255, 230, 0], [0, 0, 200]]);
+        assert!(s.stroke.is_none() && matches!(s.fill, Fill::None));
+        // The outline colour alone: the paper stays white.
+        let (_, px) = picture(Some(yellow), Fill::None);
+        assert_eq!(px, vec![[255, 230, 0], [255, 255, 255]]);
+        let (s, px) = picture(None, Fill::None);
+        assert_eq!(px, vec![[0, 0, 0], [255, 255, 255]]);
+        assert!(s.stroke.is_none());
+    }
 
     /// The indent record of #2669: left 1.5 mm, first line 1 mm from the
     /// frame, right 0. The first line starts at 1 mm (left + first-line
@@ -10230,6 +10632,44 @@ pub(crate) mod tests {
             .all(|p| tracedraw_core::SharedBytes::ptr_eq(p, pictures[0])));
     }
 
+    /// A picture of colour model 99 (one grey byte per pixel, no palette),
+    /// as a bitmap transparency stores its picture, is read as greys; it
+    /// was dropped, so a picture fill naming it had no image and its
+    /// object came in opaque (#2691, a version 22 file).
+    #[test]
+    fn grey_model_99_bitmaps_have_no_palette() {
+        // 2 x 2, model 99, 8 bpp, stride 4: bottom row 10, 200; top 0, 255.
+        let mut bmp = u32s(&[5]);
+        bmp.extend_from_slice(&[0; 50]);
+        bmp.extend_from_slice(&u32s(&[BITMAP_GREY_MASK, 1, 2, 2, 1, 8, 4, 8]));
+        bmp.extend_from_slice(&[0; 32]);
+        bmp.extend_from_slice(&[10, 200, 0, 0, 0, 255, 0, 0]);
+        let mut c = i32s(&[0, 0, 254000, 254000]);
+        c.extend_from_slice(&[0; 32]);
+        c.extend_from_slice(&u32s(&[5]));
+        c.extend_from_slice(&[0; 20]);
+        c.extend_from_slice(&u32s(&[0]));
+        let obj = list(
+            b"obj ",
+            &chunk(b"loda", &loda(OBJ_BITMAP, &[(ARG_COORDS, c)])),
+        );
+        let body = [
+            chunk(b"mcfg", &mcfg(13, 2_540_000, 2_540_000)),
+            chunk(b"bmp ", &bmp),
+            list(b"page", &list(b"layr", &obj)),
+        ]
+        .concat();
+        let (doc, rep) = parse(&riff(b"CDRD", &body), 13);
+        assert_eq!(rep.shapes, 1, "{:?}", rep.warnings);
+        let ShapeKind::Bitmap { png, .. } = &first_shape(&doc).kind else {
+            panic!("a bitmap");
+        };
+        let raw = raw_rows(png);
+        // Top row first: 0 and 255, then 10 and 200, as opaque greys.
+        assert_eq!(&raw[1..9], &[0, 0, 0, 255, 255, 255, 255, 255]);
+        assert_eq!(&raw[10..18], &[10, 10, 10, 255, 200, 200, 200, 255]);
+    }
+
     #[test]
     fn bitmap_masks_make_pixels_clear() {
         // 2 x 2, 24 bpp, then a mask block: "RI", its length, 4 zero bytes,
@@ -11432,6 +11872,7 @@ pub(crate) mod tests {
                 sharpness: 0.0,
                 complex: None,
                 twist: 0.0,
+                bend: 0.0,
             },
         );
         let [a, b] = blend_nodes(&poly).expect("nodes");
@@ -11998,6 +12439,71 @@ pub(crate) mod tests {
         }
     }
 
+    /// #2886: a Persian word whose last letter's style gives the Latin
+    /// slot 24 pt and the right-to-left (`RTL`) slot 154 pt, as the cover
+    /// of the report does: the letter is drawn at 154 pt like the rest of
+    /// the word, one run that joins, and Latin letters keep the Latin
+    /// size. The reader took the Latin size for all letters and cut the
+    /// word apart at 24 pt.
+    #[test]
+    fn right_to_left_letters_take_the_rtl_font_of_their_style() {
+        let v = 16u16;
+        let mut t = u32s(&[1]); // frame
+        t.extend_from_slice(&[0; 32]);
+        t.extend_from_slice(&u16s(&[1600]));
+        t.extend_from_slice(&[0; 3]);
+        t.extend_from_slice(&u32s(&[1, 1])); // one frame, id 1
+        t.extend_from_slice(&[0; 48]);
+        t.extend_from_slice(&u32s(&[0])); // not on a path
+        t.extend_from_slice(&[0; 8]);
+        t.extend_from_slice(&u32s(&[1])); // one paragraph
+        t.extend_from_slice(&u32s(&[0]));
+        t.push(0);
+        t.push(0); // frame flag byte: not 1
+        t.extend_from_slice(&style_string(
+            v,
+            r#"{"character":{"RTL":{"font":"Calibri","size":"543325"},"latin":{"font":"Calibri","size":"543325"}}}"#,
+        ));
+        t.extend_from_slice(&u32s(&[1])); // one style record
+        t.extend_from_slice(&u16s(&[0, 1, 0]));
+        t.extend_from_slice(&style_string(
+            v,
+            r#"{"character":{"RTL":{"font":"Calibri","size":"543325"},"latin":{"font":"Calibri","size":"84667"}}}"#,
+        ));
+        let text = "بوی ab";
+        let n = text.chars().count();
+        t.extend_from_slice(&u32s(&[n as u32]));
+        for i in 0..n {
+            t.extend_from_slice(&u16s(&[0]));
+            t.push(if i >= 2 { 0 } else { 0xfe });
+            t.extend_from_slice(&[0; 5]);
+        }
+        let bytes = utf16(text);
+        t.extend_from_slice(&u32s(&[bytes.len() as u32]));
+        t.extend_from_slice(&bytes);
+        t.push(0);
+        let mut coords = vec![0u8; 4];
+        coords.extend_from_slice(&i32s(&[508_000, 254_000]));
+        let (doc, rep) = text_doc(
+            v,
+            b"CDRG",
+            Vec::new(),
+            OBJ_PARAGRAPH_TEXT,
+            &[(ARG_COORDS, coords)],
+            t,
+        );
+        assert_eq!(rep.shapes, 1, "{:?}", rep.warnings);
+        let ShapeKind::Text { spans, .. } = &first_shape(&doc).kind else {
+            panic!("{:?}", first_shape(&doc).kind);
+        };
+        assert_eq!(spans.len(), 2, "{spans:?}");
+        assert_eq!(spans[0].text, "بوی ");
+        assert!((spans[0].size_pt - 154.0).abs() < 0.1, "{spans:?}");
+        assert_eq!(spans[0].font_family, "Calibri");
+        assert_eq!(spans[1].text, "ab");
+        assert!((spans[1].size_pt - 24.0).abs() < 0.1, "{spans:?}");
+    }
+
     /// Paragraph text of layout 1500 in a version 21 file (#1833, saved by
     /// the program that wrote the samples): each paragraph holds one style
     /// string, its default, as in layout 1700. The reader took a second
@@ -12132,6 +12638,63 @@ pub(crate) mod tests {
         match &first_shape(&doc).kind {
             ShapeKind::Text { origin, .. } => {
                 assert!(origin.x.abs() < 1e-9 && origin.y.abs() < 1e-9, "{origin:?}")
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    /// Artistic text starting with a paragraph break shows its letters
+    /// on its origin, not a line below it (#3215).
+    #[test]
+    fn artistic_text_starting_with_a_break_keeps_its_letters_on_the_origin() {
+        let v = 18u16;
+        let mut t = u32s(&[0xffff_ffff]);
+        t.extend_from_slice(&[0; 32]);
+        t.extend_from_slice(&u16s(&[1700]));
+        t.extend_from_slice(&[0; 3]);
+        t.extend_from_slice(&u32s(&[1, 1]));
+        t.extend_from_slice(&[0; 48]);
+        t.extend_from_slice(&u32s(&[0]));
+        t.extend_from_slice(&[0; 8]);
+        t.extend_from_slice(&u32s(&[1]));
+        t.extend_from_slice(&u32s(&[0]));
+        t.push(0);
+        t.push(0);
+        t.extend_from_slice(&style_string(
+            v,
+            r#"{"character":{"latin":{"font":"Arial","size":"128819","weight":"400","italic":"0"}}}"#,
+        ));
+        t.extend_from_slice(&u32s(&[0]));
+        t.extend_from_slice(&u32s(&[3]));
+        for _ in 0..3 {
+            t.extend_from_slice(&u16s(&[0]));
+            t.push(0xfe);
+            t.extend_from_slice(&[0; 5]);
+        }
+        t.extend_from_slice(&u32s(&[3]));
+        t.extend_from_slice(b"\rHi");
+        t.push(0);
+        let obj = list(
+            b"obj ",
+            &[
+                chunk(b"bbox", &i32s(&[0, 100_000, 100_000, 0])),
+                chunk(b"loda", &loda(OBJ_ARTISTIC_TEXT, &[])),
+                chunk(b"trfd", &trfd(v, [1.0, 0.0, 0.0, 0.0, 1.0, 0.0])),
+                chunk(b"txsm", &t),
+            ]
+            .concat(),
+        );
+        let body = [
+            chunk(b"mcfg", &mcfg(v, 2_540_000, 2_540_000)),
+            list(b"page", &list(b"layr", &obj)),
+        ]
+        .concat();
+        let (doc, rep) = parse(&riff(b"CDRI", &body), v);
+        assert_eq!(rep.shapes, 1, "{:?}", rep.warnings);
+        match &first_shape(&doc).kind {
+            ShapeKind::Text { spans, .. } => {
+                let text: String = spans.iter().map(|s| s.text.as_str()).collect();
+                assert_eq!(text, "Hi");
             }
             other => panic!("{other:?}"),
         }
@@ -14225,7 +14788,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn arrowheads_are_classified_from_their_outline() {
+    fn arrowheads_keep_their_own_outline_size_and_place() {
         let triangle = arrw(
             5,
             &[(0, 0), (100, 50), (0, 100), (0, 0)],
@@ -14305,21 +14868,35 @@ pub(crate) mod tests {
             let s = ctx.outlines[&id].stroke.clone().expect("stroke");
             (s.start_arrow, s.end_arrow)
         };
-        assert_eq!(arrows(1), (Arrowhead::Arrow, Arrowhead::Diamond));
-        assert_eq!(arrows(2), (Arrowhead::Square, Arrowhead::Bar));
-        assert_eq!(arrows(3), (Arrowhead::Circle, Arrowhead::OpenArrow));
-        assert_eq!(arrows(4), (Arrowhead::None, Arrowhead::None));
-        match arrows(5).0 {
-            Arrowhead::Custom { path, name } => {
-                use tracedraw_core::geometry::Shape as _;
-                assert_eq!(name, "Arrowhead 11");
-                let b = path.bounding_box();
-                // Normalised: one unit tall, tip at x = 0, body towards -x.
-                assert!((b.height() - 1.0).abs() < 1e-9, "{b:?}");
-                assert!(b.x1.abs() < 1e-9 && (b.x0 + 1.0).abs() < 1e-9, "{b:?}");
-            }
+        // Each head is the file's own outline, at the file's size and
+        // place (#3436): head units over 127 000 per outline width, in
+        // head space of 4 outline widths a unit. They were sorted into
+        // presets drawn at our size.
+        use tracedraw_core::geometry::Shape as _;
+        let unit = 127_000.0 * tracedraw_core::style::HEAD_SIZE_PER_WIDTH;
+        let custom = |a: Arrowhead| match a {
+            Arrowhead::Custom { path, name } => (path.bounding_box(), name),
             other => panic!("{other:?}"),
-        }
+        };
+        let (b, name) = custom(arrows(1).0);
+        assert_eq!(name, "Arrowhead 5");
+        assert!(
+            b.x0.abs() < 1e-12 && (b.x1 - 100.0 / unit).abs() < 1e-12,
+            "{b:?}"
+        );
+        assert!(
+            b.y0.abs() < 1e-12 && (b.y1 - 100.0 / unit).abs() < 1e-12,
+            "{b:?}"
+        );
+        assert_eq!(custom(arrows(1).1).1, "Arrowhead 6");
+        assert_eq!(custom(arrows(2).0).1, "Arrowhead 7");
+        assert_eq!(custom(arrows(2).1).1, "Arrowhead 8");
+        assert_eq!(custom(arrows(3).0).1, "Arrowhead 9");
+        // An open head is stroked one outline width wide.
+        let (b, _) = custom(arrows(3).1);
+        assert!((b.x1 - (100.0 + 63_500.0) / unit).abs() < 1e-3, "{b:?}");
+        assert_eq!(arrows(4), (Arrowhead::None, Arrowhead::None));
+        assert_eq!(custom(arrows(5).0).1, "Arrowhead 11");
         assert!(ctx
             .report
             .warnings
@@ -14371,7 +14948,7 @@ pub(crate) mod tests {
         for c in tree.root.find_all(b"arrx") {
             ctx.read_arrowhead_x(c);
         }
-        assert_eq!(ctx.arrows.get(&1), Some(&Arrowhead::Arrow));
+        assert!(ctx.arrows.get(&1).is_some_and(Arrowhead::is_custom));
         assert!(!ctx.arrows.contains_key(&2));
         assert!(ctx
             .report
@@ -14950,8 +15527,8 @@ pub(crate) mod tests {
             let s = ctx.outlines[&id].stroke.clone().expect("stroke");
             (s.start_arrow, s.end_arrow)
         };
-        assert_eq!(arrows(1), (Arrowhead::Arrow, Arrowhead::None));
-        assert_eq!(arrows(2), (Arrowhead::None, Arrowhead::Arrow));
+        assert!(arrows(1).0.is_custom() && arrows(1).1 == Arrowhead::None);
+        assert!(arrows(2).0 == Arrowhead::None && arrows(2).1.is_custom());
         assert!(ctx.report.warnings.is_empty(), "{:?}", ctx.report.warnings);
     }
 
@@ -15179,6 +15756,46 @@ pub(crate) mod tests {
                 .len(),
             1
         );
+    }
+
+    #[test]
+    fn embedded_packages_keep_their_place_as_a_box() {
+        // #3083: a wrapped file (Object Packager) with no picture.
+        let mut coords = i32s(&[200_000, 100_000]);
+        coords.extend_from_slice(&i32s(&[-100_000, 50_000, 100_000, -50_000]));
+        let name: Vec<u8> = "Embedding 3"
+            .encode_utf16()
+            .chain([0])
+            .flat_map(|u| u.to_le_bytes())
+            .collect();
+        let obj = list(
+            b"obj ",
+            &chunk(
+                b"loda",
+                &loda(OBJ_EMBEDDED, &[(ARG_NAME, name), (ARG_COORDS, coords)]),
+            ),
+        );
+        let ole = crate::ole::tests::compound_named(
+            "\u{1}Ole10Native",
+            &crate::ole::tests::package("New.crv3d"),
+        );
+        let body = [
+            chunk(b"mcfg", &mcfg(12, 2_540_000, 2_540_000)),
+            chunk(b"ole2", &ole),
+            list(b"page", &list(b"layr", &obj)),
+        ]
+        .concat();
+        let (doc, rep) = parse(&riff(b"CDRC", &body), 12);
+        assert_eq!(rep.shapes, 1, "{:?}", rep.warnings);
+        let ShapeKind::Group { children } = &first_shape(&doc).kind else {
+            panic!("{:?}", first_shape(&doc).kind);
+        };
+        let ShapeKind::Rect { rect, .. } = &children[0].kind else {
+            panic!("{:?}", children[0].kind);
+        };
+        assert!((rect.width() - 20.0).abs() < 1e-9 && (rect.height() - 10.0).abs() < 1e-9);
+        assert_eq!(children[0].name.as_deref(), Some("New.crv3d"));
+        assert!(rep.warnings.iter().any(|w| w.contains("New.crv3d")));
     }
 
     #[test]
@@ -16137,6 +16754,327 @@ pub(crate) mod tests {
         ] {
             let (f, _) = read(fill(tail));
             assert!(f.handles.is_none() && f.edge_pad > 0.0, "{f:?}");
+        }
+    }
+
+    /// The 117-byte transparency record of a version 16+ object, as
+    /// versions 13 to 27 lay it out: the byte 5 and the record's number,
+    /// the type (u16) at byte 37 of the body, the start amount in percent
+    /// at 61 and the fill id at 105.
+    fn transparency_record_v16(kind: u16, percent: f64, fill: u32) -> Vec<u8> {
+        transparency_record_v16_to(kind, percent, 0.0, fill)
+    }
+
+    /// [`transparency_record_v16`] with the end amount at byte 69.
+    fn transparency_record_v16_to(kind: u16, percent: f64, end: f64, fill: u32) -> Vec<u8> {
+        let mut b = vec![5u8];
+        b.extend_from_slice(&u32s(&[3]));
+        b.resize(29, 0);
+        b.extend_from_slice(&u32s(&[1]));
+        b.resize(37, 0);
+        b.extend_from_slice(&u16s(&[kind]));
+        b.resize(61, 0);
+        b.extend_from_slice(&f64s(&[percent, end]));
+        b.resize(81, 0);
+        b.extend_from_slice(&u32s(&[2]));
+        b.resize(105, 0);
+        b.extend_from_slice(&u32s(&[fill]));
+        b.resize(117, 0);
+        [u32s(&[0x514, 117]), b].concat()
+    }
+
+    /// #2960: a version 18 file whose objects' style strings do not
+    /// describe their transparency keeps it in argument 8000: a uniform
+    /// one (type 0) as its amount, the others as the fill the record
+    /// names, a fountain of greys or a pattern, whose lightness is the
+    /// opacity. Every kind opened solid.
+    #[test]
+    fn version_18_transparency_records_without_a_style_string_section() {
+        use tracedraw_core::live::Effect;
+        use tracedraw_core::style::{Pattern, PatternTile};
+        let main = riff(b"CDRI", &chunk(b"mcfg", &mcfg(18, 2_540_000, 2_540_000)));
+        let tree = crate::riff::parse(&main).unwrap();
+        let mut ctx = Ctx::new(&main, &tree, 18);
+        let ramp = Fountain {
+            stops: vec![
+                Stop::new(0.0, Color::rgb8(255, 255, 255)),
+                Stop::new(1.0, Color::rgb8(0, 0, 0)),
+            ],
+            ..Default::default()
+        };
+        let two = Fill::Pattern(Pattern::TwoColor {
+            tile: PatternTile::Checker,
+            front: Color::rgb8(0, 0, 0),
+            back: Color::rgb8(255, 255, 255),
+            size_mm: 5.0,
+            placement: Default::default(),
+        });
+        ctx.fills.insert(
+            7,
+            FillDef {
+                fill: Fill::Fountain(ramp),
+            },
+        );
+        ctx.fills.insert(8, FillDef { fill: two.clone() });
+        ctx.fills.insert(
+            9,
+            FillDef {
+                fill: Fill::Solid(Color::rgb8(10, 20, 30)),
+            },
+        );
+        let mut read_to = |kind: u16, percent: f64, end: f64, fill: u32| {
+            // Kept for the reader's lifetime, as file data is.
+            let op: &'static [u8] =
+                Box::leak(transparency_record_v16_to(kind, percent, end, fill).into_boxed_slice());
+            let arg = Arg {
+                ty: ARG_OPACITY,
+                off: 0,
+                end: op.len(),
+            };
+            ctx.read_transparency_record_v16(op, arg)
+        };
+        // Uniform: its amount, whatever the fill (the object's own).
+        assert!(
+            matches!(read_to(0, 40.0, 0.0, 9), Some(RecordTransparency::Opacity(o)) if (o - 0.6).abs() < 1e-9)
+        );
+        assert!(matches!(
+            read_to(0, 40.0, 0.0, 7),
+            Some(RecordTransparency::Opacity(_))
+        ));
+        assert!(read_to(0, 0.0, 0.0, 9).is_none());
+        assert!(read_to(0, 250.0, 0.0, 9).is_none());
+        // A fountain: its greys, white opaque.
+        let Some(RecordTransparency::Mask((Fill::Fountain(f), 2))) = read_to(1, 0.0, 0.0, 7) else {
+            panic!("no fountain mask");
+        };
+        assert_eq!(f.stops[0].color, Color::Gray { v: 1.0 });
+        assert_eq!(f.stops[1].color, Color::Gray { v: 0.0 });
+        // A two-colour pattern: its colours become greys of their opacity,
+        // the transparency running from the end amount for black to the
+        // start amount for white (100 and 0 in the reporter's file: white
+        // see-through, black solid).
+        let Some(RecordTransparency::Mask((
+            Fill::Pattern(Pattern::TwoColor { front, back, .. }),
+            2,
+        ))) = read_to(7, 100.0, 0.0, 8)
+        else {
+            panic!("no two-colour mask");
+        };
+        assert_eq!(
+            (front, back),
+            (Color::Gray { v: 1.0 }, Color::Gray { v: 0.0 })
+        );
+        // Amounts of 30 % for white and 80 % for black.
+        let Some(RecordTransparency::Mask((
+            Fill::Pattern(Pattern::TwoColor { front, back, .. }),
+            _,
+        ))) = read_to(7, 30.0, 80.0, 8)
+        else {
+            panic!("no two-colour mask");
+        };
+        let grey = |c: Color| match c {
+            Color::Gray { v } => v,
+            other => panic!("{other:?}"),
+        };
+        assert!(
+            (grey(front) - 0.2).abs() < 1e-6 && (grey(back) - 0.7).abs() < 1e-6,
+            "{front:?} {back:?}"
+        );
+        // A fill that is neither: opaque, with a warning.
+        assert!(read_to(1, 0.0, 0.0, 9).is_none());
+        assert!(read_to(1, 0.0, 0.0, 99).is_none());
+        assert!(ctx
+            .report
+            .warnings
+            .iter()
+            .any(|w| w.contains("names fill 99")));
+
+        // Through an object: a style string without a transparency
+        // section and a uniform record of 40 %.
+        let rect = |style: &str, op: Vec<u8>| {
+            let style = [u32s(&[1, style.len() as u32]), style.as_bytes().to_vec()].concat();
+            let args = vec![
+                (ARG_OPACITY, op),
+                (ARG_STYLE_STRING, style),
+                (ARG_COORDS, f64s(&[254_000.0, 254_000.0, 1.0, 1.0])),
+            ];
+            let body = [
+                chunk(b"mcfg", &mcfg(18, 2_540_000, 2_540_000)),
+                list(
+                    b"page",
+                    &list(
+                        b"layr",
+                        &list(b"obj ", &chunk(b"loda", &loda(OBJ_RECT, &args))),
+                    ),
+                ),
+            ]
+            .concat();
+            let (doc, rep) = parse(&riff(b"CDRI", &body), 18);
+            assert_eq!(rep.shapes, 1, "{:?}", rep.warnings);
+            first_shape(&doc).clone()
+        };
+        let fill = r#"{"fill":{"type":"1","primaryColor":"RGB255,USER,102,97,143,100,00000000-0000-0000-0000-000000000000"}}"#;
+        let s = rect(fill, transparency_record_v16(0, 40.0, 1));
+        assert!((s.opacity - 0.6).abs() < 1e-9, "{}", s.opacity);
+        assert!(!s
+            .effects
+            .iter()
+            .any(|e| matches!(e, Effect::Transparency { .. })));
+        // An empty transparency section is still none.
+        let s = rect(
+            r#"{"transparency":{}}"#,
+            transparency_record_v16(0, 40.0, 1),
+        );
+        assert_eq!(s.opacity, 1.0);
+        // The style string's own amount wins over the record's.
+        let own = r#"{"transparency":{"fill":{"type":"1"},"uniformTransparency":"0.2"}}"#;
+        let s = rect(own, transparency_record_v16(0, 40.0, 1));
+        assert!((s.opacity - 0.8).abs() < 1e-9, "{}", s.opacity);
+    }
+
+    /// #3095: a fountain transparency in a version 18 file, each kind
+    /// (linear, radial, conical, square), with nodes in greys, in another
+    /// model, or not given in the style string at all (then the record's
+    /// fountain): a graded mask every time, never the object drawn
+    /// uniform or solid.
+    #[test]
+    fn fountain_transparencies_of_every_kind_and_node_model() {
+        use tracedraw_core::live::Effect;
+        let v = 18u16;
+        let ramp = Fill::Fountain(Fountain {
+            stops: vec![
+                Stop::new(0.0, Color::rgb8(255, 255, 255)),
+                Stop::new(0.5, Color::rgb8(128, 128, 128)),
+                Stop::new(1.0, Color::rgb8(0, 0, 0)),
+            ],
+            ..Default::default()
+        });
+        let read = |style: &str| {
+            let style = [u32s(&[1, style.len() as u32]), style.as_bytes().to_vec()].concat();
+            let args = vec![
+                (ARG_OPACITY, transparency_record_v16(1, 0.0, 5)),
+                (ARG_STYLE_STRING, style),
+                (ARG_COORDS, f64s(&[254_000.0, 254_000.0, 1.0, 1.0])),
+            ];
+            let obj = list(b"obj ", &chunk(b"loda", &loda(OBJ_RECT, &args)));
+            let body = [
+                chunk(b"mcfg", &mcfg(v, 2_540_000, 2_540_000)),
+                chunk(b"fild", &crate::write::fild_of_version(v, 5, &ramp)),
+                list(b"page", &list(b"layr", &obj)),
+            ]
+            .concat();
+            let (doc, rep) = parse(&riff(b"CDRJ", &body), v);
+            assert_eq!(rep.shapes, 1, "{:?}", rep.warnings);
+            first_shape(&doc).clone()
+        };
+        let mask = |s: &Shape| {
+            s.effects.iter().find_map(|e| match e {
+                Effect::Transparency {
+                    mask: Fill::Fountain(f),
+                    ..
+                } => Some(f.clone()),
+                _ => None,
+            })
+        };
+        let grey = |c: Color| c.to_rgb_f32_builtin()[1];
+        let fill = r#""fill":{"type":"1","primaryColor":"RGB255,USER,102,97,143,100,00000000-0000-0000-0000-000000000000"}"#;
+        let node = |model: &str, v: u8| match model {
+            "GRAY" => format!("GRAY255,USER,{v},100,00000000-0000-0000-0000-000000000000"),
+            _ => format!("RGB255,USER,{v},{v},{v},100,00000000-0000-0000-0000-000000000000"),
+        };
+        for (code, kind) in [
+            (1, FountainKind::Linear),
+            (2, FountainKind::Radial),
+            (3, FountainKind::Conical),
+            (4, FountainKind::Square),
+        ] {
+            for model in ["GRAY", "RGB"] {
+                let style = format!(
+                    r#"{{"transparency":{{"fill":{{"type":"2","fountainType":"{code}","angle":"0","primaryColor":"{}","secondaryColor":"{}","xScale":"1","yScale":"1","xCenterOffset":"0","yCenterOffset":"0"}},"startTransparency":"0","endTransparency":"1"}},{fill}}}"#,
+                    node(model, 255),
+                    node(model, 0),
+                );
+                let s = read(&style);
+                assert_eq!(s.opacity, 1.0, "{model} {code}");
+                let f = mask(&s).unwrap_or_else(|| panic!("{model} {code}: {:?}", s.effects));
+                assert_eq!(f.kind, kind, "{model} {code}");
+                // Graded from clear to opaque (a radial run is stored
+                // from its rim, so its stops come the other way round).
+                let (a, b) = (grey(f.stops[0].color), grey(f.stops.last().unwrap().color));
+                assert!((a - b).abs() > 0.99, "{model} {code}: {:?}", f.stops);
+            }
+        }
+        // The style string names a fountain but gives no nodes: the
+        // record's fountain, mid node and all, not 50 % uniform.
+        let s = read(&format!(
+            r#"{{"transparency":{{"fill":{{"type":"2"}},"startTransparency":"0","endTransparency":"1"}},{fill}}}"#
+        ));
+        assert_eq!(s.opacity, 1.0);
+        let f = mask(&s).unwrap_or_else(|| panic!("{:?}", s.effects));
+        assert_eq!(f.stops.len(), 3, "{:?}", f.stops);
+        assert!((grey(f.stops[1].color) - 128.0 / 255.0).abs() < 0.02, "{:?}", f.stops);
+    }
+
+    /// #2960: an object's vector pattern transparency read from its
+    /// record: the pattern at its own tile size from the bottom-left
+    /// corner of the object's box, its colours the greys of their opacity.
+    #[test]
+    fn an_object_with_a_vector_pattern_transparency_record() {
+        use tracedraw_core::live::Effect;
+        let v = 27u16;
+        let read = |style: &str| {
+            let pattern = vector_pattern_fild_v27(
+                5,
+                (254_000, 254_000),
+                [-200_000, 200_000, 200_000, -200_000],
+                19,
+            );
+            let style = [u32s(&[1, style.len() as u32]), style.as_bytes().to_vec()].concat();
+            let args = vec![
+                (ARG_OPACITY, transparency_record_v16(10, 0.0, 5)),
+                (ARG_STYLE_STRING, style),
+                (ARG_COORDS, f64s(&[254_000.0, 254_000.0, 1.0, 1.0])),
+            ];
+            let obj = list(b"obj ", &chunk(b"loda", &loda(OBJ_RECT, &args)));
+            let body = [
+                chunk(b"mcfg", &mcfg(v, 2_540_000, 2_540_000)),
+                chunk(b"vpat", &vpat_with_a_rectangle(19)),
+                chunk(b"fild", &pattern),
+                list(b"page", &list(b"layr", &obj)),
+            ]
+            .concat();
+            let (doc, rep) = parse(&riff(b"CDRU", &body), v);
+            assert_eq!(rep.shapes, 1, "{:?}", rep.warnings);
+            first_shape(&doc).clone()
+        };
+        let fill = r#""fill":{"type":"1","primaryColor":"RGB255,USER,102,97,143,100,00000000-0000-0000-0000-000000000000"}"#;
+        // No transparency section, and a section naming a vector pattern
+        // (type 10) with its two amounts, which read as their mean before.
+        for style in [
+            format!("{{{fill}}}"),
+            format!(
+                r#"{{"transparency":{{"fill":{{"type":"10"}},"startTransparency":"0","endTransparency":"1"}},{fill}}}"#
+            ),
+        ] {
+            let s = read(&style);
+            assert_eq!(s.opacity, 1.0, "{style}");
+            let b = s.bounds();
+            // At the tile's own size, from the box's bottom-left corner;
+            // the drawing's colours turned into the greys of their opacity.
+            let placed = s.effects.iter().any(|e| {
+                matches!(
+                    e,
+                    Effect::Transparency {
+                        mask: Fill::Pattern(tracedraw_core::style::Pattern::Vector { placement, shapes, .. }),
+                        target: 2,
+                        ..
+                    } if (placement.offset_x - b.x0).abs() < 1e-6
+                        && (placement.offset_y - b.y0).abs() < 1e-6
+                        && placement.size.is_none()
+                        && shapes.iter().all(|s| matches!(s.fill, Fill::Solid(Color::Gray { .. }) | Fill::None))
+                )
+            });
+            assert!(placed, "{style}: {:?}", s.effects);
         }
     }
 }

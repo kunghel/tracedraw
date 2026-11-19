@@ -426,6 +426,15 @@ pub fn main_window_builder(settings: &Settings, plain: bool) -> egui::ViewportBu
         .with_maximized(settings.window_maximized && !plain)
         .with_title("TraceDraw")
         .with_app_id(APP_ID)
+        .with_icon(window_icon())
+}
+
+/// The window's icon, TraceDraw's own. Left unset, eframe gave the window
+/// egui's icon, which the Windows taskbar showed in place of the one in
+/// the program file (#3244).
+pub fn window_icon() -> std::sync::Arc<egui::IconData> {
+    let png = include_bytes!("../../../assets/icon/tracedraw-256.png");
+    std::sync::Arc::new(eframe::icon_data::from_png_bytes(png).unwrap_or_default())
 }
 
 /// The window's application id: the Wayland `app_id` and the X11
@@ -752,6 +761,18 @@ mod eframe_window_start;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The window carries TraceDraw's own icon, so the Windows taskbar of
+    /// the portable build shows it and not egui's (#3244).
+    #[test]
+    fn the_window_has_tracedraws_icon() {
+        let icon = window_icon();
+        assert_eq!((icon.width, icon.height), (256, 256));
+        assert_eq!(icon.rgba.len(), 256 * 256 * 4);
+        let settings = Settings::default();
+        let b = main_window_builder(&settings, true);
+        assert_eq!(b.icon.as_deref(), Some(&*icon));
+    }
 
     /// The window's application id is the one the Linux desktop file
     /// names (its file name and `StartupWMClass`), so docks show its icon

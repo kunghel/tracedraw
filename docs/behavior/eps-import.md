@@ -12,10 +12,17 @@ export (see `export.md`, AI files), is run with the format's operators
 defined first in PostScript: paths (`m`, `l`, `L`, `c`, `C`, `v`, `V`,
 `y`, `Y`), painting (`f`, `F`, `s`, `S`, `b`, `B`, `n`, `N`, with the
 fill and outline colours kept apart), compound paths (`*u`, `*U`),
-clipping groups (`q`, `W`, `Q`), groups (`u`, `U`), process and grey
-colours (`k`, `K`, `g`, `G`), outline settings and layers; operators
-beyond those are reported as undefined and skipped (#1728,
-`ai::tests::classic_ai_reads_back_with_its_page_and_objects`). A file that is not PostScript
+clipping groups (`q`, `W`, `Q`), groups (`u`, `U`: the objects between
+them become a group, one object staying as it is), process, grey and
+RGB colours (`k`, `K`, `g`, `G`, `Xa`, `XA`) and custom colours (`x`,
+`X`, and `Xx`, `XX` with their type, 0 CMYK or 1 RGB; the name is not
+kept, the tint, 0 for the whole colour to 1 for none, lightens the
+colour toward white), outline settings and layers; operators beyond
+those are reported as undefined and skipped (#1728,
+`ai::tests::classic_ai_reads_back_with_its_page_and_objects`; colours
+and groups as tracing programs write them, d#2949,
+`eps_import::tests::classic_ai_rgb_and_custom_colours_and_groups`:
+before, every object of such a file came in black and ungrouped). A file that is not PostScript
 (a `.prn` file in a printer's own language, for one) is refused with a
 message. The file is run by
 a PostScript interpreter (`crates/io/src/eps_import.rs`) that records
@@ -44,7 +51,13 @@ what the program paints; no external PostScript engine is involved.
   line width, caps, joins, dashes scaled by the CTM; `clip`, `eoclip`,
   `rectclip`, `initclip`, `clippath`; all matrix operators;
   `gsave`/`grestore` restore the current path too, so
-  `gsave fill grestore stroke` strokes the same path.
+  `gsave fill grestore stroke` strokes the same path. Such an outline,
+  stroked over the fill just painted on the same path (a classic
+  Illustrator file's `b` and `B` too, also in a clipping group), is
+  that object's outline: one object with its fill and outline, not a
+  filled object with an outline object over it. A stroke of another
+  path, or one after a group or a page began, stays an object of its
+  own.
 - Images: `image`, `imagemask` and `colorimage` in the Level 1 operand
   form and the Level 2 dictionary form, 1 to 16 bits, 1/3/4 components,
   single or multiple data sources (read row by row in turn), Decode
@@ -71,7 +84,9 @@ what the program paints; no external PostScript engine is involved.
 
 6 million operations, 200 nested procedure levels, 50 000 operand
 stack entries, 64 MB strings; past any of them the import stops with a
-warning and keeps what was painted. LZW filters and font programs are
+warning and keeps what was painted. A loop whose procedure is a plain
+name (`/a loop`, found in damaged files) counts against the
+operations too, so it stops like any other. LZW filters and font programs are
 not run (warnings). Unknown operators are reported once and ignored.
 
 ## Checks

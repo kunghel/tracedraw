@@ -55,12 +55,13 @@ pub(crate) fn width_choices(u: crate::app::Units) -> Vec<(f64, String)> {
 }
 
 /// The dash styles the style list offers before the custom ones.
-fn preset_dashes() -> [Vec<f64>; 4] {
+fn preset_dashes() -> [Vec<f64>; 5] {
     [
         vec![],
         vec![4.0, 2.0],
         vec![1.0, 1.0],
         vec![6.0, 2.0, 1.0, 2.0],
+        Stroke::ROUND_DOTS.to_vec(),
     ]
 }
 
@@ -349,7 +350,10 @@ fn general(ui: &mut Ui, st: &mut OutlinePenState, lib: &crate::ui::line_style::O
                         );
                     }
                     if r.clicked() {
-                        st.stroke.dash = d.clone();
+                        // Round dots take round caps (#3404).
+                        if st.stroke.set_dash(d) {
+                            touch(st, StrokeField::Cap);
+                        }
                         touch(st, StrokeField::Dash);
                     }
                 }
@@ -1049,13 +1053,18 @@ fn dash_line(p: &egui::Painter, r: Rect, dash: &[f64]) {
     let unit = 2.0f32;
     let mut x = r.left();
     let mut i = 0;
-    while x < r.right() {
-        let len = dash[i % dash.len()] as f32 * unit;
+    while x < r.right() && i < 400 {
+        let len = dash[i % dash.len()].max(0.0) as f32 * unit;
         if i % 2 == 0 {
-            p.line_segment(
-                [Pos2::new(x, y), Pos2::new((x + len).min(r.right()), y)],
-                ink,
-            );
+            if len <= 0.0 {
+                // A dash of no length: a round dot (#3404).
+                p.circle_filled(Pos2::new(x, y), unit * 0.75, ink.color);
+            } else {
+                p.line_segment(
+                    [Pos2::new(x, y), Pos2::new((x + len).min(r.right()), y)],
+                    ink,
+                );
+            }
         }
         x += len.max(0.5);
         i += 1;

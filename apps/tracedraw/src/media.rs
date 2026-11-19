@@ -6,12 +6,13 @@
 use crate::app::App;
 use tracedraw_core::{
     document::{Shape, ShapeKind},
-    geometry::{BezPath, Point},
+    geometry::Point,
     style::{Stroke, WidthNode},
     Color, Command, Fill,
 };
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum MediaMode {
     Preset,
     Brush,
@@ -78,56 +79,6 @@ fn profile(preset: usize, t: f64) -> f64 {
     .max(0.02)
 }
 
-fn spray_object(preset: usize, c: Point, size: f64, k: usize) -> BezPath {
-    let r = size / 2.0;
-    let rect = tracedraw_core::geometry::Rect::new(c.x - r, c.y - r, c.x + r, c.y + r);
-    match preset {
-        0 => tracedraw_core::geometry::ellipse_path(rect),
-        1 => tracedraw_core::geometry::polygon_path(rect, 5, 0.5),
-        2 => tracedraw_core::geometry::rect_path(rect, 0.0),
-        3 => {
-            // Heart: two circles and a triangle, welded.
-            let top = tracedraw_core::geometry::ellipse_path(tracedraw_core::geometry::Rect::new(
-                c.x - r,
-                c.y,
-                c.x,
-                c.y + r,
-            ));
-            let top2 = tracedraw_core::geometry::ellipse_path(tracedraw_core::geometry::Rect::new(
-                c.x,
-                c.y,
-                c.x + r,
-                c.y + r,
-            ));
-            let tri = tracedraw_core::effects::polygon(&[
-                Point::new(c.x - r, c.y + r * 0.5),
-                Point::new(c.x + r, c.y + r * 0.5),
-                Point::new(c.x, c.y - r),
-            ]);
-            let a =
-                tracedraw_core::shaping::overlay(&top, &top2, tracedraw_core::shaping::Op::Weld);
-            tracedraw_core::shaping::overlay(&a, &tri, tracedraw_core::shaping::Op::Weld)
-        }
-        _ => {
-            // Leaf: a lens shape rotated with the index.
-            let mut p = BezPath::new();
-            p.move_to((c.x - r, c.y));
-            p.curve_to(
-                (c.x - r * 0.3, c.y + r),
-                (c.x + r * 0.3, c.y + r),
-                (c.x + r, c.y),
-            );
-            p.curve_to(
-                (c.x + r * 0.3, c.y - r),
-                (c.x - r * 0.3, c.y - r),
-                (c.x - r, c.y),
-            );
-            p.close_path();
-            tracedraw_core::geometry::Affine::rotate_about((k as f64 * 0.7).sin() * 0.8, c) * p
-        }
-    }
-}
-
 impl App {
     /// Geometry for a stroke in the current media mode. Returns shapes to
     /// add (several for the sprayer).
@@ -151,10 +102,9 @@ impl App {
             Some(st) => st.color,
             None => Color::BLACK,
         };
-        let width = self.media_width;
         // A stroke stays the path drawn, with the brush as its live
         // outline: its nodes edit like any curve's and the brush follows
-        // (#829). Only the sprayer makes objects of their own.
+        // (#829).
         if let Some(stroke) = self.media_stroke_pen(&pts, color, pen) {
             let id = self.engine.new_shape_id();
             let path = tracedraw_core::geometry::smooth_path(&pts, false);
@@ -170,46 +120,36 @@ impl App {
             s.name = Some(self.media_mode_name().into());
             return vec![s];
         }
-        let mut out = Vec::new();
-        let mut make = |path: BezPath, name: &str| {
-            if path.elements().is_empty() {
-                return;
-            }
-            let id = self.engine.new_shape_id();
-            let mut s = Shape::new(id, ShapeKind::Path { path, closed: true });
-            s.fill = Fill::Solid(color);
-            s.stroke = None;
-            s.name = Some(name.into());
-            out.push(s);
-        };
-        if self.media_mode == MediaMode::Sprayer {
-            {
-                let spacing = self.media_spacing.max(0.5);
-                let preset = self.media_preset;
-                let mut cum = vec![0.0];
-                for w in pts.windows(2) {
-                    cum.push(cum.last().copied().unwrap_or(0.0) + (w[1] - w[0]).hypot());
-                }
-                let total = cum.last().copied().unwrap_or(0.0);
-                let mut s = 0.0;
-                let mut k = 0;
-                while s <= total {
-                    let i = cum
-                        .partition_point(|c| *c <= s)
-                        .saturating_sub(1)
-                        .min(pts.len() - 2);
-                    let seg = pts[i + 1] - pts[i];
-                    let len = seg.hypot().max(1e-9);
-                    let u = ((s - cum[i]) / len).clamp(0.0, 1.0);
-                    let c = pts[i] + seg * u;
-                    let size = width * (0.7 + 0.3 * ((k as f64 * 1.3).sin().abs()));
-                    make(spray_object(preset, c, size, k), "Sprayed object");
-                    s += spacing;
-                    k += 1;
-                }
-            }
+        // The sprayer: the path drawn, with its objects along it as a
+        // live effect, so they follow it when it is edited and break apart
+        // into a group (#3435).
+        if self.media_mode != MediaMode::Sprayer {
+            return Vec::new();
         }
-        out
+        let id = self.engine.new_shape_id();
+        let path = tracedraw_core::geometry::smooth_path(&pts, false);
+        let mut s = Shape::new(
+            id,
+            ShapeKind::Path {
+                path,
+                closed: false,
+            },
+        );
+        s.fill = Fill::None;
+        s.stroke = None;
+        s.name = Some(self.media_mode_name().into());
+        s.effects.push(self.spray_effect(color));
+        vec![s]
+    }
+
+    /// The sprayer effect of the Brush Strokes settings in `color`.
+    pub fn spray_effect(&self, color: Color) -> tracedraw_core::live::Effect {
+        tracedraw_core::live::Effect::Spray {
+            preset: self.media_preset.min(u8::MAX as usize) as u8,
+            size: self.media_width,
+            spacing: self.media_spacing.max(0.5),
+            color,
+        }
     }
 
     /// The live outline the current mode draws along `pts` in `color`:
@@ -312,16 +252,16 @@ impl App {
             MediaMode::Preset => "Preset stroke",
             MediaMode::Brush => "Brush stroke",
             MediaMode::Expression => "Expression stroke",
-            MediaMode::Sprayer => "Sprayed object",
+            MediaMode::Sprayer => "Sprayed objects",
         }
     }
 
     /// Brush Strokes docker > Apply to curve: use the selected curves as
     /// the path of a stroke in the current mode.
     pub fn apply_media_to_selection(&mut self) {
-        let Some(layer) = self.active_layer() else {
+        if self.active_layer().is_none() {
             return;
-        };
+        }
         let curves: Vec<Shape> = self
             .selected_shapes()
             .into_iter()
@@ -341,13 +281,16 @@ impl App {
                 });
                 continue;
             }
-            let path = c.page_path();
-            let pts = tracedraw_core::effects::resample(&path, 120);
-            for s in self.media_shapes(&pts) {
-                new_sel.push(s.id);
-                cmds.push(Command::AddShape { layer, shape: s });
-            }
-            cmds.push(Command::DeleteShapes { shapes: vec![c.id] });
+            // The sprayer: the curve stays, with its objects along it as
+            // a live effect (#3435), one in place of any it had.
+            let mut effects = c.effects.clone();
+            effects.retain(|e| !matches!(e, tracedraw_core::live::Effect::Spray { .. }));
+            effects.push(self.spray_effect(color));
+            new_sel.push(c.id);
+            cmds.push(Command::SetEffects {
+                shape: c.id,
+                effects,
+            });
         }
         if !cmds.is_empty() {
             let _ = self.engine.run_batch("Brush Strokes", &cmds);
@@ -359,6 +302,7 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tracedraw_core::geometry::BezPath;
     use tracedraw_core::geometry::Shape as _;
 
     /// The texts the property bar draws.
@@ -457,9 +401,103 @@ mod tests {
             let reach = band.bounding_box().height() - path.bounding_box().height();
             assert!(reach > 1.0 && reach < 9.0, "{mode:?}: {reach}");
         }
-        // The sprayer still sprays objects.
+        // The sprayer still sprays objects, along the path drawn.
         app.media_mode = MediaMode::Sprayer;
-        assert!(app.media_shapes(&pts).len() > 1);
+        let shapes = app.media_shapes(&pts);
+        assert_eq!(shapes.len(), 1);
+        let ev = tracedraw_core::live::evaluate(&shapes[0]);
+        let ShapeKind::Group { children } = &ev.above[0].kind else {
+            panic!("{:?}", ev.above);
+        };
+        assert!(children.len() > 1);
+    }
+
+    /// The sprayer leaves the path drawn with its objects along it as one
+    /// live group: the path's nodes edited, the objects follow, and Break
+    /// Apart leaves them grouped (#3435: the objects were left loose,
+    /// with no line).
+    #[test]
+    fn sprayed_objects_follow_their_path_and_break_apart_as_a_group() {
+        let mut app = App::headless();
+        app.media_mode = MediaMode::Sprayer;
+        app.media_spacing = 10.0;
+        app.media_width = 4.0;
+        let pts: Vec<Point> = (0..=40)
+            .map(|i| Point::new(10.0 + i as f64 * 2.0, 50.0))
+            .collect();
+        let shapes = app.media_shapes(&pts);
+        assert_eq!(shapes.len(), 1, "one path, not loose objects");
+        let path = shapes[0].clone();
+        assert!(matches!(path.kind, ShapeKind::Path { closed: false, .. }));
+        let layer = app.active_layer().expect("layer");
+        let id = path.id;
+        app.engine
+            .run(&Command::AddShape { layer, shape: path })
+            .expect("add");
+        let sprayed = |app: &App| {
+            let s = app.doc().find_shape(id).expect("the path stays").clone();
+            let ev = tracedraw_core::live::evaluate(&s);
+            let g = ev.above.first().expect("the objects").clone();
+            let ShapeKind::Group { children } = &g.kind else {
+                panic!("{:?}", g.kind);
+            };
+            assert_eq!(children.len(), 9, "80 mm at 10 mm apart");
+            g.page_path().bounding_box()
+        };
+        let before = sprayed(&app);
+        assert!(before.y0 > 45.0 && before.y1 < 55.0, "{before:?}");
+        // A click on an object picks the path that sprays it.
+        assert_eq!(app.hit_test(Point::new(30.0, 50.0)), Some(id));
+        // The path bent up at its end: the objects go with it.
+        let mut bent = BezPath::new();
+        bent.move_to(Point::new(10.0, 50.0));
+        bent.line_to(Point::new(50.0, 50.0));
+        bent.line_to(Point::new(50.0, 90.0));
+        app.engine
+            .run(&Command::SetShapeKind {
+                shape: id,
+                kind: ShapeKind::Path {
+                    path: bent,
+                    closed: false,
+                },
+            })
+            .expect("edit");
+        let after = sprayed(&app);
+        assert!(after.y1 > 85.0 && after.x1 < 55.0, "{after:?}");
+        // Break Apart: the objects become a group of their own.
+        app.select(vec![id]);
+        app.break_effect_groups();
+        let groups: Vec<_> = app.doc().pages[0]
+            .layers
+            .iter()
+            .flat_map(|l| &l.shapes)
+            .filter(|s| matches!(&s.kind, ShapeKind::Group { children } if children.len() == 9))
+            .collect();
+        assert_eq!(groups.len(), 1, "one group of sprayed objects");
+    }
+
+    /// Apply to curve with the sprayer keeps the curve and sprays along it.
+    #[test]
+    fn spraying_a_curve_keeps_the_curve() {
+        let mut app = App::headless();
+        let mut line = BezPath::new();
+        line.move_to(Point::new(10.0, 10.0));
+        line.line_to(Point::new(90.0, 10.0));
+        let id = app
+            .new_shape(ShapeKind::Path {
+                path: line,
+                closed: false,
+            })
+            .expect("curve");
+        app.select(vec![id]);
+        app.media_mode = MediaMode::Sprayer;
+        app.apply_media_to_selection();
+        let s = app.doc().find_shape(id).expect("the curve stays");
+        assert!(s
+            .effects
+            .iter()
+            .any(|e| matches!(e, tracedraw_core::live::Effect::Spray { .. })));
+        assert_eq!(app.selection, vec![id]);
     }
 
     /// Apply to curve keeps the curve, with the brush as its outline.
@@ -533,6 +571,7 @@ fn frame_times_of_brush_strokes() {
                 zoom: 4.0,
                 origin_x: 0.0,
                 origin_y: 1188.0,
+                stretch_y: 1.0,
             },
             ..Default::default()
         };

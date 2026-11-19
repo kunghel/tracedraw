@@ -17,7 +17,7 @@ your data becomes a copy of the page, filled in.
      pictures, fields named QR as QR codes; the types show at once to be
      changed;
    - or **Add column** to add fields by hand, then add records with **+**.
-4. Click **Finish**. The [[docker.print_merge]] panel opens, where you put
+4. Click **[[merge.finish]]**. The [[docker.print_merge]] panel opens, where you put
    the fields on the page and make the merge.
 
 ![The Data Merge dialog box](../../img/printing-print-merge.png)

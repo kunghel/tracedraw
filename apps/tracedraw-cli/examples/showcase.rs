@@ -237,6 +237,7 @@ fn poster(dir: &Path) -> Document {
         offset: 3.2,
         outside: true,
         to_center: false,
+        both: false,
         fill_to: hex("#EE8F86"),
         outline_to: None,
         fill_end_to: None,
@@ -476,6 +477,7 @@ fn star(cx: f64, cy: f64, r: f64, points: u32, sharpness: f64) -> ShapeKind {
         sharpness,
         complex: None,
         twist: 0.0,
+        bend: 0.0,
     }
 }
 
@@ -531,6 +533,7 @@ fn effects(dir: &Path) {
         offset: 2.6,
         outside: true,
         to_center: false,
+        both: false,
         fill_to: hex("#FF3D7F"),
         outline_to: None,
         fill_end_to: None,

@@ -201,6 +201,35 @@ pub fn mesh_bar(app: &mut App, ui: &mut Ui) {
         app.mesh_eyedropper = !app.mesh_eyedropper;
     }
     crate::ui::propbar::sep(ui);
+    // Shuffle: a new random mesh from a colour set for every selected
+    // object, each click another mix.
+    let sets = crate::mesh_tool::MESH_PALETTES;
+    let name = |i: usize| match sets.get(i) {
+        Some((key, _)) => tr(key),
+        None => tr("toolbar.mesh_colors_document"),
+    };
+    crate::ui::keynav::ComboBox::from_id_salt("mesh_shuffle_colors")
+        .selected_text(name(app.mesh_palette))
+        .width(110.0)
+        .show_ui(ui, |ui| {
+            for i in 0..=sets.len() {
+                ui.selectable_value(&mut app.mesh_palette, i, name(i));
+            }
+        })
+        .response
+        .rich_tip(crate::ui::tips::keyed("toolbar.mesh_colors"));
+    if ui
+        .add_enabled(
+            !app.selection.is_empty(),
+            egui::Button::new(tr("toolbar.mesh_shuffle")),
+        )
+        .rich_tip(crate::ui::tips::keyed("toolbar.mesh_shuffle"))
+        .rich_disabled_tip(crate::ui::tips::keyed("toolbar.mesh_shuffle"))
+        .clicked()
+    {
+        app.shuffle_mesh();
+    }
+    crate::ui::propbar::sep(ui);
     if ui
         .add_enabled(mesh.is_some(), egui::Button::new(tr("toolbar.clear_mesh")))
         .clicked()
@@ -295,6 +324,12 @@ pub fn smart_fill_bar(app: &mut App, ui: &mut Ui) {
         &tr("toolbar.outline_color"),
         omode == 1,
     );
+    crate::ui::propbar::sep(ui);
+    ui.checkbox(
+        &mut app.area_fill_outline_edges,
+        tr("toolbar.smart_outline_edges"),
+    )
+    .rich_tip(crate::ui::tips::keyed("toolbar.smart_outline_edges"));
     crate::ui::propbar::sep(ui);
     dim(ui, tr("toolbar.smart_fill_hint"));
 }

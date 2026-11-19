@@ -51,6 +51,16 @@ other place, on the active layer, with the trim marks: one undo step
 nothing that fits Apply is greyed and the status bar says so; more than
 10,000 copies are not made (the panel says so).
 
+Every copy, made by Copies or by Fill page, and every object inside it
+(the members of a group, a PowerClip's frame and contents) takes a new
+id, as Duplicate gives them; a text frame's links point to the copies of
+the frames copied with it. The objects inside kept their originals' ids,
+so the drawing held two objects of one id, and picking or changing one
+could reach the other. Symbols > Revert to objects gives the objects of
+each instance new ids the same way (#3066,
+`step_repeat::tests::copies_of_a_group_give_its_objects_new_ids`,
+`reverted_symbol_instances_give_objects_of_their_own`).
+
 While the panel is worked in (the pointer on it, a field being typed in,
 or the last click in it) every place of the grid is outlined dashed on
 the page, the outlines turned once for turned copies, with the trim

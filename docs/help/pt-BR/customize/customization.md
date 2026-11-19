@@ -13,6 +13,7 @@ aparecem e como a paleta de cores se comporta.
 - [[options.center_dialogs]]: as caixas de diálogo abrem no meio da janela;
   desligado, abrem onde você as deixou.
 - [[options.ui_shadows]] (menos sombras ajudam gráficos mais lentos).
+- [[options.translucent_menus]]: os menus abertos deixam o desenho aparecer por trás, com a [[options.menu_opacity]] ao lado da caixa (desligado por padrão).
 - [[options.colored_icons]]: cada grupo de ferramentas recebe uma cor própria.
 - [[options.docker_tabs_icons_only]]: as abas dos painéis nas laterais da
   janela mostram só as figuras, com o nome na dica. Desligado, mostram a

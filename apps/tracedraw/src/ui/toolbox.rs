@@ -5,6 +5,8 @@
 //! each tool's icon, name and shortcut with separators between the kinds
 //! of tools. Once a flyout is open, hovering another flyout button opens
 //! that one instead. The button at the end shows or hides flyouts.
+//! Commands dragged onto it from Options > Customization > Commands
+//! follow the tools, as on the toolbars (#3211).
 
 use crate::app::App;
 use crate::i18n::tr;
@@ -45,15 +47,24 @@ pub fn group_visible(app: &App, gi: usize) -> bool {
         .any(|id| id == group.tools[0].id())
 }
 
-/// The tooltip of a tool: its name and shortcut in bold, then what it does.
-pub fn tool_tooltip(ui: &mut Ui, tool: Tool) {
-    let head = if tool.shortcut_label().is_empty() {
+/// The keys that pick `tool` now, joined: the user's from Options >
+/// Customization > Commands, else its built-in one. The toolbox showed
+/// the built-in key alone, so a key given to another tool still showed
+/// on the tool that lost it, and not on the one that took it (#3099).
+pub fn tool_keys(app: &App, tool: Tool) -> String {
+    crate::shortcuts::keys_for(&app.settings.shortcuts, tool.id(), tool.shortcut()).join(", ")
+}
+
+/// The tooltip of a tool: its name and shortcut (`keys`, see
+/// [`tool_keys`]) in bold, then what it does.
+pub fn tool_tooltip(ui: &mut Ui, tool: Tool, keys: &str) {
+    let head = if keys.is_empty() {
         crate::i18n::trf("toolbox.tool_title", &[("t", &tool.name())])
     } else {
         format!(
             "{} ({})",
             crate::i18n::trf("toolbox.tool_title", &[("t", &tool.name())]),
-            tool.shortcut_label()
+            keys
         )
     };
     ui.set_max_width(260.0);
@@ -430,7 +441,121 @@ fn tools(app: &mut App, ui: &mut Ui, dock: crate::ui::bars::Dock, fitted: Option
             ui.add_space(2.0);
         }
     }
+    commands(app, ui, side, horizontal);
     quick_customize(app, ui, horizontal);
+}
+
+/// The commands put on the toolbox (#3211), after its tools: each a
+/// button of the toolbox's size with the command's menu picture (a tool's
+/// icon for a tool, the start of its name when it has no picture); a
+/// click runs it as its menu item would. In customize mode a button
+/// moves or leaves as on the toolbars, and the whole toolbox takes a
+/// command dragged from the Commands page.
+fn commands(app: &mut App, ui: &mut Ui, side: f32, horizontal: bool) {
+    use crate::ui::bar_items::{self, ItemBar};
+    let list = bar_items::items(app, ItemBar::Toolbox);
+    let custom = bar_items::customizing(app, ui.ctx());
+    let size = Vec2::new(button_width(app), side);
+    let icon = Tokens::tool_icon().min(side - 4.0).max(12.0);
+    let mut rects = Vec::with_capacity(list.len());
+    for (i, id) in list.iter().enumerate() {
+        if id == bar_items::SEP {
+            let (r, _) = if horizontal {
+                ui.allocate_exact_size(Vec2::new(5.0, side), Sense::hover())
+            } else {
+                ui.allocate_exact_size(Vec2::new(size.x, 5.0), Sense::hover())
+            };
+            if horizontal {
+                ui.painter().vline(
+                    r.center().x,
+                    r.y_range().shrink(4.0),
+                    Stroke::new(1.0, Tokens::border()),
+                );
+            } else {
+                ui.painter().hline(
+                    r.x_range().shrink(4.0),
+                    r.center().y,
+                    Stroke::new(1.0, Tokens::border()),
+                );
+            }
+            rects.push(r);
+            continue;
+        }
+        let tool = bar_items::tool_of(id);
+        let (rect, resp) = ui.allocate_exact_size(size, Sense::click_and_drag());
+        let name = match tool {
+            Some(t) => t.name(),
+            None => tr(id),
+        };
+        crate::theme::paint_icon_button(
+            ui.painter(),
+            rect,
+            resp.hovered(),
+            tool.is_some_and(|t| app.tool == t),
+        );
+        let pic = Rect::from_center_size(rect.center(), Vec2::splat(icon));
+        if tool.is_some() || crate::ui::menus::has_menu_picture(id) {
+            bar_items::picture(ui.painter(), pic, id, Tokens::icon());
+        } else {
+            // No picture: as much of its name as fits the button.
+            let font = egui::FontId::proportional(9.0);
+            let room = rect.width() - 4.0;
+            let mut shown: String = name.clone();
+            while !shown.is_empty()
+                && ui
+                    .painter()
+                    .layout_no_wrap(shown.clone(), font.clone(), Tokens::text())
+                    .size()
+                    .x
+                    > room
+            {
+                shown.pop();
+            }
+            ui.painter().text(
+                rect.center(),
+                egui::Align2::CENTER_CENTER,
+                shown,
+                font,
+                Tokens::text(),
+            );
+        }
+        let resp = resp.on_hover_ui(|ui| crate::ui::toolbar::rich_tip(ui, &name));
+        if custom {
+            if resp.hovered() {
+                ui.painter().rect_stroke(
+                    rect.shrink(0.5),
+                    0.0,
+                    Stroke::new(1.0, Tokens::ACCENT),
+                    egui::StrokeKind::Inside,
+                );
+            }
+            if resp.drag_started() && !crate::ui::overflow::finger_sliding(ui.ctx()) {
+                app.bar_item_drag = Some(bar_items::ItemDrag {
+                    item: id.clone(),
+                    from: Some((ItemBar::Toolbox, i)),
+                });
+            }
+        } else if resp.clicked() {
+            match tool {
+                Some(t) => app.choose_tool(t),
+                None => {
+                    if !crate::ui::menus::run_command(app, ui.ctx(), id) {
+                        app.status =
+                            crate::i18n::trf("status.command_unavailable", &[("name", &name)]);
+                    }
+                }
+            }
+        }
+        rects.push(rect);
+    }
+    // The whole toolbox takes a dropped command (after the tools when it
+    // has none yet).
+    app.bar_slots.push(bar_items::Slot {
+        bar: ItemBar::Toolbox,
+        rect: ui.min_rect(),
+        items: rects,
+        vertical: !horizontal,
+    });
 }
 
 /// The floating toolbox's grid: its buttons in the rows [`flow`] gives
@@ -587,7 +712,8 @@ fn tool_button(
     }
     // No tooltip while a flyout is open: it would cover the list.
     let resp = if app.flyout_open.is_none() {
-        resp.on_hover_ui(|ui| tool_tooltip(ui, shown))
+        let keys = tool_keys(app, shown);
+        resp.on_hover_ui(|ui| tool_tooltip(ui, shown, &keys))
     } else {
         resp
     };
@@ -764,16 +890,17 @@ fn flyout(app: &mut App, ui: &mut Ui, gi: usize, button: Rect, dock: crate::ui::
                             egui::FontId::proportional(12.0),
                             Tokens::text(),
                         );
-                        if !t.shortcut_label().is_empty() {
+                        let keys = tool_keys(app, *t);
+                        if !keys.is_empty() {
                             ui.painter().text(
                                 Pos2::new(r.max.x - 8.0, r.center().y),
                                 egui::Align2::RIGHT_CENTER,
-                                t.shortcut_label(),
+                                &keys,
                                 egui::FontId::proportional(12.0),
                                 Tokens::text(),
                             );
                         }
-                        if rr.on_hover_ui(|ui| tool_tooltip(ui, *t)).clicked() {
+                        if rr.on_hover_ui(|ui| tool_tooltip(ui, *t, &keys)).clicked() {
                             app.choose_tool(*t);
                             close = true;
                         }
@@ -888,6 +1015,25 @@ pub fn reset_toolbox(app: &mut App) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #3099: the toolbox names the keys a tool has now. A key given to
+    /// another tool in Options leaves the tool that lost it without one,
+    /// and the tool that took it shows it beside its own.
+    #[test]
+    fn the_toolbox_shows_the_keys_set_in_options() {
+        let mut app = App::headless();
+        assert_eq!(tool_keys(&app, Tool::Zoom), "Z");
+        assert_eq!(tool_keys(&app, Tool::Rectangle), "F6");
+        // What Options > Customization > Commands keeps when Zoom's Z is
+        // given to the Rectangle tool.
+        app.settings.shortcuts = vec![
+            ("zoom".into(), String::new()),
+            ("rectangle".into(), "F6".into()),
+            ("rectangle".into(), "Z".into()),
+        ];
+        assert_eq!(tool_keys(&app, Tool::Zoom), "");
+        assert_eq!(tool_keys(&app, Tool::Rectangle), "F6, Z");
+    }
 
     fn flyout_pointer_frame(
         ctx: &egui::Context,

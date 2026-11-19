@@ -11,6 +11,7 @@ Intermediate objects between a start and an end object.
 | Spacing (along a path) | off, 5 mm | the steps follow from the path's length: `floor(length / spacing) - 1`, 1 to 999 |
 | Loop | off | with a rotation, the steps' centres leave the straight way and curve from the start to the end (a half circle at 180 degrees, a curl through the middle at 360) |
 | Blend along full path | off | along a path, the first and last steps sit on the path's ends |
+| Start / End on path | 0 %, 100 % | along a path, where the start and end objects sit, in % of its length, either way round (#2946) |
 | Apply to sizing | off | the object acceleration changes the steps' outlines and sizes too |
 | Color blend | Direct | Direct (straight through RGB), Clockwise (hue increasing), Counterclockwise (hue decreasing), through HSB |
 
@@ -23,13 +24,14 @@ Not yet: mapping nodes, splitting and fusing.
 
 Two picture buttons choose Steps or Spacing (Spacing only for a blend
 on a path), then the Steps and Spacing fields (the one not chosen is
-greyed), Rotation, Loop (with a rotation), Blend along full path and
-Rotate all objects (with a path). Under "Acceleration" the Object and
+greyed), Rotation, Loop (with a rotation), Blend along full path,
+Rotate all objects and Start on path / End on path (with a path). Under "Acceleration" the Object and
 Color sliders, Apply to sizing, Link acceleration (the colour slider
 follows the object one and is greyed) and Reset (both back to even).
 Under "Color Blend" three picture buttons: Direct, Clockwise and
 Counterclockwise. With a blend selected every change applies live and
-New path, Clear Blend and Break Apart follow; otherwise a full-width
+New path, Detach from path (with a path), Clear Blend and Break Apart
+follow; otherwise a full-width
 Apply blends the two selected objects with these settings
 (`tracedraw_core::live::tests::blend_options_change_the_steps`).
 
@@ -38,7 +40,9 @@ Apply blends the two selected objects with these settings
 Steps, Rotation, Object acceleration, Color acceleration; with nothing
 blended selected they are what the next blend takes (Steps is kept in the
 preferences), with a blend selected they change it live (a run of changes
-is one undo step), and Clear Blend and Break Apart follow; otherwise a
+is one undo step), and New path, Start on path and End on path with
+Detach from path (for a blend on a path), Clear Blend and Break Apart
+follow; otherwise a
 line on dragging from one object to another.
 
 Interactive: drag from the start object to the end object; the start
@@ -114,6 +118,16 @@ the same undo step:
 - the start object changed: the steps follow (they are drawn from it);
 - the end object deleted: the blend goes with it (Undo brings both
   back).
+
+A blend copied with its end object (Copy and Paste, Duplicate, Step and
+Repeat, Duplicate Page, a `.tdraw` imported) ends at the copy of the end, so the copies
+are a blend of their own; they still named the original's end, and the
+copy moved away drew its steps back to the original. A start object
+pasted without its end in another drawing keeps its steps as they were
+and names no end object; it named whatever object had the end's number
+there and blended into it
+(`blend_link::tests::copied_blends_end_at_their_own_copies`,
+`a_duplicated_page_blends_to_its_own_end_object`).
 
 Selecting either object picks the blend for the bar and the Blend
 panel. Selected, each object shows its own box and handles: the start
@@ -224,7 +238,22 @@ curve and the range the `.cdr` files' blends use, #1192;
   Two copies of one outline stay copies: each step turns by
   `rotation * (t' - t)`.
 - Along a path: step `k` is placed at arc length `t' * L` on the path,
-  oriented to the tangent when "rotate all objects" is on.
+  oriented to the tangent when "rotate all objects" is on. With Start
+  and End on path (`BlendOptions::path_range`, shares `a` and `b` of
+  the length) it is at `(a + (b - a) * t') * L`, and the spacing counts
+  over `|b - a| * L` (`live::tests::a_blend_runs_along_the_part_of_its_path_between_its_ends`).
+
+## Fitting a blend to a path (#2946)
+
+New path (panel or bar, then a click on a curve) attaches the curve to
+the selected blends, also one picked by its end object, and starts
+from its two ends again. Start on path and End on path (0 to 100 %)
+move the start and end objects' centres onto the curve at those shares
+of its length and set `path_range`; a run of changes from the fields
+is one undo step. The blend stays live: steps, spacing, acceleration,
+rotation and colours still edit it. Detach from path drops the path,
+the range and Blend along full path, a straight blend again
+(`blend_link::tests::a_blend_fitted_to_a_path_places_its_ends_anywhere_along_it`).
 
 ## Saving as `.cdr`
 

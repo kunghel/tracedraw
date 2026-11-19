@@ -27,6 +27,10 @@ web-time = "1"
 zip.workspace = true
 # Compound files (the container of newer `.pmd` files, #2822).
 cfb = "0.15"
+# Hebrew and Arabic in PDF import: the directions of the letters, to put
+# text drawn right to left back in the order it is typed; the same version
+# the text layout uses.
+unicode-bidi = "0.3"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
 # The raw inks of a CMYK JPEG in a PDF, which the image decoder above
 # turns into RGB as if they were stored inverted (#2322).

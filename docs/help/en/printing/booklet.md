@@ -46,6 +46,11 @@ for those pages only.
 - [[print.booklet_gap]] (0 to 100 mm, 0 at first): the space between the two
   pages of a spread, centred on the fold. On a sheet sized to the pages, the
   sheet grows by the gap.
+- [[print.booklet_up]]: 2 at first. Choose 4 or 8 to print a large sheet for
+  an offset press with 4 or 8 pages on each side. The printed sheet folds
+  into a signature of 8 or 16 pages, so the pages of the top row are printed
+  upside down. With [[print.saddle_stitch]] the signatures go one inside the
+  other; with [[print.perfect_bound]] they are stacked in order.
 
 ## Blank pages and the counts {#counts}
 

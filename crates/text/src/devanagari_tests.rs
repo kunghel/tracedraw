@@ -200,3 +200,57 @@ fn a_letter_after_a_virama_joins_only_in_its_own_script() {
         "क् stays in its face"
     );
 }
+
+/// Condensed and tightly spaced Devanagari, converted to curves (#1483):
+/// the glyphs overlap, and where one's outline crosses another's a hair
+/// from a node, the curves took the node for the crossing, or ran on
+/// round a corner across the narrow gap between two stems. The curves
+/// cover what the text covers, away from a hair along its outline.
+#[test]
+fn condensed_text_turned_to_curves_keeps_the_letter_shapes() {
+    use kurbo::Shape as _;
+    let f = system();
+    for (w, width, track) in [
+        ("\u{938}\u{94d}\u{924}\u{94d}\u{930}", 50.0, -20.0),
+        (
+            "\u{924}\u{94d}\u{930}\u{93f}\u{92d}\u{941}\u{935}\u{928}",
+            50.0,
+            -20.0,
+        ),
+        ("\u{915}\u{94d}\u{924}", 60.0, 0.0),
+        ("\u{928}\u{94d}\u{926}\u{94d}\u{930}", 100.0, -30.0),
+    ] {
+        let mut span = TextSpan::new(w, DEVA, 24.0);
+        span.width_pct = width;
+        span.tracking_pct = track;
+        let text = f.outline(&[span]).path;
+        let curves = tracedraw_core::shaping::nonzero_as_even_odd(&text);
+        let b = text.bounding_box();
+        let (nx, ny) = (200, 60);
+        let mut wrong = 0;
+        for i in 0..nx {
+            for j in 0..ny {
+                // Off the grid of the glyphs' own coordinates, so no
+                // sample sits level with a node.
+                let pt = kurbo::Point::new(
+                    b.x0 + (i as f64 + 0.5137) * b.width() / nx as f64,
+                    b.y0 + (j as f64 + 0.4731) * b.height() / ny as f64,
+                );
+                if (text.winding(pt) != 0) == (curves.winding(pt) % 2 != 0) {
+                    continue;
+                }
+                let edge = text
+                    .segments()
+                    .map(|s| {
+                        use kurbo::ParamCurveNearest as _;
+                        s.nearest(pt, 1e-9).distance_sq.sqrt()
+                    })
+                    .fold(f64::MAX, f64::min);
+                if edge > 0.003 {
+                    wrong += 1;
+                }
+            }
+        }
+        assert_eq!(wrong, 0, "{w} at {width}% width, {track}% spacing");
+    }
+}

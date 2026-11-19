@@ -620,6 +620,19 @@ impl TraceCutState {
         }
     }
 
+    /// Load the preset the preset list shows for the current tool (the
+    /// one chosen last), so the settings are the preset's: the list named
+    /// it but the settings stayed the defaults or the last tool's
+    /// (d#3234). Nothing is written to the presets file.
+    pub fn load_shown_preset(&mut self) {
+        let tool = self.tool;
+        let p = self.presets.tool(tool);
+        let Some(v) = p.current.as_ref().and_then(|n| p.items.get(n)).cloned() else {
+            return;
+        };
+        self.settings.load_json(tool, &v);
+    }
+
     /// Forget every tool's zoom when the objects worked on change.
     pub fn track_targets(&mut self, targets: &[ShapeId]) {
         if self.view_targets != targets {
@@ -654,6 +667,7 @@ impl App {
     pub fn open_tracecut(&mut self) {
         let mut st = TraceCutState::new(self.settings.tracecut.tool);
         st.settings.tray = self.settings.tracecut.tray.clone();
+        st.load_shown_preset();
         self.dialog = crate::ui::dialogs::Dialog::TraceCut(Box::new(st));
     }
 

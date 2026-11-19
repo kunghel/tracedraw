@@ -47,6 +47,12 @@ configurações, e **Aplicar** as guarda para a próxima vez.
   separações**; só as tintas marcadas são impressas.
 - **Converter cores especiais em CMYK** imprime as tintas especiais como a
   mistura CMYK delas.
+- **Perfil de cor** converte as cores e imagens para o perfil ICC da
+  impressora (RGB ou CMYK, dos perfis instalados neste computador), para
+  impressoras cujo driver não gerencia as cores, como as de sublimação.
+  Escolha a **Intenção** ao lado. Funciona na saída Composta, não em Tons de
+  cinza nem em Separações. Desligue o gerenciamento de cor do driver da
+  impressora para as cores não serem convertidas duas vezes.
 
 ## Composta {#composite}
 
@@ -57,8 +63,10 @@ configurações, e **Aplicar** as guarda para a próxima vez.
 ## Layout {#layout}
 
 - **Como no documento**, **Ajustar à página** ou **Escala** em porcentagem.
-  **Ajustar à página** também reduz objetos maiores que a página (ou a
-  seleção, quando só ela é impressa) para que saiam inteiros nela.
+  **Ajustar à página** aumenta ou reduz a página para ocupar o papel dentro
+  das margens; o que você deixou em parte fora da página continua cortado na
+  borda, como na tela. Quando só a seleção é impressa, ela é reduzida para
+  caber na página.
 - **Limite de sangria**: até onde além da página os objetos são impressos
   (4 mm de início, ou a sangria do próprio desenho).
 - **Margens do papel** (esquerda, direita, superior, inferior, 0 de início)

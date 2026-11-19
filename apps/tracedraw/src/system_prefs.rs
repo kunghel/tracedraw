@@ -286,19 +286,105 @@ pub fn colors_from(output: &str) -> ContrastColors {
     }
 }
 
+/// A value of a registry key, as [`reg_listing`] prints it.
+#[cfg_attr(not(windows), allow(dead_code))]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RegValue {
+    Dword(u32),
+    Text(String),
+}
+
+/// The values of a key in the layout `reg query` prints ("    Name
+/// REG_DWORD    0x96", "    Name    REG_SZ    text"), which the readers
+/// above take. Other kinds of value are left out.
+#[cfg_attr(not(windows), allow(dead_code))]
+pub fn reg_listing(values: &[(String, RegValue)]) -> String {
+    let mut out = String::new();
+    for (name, value) in values {
+        match value {
+            RegValue::Dword(v) => out.push_str(&format!("    {name}    REG_DWORD    0x{v:x}\n")),
+            RegValue::Text(t) => out.push_str(&format!("    {name}    REG_SZ    {t}\n")),
+        }
+    }
+    out
+}
+
+/// The values of `key` under HKEY_CURRENT_USER (as `reg query` prints
+/// them), read with the registry functions; `None` when the key is not
+/// there. Reading them takes microseconds: this used to start
+/// `reg.exe` (and the console host Windows gives it) three times every
+/// [`EVERY_SECS`] seconds, for as long as TraceDraw ran, which slowed
+/// the whole computer on some (d#2961, d#2670, d#2729).
 #[cfg(windows)]
 fn reg_query(key: &str) -> Option<String> {
-    use std::os::windows::process::CommandExt;
-    // No console window flashes up.
-    const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-    let out = std::process::Command::new("reg")
-        .args(["query", key])
-        .creation_flags(CREATE_NO_WINDOW)
-        .output()
-        .ok()?;
-    out.status
-        .success()
-        .then(|| String::from_utf8_lossy(&out.stdout).to_string())
+    use windows_sys::Win32::Foundation::{ERROR_MORE_DATA, ERROR_SUCCESS};
+    use windows_sys::Win32::System::Registry::{
+        RegCloseKey, RegEnumValueW, RegOpenKeyExW, HKEY, HKEY_CURRENT_USER, KEY_READ, REG_DWORD,
+        REG_EXPAND_SZ, REG_SZ,
+    };
+    let path = key.strip_prefix(r"HKCU\").unwrap_or(key);
+    let wide: Vec<u16> = path.encode_utf16().chain(std::iter::once(0)).collect();
+    let mut hkey: HKEY = 0;
+    // SAFETY: `wide` is a NUL-terminated UTF-16 string and `hkey` is
+    // written by the call; the key is closed below.
+    if unsafe { RegOpenKeyExW(HKEY_CURRENT_USER, wide.as_ptr(), 0, KEY_READ, &mut hkey) }
+        != ERROR_SUCCESS
+    {
+        return None;
+    }
+    let mut values = Vec::new();
+    let mut name = vec![0u16; 256];
+    let mut data = vec![0u8; 1024];
+    let mut index = 0;
+    loop {
+        let mut name_len = name.len() as u32;
+        let mut data_len = data.len() as u32;
+        let mut kind = 0u32;
+        // SAFETY: the buffers are as long as the lengths passed say.
+        let r = unsafe {
+            RegEnumValueW(
+                hkey,
+                index,
+                name.as_mut_ptr(),
+                &mut name_len,
+                std::ptr::null(),
+                &mut kind,
+                data.as_mut_ptr(),
+                &mut data_len,
+            )
+        };
+        if r == ERROR_MORE_DATA {
+            // A longer name or value: the buffers grow and it is read
+            // again (a name is at most 16383 characters).
+            name.resize(16384, 0);
+            data.resize((data_len as usize).max(data.len() * 2), 0);
+            continue;
+        }
+        if r != ERROR_SUCCESS {
+            break;
+        }
+        index += 1;
+        let n = String::from_utf16_lossy(&name[..name_len as usize]);
+        let bytes = &data[..(data_len as usize).min(data.len())];
+        match kind {
+            REG_DWORD if bytes.len() >= 4 => values.push((
+                n,
+                RegValue::Dword(u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]])),
+            )),
+            REG_SZ | REG_EXPAND_SZ => {
+                let units: Vec<u16> = bytes
+                    .chunks_exact(2)
+                    .map(|c| u16::from_le_bytes([c[0], c[1]]))
+                    .take_while(|u| *u != 0)
+                    .collect();
+                values.push((n, RegValue::Text(String::from_utf16_lossy(&units))));
+            }
+            _ => {}
+        }
+    }
+    // SAFETY: `hkey` was opened above.
+    unsafe { RegCloseKey(hkey) };
+    Some(reg_listing(&values))
 }
 
 #[cfg(windows)]
@@ -675,6 +761,45 @@ mod tests {
         assert_eq!(ContrastColors::for_dark(true), ContrastColors::BLACK);
         assert_eq!(ContrastColors::for_dark(false), ContrastColors::WHITE);
         assert!(!ContrastColors::WHITE.is_dark());
+    }
+
+    /// d#2961: the values read from the registry itself come out as
+    /// `reg query` printed them, so text size, high contrast, its colours
+    /// and dark mode read as before, without starting a program.
+    #[test]
+    fn registry_values_read_as_reg_printed_them() {
+        let v = |n: &str, x: RegValue| (n.to_string(), x);
+        let acc = reg_listing(&[v("TextScaleFactor", RegValue::Dword(150))]);
+        assert_eq!(text_scale_from(&acc), 1.5);
+        let contrast = reg_listing(&[
+            v("Flags", RegValue::Text("127".into())),
+            v(
+                "High Contrast Scheme",
+                RegValue::Text("High Contrast #1".into()),
+            ),
+        ]);
+        assert!(high_contrast_on(&contrast));
+        assert!(!high_contrast_on(&reg_listing(&[v(
+            "Flags",
+            RegValue::Text("126".into())
+        )])));
+        let colors = colors_from(&reg_listing(&[
+            v("Hilight", RegValue::Text("26 235 255".into())),
+            v("HilightText", RegValue::Text("0 0 0".into())),
+            v("Window", RegValue::Text("0 0 0".into())),
+        ]));
+        assert_eq!(colors.highlight, [26, 235, 255]);
+        assert_eq!(colors.highlight_text, [0, 0, 0]);
+        assert_eq!(colors.window_text, ContrastColors::BLACK.window_text);
+        assert!(windows_apps_dark(&reg_listing(&[
+            v("SystemUsesLightTheme", RegValue::Dword(1)),
+            v("AppsUseLightTheme", RegValue::Dword(0)),
+        ])));
+        assert!(!windows_apps_dark(&reg_listing(&[v(
+            "AppsUseLightTheme",
+            RegValue::Dword(1)
+        )])));
+        assert_eq!(reg_listing(&[]), "");
     }
 
     /// #2748: the desktop's dark mode on Windows and the free desktops.

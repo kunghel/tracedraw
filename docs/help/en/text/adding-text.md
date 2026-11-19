@@ -185,7 +185,9 @@ from it.
 - [[menu.text > menu.text.insert_formatting_code]]: special characters such as
   [[menu.text.code_em_space]], [[menu.text.code_nonbreaking_space]],
   [[menu.text.code_optional_hyphen]] and [[menu.text.code_column_break]].
-- [[menu.text.show_non_printing]] shows spaces, tabs and breaks.
+- [[menu.text.show_non_printing]] shows spaces (dots), tabs (arrows),
+  paragraph ends (pilcrows) and line breaks in the text you are editing.
+  The marks never print.
 - [[menu.text.make_web_compatible]] prepares text for web pages.
 - [[menu.text > menu.text.convert]] switches between artistic and paragraph
   text.

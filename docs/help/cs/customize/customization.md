@@ -13,6 +13,7 @@ chování barevné palety.
 - [[options.center_dialogs]]: dialogová okna se otevírají uprostřed okna; po
   vypnutí se otevírají tam, kde jste je naposledy nechali.
 - [[options.ui_shadows]] (méně stínů pomůže pomalejší grafice).
+- [[options.translucent_menus]]: open menus let the drawing show through them, at the [[options.menu_opacity]] beside the box (off by default).
 - [[options.colored_icons]]: každá skupina nástrojů dostane vlastní barvu.
 - [[options.docker_tabs_icons_only]]: karty panelů po stranách okna ukazují
   jen obrázek, název je v tipu. Vypnuto ukazují obrázek i název a sloupec

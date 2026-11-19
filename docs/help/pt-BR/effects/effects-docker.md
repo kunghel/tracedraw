@@ -23,6 +23,11 @@ Cada linha da lista tem:
 Cada alteração é um passo de desfazer. Cada efeito continua sendo editado com a
 própria ferramenta ou painel.
 
+Abaixo da lista, os visuais prontos dão aos objetos selecionados um acabamento
+com um clique: cromado, metal líquido, ouro, vidro líquido (que desfoca o que
+está por baixo) e vidro transparente. Cada imagem mostra o objeto selecionado
+com o visual; um desfazer o remove. As suas predefinições salvas vêm depois.
+
 ## Outros comandos de efeito {#commands}
 
 - [[menu.effects > menu.effects.flatten]] transforma os efeitos dos objetos

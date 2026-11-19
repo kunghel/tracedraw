@@ -341,6 +341,46 @@ pub struct Pictures {
     pub overlay: Option<TextureId>,
     /// The copy's size, pixels.
     pub size: Vec2,
+    /// For each pane (as [`layout`] lists them), a picture drawn in place
+    /// of the result or the overlay's lines over the screen rectangle
+    /// given: the result drawn sharp at the screen's pixels while zoomed
+    /// in (#2951).
+    pub sharp: Vec<Option<(TextureId, Rect)>>,
+}
+
+/// Which pane shows the result (or, in the overlay view, its lines) in
+/// `view`, if any: its index among [`layout`]'s panes.
+pub fn result_pane(view: View) -> Option<usize> {
+    match view {
+        View::Stacked | View::SideBySide => Some(1),
+        View::After | View::Large | View::Split | View::Overlay => Some(0),
+        View::Before => None,
+    }
+}
+
+/// The zoom (points per pixel of the copy) and centre the panes show
+/// `size` with in `area`, and the zoom that fits.
+fn zoom_and_centre(area: Rect, st: &ViewState, size: Vec2) -> (f32, Vec2, f32) {
+    let fit = fit_zoom(area, st.view, size, st.turns);
+    let lo = (fit * ZOOM_MIN_OF_FIT).min(0.02);
+    let k = st.zoom.unwrap_or(fit).clamp(lo, ZOOM_MAX);
+    (k, st.centre.unwrap_or(Vec2::splat(0.5)), fit)
+}
+
+/// The panes of `st.view` in `area` and, for each, the screen rectangle
+/// of the picture (`size` pixels, turned) in it, as [`view`] draws them.
+pub fn layout(area: Rect, st: &ViewState, size: Vec2) -> Vec<(Rect, Rect)> {
+    let (k, centre, _) = zoom_and_centre(area, st, size);
+    let size = turned_size(size, st.turns);
+    pane_rects(area, st.view)
+        .into_iter()
+        .map(|pane| {
+            (
+                pane,
+                Rect::from_min_size(pane.center() - centre * size * k, size * k),
+            )
+        })
+        .collect()
 }
 
 /// What a frame of the panes did.
@@ -474,12 +514,10 @@ pub fn view(
     painter.rect_filled(area, 0.0, Color32::from_gray(0xC8));
     let panes = pane_rects(area, st.view);
     let size = turned_size(pics.size, st.turns);
-    let fit = fit_zoom(area, st.view, pics.size, st.turns);
+    let (k, centre, fit) = zoom_and_centre(area, st, pics.size);
+    let lo = (fit * ZOOM_MIN_OF_FIT).min(0.02);
     out.fit = fit;
     ui.ctx().data_mut(|d| d.insert_temp(id.with("fit"), fit));
-    let lo = (fit * ZOOM_MIN_OF_FIT).min(0.02);
-    let k = st.zoom.unwrap_or(fit).clamp(lo, ZOOM_MAX);
-    let centre = st.centre.unwrap_or(Vec2::splat(0.5));
     let resp = ui.interact(area, id.with("panes"), Sense::click_and_drag());
     let img_rect = |pane: Rect| Rect::from_min_size(pane.center() - centre * size * k, size * k);
     let (before_l, after_l) = (tr("dialog.before"), tr("dialog.after"));
@@ -513,8 +551,20 @@ pub fn view(
             if let Some(t) = pics.before {
                 paint_turned(&ui.painter_at(left), t, r, st.turns, Color32::WHITE);
             }
-            if let Some(t) = pics.after {
-                paint_turned(&ui.painter_at(right), t, r, st.turns, Color32::WHITE);
+            match pics.sharp.get(i).copied().flatten() {
+                Some((t, at)) => {
+                    ui.painter_at(right.intersect(*pane)).image(
+                        t,
+                        at,
+                        Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
+                        Color32::WHITE,
+                    );
+                }
+                None => {
+                    if let Some(t) = pics.after {
+                        paint_turned(&ui.painter_at(right), t, r, st.turns, Color32::WHITE);
+                    }
+                }
             }
             let mut y = pane.top();
             while y < pane.bottom() {
@@ -532,11 +582,25 @@ pub fn view(
                 y += 12.0;
             }
         } else {
+            // Zoomed in, the result (or the overlay's lines) drawn sharp
+            // in place of its picture, which would show its pixels.
+            let sharp = pics.sharp.get(i).copied().flatten();
+            let uv = Rect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0));
             if let Some(t) = tex {
-                paint_turned(&p, *t, r, st.turns, tint);
+                match sharp.filter(|_| over.is_none()) {
+                    Some((s, at)) => {
+                        p.image(s, at, uv, tint);
+                    }
+                    None => paint_turned(&p, *t, r, st.turns, tint),
+                }
             }
             if let Some(t) = over {
-                paint_turned(&p, *t, r, st.turns, Color32::WHITE);
+                match sharp {
+                    Some((s, at)) => {
+                        p.image(s, at, uv, Color32::WHITE);
+                    }
+                    None => paint_turned(&p, *t, r, st.turns, Color32::WHITE),
+                }
             }
         }
         if !label.is_empty() {
@@ -833,6 +897,7 @@ pub fn live(
         after: Some(after_tex.id()),
         overlay: None,
         size: Vec2::new(copy.img.width() as f32, copy.img.height() as f32),
+        sharp: Vec::new(),
     };
     let out = view(ui, id, st, area, &pics, *picking);
     let (w, h) = copy.img.dimensions();

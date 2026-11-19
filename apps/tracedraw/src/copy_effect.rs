@@ -279,6 +279,7 @@ mod tests {
                     offset: 1.0,
                     outside: true,
                     to_center: false,
+                    both: false,
                     fill_to: tracedraw_core::Color::BLACK,
                     outline_to: None,
                     fill_end_to: None,

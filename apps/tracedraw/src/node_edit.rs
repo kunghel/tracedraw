@@ -362,8 +362,19 @@ impl App {
     /// A click on a node: alone, Ctrl adds or removes it, Shift selects
     /// the run of nodes from the last one selected to it (the shorter way
     /// round a closed subpath); Shift+clicking the end of that run again
-    /// selects the other way round instead.
+    /// selects the other way round instead. Ctrl+Shift selects every node
+    /// of its subpath, as in CorelDRAW (#3007).
     pub fn click_node(&mut self, key: (ShapeId, usize), mods: Modifiers) {
+        if (mods.command || mods.ctrl) && mods.shift {
+            self.node_run = None;
+            if let Some(ring) = self
+                .curve_of(key.0)
+                .and_then(|(path, _, _)| nodes::subpath_nodes(&path, key.1))
+            {
+                self.node_selection = ring.into_iter().map(|i| (key.0, i)).collect();
+                return;
+            }
+        }
         if mods.command || mods.ctrl {
             self.node_run = None;
             if let Some(i) = self.node_selection.iter().position(|k| *k == key) {
@@ -828,6 +839,30 @@ mod tests {
         app.node_selection = vec![(id, 0)];
         assert!(app.cycle_node(false));
         assert_eq!(app.node_selection, vec![(id, 3)]);
+    }
+
+    /// Ctrl+Shift+click a node: every node of its subpath, and only of
+    /// that one (#3007).
+    #[test]
+    fn ctrl_shift_click_selects_the_subpath() {
+        let mut app = App::headless();
+        let mut path = Rect::new(0.0, 0.0, 10.0, 10.0).to_path(0.01);
+        path.extend(Rect::new(20.0, 0.0, 30.0, 10.0).to_path(0.01));
+        let id = app
+            .new_shape(ShapeKind::Path {
+                path: path.clone(),
+                closed: true,
+            })
+            .expect("two squares");
+        app.select(vec![id]);
+        app.tool = crate::tools::Tool::Shape;
+        let second = nodes::subpath_nodes(&path, 6).expect("second square");
+        assert_eq!(second.len(), 4);
+        let first = nodes::subpath_nodes(&path, 0).expect("first square");
+        assert!(first.iter().all(|i| !second.contains(i)));
+        app.click_node((id, second[1]), Modifiers::CTRL | Modifiers::SHIFT);
+        let want: Vec<_> = second.iter().map(|i| (id, *i)).collect();
+        assert_eq!(app.node_selection, want);
     }
 
     #[test]

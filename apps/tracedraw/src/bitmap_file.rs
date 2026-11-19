@@ -210,13 +210,19 @@ pub struct ReadPicture {
     /// The ink channels (cyan, magenta, yellow, black) as the grey PNG
     /// `PictureInks` keeps, when the file is CMYK.
     pub planes: Option<Vec<u8>>,
+    /// The colour mode the file stores its pixels in (#3025).
+    pub mode: FileMode,
 }
 
 impl ReadPicture {
     /// The pixels as the PNG a bitmap keeps, and the ink channels that
     /// belong to it.
     pub fn into_png(self) -> Option<(Vec<u8>, Option<Box<PictureInks>>)> {
-        let png = crate::bitmap_fx::encode(&self.rgba)?;
+        let png = if self.planes.is_none() {
+            encode_as(&self.rgba, self.mode)?
+        } else {
+            crate::bitmap_fx::encode(&self.rgba)?
+        };
         let inks = self
             .planes
             .map(|p| Box::new(PictureInks::cmyk(&png, p.into())));
@@ -235,10 +241,285 @@ pub fn read(bytes: &[u8]) -> Result<ReadPicture, String> {
     if let Some(p) = read_cmyk_jpeg(bytes) {
         return Ok(p);
     }
+    if let Some(p) = read_palette_tiff(bytes) {
+        return Ok(p);
+    }
     let rgba = crate::files::decode_picture(bytes)
         .map_err(|e| e.to_string())?
         .into_rgba8();
-    Ok(ReadPicture { rgba, planes: None })
+    Ok(ReadPicture {
+        rgba,
+        planes: None,
+        mode: file_mode(bytes),
+    })
+}
+
+/// The colour mode a picture file stores its pixels in, among those a
+/// bitmap of the drawing keeps (CMYK files keep their inks apart).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum FileMode {
+    #[default]
+    Rgb,
+    Gray,
+    /// One bit per pixel.
+    BlackWhite,
+    /// A palette of at most 256 colours.
+    Indexed,
+}
+
+/// The colour mode of picture file `bytes`, from its header: PNG (colour
+/// type and bit depth), BMP (bits per pixel), GIF (always a palette),
+/// TIFF (photometric interpretation and bits per sample), JPEG (one
+/// component is grey) and Photoshop (its colour mode; a duotone keeps
+/// its grey picture). Every file came in as RGB, its mode lost (#3025).
+pub fn file_mode(bytes: &[u8]) -> FileMode {
+    if bytes.starts_with(b"\x89PNG\r\n\x1a\n") && bytes.get(12..16) == Some(b"IHDR".as_slice()) {
+        return match (bytes.get(24), bytes.get(25)) {
+            (_, Some(3)) => FileMode::Indexed,
+            (Some(1), Some(0)) => FileMode::BlackWhite,
+            (_, Some(0) | Some(4)) => FileMode::Gray,
+            _ => FileMode::Rgb,
+        };
+    }
+    if bytes.starts_with(b"BM") {
+        // BITMAPINFOHEADER and later: bits per pixel after the 14-byte
+        // file header, size, width, height and planes.
+        return match bytes.get(28..30).map(|b| u16::from_le_bytes([b[0], b[1]])) {
+            Some(1) => FileMode::BlackWhite,
+            Some(4 | 8) => FileMode::Indexed,
+            _ => FileMode::Rgb,
+        };
+    }
+    if bytes.starts_with(b"GIF8") {
+        return FileMode::Indexed;
+    }
+    if bytes.starts_with(b"8BPS") {
+        return match bytes.get(24..26).map(|b| u16::from_be_bytes([b[0], b[1]])) {
+            Some(0) => FileMode::BlackWhite,
+            Some(1 | 8) => FileMode::Gray,
+            Some(2) => FileMode::Indexed,
+            _ => FileMode::Rgb,
+        };
+    }
+    if let Some(tags) = TiffTags::new(bytes) {
+        let bits = tags.short(258).map(|(v, _)| v).unwrap_or(1);
+        return match tags.short(262).map(|(v, _)| v) {
+            Some(3) => FileMode::Indexed,
+            Some(0 | 1) if tags.short(277).is_none_or(|(n, _)| n == 1) => {
+                if bits == 1 {
+                    FileMode::BlackWhite
+                } else {
+                    FileMode::Gray
+                }
+            }
+            _ => FileMode::Rgb,
+        };
+    }
+    if jpeg_components(bytes) == Some(1) {
+        return FileMode::Gray;
+    }
+    FileMode::Rgb
+}
+
+/// The number of components of a JPEG file, from its frame header.
+fn jpeg_components(b: &[u8]) -> Option<u8> {
+    if !b.starts_with(&[0xFF, 0xD8]) {
+        return None;
+    }
+    let mut at = 2usize;
+    loop {
+        while b.get(at) == Some(&0xFF) && b.get(at + 1) == Some(&0xFF) {
+            at += 1;
+        }
+        if *b.get(at)? != 0xFF {
+            return None;
+        }
+        let marker = *b.get(at + 1)?;
+        if marker == 0x01 || (0xD0..=0xD7).contains(&marker) {
+            at += 2;
+            continue;
+        }
+        if marker == 0xDA || marker == 0xD9 {
+            return None;
+        }
+        let len = usize::from(u16::from_be_bytes([*b.get(at + 2)?, *b.get(at + 3)?]));
+        if (0xC0..=0xCF).contains(&marker) && !matches!(marker, 0xC4 | 0xC8 | 0xCC) {
+            return b.get(at + 9).copied();
+        }
+        at += 2 + len;
+    }
+}
+
+/// `img` as the PNG a bitmap keeps in colour mode `mode`: 1-bit, grey or
+/// indexed when its pixels allow it (a 1-bit file of two colours other
+/// than black and white is indexed), else RGB.
+pub fn encode_as(img: &image::RgbaImage, mode: FileMode) -> Option<Vec<u8>> {
+    use crate::bitmap_fx as fx;
+    let grey = || img.pixels().all(|p| p[0] == p[1] && p[1] == p[2]);
+    match mode {
+        FileMode::Rgb => fx::encode(img),
+        FileMode::Gray if grey() => fx::encode_gray(img),
+        FileMode::BlackWhite
+            if img.pixels().all(|p| {
+                p[3] == 0 || (p[0] == p[1] && p[1] == p[2] && matches!(p[0], 0 | 255))
+            }) =>
+        {
+            fx::encode_bw(img)
+        }
+        FileMode::BlackWhite | FileMode::Indexed => {
+            fx::encode_indexed(img).or_else(|| fx::encode(img))
+        }
+        FileMode::Gray => fx::encode(img),
+    }
+}
+
+/// The bitmaps a Photoshop file gave keep its colour mode: a Bitmap
+/// (1-bit), Grayscale, Duotone or Indexed file came in as RGB (#3025).
+pub fn keep_psd_mode(bytes: &[u8], shapes: &mut [Shape]) {
+    if !bytes.starts_with(b"8BPS") {
+        return;
+    }
+    let mode = file_mode(bytes);
+    if mode == FileMode::Rgb {
+        return;
+    }
+    for s in shapes {
+        if let ShapeKind::Bitmap { png, .. } = &mut s.kind {
+            let Ok(img) = image::load_from_memory_with_format(png, image::ImageFormat::Png) else {
+                continue;
+            };
+            if let Some(kept) = encode_as(&img.into_rgba8(), mode) {
+                *png = kept.into();
+            }
+        }
+    }
+}
+
+/// The entries of the first directory of a classic TIFF file.
+struct TiffTags<'a> {
+    b: &'a [u8],
+    le: bool,
+    ifd: usize,
+    n: usize,
+}
+
+impl<'a> TiffTags<'a> {
+    fn new(b: &'a [u8]) -> Option<TiffTags<'a>> {
+        let le = match b.get(..4)? {
+            b"II*\0" => true,
+            b"MM\0*" => false,
+            _ => return None,
+        };
+        let mut t = TiffTags {
+            b,
+            le,
+            ifd: 0,
+            n: 0,
+        };
+        t.ifd = t.u32(4)? as usize;
+        t.n = usize::from(t.u16(t.ifd)?);
+        Some(t)
+    }
+
+    fn u16(&self, at: usize) -> Option<u16> {
+        let v = self.b.get(at..at + 2)?;
+        Some(if self.le {
+            u16::from_le_bytes([v[0], v[1]])
+        } else {
+            u16::from_be_bytes([v[0], v[1]])
+        })
+    }
+
+    fn u32(&self, at: usize) -> Option<u32> {
+        let v = self.b.get(at..at + 4)?;
+        let v = [v[0], v[1], v[2], v[3]];
+        Some(if self.le {
+            u32::from_le_bytes(v)
+        } else {
+            u32::from_be_bytes(v)
+        })
+    }
+
+    /// The value of tag `tag` when it is one SHORT (or LONG below 65536),
+    /// and where the value is stored.
+    fn short(&self, tag: u16) -> Option<(u16, usize)> {
+        (0..self.n).find_map(|i| {
+            let e = self.ifd + 2 + i * 12;
+            if self.u16(e)? != tag || self.u32(e + 4)? != 1 {
+                return None;
+            }
+            match self.u16(e + 2)? {
+                3 => Some((self.u16(e + 8)?, e + 8)),
+                4 => Some((u16::try_from(self.u32(e + 8)?).ok()?, e + 8)),
+                _ => None,
+            }
+        })
+    }
+}
+
+/// A palette TIFF (photometric interpretation 3, 1 to 8 bits per pixel):
+/// its colours, and the Indexed mode. The TIFF reader takes no palette
+/// file, so such a file did not open at all (#3025): it is read as grey
+/// levels, which are the palette's indices, and those are looked up in
+/// its colour map (TIFF 6.0, section 5: 16-bit red, then green, then
+/// blue levels).
+fn read_palette_tiff(bytes: &[u8]) -> Option<ReadPicture> {
+    let tags = TiffTags::new(bytes)?;
+    let (photometric, at) = tags.short(262)?;
+    if photometric != 3 {
+        return None;
+    }
+    let mut grey = bytes.to_vec();
+    let one = if tags.le { [1, 0] } else { [0, 1] };
+    grey.get_mut(at..at + 2)?.copy_from_slice(&one);
+    let limit = usize::try_from(crate::files::picture_decode_limit()).unwrap_or(usize::MAX);
+    let mut limits = tiff::decoder::Limits::default();
+    limits.decoding_buffer_size = limits.decoding_buffer_size.max(limit);
+    let mut dec = tiff::decoder::Decoder::new(std::io::Cursor::new(grey.as_slice()))
+        .ok()?
+        .with_limits(limits);
+    let bits = match dec.colortype().ok()? {
+        tiff::ColorType::Gray(b @ (1 | 2 | 4 | 8)) => b,
+        _ => return None,
+    };
+    let map: Vec<u16> = dec
+        .find_tag_unsigned_vec(tiff::tags::Tag::ColorMap)
+        .ok()??;
+    let colors = 1usize << bits;
+    if map.len() < colors * 3 {
+        return None;
+    }
+    let (w, h) = dec.dimensions().ok()?;
+    let tiff::decoder::DecodingResult::U8(data) = dec.read_image().ok()? else {
+        return None;
+    };
+    let row = (w as usize * usize::from(bits)).div_ceil(8);
+    let level = |v: u16| (v >> 8) as u8;
+    let mut rgba = image::RgbaImage::new(w, h);
+    for (y, line) in data.chunks(row).take(h as usize).enumerate() {
+        for x in 0..w as usize {
+            let bit = x * usize::from(bits);
+            let byte = *line.get(bit / 8)?;
+            let i = if bits == 8 {
+                usize::from(byte)
+            } else {
+                let shift = 8 - usize::from(bits) - bit % 8;
+                usize::from(byte >> shift) & (colors - 1)
+            };
+            let px = [
+                level(map[i]),
+                level(map[colors + i]),
+                level(map[2 * colors + i]),
+                255,
+            ];
+            rgba.put_pixel(x as u32, y as u32, image::Rgba(px));
+        }
+    }
+    Some(ReadPicture {
+        rgba,
+        planes: None,
+        mode: FileMode::Indexed,
+    })
 }
 
 fn read_cmyk_tiff(bytes: &[u8]) -> Option<ReadPicture> {
@@ -318,6 +599,7 @@ fn picture_with_planes(rgba: image::RgbaImage, planes: image::GrayImage) -> Opti
     Some(ReadPicture {
         rgba,
         planes: Some(png.into_inner()),
+        mode: FileMode::Rgb,
     })
 }
 
@@ -329,8 +611,8 @@ enum JpegInks {
     /// C, M, Y, K inverted (255 = no ink): an Adobe `APP14` marker with
     /// transform 0 (Adobe Technical Note 5116).
     Inverted,
-    /// Y, Cb, Cr of the inverted C, M, Y, then the inverted K: an Adobe
-    /// `APP14` marker with transform 2 (YCCK).
+    /// Y, Cb, Cr of C, M, Y, then the inverted K: an Adobe `APP14`
+    /// marker with transform 2 (YCCK).
     Ycck,
 }
 
@@ -397,16 +679,21 @@ fn jpeg_pixel_inks(px: [u8; 4], how: JpegInks) -> [u8; 4] {
         JpegInks::Plain => px,
         JpegInks::Inverted => px.map(|v| 255 - v),
         JpegInks::Ycck => {
-            // T.81 is silent on colour; the YCbCr of JFIF (ITU-T T.871):
-            // the colour transform taken back gives the inverted C, M, Y.
+            // T.81 is silent on colour; the YCbCr of JFIF (ITU-T T.871).
+            // The writer turns the CMYK it is given, stored inverted as
+            // under transform 0, into "RGB" as 255 less each value, so
+            // the colour transform taken back gives C, M and Y as they
+            // are, and K stays inverted. Taken as the inverted C, M, Y,
+            // a Photoshop CMYK JPEG (YCCK as a rule) came in with its
+            // cyan, magenta and yellow inverted (#3025).
             let y = f32::from(px[0]);
             let cb = f32::from(px[1]) - 128.0;
             let cr = f32::from(px[2]) - 128.0;
             let byte = |v: f32| v.round().clamp(0.0, 255.0) as u8;
-            let r = byte(y + 1.402 * cr);
-            let g = byte(y - 0.344_136 * cb - 0.714_136 * cr);
-            let b = byte(y + 1.772 * cb);
-            [255 - r, 255 - g, 255 - b, 255 - px[3]]
+            let c = byte(y + 1.402 * cr);
+            let m = byte(y - 0.344_136 * cb - 0.714_136 * cr);
+            let ye = byte(y + 1.772 * cb);
+            [c, m, ye, 255 - px[3]]
         }
     }
 }
@@ -989,14 +1276,14 @@ mod tests {
     }
 
     /// YCCK (Adobe transform 2): the colour transform taken back gives
-    /// the inverted cyan, magenta and yellow; black is inverted.
+    /// cyan, magenta and yellow as they are; black is inverted.
     #[test]
     fn ycck_pixels_give_their_inks() {
         assert_eq!(
             jpeg_pixel_inks([200, 128, 128, 55], JpegInks::Ycck),
-            [55, 55, 55, 200]
+            [200, 200, 200, 200]
         );
-        // Stored red (R 255, G 0, B 0): no cyan, full magenta and yellow.
+        // Stored as R 255, G 0, B 0: full cyan, no magenta or yellow.
         let (r, g, b) = (255.0f32, 0.0f32, 0.0f32);
         let y = 0.299 * r + 0.587 * g + 0.114 * b;
         let cb = 128.0 - 0.168_736 * r - 0.331_264 * g + 0.5 * b;
@@ -1004,7 +1291,7 @@ mod tests {
         let byte = |v: f32| v.round().clamp(0.0, 255.0) as u8;
         let got = jpeg_pixel_inks([byte(y), byte(cb), byte(cr), 255], JpegInks::Ycck);
         assert!(
-            near(got[0], 0, 2) && near(got[1], 255, 2) && near(got[2], 255, 2),
+            near(got[0], 255, 2) && near(got[1], 0, 2) && near(got[2], 0, 2),
             "{got:?}"
         );
         assert_eq!(got[3], 0);
@@ -1013,6 +1300,113 @@ mod tests {
             jpeg_pixel_inks([1, 2, 3, 4], JpegInks::Inverted),
             [254, 253, 252, 251]
         );
+    }
+
+    /// Six squares of 16 by 16 pixels: C100, M100, Y100, K100,
+    /// C20 M40 Y60 K10, and no ink, written by libjpeg (ImageMagick 6,
+    /// quality 100, no subsampling) as YCCK under an Adobe marker with
+    /// transform 2, as Photoshop writes CMYK JPEGs.
+    const YCCK_SQUARES: &[u8] = &[
+        0xFF, 0xD8, 0xFF, 0xE0, 0x00, 0x10, 0x4A, 0x46, 0x49, 0x46, 0x00, 0x01, 0x01, 0x01, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0xFF, 0xEE, 0x00, 0x0E, 0x41, 0x64, 0x6F, 0x62, 0x65, 0x00,
+        0x64, 0x00, 0x00, 0x00, 0x00, 0x02, 0xFF, 0xDB, 0x00, 0x43, 0x00, 0x01, 0x01, 0x01, 0x01,
+        0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01,
+        0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01,
+        0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01,
+        0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01,
+        0xFF, 0xDB, 0x00, 0x43, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01,
+        0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01,
+        0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01,
+        0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01,
+        0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0xFF, 0xC0, 0x00, 0x14, 0x08, 0x00,
+        0x10, 0x00, 0x60, 0x04, 0x01, 0x11, 0x00, 0x02, 0x11, 0x01, 0x03, 0x11, 0x01, 0x04, 0x11,
+        0x00, 0xFF, 0xC4, 0x00, 0x18, 0x00, 0x01, 0x01, 0x01, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x0A, 0x08, 0x0B, 0x09, 0xFF, 0xC4, 0x00,
+        0x14, 0x10, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0xFF, 0xC4, 0x00, 0x18, 0x01, 0x01, 0x00, 0x03, 0x01, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x08, 0x09, 0x0A, 0x0B,
+        0xFF, 0xC4, 0x00, 0x14, 0x11, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xFF, 0xDA, 0x00, 0x0E, 0x04, 0x01, 0x00, 0x02,
+        0x11, 0x03, 0x11, 0x04, 0x00, 0x00, 0x3F, 0x00, 0xF1, 0x7D, 0x54, 0xED, 0xFC, 0x2F, 0xE0,
+        0x01, 0x4A, 0x0A, 0xB7, 0x70, 0xAF, 0x00, 0x10, 0x6E, 0xED, 0x30, 0xD5, 0x80, 0x00, 0xC2,
+        0xEC, 0x03, 0xA5, 0x43, 0x80, 0x38, 0x02, 0xBA, 0x16, 0x20, 0x81, 0xEE, 0xE5, 0x00, 0x09,
+        0x17, 0x57, 0x7A, 0x78, 0x36, 0x80, 0x02, 0x98, 0x15, 0x4E, 0xDF, 0xC0, 0x00, 0xA5, 0x05,
+        0x5B, 0xB8, 0x57, 0x80, 0x08, 0x37, 0x76, 0x98, 0x6A, 0xC0, 0x00, 0x61, 0x76, 0x01, 0xD2,
+        0xA1, 0xC0, 0x1C, 0x01, 0x5D, 0x0B, 0x10, 0x40, 0xF7, 0x72, 0x80, 0x04, 0x8B, 0xAB, 0xBD,
+        0x3C, 0x1B, 0x40, 0x01, 0xFF, 0xD9,
+    ];
+
+    /// The same squares written by libjpeg through Pillow as CMYK
+    /// inverted under an Adobe marker with transform 0.
+    const INVERTED_SQUARES: &[u8] = &[
+        0xFF, 0xD8, 0xFF, 0xEE, 0x00, 0x0E, 0x41, 0x64, 0x6F, 0x62, 0x65, 0x00, 0x64, 0x00, 0x00,
+        0x00, 0x00, 0x00, 0xFF, 0xDB, 0x00, 0x43, 0x00, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01,
+        0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01,
+        0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01,
+        0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01,
+        0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01, 0xFF, 0xC0, 0x00,
+        0x14, 0x08, 0x00, 0x10, 0x00, 0x60, 0x04, 0x43, 0x11, 0x00, 0x4D, 0x11, 0x00, 0x59, 0x11,
+        0x00, 0x4B, 0x11, 0x00, 0xFF, 0xC4, 0x00, 0x1F, 0x00, 0x00, 0x01, 0x05, 0x01, 0x01, 0x01,
+        0x01, 0x01, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x02, 0x03, 0x04,
+        0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0xFF, 0xC4, 0x00, 0xB5, 0x10, 0x00, 0x02, 0x01,
+        0x03, 0x03, 0x02, 0x04, 0x03, 0x05, 0x05, 0x04, 0x04, 0x00, 0x00, 0x01, 0x7D, 0x01, 0x02,
+        0x03, 0x00, 0x04, 0x11, 0x05, 0x12, 0x21, 0x31, 0x41, 0x06, 0x13, 0x51, 0x61, 0x07, 0x22,
+        0x71, 0x14, 0x32, 0x81, 0x91, 0xA1, 0x08, 0x23, 0x42, 0xB1, 0xC1, 0x15, 0x52, 0xD1, 0xF0,
+        0x24, 0x33, 0x62, 0x72, 0x82, 0x09, 0x0A, 0x16, 0x17, 0x18, 0x19, 0x1A, 0x25, 0x26, 0x27,
+        0x28, 0x29, 0x2A, 0x34, 0x35, 0x36, 0x37, 0x38, 0x39, 0x3A, 0x43, 0x44, 0x45, 0x46, 0x47,
+        0x48, 0x49, 0x4A, 0x53, 0x54, 0x55, 0x56, 0x57, 0x58, 0x59, 0x5A, 0x63, 0x64, 0x65, 0x66,
+        0x67, 0x68, 0x69, 0x6A, 0x73, 0x74, 0x75, 0x76, 0x77, 0x78, 0x79, 0x7A, 0x83, 0x84, 0x85,
+        0x86, 0x87, 0x88, 0x89, 0x8A, 0x92, 0x93, 0x94, 0x95, 0x96, 0x97, 0x98, 0x99, 0x9A, 0xA2,
+        0xA3, 0xA4, 0xA5, 0xA6, 0xA7, 0xA8, 0xA9, 0xAA, 0xB2, 0xB3, 0xB4, 0xB5, 0xB6, 0xB7, 0xB8,
+        0xB9, 0xBA, 0xC2, 0xC3, 0xC4, 0xC5, 0xC6, 0xC7, 0xC8, 0xC9, 0xCA, 0xD2, 0xD3, 0xD4, 0xD5,
+        0xD6, 0xD7, 0xD8, 0xD9, 0xDA, 0xE1, 0xE2, 0xE3, 0xE4, 0xE5, 0xE6, 0xE7, 0xE8, 0xE9, 0xEA,
+        0xF1, 0xF2, 0xF3, 0xF4, 0xF5, 0xF6, 0xF7, 0xF8, 0xF9, 0xFA, 0xFF, 0xDA, 0x00, 0x0E, 0x04,
+        0x43, 0x00, 0x4D, 0x00, 0x59, 0x00, 0x4B, 0x00, 0x00, 0x3F, 0x00, 0xFF, 0x00, 0x3F, 0xFA,
+        0xFE, 0xFE, 0x2B, 0xFB, 0xF8, 0xAF, 0xEF, 0xE2, 0x8A, 0x28, 0xA2, 0xBF, 0xDF, 0xE2, 0xBF,
+        0xC0, 0x1E, 0x8A, 0x28, 0xA2, 0x8A, 0x28, 0xAF, 0xF7, 0xF8, 0xAF, 0xF0, 0x07, 0xA2, 0x8A,
+        0x28, 0xA2, 0x8A, 0x2B, 0xFD, 0xFE, 0x2B, 0xFC, 0x01, 0xE8, 0xA2, 0x8A, 0x2B, 0xF1, 0x9E,
+        0xBF, 0x8C, 0xFA, 0xFF, 0x00, 0x33, 0x7A, 0xFF, 0x00, 0x72, 0x8A, 0x28, 0xA2, 0x8A, 0xFD,
+        0x98, 0xAF, 0xEC, 0xC2, 0xBF, 0xD3, 0x22, 0xBE, 0xD0, 0xA2, 0x8A, 0x28, 0xAF, 0xF0, 0x07,
+        0xA2, 0x8A, 0x28, 0xA2, 0x8A, 0x2B, 0xFD, 0xFE, 0x2B, 0xFC, 0x01, 0xE8, 0xA2, 0x8A, 0x28,
+        0xA2, 0x8A, 0xFF, 0x00, 0x7F, 0x8A, 0xFF, 0x00, 0x00, 0x7A, 0x28, 0xA2, 0x8A, 0x28, 0xA2,
+        0xBF, 0xDF, 0xE2, 0xBF, 0xC0, 0x1E, 0x8A, 0x28, 0xA2, 0xBF, 0x19, 0xEB, 0xF8, 0xCF, 0xAF,
+        0xF3, 0x37, 0xAF, 0xF7, 0x28, 0xA2, 0x8A, 0x28, 0xAF, 0xD9, 0x8A, 0xFE, 0xCC, 0x2B, 0xFD,
+        0x32, 0x2B, 0xED, 0x0A, 0x28, 0xA2, 0x8A, 0xFF, 0xD9,
+    ];
+
+    /// #3025: CMYK JPEGs written by another program come in with the
+    /// inks they were written with. A YCCK file (Photoshop's usual CMYK
+    /// JPEG) came in with its cyan, magenta and yellow inverted: C100
+    /// as M100 Y100, white as C100 M100 Y100.
+    #[test]
+    fn cmyk_jpegs_of_other_programs_keep_their_inks() {
+        let want: [[u8; 4]; 6] = [
+            [255, 0, 0, 0],
+            [0, 255, 0, 0],
+            [0, 0, 255, 0],
+            [0, 0, 0, 255],
+            [51, 102, 153, 26],
+            [0, 0, 0, 0],
+        ];
+        for (name, file) in [("YCCK", YCCK_SQUARES), ("inverted", INVERTED_SQUARES)] {
+            let pic = read(file).expect(name);
+            assert_eq!(pic.rgba.dimensions(), (96, 16), "{name}");
+            let p = read_planes(&pic);
+            for (i, ink) in want.iter().enumerate() {
+                let x = i as u32 * 16 + 8;
+                let got: Vec<u8> = (0..4).map(|k| p.get_pixel(x, k * 16 + 8).0[0]).collect();
+                assert!(
+                    got.iter().zip(ink).all(|(g, w)| near(*g, *w, 3)),
+                    "{name} square {i}: {got:?}, want {ink:?}"
+                );
+            }
+            // No ink is white.
+            assert_eq!(
+                &pic.rgba.get_pixel(88, 8).0[..3],
+                &[255, 255, 255],
+                "{name}"
+            );
+        }
     }
 
     /// Broken or other JPEG files are no CMYK JPEG, and reading them
@@ -1098,6 +1492,272 @@ mod tests {
         assert!(at(0, 4, 2) > 200 && at(3, 4, 2) < 50, "cyan on top");
         assert!(at(3, 4, 13) > 200 && at(0, 4, 13) < 50, "black below");
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// A minimal uncompressed little-endian TIFF of `w` by `h` pixels
+    /// of `bits` bits: the tags given (SHORT values) plus the strip, and
+    /// a colour map when `map` is given.
+    fn tiff(w: u16, h: u16, tags: &[(u16, u16)], map: Option<&[u16]>, data: &[u8]) -> Vec<u8> {
+        let mut entries: Vec<(u16, u16, u32, u32)> =
+            tags.iter().map(|&(t, v)| (t, 3, 1, u32::from(v))).collect();
+        entries.push((256, 3, 1, u32::from(w)));
+        entries.push((257, 3, 1, u32::from(h)));
+        entries.push((278, 3, 1, u32::from(h)));
+        entries.push((279, 4, 1, data.len() as u32));
+        let n = entries.len() + 1 + usize::from(map.is_some());
+        let ifd_len = 2 + n * 12 + 4;
+        let data_at = 8 + ifd_len;
+        let map_at = data_at + data.len();
+        entries.push((273, 4, 1, data_at as u32));
+        if let Some(m) = map {
+            entries.push((320, 3, m.len() as u32, map_at as u32));
+        }
+        entries.sort_by_key(|e| e.0);
+        let mut b = b"II*\0".to_vec();
+        b.extend_from_slice(&8u32.to_le_bytes());
+        b.extend_from_slice(&(entries.len() as u16).to_le_bytes());
+        for (t, ty, count, v) in entries {
+            b.extend_from_slice(&t.to_le_bytes());
+            b.extend_from_slice(&ty.to_le_bytes());
+            b.extend_from_slice(&count.to_le_bytes());
+            if ty == 3 && count == 1 {
+                b.extend_from_slice(&(v as u16).to_le_bytes());
+                b.extend_from_slice(&[0, 0]);
+            } else {
+                b.extend_from_slice(&v.to_le_bytes());
+            }
+        }
+        b.extend_from_slice(&0u32.to_le_bytes());
+        b.extend_from_slice(data);
+        if let Some(m) = map {
+            for v in m {
+                b.extend_from_slice(&v.to_le_bytes());
+            }
+        }
+        b
+    }
+
+    /// A BMP of `w` by `h` pixels of `bits` (1, 4 or 8) bits with the
+    /// palette `pal` (RGB): rows bottom up, each padded to four bytes.
+    fn bmp(w: u32, h: u32, bits: u16, pal: &[[u8; 3]], index: impl Fn(u32, u32) -> u8) -> Vec<u8> {
+        let row = ((w * u32::from(bits)).div_ceil(32) * 4) as usize;
+        let mut pixels = vec![0u8; row * h as usize];
+        for y in 0..h {
+            let line = &mut pixels[(h - 1 - y) as usize * row..][..row];
+            for x in 0..w {
+                let i = index(x, y);
+                let bit = (x * u32::from(bits)) as usize;
+                line[bit / 8] |= i << (8 - bits as usize - bit % 8);
+            }
+        }
+        let offset = 14 + 40 + pal.len() * 4;
+        let mut b = b"BM".to_vec();
+        b.extend_from_slice(&((offset + pixels.len()) as u32).to_le_bytes());
+        b.extend_from_slice(&[0; 4]);
+        b.extend_from_slice(&(offset as u32).to_le_bytes());
+        b.extend_from_slice(&40u32.to_le_bytes());
+        b.extend_from_slice(&(w as i32).to_le_bytes());
+        b.extend_from_slice(&(h as i32).to_le_bytes());
+        b.extend_from_slice(&1u16.to_le_bytes());
+        b.extend_from_slice(&bits.to_le_bytes());
+        b.extend_from_slice(&[0; 4]); // no compression
+        b.extend_from_slice(&(pixels.len() as u32).to_le_bytes());
+        b.extend_from_slice(&[0; 8]);
+        b.extend_from_slice(&(pal.len() as u32).to_le_bytes());
+        b.extend_from_slice(&[0; 4]);
+        for c in pal {
+            b.extend_from_slice(&[c[2], c[1], c[0], 0]);
+        }
+        b.extend_from_slice(&pixels);
+        b
+    }
+
+    fn mode(s: &Shape) -> crate::bitmap_fx::ColorMode {
+        let ShapeKind::Bitmap { png, .. } = &s.kind else {
+            panic!("bitmap");
+        };
+        crate::bitmap_fx::mode_of(s.cmyk_bitmap, png)
+    }
+
+    /// #3025: 1-bit, grayscale and indexed files keep their colour mode
+    /// when imported (PNG, BMP, GIF, TIFF and Photoshop); they all came
+    /// in as RGB. A palette TIFF, which did not open at all, opens with
+    /// its colours.
+    #[test]
+    fn imported_pictures_keep_their_colour_mode() {
+        use crate::bitmap_fx::{self as fx, ColorMode};
+        let d = dir("3025-modes");
+        let mut app = App::headless();
+        let checker = image::RgbaImage::from_fn(10, 3, |x, y| {
+            let v = if (x + y) % 2 == 0 { 0 } else { 255 };
+            image::Rgba([v, v, v, 255])
+        });
+        let three = image::RgbaImage::from_fn(10, 3, |x, _| {
+            image::Rgba(match x % 3 {
+                0 => [200, 30, 30, 255],
+                1 => [30, 200, 30, 255],
+                _ => [30, 30, 200, 255],
+            })
+        });
+        let gray = {
+            let mut out = std::io::Cursor::new(Vec::new());
+            image::GrayImage::from_fn(10, 3, |x, _| image::Luma([(x * 25) as u8]))
+                .write_to(&mut out, image::ImageFormat::Png)
+                .unwrap();
+            out.into_inner()
+        };
+        let gif = {
+            let mut out = std::io::Cursor::new(Vec::new());
+            image::DynamicImage::ImageRgba8(three.clone())
+                .write_to(&mut out, image::ImageFormat::Gif)
+                .unwrap();
+            out.into_inner()
+        };
+        let pal = [[200, 30, 30], [30, 200, 30], [30, 30, 200]];
+        let cases: Vec<(&str, Vec<u8>, ColorMode)> = vec![
+            (
+                "bw.png",
+                fx::encode_bw(&checker).unwrap(),
+                ColorMode::BlackWhite,
+            ),
+            (
+                "indexed.png",
+                fx::encode_indexed(&three).unwrap(),
+                ColorMode::Paletted,
+            ),
+            ("gray.png", gray, ColorMode::Grayscale),
+            ("indexed.gif", gif, ColorMode::Paletted),
+            (
+                "bw.bmp",
+                bmp(10, 3, 1, &[[0, 0, 0], [255, 255, 255]], |x, y| {
+                    ((x + y) % 2) as u8
+                }),
+                ColorMode::BlackWhite,
+            ),
+            (
+                "indexed.bmp",
+                bmp(10, 3, 8, &pal, |x, _| (x % 3) as u8),
+                ColorMode::Paletted,
+            ),
+            (
+                "bw.tif",
+                // 1 bit, white is zero; rows of two bytes.
+                tiff(
+                    10,
+                    3,
+                    &[(258, 1), (259, 1), (262, 0), (277, 1)],
+                    None,
+                    &[0x55, 0x40, 0xAA, 0x80, 0x55, 0x40],
+                ),
+                ColorMode::BlackWhite,
+            ),
+            ("rgb.png", fx::encode(&three).unwrap(), ColorMode::Rgb),
+        ];
+        for (name, bytes, want) in cases {
+            let s = imported(&mut app, &d, name, &bytes);
+            assert_eq!(mode(&s), want, "{name}");
+            assert_eq!(size_px(&s), (10, 3), "{name}");
+        }
+        // A palette TIFF: 8 bits of index, a colour map of 256 entries
+        // (16-bit levels: all reds, all greens, all blues).
+        let mut map = vec![0u16; 768];
+        for (i, c) in pal.iter().enumerate() {
+            map[i] = u16::from(c[0]) * 257;
+            map[256 + i] = u16::from(c[1]) * 257;
+            map[512 + i] = u16::from(c[2]) * 257;
+        }
+        let index: Vec<u8> = (0..30).map(|i| (i % 10 % 3) as u8).collect();
+        let t = tiff(
+            10,
+            3,
+            &[(258, 8), (259, 1), (262, 3), (277, 1)],
+            Some(&map),
+            &index,
+        );
+        assert_eq!(file_mode(&t), FileMode::Indexed);
+        let s = imported(&mut app, &d, "indexed.tif", &t);
+        assert_eq!(mode(&s), ColorMode::Paletted);
+        assert_eq!(pixel(&s, 1, 0), [30, 200, 30, 255]);
+        assert_eq!(pixel(&s, 5, 2), [30, 30, 200, 255]);
+        // The pixels stay what they were.
+        let s = imported(&mut app, &d, "bw2.png", &fx::encode_bw(&checker).unwrap());
+        assert_eq!(pixel(&s, 0, 0), [0, 0, 0, 255]);
+        assert_eq!(pixel(&s, 1, 0), [255, 255, 255, 255]);
+    }
+
+    /// #3025: a 1-bit Bitmap mode Photoshop file opens as a black and
+    /// white picture, a grayscale one as a grayscale picture.
+    #[test]
+    fn photoshop_bitmaps_keep_the_files_mode() {
+        let psd = |mode: u16, depth: u16, image: &[u8]| {
+            let mut b = b"8BPS".to_vec();
+            b.extend_from_slice(&1u16.to_be_bytes());
+            b.extend_from_slice(&[0; 6]);
+            b.extend_from_slice(&1u16.to_be_bytes());
+            b.extend_from_slice(&1u32.to_be_bytes());
+            b.extend_from_slice(&10u32.to_be_bytes());
+            b.extend_from_slice(&depth.to_be_bytes());
+            b.extend_from_slice(&mode.to_be_bytes());
+            b.extend_from_slice(&[0; 12]);
+            b.extend_from_slice(&0u16.to_be_bytes());
+            b.extend_from_slice(image);
+            b
+        };
+        for (bytes, want) in [
+            (
+                psd(0, 1, &[0b1010_0000, 0b0100_0000]),
+                crate::bitmap_fx::ColorMode::BlackWhite,
+            ),
+            (
+                psd(1, 8, &[0, 30, 60, 90, 120, 150, 180, 210, 240, 255]),
+                crate::bitmap_fx::ColorMode::Grayscale,
+            ),
+        ] {
+            let mut imported =
+                tracedraw_io::psd::parse(&bytes, &mut tracedraw_core::id::IdSource::default())
+                    .expect("psd");
+            keep_psd_mode(&bytes, &mut imported.shapes);
+            assert_eq!(mode(&imported.shapes[0]), want);
+        }
+    }
+
+    /// #3210, #3063: a JPEG XL file written by the export (lossless,
+    /// opaque or with transparency, down to one pixel) is imported and
+    /// opened with every pixel as it was.
+    #[test]
+    fn jpeg_xl_files_export_and_import_losslessly() {
+        let d = dir("jxl");
+        let mut app = App::headless();
+        let mut img = image::RgbaImage::new(37, 23);
+        for (x, y, p) in img.enumerate_pixels_mut() {
+            *p = image::Rgba([(x * 7) as u8, (y * 11) as u8, (x ^ y) as u8, 255]);
+        }
+        let mut clear = img.clone();
+        for (x, _, p) in clear.enumerate_pixels_mut() {
+            p.0[3] = (x * 6) as u8;
+        }
+        for (name, pic) in [("opaque.jxl", &img), ("clear.jxl", &clear)] {
+            let bytes = crate::export::encode_jxl(pic).expect("jxl");
+            assert!(crate::files::is_jxl(&bytes), "{name}");
+            let s = imported(&mut app, &d, name, &bytes);
+            assert_eq!(size_px(&s), (37, 23), "{name}");
+            for (x, y) in [(0, 0), (5, 3), (36, 22), (20, 11)] {
+                assert_eq!(pixel(&s, x, y), pic.get_pixel(x, y).0, "{name} ({x}, {y})");
+            }
+            // Read as a picture too (File > Open of a picture).
+            let read = read(&bytes).expect("reads");
+            assert_eq!(read.rgba.get_pixel(20, 11), pic.get_pixel(20, 11));
+        }
+        // One pixel across: written two across, the same colour.
+        let one = image::RgbaImage::from_pixel(1, 5, image::Rgba([9, 99, 199, 255]));
+        let bytes = crate::export::encode_jxl(&one).expect("jxl");
+        let back = crate::files::decode_picture(&bytes)
+            .expect("decodes")
+            .to_rgba8();
+        assert_eq!(back.dimensions(), (2, 5));
+        assert!(back.pixels().all(|p| p.0 == [9, 99, 199, 255]));
+        // Not a JPEG XL file: an error, not a picture.
+        assert!(crate::files::decode_picture(&[0xff, 0x0a, 1, 2, 3]).is_err());
     }
 
     /// #2167: File > Import reads every common kind of PNG and JPEG:

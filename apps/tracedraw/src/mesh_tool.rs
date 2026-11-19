@@ -4,7 +4,8 @@
 //! colour goes with them, and they snap) and coloured from the colour
 //! palette; the selected node shows a handle on each grid line leaving
 //! it, dragged to bend the line; a double-click adds grid lines through
-//! the point and Delete removes the lines through the selected node. The
+//! the point, and a double-click on a node or Delete removes the lines
+//! through it (the selected node for Delete). The
 //! property bar sets the grid, Smooth colour, the selected node's
 //! transparency and Clear Mesh.
 
@@ -410,6 +411,66 @@ impl App {
         true
     }
 
+    /// Shuffle on the Mesh Fill bar: every selected object (its own grid,
+    /// else the bar's) gets a new mesh of colours drawn from the chosen
+    /// colour set, its inner nodes nudged off the grid, smooth colour on;
+    /// each click a new mix, all in one undo step. False when nothing
+    /// selected can take a fill.
+    pub fn shuffle_mesh(&mut self) -> bool {
+        let colors = self.mesh_shuffle_colors();
+        let mut cmds = Vec::new();
+        for (k, id) in self.selection.clone().into_iter().enumerate() {
+            let Some(s) = self.doc().find_shape(id) else {
+                continue;
+            };
+            if matches!(
+                s.kind,
+                tracedraw_core::ShapeKind::Group { .. } | tracedraw_core::ShapeKind::Bitmap { .. }
+            ) {
+                continue;
+            }
+            let b = s.local_path().bounding_box();
+            if !(b.width() > 0.0 && b.height() > 0.0) {
+                continue;
+            }
+            let (rows, cols) = match &s.fill {
+                Fill::Mesh(m) => (m.rows, m.cols),
+                _ => (self.mesh_rows, self.mesh_cols),
+            };
+            let seed = self.mesh_seed.wrapping_add(k as u64 * 7919);
+            cmds.push(Command::SetFill {
+                shapes: vec![id],
+                fill: Fill::Mesh(random_mesh(b, rows, cols, &colors, seed, 0.35)),
+            });
+        }
+        if cmds.is_empty() {
+            return false;
+        }
+        self.mesh_seed = self.mesh_seed.wrapping_add(1);
+        if let Err(e) = self.engine.run_batch("Shuffle Mesh", &cmds) {
+            self.status = e.to_string();
+            return false;
+        }
+        self.selected_effect_node = None;
+        true
+    }
+
+    /// The colours Shuffle draws from: the chosen set, or the document
+    /// palette (past the sets' end, or when a set is missing).
+    pub fn mesh_shuffle_colors(&self) -> Vec<Color> {
+        match MESH_PALETTES.get(self.mesh_palette) {
+            Some((_, set)) => set.iter().map(|v| hex(*v)).collect(),
+            None => {
+                let c: Vec<Color> = self.palette.iter().map(|(_, c)| *c).collect();
+                if c.len() >= 2 {
+                    c
+                } else {
+                    MESH_PALETTES[0].1.iter().map(|v| hex(*v)).collect()
+                }
+            }
+        }
+    }
+
     /// Clear Mesh: the selected objects lose their mesh fills (no fill).
     pub fn clear_mesh(&mut self) {
         let shapes: Vec<ShapeId> = self
@@ -431,6 +492,90 @@ impl App {
         });
         self.selected_effect_node = None;
     }
+}
+
+/// The colour sets of the Mesh Fill bar's Shuffle: a name key and five
+/// colours (0xRRGGBB).
+pub const MESH_PALETTES: [(&str, [u32; 5]); 6] = [
+    (
+        "toolbar.mesh_colors_aurora",
+        [0x0B1D51, 0x3A86FF, 0x2EC4B6, 0x8338EC, 0xFF6EC7],
+    ),
+    (
+        "toolbar.mesh_colors_sunset",
+        [0x2D0B3A, 0xC0306A, 0xFF7B54, 0xFFB26B, 0xFFE3A3],
+    ),
+    (
+        "toolbar.mesh_colors_ocean",
+        [0x03045E, 0x0077B6, 0x00B4D8, 0x90E0EF, 0xCAF0F8],
+    ),
+    (
+        "toolbar.mesh_colors_candy",
+        [0xFFADAD, 0xFFD6A5, 0xFDFFB6, 0xCAFFBF, 0xBDB2FF],
+    ),
+    (
+        "toolbar.mesh_colors_forest",
+        [0x1B4332, 0x2D6A4F, 0x52B788, 0xB7E4C7, 0xF1C453],
+    ),
+    (
+        "toolbar.mesh_colors_neon",
+        [0x10002B, 0xFF006E, 0xFB5607, 0xFFBE0B, 0x3A86FF],
+    ),
+];
+
+fn hex(v: u32) -> Color {
+    Color::rgb8((v >> 16) as u8, (v >> 8) as u8, v as u8)
+}
+
+/// A random mesh over `bounds`: `rows` x `cols` cells, each node a colour
+/// of `colors` (or a mix of two), the inner nodes moved up to `warp` of a
+/// cell off the grid, smooth colour on. The same seed gives the same mesh.
+pub fn random_mesh(
+    bounds: tracedraw_core::geometry::Rect,
+    rows: u32,
+    cols: u32,
+    colors: &[Color],
+    seed: u64,
+    warp: f64,
+) -> Mesh {
+    let (rows, cols) = (rows.clamp(1, 50), cols.clamp(1, 50));
+    let base = colors.first().copied().unwrap_or(Color::WHITE);
+    let mut mesh = Mesh::new(bounds, rows, cols, base);
+    mesh.smooth = true;
+    let mut state = seed ^ 0x9E37_79B9_7F4A_7C15;
+    let mut next = move || {
+        state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        let mut z = state;
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        ((z ^ (z >> 31)) >> 11) as f64 / (1u64 << 53) as f64
+    };
+    let warp = if warp.is_finite() {
+        warp.clamp(0.0, 0.45)
+    } else {
+        0.0
+    };
+    let (cw, ch) = (bounds.width() / cols as f64, bounds.height() / rows as f64);
+    for r in 0..=rows {
+        for c in 0..=cols {
+            let i = (r * (cols + 1) + c) as usize;
+            let Some(n) = mesh.nodes.get_mut(i) else {
+                continue;
+            };
+            if !colors.is_empty() {
+                let a = colors[(next() * colors.len() as f64) as usize % colors.len()];
+                let b = colors[(next() * colors.len() as f64) as usize % colors.len()];
+                n.color = crate::ui::palette::mix(a, b, (next() * 0.5) as f32);
+            }
+            let inner = r > 0 && r < rows && c > 0 && c < cols;
+            if inner {
+                let dx = (next() * 2.0 - 1.0) * warp * cw;
+                let dy = (next() * 2.0 - 1.0) * warp * ch;
+                n.pos = tracedraw_core::geometry::Point::new(n.pos.x + dx, n.pos.y + dy);
+            }
+        }
+    }
+    mesh
 }
 
 #[cfg(test)]
@@ -455,6 +600,59 @@ mod tests {
             Fill::Mesh(m) => m.clone(),
             other => panic!("{other:?}"),
         }
+    }
+
+    #[test]
+    fn shuffle_makes_a_new_random_mesh_each_click() {
+        let mut app = App::headless();
+        let id = square(&mut app);
+        app.mesh_rows = 3;
+        app.mesh_cols = 4;
+        let depth = app.engine.history_labels().0.len();
+        assert!(app.shuffle_mesh());
+        assert_eq!(app.engine.history_labels().0.len(), depth + 1);
+        let a = mesh(&app, id);
+        assert_eq!((a.rows, a.cols), (3, 4));
+        assert!(a.smooth);
+        // Every colour comes from the set (or a mix of two of its colours).
+        let set = app.mesh_shuffle_colors();
+        assert_eq!(set.len(), 5);
+        let distinct: std::collections::HashSet<[u8; 3]> =
+            a.nodes.iter().map(|n| n.color.to_rgb8()).collect();
+        assert!(distinct.len() >= 3, "{distinct:?}");
+        // The edge stays on the bounds, inner nodes leave the grid.
+        let grid = Mesh::new(Rect::new(0.0, 0.0, 40.0, 40.0), 3, 4, Color::WHITE);
+        let moved = a
+            .nodes
+            .iter()
+            .zip(&grid.nodes)
+            .filter(|(n, g)| (n.pos - g.pos).hypot() > 1e-6)
+            .count();
+        assert!(moved > 0 && moved <= 2 * 3, "{moved}");
+        for (n, g) in a.nodes.iter().zip(&grid.nodes) {
+            let on_edge = [0.0, 40.0].contains(&g.pos.x) || [0.0, 40.0].contains(&g.pos.y);
+            if on_edge {
+                assert!((n.pos - g.pos).hypot() < 1e-9);
+            }
+        }
+        // The next click keeps the grid and makes another mix.
+        assert!(app.shuffle_mesh());
+        let b = mesh(&app, id);
+        assert_eq!((b.rows, b.cols), (3, 4));
+        assert_ne!(a, b);
+        app.undo();
+        assert_eq!(mesh(&app, id), a);
+        // The same seed gives the same mesh.
+        let r = Rect::new(0.0, 0.0, 10.0, 10.0);
+        assert_eq!(
+            random_mesh(r, 2, 2, &set, 9, 0.3),
+            random_mesh(r, 2, 2, &set, 9, 0.3)
+        );
+        // The document palette is a choice too; nothing selected does nothing.
+        app.mesh_palette = MESH_PALETTES.len();
+        assert!(app.mesh_shuffle_colors().len() >= 2);
+        app.select(vec![]);
+        assert!(!app.shuffle_mesh());
     }
 
     /// The tool's grid makes the mesh; a palette colour paints the selected

@@ -20,6 +20,7 @@ preparar objetos para efeitos de bitmap. É um passo de desfazer.
 - **Suavização** (ligada de início): bordas suaves; desligada dá bordas de
   pixel duras.
 - **Fundo transparente** (ligado de início); desligado põe os objetos sobre
-  branco.
+  branco. Preto e Branco é de 1 bit e não tem transparência: sai sempre
+  sobre branco e a caixa não pode ser marcada.
 
 A caixa de diálogo mostra o tamanho que o bitmap terá, sem compressão.

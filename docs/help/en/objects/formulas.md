@@ -43,7 +43,7 @@ Select the formula and choose
 [[menu.object > menu.object.insert > menu.object.insert_formula]] again: the
 dialog opens as [[formula.edit_title]] with the formula's text, font and size.
 After OK the formula changes in place, keeping its colour, outline, size and
-position, in one step to undo.
+position (its top left corner stays put), in one step to undo.
 
 A formula converted to curves, broken apart or combined with other objects is
 no longer a formula, and the menu item inserts a new one.

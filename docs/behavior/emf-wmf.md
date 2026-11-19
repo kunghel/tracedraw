@@ -50,8 +50,11 @@ specifications; the reader is a GDI record player
   records that are read.
 - Limits: 2,000,000 records, 2,000,000 points, 500,000 objects, DIBs up
   to 20,000 px a side and 50 Mpx, palettes up to 256 entries; truncated
-  records stop the reader with a warning. Mutation testing finds no
-  panic.
+  records stop the reader with a warning. A record gives no more
+  points than it holds, whatever count it claims, and the WMF object
+  table numbers up to 65,536 objects (the rest skipped with a warning),
+  so damaged files of huge counts or tens of thousands of objects open
+  at once (#3339). Mutation testing finds no panic.
 
 ## EMF export
 

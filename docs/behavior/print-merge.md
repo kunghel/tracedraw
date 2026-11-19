@@ -10,7 +10,8 @@ The dialog: "Add columns or records manually or import data from a file"
 with Import File; under "Add or edit records" Add Column, Configure
 Columns and View Single Record; the records; + and - (add a record, delete
 the current one) and the navigation (first, previous, next, last, Go to
-Record); Save Data Source, Finish and Cancel.
+Record); Save Data Source, Continue and Cancel (the button read Finish
+until #3183, `ui::dialogs::tests::the_data_merge_dialog_goes_on_with_continue`).
 
 - Import File reads a CSV whose first line names the fields (comma,
   semicolon or tab, whichever the first line has most of; UTF-8 with or
@@ -102,7 +103,7 @@ Record); Save Data Source, Finish and Cancel.
 
 ## The Data Merge docker
 
-Finish keeps the records and opens the Data Merge docker (also Window >
+Continue keeps the records and opens the Data Merge docker (also Window >
 Panels > Data Merge); it no longer merges at once (#437). From top to bottom:
 
 - Create (greyed while records are loaded) opens the dialog on new

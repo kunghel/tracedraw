@@ -188,6 +188,43 @@ fn walk<'a>(s: &'a Shape, out: &mut Vec<&'a Shape>) {
     }
 }
 
+/// Take the values a drawing read from another format holds as where
+/// each clone's link stands (#2879): the file keeps the link, but the
+/// fills and shapes come back written its way, so the hashes saved with
+/// the link no longer match and the first edit would have taken every
+/// followed property for the clone's own. A property the clone had made
+/// its own stays its own.
+pub fn rebase_clone_links(doc: &mut tracedraw_core::Document) {
+    let mut all = Vec::new();
+    for l in doc.all_layers() {
+        for s in &l.shapes {
+            walk(s, &mut all);
+        }
+    }
+    let updates: Vec<(ShapeId, Vec<(String, String)>)> = all
+        .iter()
+        .filter_map(|clone| {
+            let (master_id, state) = clone_link(&clone.data)?;
+            let master = all.iter().find(|s| s.id == master_id)?;
+            let state: Vec<(Prop, Follow)> = state
+                .into_iter()
+                .map(|(p, f)| match f {
+                    Follow::Own => (p, Follow::Own),
+                    Follow::Linked(..) => {
+                        (p, Follow::Linked(hash_prop(master, p), hash_prop(clone, p)))
+                    }
+                })
+                .collect();
+            Some((clone.id, link_data(&clone.data, master_id, &state)))
+        })
+        .collect();
+    for (id, data) in updates {
+        if let Some(s) = doc.find_shape_mut(id) {
+            s.data = data;
+        }
+    }
+}
+
 /// A copy of a container's kind with new ids for everything inside.
 fn fresh_kind(kind: &ShapeKind, engine: &mut tracedraw_core::Engine) -> ShapeKind {
     let mut tmp = Shape::new(ShapeId(0), kind.clone());
@@ -514,6 +551,53 @@ mod tests {
         clone
     }
 
+    /// A clone saved in a CorelDRAW 2018 file and opened again still
+    /// follows its master (#2879): the link came back without its data,
+    /// and with it hashes of values the file writes its own way.
+    #[test]
+    fn a_clone_saved_as_cdr_still_follows_its_master() {
+        if crate::files::WEB {
+            return;
+        }
+        let mut app = App::headless();
+        let master = rect(&mut app, 10.0);
+        app.run(Command::SetFill {
+            shapes: vec![master],
+            fill: red(),
+        });
+        let clone = cloned(&mut app, master);
+        // The clone's own outline: it stays its own after the file.
+        let own = Some(Stroke::hairline(Color::rgb8(0, 128, 0)));
+        app.run(Command::SetStroke {
+            shapes: vec![clone],
+            stroke: own.clone(),
+        });
+        let dir = std::env::temp_dir().join(format!("tracedraw-clone2879-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("clones.cdr");
+        let bytes = tracedraw_cdr::write::document_to_cdr_version(app.doc(), 20);
+        std::fs::write(&path, bytes).expect("write");
+        let mut back = App::headless();
+        back.open_path(path);
+        let pairs = back.object_clones();
+        assert_eq!(pairs.len(), 1, "one clone, linked");
+        let (clone, master) = pairs[0];
+        back.run(Command::SetFill {
+            shapes: vec![master],
+            fill: blue(),
+        });
+        assert_eq!(fill_of(&back, clone), blue(), "follows the master's fill");
+        let outline = |app: &App| app.doc().find_shape(clone).expect("clone").stroke.clone();
+        let before = outline(&back);
+        back.run(Command::SetStroke {
+            shapes: vec![master],
+            stroke: Some(Stroke::hairline(Color::rgb8(9, 9, 9))),
+        });
+        assert_eq!(outline(&back), before, "its own outline stays");
+        assert_eq!(back.clone_master_of(clone), Some(master));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn a_clone_follows_its_master_until_it_is_edited() {
         let mut app = App::headless();
@@ -611,6 +695,54 @@ mod tests {
         app.clone_selection();
         assert_eq!(app.selection, vec![a]);
         assert_eq!(app.status, tr("status.clone_of_clone"));
+    }
+
+    /// The status bar and the Objects docker say what a clone, its master
+    /// and a symmetry are (#2877, #2997): before, each read as the plain
+    /// object it is made of.
+    #[test]
+    fn clones_masters_and_symmetries_say_what_they_are() {
+        use crate::i18n::trf;
+        let mut app = App::headless();
+        let master = rect(&mut app, 10.0);
+        let kind = crate::ui::dockers::kind_name(&app.doc().find_shape(master).expect("m").kind);
+        let a = cloned(&mut app, master);
+        let _b = cloned(&mut app, master);
+        app.select(vec![a]);
+        let info = crate::ui::status::object_info(&app);
+        assert!(
+            info.contains(&trf("status.clone_kind", &[("k", &kind)])),
+            "{info}"
+        );
+        let clone = app.doc().find_shape(a).expect("clone").clone();
+        assert_eq!(
+            crate::ui::objects_docker::object_label(&clone),
+            trf("status.clone_kind", &[("k", &kind)])
+        );
+        app.select(vec![master]);
+        let info = crate::ui::status::object_info(&app);
+        assert!(info.contains("(2"), "two clones follow the master: {info}");
+        // A symmetry.
+        let other = rect(&mut app, 80.0);
+        app.run(Command::SetEffects {
+            shape: other,
+            effects: vec![tracedraw_core::live::Effect::Symmetry {
+                center: tracedraw_core::geometry::Point::new(100.0, 20.0),
+                angle: 90.0,
+                lines: 1,
+            }],
+        });
+        app.select(vec![other]);
+        let info = crate::ui::status::object_info(&app);
+        assert!(
+            info.contains(&trf("status.symmetry_kind", &[("k", &kind)])),
+            "{info}"
+        );
+        let sym = app.doc().find_shape(other).expect("sym").clone();
+        assert_eq!(
+            crate::ui::objects_docker::object_label(&sym),
+            trf("status.symmetry_kind", &[("k", &kind)])
+        );
     }
 
     #[test]

@@ -19,5 +19,7 @@ bitmap effects. It is one undo step.
   beneath.
 - **Anti-aliasing** (on at first): smooth edges; off gives hard pixel edges.
 - **Transparent background** (on at first); off puts the objects on white.
+  Black and White is 1-bit and has no transparency, so it always comes out
+  on white and the box can't be ticked.
 
 The dialog box shows how large the bitmap will be, uncompressed.

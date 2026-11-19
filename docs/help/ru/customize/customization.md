@@ -13,6 +13,7 @@
 - [[options.center_dialogs]]: диалоговые окна открываются посередине окна;
   если выключено, они открываются там, где вы их оставили.
 - [[options.ui_shadows]] (меньше теней помогает медленной графике).
+- [[options.translucent_menus]]: open menus let the drawing show through them, at the [[options.menu_opacity]] beside the box (off by default).
 - [[options.colored_icons]]: каждая группа инструментов получает свой цвет.
 - [[options.docker_tabs_icons_only]]: вкладки панелей по краям окна
   показывают только значок, а название во всплывающей подсказке. Если

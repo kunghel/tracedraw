@@ -207,6 +207,9 @@ fn circle(c: Point, r: f64) -> BezPath {
 /// A classic Illustrator (version 8, PostScript-based) file of page
 /// `page_index` of `doc`; empty when there is no such page.
 pub fn page_to_ai8(doc: &Document, page_index: usize) -> String {
+    // As the other vector exports see it: an open curve's fill as the
+    // screen shows it (none, unless the document fills open curves).
+    let doc = &*crate::for_export(doc, Some(page_index));
     let Some(page) = doc.pages.get(page_index) else {
         return String::new();
     };
@@ -511,6 +514,14 @@ impl Writer<'_> {
             }
             ShapeKind::ClipFrame { frame, contents } => {
                 self.line("u");
+                // An outline behind the frame's fill goes beneath the fill
+                // and the contents (#3110).
+                let behind = frame.stroke.as_ref().is_some_and(|st| st.behind_fill);
+                let mut outline = (**frame).clone();
+                outline.fill = Fill::None;
+                if behind {
+                    self.shape(&outline, transform);
+                }
                 let mut fill_only = (**frame).clone();
                 fill_only.stroke = None;
                 self.shape(&fill_only, transform);
@@ -523,9 +534,9 @@ impl Writer<'_> {
                     }
                     self.line("Q");
                 }
-                let mut outline = (**frame).clone();
-                outline.fill = Fill::None;
-                self.shape(&outline, transform);
+                if !behind {
+                    self.shape(&outline, transform);
+                }
                 self.line("U");
                 return;
             }
@@ -543,6 +554,14 @@ impl Writer<'_> {
         // Text is filled by winding, the rest even-odd.
         let subs = if filled && !matches!(shape.kind, ShapeKind::Text { .. }) {
             orient_for_nonzero(subs)
+        } else if let Some(cut) = shape
+            .stroke
+            .as_ref()
+            .filter(|_| !filled)
+            .and_then(|s| tracedraw_core::arrowhead_stroke_path(&shape.page_path(), s))
+        {
+            // An unfilled line with arrowheads ends under them (#2981).
+            subpaths(&(parent * cut))
         } else {
             subs
         };
@@ -822,7 +841,25 @@ mod tests {
         assert!((back.size.width - 210.0).abs() < 0.01, "{:?}", back.size);
         assert!((back.size.height - 297.0).abs() < 0.01, "{:?}", back.size);
         let page = |s: &Shape| s.page_path().bounding_box();
-        let all: Vec<&Shape> = back.shapes.iter().collect();
+        // The ring and the line come back as the group they were saved
+        // as (`u` ... `U`).
+        let group = back
+            .shapes
+            .iter()
+            .find_map(|s| match &s.kind {
+                ShapeKind::Group { children } => Some(children),
+                _ => None,
+            })
+            .expect("the group");
+        assert_eq!(group.len(), 2);
+        let all: Vec<&Shape> = back
+            .shapes
+            .iter()
+            .flat_map(|s| match &s.kind {
+                ShapeKind::Group { children } => children.iter().collect::<Vec<_>>(),
+                _ => vec![s],
+            })
+            .collect();
         // The rectangle, its fill cyan and its outline there.
         let rect = all
             .iter()

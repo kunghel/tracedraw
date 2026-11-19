@@ -16,6 +16,7 @@
 use crate::app::App;
 use crate::app::Drag;
 use egui::Pos2;
+use tracedraw_core::geometry::Rect;
 use tracedraw_core::{Command, LayerId, ShapeId};
 
 /// How long a moved selection rests on a page tab before that page
@@ -50,6 +51,96 @@ impl App {
             .find(|l| !l.locked && l.visible)
             .or_else(|| page.layers.iter().rev().find(|l| !l.locked))
             .map(|l| l.id)
+    }
+
+    /// The drawing's desktop layer (on the master page, shown from every
+    /// page), when it is there and unlocked.
+    pub(crate) fn desktop_layer(&self) -> Option<LayerId> {
+        self.doc()
+            .master
+            .iter()
+            .find(|l| l.desktop && !l.locked)
+            .map(|l| l.id)
+    }
+
+    /// The layer objects with the box `bounds`, meant for `layer`, go
+    /// to while the desktop takes objects beside the page (#3100): the
+    /// desktop layer when they lie wholly beside the page and `layer` is
+    /// one of the current page's own layers; the page's layer when
+    /// `layer` is the desktop and they reach onto the page; else `layer`.
+    pub(crate) fn layer_beside_page(&self, layer: LayerId, bounds: Rect) -> LayerId {
+        if !self.settings.desktop_takes_objects_beside_page {
+            return layer;
+        }
+        let Some(desktop) = self.desktop_layer() else {
+            return layer;
+        };
+        let p = self.page_rect();
+        let beside =
+            bounds.x1 <= p.x0 || bounds.x0 >= p.x1 || bounds.y1 <= p.y0 || bounds.y0 >= p.y1;
+        let page = self.doc().pages.iter().find(|pg| pg.id == self.page);
+        let on_page = |l: LayerId| page.is_some_and(|pg| pg.layers.iter().any(|x| x.id == l));
+        if beside && on_page(layer) {
+            return desktop;
+        }
+        if !beside && layer == desktop {
+            let back = self.active_layer().filter(|l| on_page(*l)).or_else(|| {
+                page.and_then(|pg| {
+                    pg.layers
+                        .iter()
+                        .rev()
+                        .find(|l| !l.locked && l.visible)
+                        .or_else(|| pg.layers.iter().rev().find(|l| !l.locked))
+                        .map(|l| l.id)
+                })
+            });
+            return back.unwrap_or(layer);
+        }
+        layer
+    }
+
+    /// After a move let go: each selected object (not one chosen inside
+    /// a group) goes to the layer [`App::layer_beside_page`] gives it, in
+    /// the move's undo step (the steps after `before` become one). The
+    /// selection stays.
+    pub(crate) fn settle_beside_page(&mut self, before: Option<u64>) {
+        if !self.settings.desktop_takes_objects_beside_page
+            || self.editing_clip_contents()
+            || self.symmetry_edit.is_some()
+        {
+            return;
+        }
+        let mut to: Vec<(LayerId, Vec<ShapeId>)> = Vec::new();
+        for l in self.doc().all_layers() {
+            for s in l.shapes.iter().filter(|s| self.selection.contains(&s.id)) {
+                let goes = self.layer_beside_page(l.id, s.bounds());
+                if goes == l.id {
+                    continue;
+                }
+                match to.iter_mut().find(|(t, _)| *t == goes) {
+                    Some((_, ids)) => ids.push(s.id),
+                    None => to.push((goes, vec![s.id])),
+                }
+            }
+        }
+        let cmds: Vec<Command> = to
+            .iter()
+            .flat_map(|(layer, ids)| crate::ui::objects_docker::move_commands(self, ids, *layer))
+            .collect();
+        if cmds.is_empty() {
+            return;
+        }
+        let moved = self.engine.last_step_id() != before;
+        let label = self.engine.undo_label().filter(|_| moved);
+        if let Err(e) = self.engine.run_batch("Move to Layer", &cmds) {
+            self.status = e.to_string();
+            return;
+        }
+        if let Some(label) = label {
+            self.engine.join_group(before, label);
+        }
+        let ids = self.selection.clone();
+        self.select(ids);
     }
 
     /// Send the selection to page `idx`, at the same place on the page:

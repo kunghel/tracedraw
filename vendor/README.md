@@ -141,6 +141,16 @@ change marked `TraceDraw:` in a comment.
   (`splash::open_main_window`). TraceDraw's tests include and run it
   (`splash::eframe_monitor_place::tests`). When moving to a newer
   eframe, check whether it centres with the monitor's position.
+- Change: input kept while the window is minimized
+  (`native/pending_input.rs`, used by `native/epi_integration.rs`'s
+  `prepare_raw_input`) takes the newer input's hovered files whole
+  instead of appending them (#3058). egui-winit hands the full list with
+  every input, so `RawInput::append` doubled the list kept from the last
+  frame at every frame the window was minimized; on Windows, where the
+  files of a drop that never reached the program stay listed, the copies
+  counted as a new drag and the file was imported again at every
+  restore. `apps/tracedraw/src/lib.rs` includes the file so that its
+  test runs (`eframe_pending_input::tests`).
 - Drop the copy and the `[patch.crates-io]` entry when the workspace moves
   to egui/eframe 0.37 or later: what holds that back is the egui 0.37
   API migration across the app. The fixed-function painter has no
@@ -416,6 +426,17 @@ change marked `TraceDraw:` in a comment.
   whole multiples of 12 pixels, transparent beyond the image: without a
   viewport the cursor surface takes the output's integer buffer scale,
   and a buffer whose size it does not divide is a protocol error.
+- Change: a bitmap cursor looks the same on every start (#2871). On X11
+  (`platform_impl/linux/x11/util/cursor.rs`) the image's pixels go to
+  Xcursor premultiplied by their alpha, as it takes them; given straight,
+  the half transparent edge of a drawn pointer was a colour brighter than
+  its alpha. On Wayland without a viewport
+  (`platform_impl/linux/wayland/window/state.rs`, `apply_custom_cursor`)
+  the cursor buffer takes the window's scale, which the image is drawn
+  for, not the cursor surface's, which stays 1 until the compositor says
+  which output the pointer is on: the first pointer of a start could show
+  at twice its size. `src/cursor_pixels.rs` holds both, with tests that
+  TraceDraw's tests include and run (`winit_cursor_pixels::tests`).
 - The published crate's `examples/` and `tests/` stay as downloaded (the
   manifest lists them); they build in no gate.
 - Change: a picture dragged in from another program (#2349). winit 0.30

@@ -21,7 +21,7 @@ QR. Cada registro dos seus dados vira uma cópia da página, preenchida.
      aparecem logo para serem mudados;
    - ou **Adicionar coluna** para acrescentar campos à mão, depois acrescente
      registros com **+**.
-4. Clique em **Concluir**. Abre o painel [[docker.print_merge]], onde você
+4. Clique em **[[merge.finish]]**. Abre o painel [[docker.print_merge]], onde você
    põe os campos na página e faz a mesclagem.
 
 ![A caixa de diálogo Mesclagem de impressão](../../img/printing-print-merge.png)

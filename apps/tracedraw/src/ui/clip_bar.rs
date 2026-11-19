@@ -46,6 +46,11 @@ impl FitContents {
 
 /// The one clip frame selected, when the bar applies.
 fn selected_clip(app: &App) -> Option<tracedraw_core::ShapeId> {
+    // Asked each frame: a large selection is not one clip frame, and
+    // copying its objects to find that out took a good part of a frame.
+    if app.selection.len() != 1 {
+        return None;
+    }
     let shapes = app.selected_shapes();
     match shapes.as_slice() {
         [s] if matches!(s.kind, ShapeKind::ClipFrame { .. }) => Some(s.id),

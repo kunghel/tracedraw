@@ -153,7 +153,8 @@ shape. Choose a mode on the property bar:
 - **Brush**: the preset profile with a rough, dry-brush edge.
 - **Expression**: slow strokes come out wider, like pressing harder.
 - **Sprayer**: small objects (circles, squares, stars, hearts, leaves)
-  placed along the path.
+  placed along the path, which stays editable; Break Apart makes them a
+  group.
 
 To turn an existing curve into a brush stroke, select it and use
 **Apply to curve** in the **Brush Strokes** panel. See

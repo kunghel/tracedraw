@@ -215,6 +215,7 @@ fn mime_for(name: &str) -> &'static str {
         "png" => "image/png",
         "jpg" | "jpeg" => "image/jpeg",
         "webp" => "image/webp",
+        "jxl" => "image/jxl",
         "gif" => "image/gif",
         "html" => "text/html",
         // A .tdraw is gzip-compressed JSON (#2849).

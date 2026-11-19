@@ -294,6 +294,12 @@ pub(crate) struct RunStyle {
     /// slot of a style table font entry, the `farEast` section of a
     /// version 16+ style string), when it is not the Latin one.
     pub asian: Option<ScriptFont>,
+    /// The font the style gives right-to-left letters (Arabic, Persian,
+    /// Hebrew...): the `RTL` section of a version 16+ style string, when
+    /// it is not the Latin one. A version 27 file sets its Persian title
+    /// at 154 pt there with the Latin slot at 24 pt on some letters, and
+    /// CorelDRAW draws them all at 154 pt (#2886).
+    pub rtl: Option<ScriptFont>,
 }
 
 /// The font settings of one script in a style: the style table's font
@@ -363,15 +369,39 @@ pub(crate) fn is_east_asian(c: char) -> bool {
     )
 }
 
-/// `text` cut into runs of East Asian letters and of the rest, each with
-/// whether it is East Asian. Characters of neither kind (spaces, line
-/// breaks, common punctuation) go with the run before them, or with the
-/// run after them at the start.
-pub(crate) fn split_scripts(text: &str) -> Vec<(String, bool)> {
-    let mut out: Vec<(String, bool)> = Vec::new();
+/// Whether a character is set in the right-to-left font of a style:
+/// Hebrew, Arabic (with its supplements and presentation forms), Syriac,
+/// Thaana and N'Ko letters, and the Arabic digits and punctuation.
+pub(crate) fn is_rtl_script(c: char) -> bool {
+    matches!(
+        c as u32,
+        0x0590..=0x08FF | 0xFB1D..=0xFDFF | 0xFE70..=0xFEFF | 0x10800..=0x10FFF | 0x1E800..=0x1EFFF
+    )
+}
+
+/// Which of a style's fonts a character is set in.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Script {
+    Latin,
+    EastAsian,
+    Rtl,
+}
+
+/// `text` cut into runs by the font of the style they are set in, East
+/// Asian, right-to-left or the Latin one for the rest, with the script
+/// of each. Only the scripts asked for (`asian`, `rtl`) are cut off; the
+/// others count as Latin. Characters of no script (spaces, line breaks,
+/// common punctuation, the joiners and direction marks) go with the run
+/// before them, or with the run after them at the start, so that a
+/// word's letters stay one run and join.
+pub(crate) fn split_scripts(text: &str, asian: bool, rtl: bool) -> Vec<(String, Script)> {
+    let mut out: Vec<(String, Script)> = Vec::new();
     let mut pending = String::new();
     for c in text.chars() {
-        let neutral = c.is_whitespace() || c.is_ascii_punctuation() || c.is_control();
+        let neutral = c.is_whitespace()
+            || c.is_ascii_punctuation()
+            || c.is_control()
+            || matches!(c as u32, 0x200B..=0x200F | 0x2028..=0x202E | 0x2066..=0x2069);
         if neutral {
             match out.last_mut() {
                 Some(last) => last.0.push(c),
@@ -379,18 +409,24 @@ pub(crate) fn split_scripts(text: &str) -> Vec<(String, bool)> {
             }
             continue;
         }
-        let asian = is_east_asian(c);
+        let script = if asian && is_east_asian(c) {
+            Script::EastAsian
+        } else if rtl && is_rtl_script(c) {
+            Script::Rtl
+        } else {
+            Script::Latin
+        };
         match out.last_mut() {
-            Some(last) if last.1 == asian => last.0.push(c),
+            Some(last) if last.1 == script => last.0.push(c),
             _ => {
                 let mut s = std::mem::take(&mut pending);
                 s.push(c);
-                out.push((s, asian));
+                out.push((s, script));
             }
         }
     }
     if !pending.is_empty() {
-        out.push((pending, false));
+        out.push((pending, Script::Latin));
     }
     out
 }
@@ -452,37 +488,83 @@ impl RunStyle {
             // A style naming its own font sets it for every script; one
             // that only changes the size or the face keeps the base's
             // East Asian font at that size and face.
-            asian: if self.font_id.is_some() || self.family.is_some() {
-                self.asian.clone()
-            } else {
-                self.asian.clone().or_else(|| {
-                    base.asian.clone().map(|mut a| {
-                        if self.size_pt.is_some() {
-                            a.size_pt = self.size_pt;
-                        }
-                        if self.flags.is_some() {
-                            a.flags = self.flags;
-                        }
-                        if self.bold.is_some() {
-                            a.bold = self.bold;
-                            a.weight = self.weight;
-                        }
-                        if self.italic.is_some() {
-                            a.italic = self.italic;
-                        }
-                        a
-                    })
-                })
-            },
+            asian: self.script_over(&self.asian, &base.asian),
+            // The same for the right-to-left font (#2886).
+            rtl: self.script_over(&self.rtl, &base.rtl),
         }
+    }
+
+    /// A script's font of `self` (`own`) on top of the base's (`base`):
+    /// a style naming its own font sets it for every script; one that
+    /// only changes the size or the face keeps the base's font of the
+    /// script at that size and face.
+    fn script_over(
+        &self,
+        own: &Option<ScriptFont>,
+        base: &Option<ScriptFont>,
+    ) -> Option<ScriptFont> {
+        if self.font_id.is_some() || self.family.is_some() {
+            return own.clone();
+        }
+        own.clone().or_else(|| {
+            base.clone().map(|mut a| {
+                if self.size_pt.is_some() {
+                    a.size_pt = self.size_pt;
+                }
+                if self.flags.is_some() {
+                    a.flags = self.flags;
+                }
+                if self.bold.is_some() {
+                    a.bold = self.bold;
+                    a.weight = self.weight;
+                }
+                if self.italic.is_some() {
+                    a.italic = self.italic;
+                }
+                a
+            })
+        })
     }
 
     /// The style with its East Asian font in place of the Latin one, for
     /// the letters set in it.
+    ///
+    /// A Latin font in its vertical form (named with a leading `@`) makes
+    /// the text vertical, whatever East Asian font the run names: a
+    /// version 22 file of #3217 sets one column in `@站酷文艺体` for Latin
+    /// letters and `站酷文艺体`, `Arial` and `@宋体` for the ideographs of
+    /// its three runs, and the program that wrote it draws the whole
+    /// column with its ideographs upright. The East Asian font then takes
+    /// the `@` too, so the text reads as vertical (see
+    /// `vertical_font_text`); the face itself is found without it.
     pub fn for_east_asian(&self) -> RunStyle {
         let Some(a) = &self.asian else {
             return self.clone();
         };
+        let mut s = self.with_script_font(a);
+        let latin_vertical = self
+            .family
+            .as_deref()
+            .is_some_and(|f| f.starts_with('@') && f.len() > 1);
+        if latin_vertical {
+            if let Some(f) = s.family.as_mut().filter(|f| !f.starts_with('@')) {
+                f.insert(0, '@');
+            }
+        }
+        s
+    }
+
+    /// The style with its right-to-left font in place of the Latin one,
+    /// for the Arabic, Persian or Hebrew letters set in it (#2886).
+    pub fn for_rtl(&self) -> RunStyle {
+        let Some(a) = &self.rtl else {
+            return self.clone();
+        };
+        self.with_script_font(a)
+    }
+
+    /// The style with the script font `a` in place of the Latin one.
+    fn with_script_font(&self, a: &ScriptFont) -> RunStyle {
         let mut s = self.clone();
         if a.font_id.is_some() || a.family.is_some() {
             s.font_id = a.font_id;
@@ -497,6 +579,7 @@ impl RunStyle {
         }
         s.italic = a.italic.or(s.italic);
         s.asian = None;
+        s.rtl = None;
         s
     }
 }
@@ -1538,14 +1621,16 @@ fn split_by_lengths<'t, T>(
     runs
 }
 
-/// Cut `text` into runs of `n` characters per style (see
-/// [`split_by_lengths`]).
+/// Cut `text` into runs of `n` letters per style (see
+/// [`split_by_lengths`]). A letter is a UTF-16 unit, as files count them:
+/// a letter beyond U+FFFF (an emoji) is two, a surrogate pair. Counted in
+/// characters, every run after such a letter started one letter late.
 fn split_runs(text: &str, styles: &[(usize, RunStyle)]) -> Vec<TextRun> {
-    let chars: Vec<char> = text.chars().collect();
-    split_by_lengths(&chars, styles)
+    let units: Vec<u16> = text.encode_utf16().collect();
+    split_by_lengths(&units, styles)
         .into_iter()
-        .map(|(c, style)| TextRun {
-            text: c.iter().collect(),
+        .map(|(u, style)| TextRun {
+            text: String::from_utf16_lossy(u),
             style,
             raw: None,
         })
@@ -1665,6 +1750,7 @@ fn read_txsm_16(d: &[u8], v: u16, charset: u8, warn: &mut dyn FnMut(String)) -> 
         frame_text_styles: Vec::new(),
         columns: None,
     };
+    let mut graphics = 0;
     for _ in 0..np {
         let style_id = r.u32()?;
         r.skip(1);
@@ -1696,12 +1782,35 @@ fn read_txsm_16(d: &[u8], v: u16, charset: u8, warn: &mut dyn FnMut(String)) -> 
             let _st1 = r.u16()?;
             let st2 = r.u16()?;
             let st3 = r.u16()?;
+            // Bit 1: the run is a graphic placed in the line as a letter.
+            // A word (0 in the samples), the graphic's byte count (u32)
+            // and its bytes (a compressed Corel metafile that starts
+            // "CMX3") come first (a version 18 file's two texts, each a
+            // word with a graphic after its first letter, #3181: read
+            // without them, the style string's length was taken from the
+            // graphic and both texts were skipped). The graphic is not
+            // drawn; its letter stays.
+            if st3 & 0x02 != 0 {
+                r.skip(2);
+                let len = r.u32()? as usize;
+                r.skip(len);
+                graphics += 1;
+            }
             if st2 == 0x3fff && st3 & 0x11 == 0x11 {
                 let len = r.u32()? as usize;
                 r.skip(if v >= 17 { len } else { len.saturating_mul(2) });
             }
             if st3 & 0x04 != 0 {
                 let len = r.u32()? as usize;
+                r.skip(len.saturating_mul(2));
+            }
+            // Bit 3: the run is a print merge field. A word (0 in the
+            // samples), the field name's length and its UTF-16 letters
+            // follow the language (a version 24 file's twelve texts of
+            // fields such as "EVTI", stored as the text "<EVTI>", #2969).
+            if st3 & 0x08 != 0 {
+                r.skip(2);
+                let len = r.u16()? as usize;
                 r.skip(len.saturating_mul(2));
             }
             // Every record ends with a style string, also one marked
@@ -1769,10 +1878,15 @@ fn read_txsm_16(d: &[u8], v: u16, charset: u8, warn: &mut dyn FnMut(String)) -> 
         } else {
             decode_utf16le(text)
         };
-        // Group consecutive characters sharing a style record.
+        // Group consecutive characters sharing a style record. Each
+        // record is a letter's, a UTF-16 unit: a letter beyond U+FFFF (an
+        // emoji) has two, and the letters after it name the records after
+        // its second.
         let mut runs: Vec<TextRun> = Vec::new();
-        for (i, ch) in text.chars().enumerate() {
+        let mut i = 0usize;
+        for ch in text.chars() {
             let idx = overrides.get(i).copied().unwrap_or(usize::MAX);
+            i += ch.len_utf16();
             let style = match records.get(idx) {
                 Some(s) => s.over(&default),
                 None => default.clone(),
@@ -1799,18 +1913,50 @@ fn read_txsm_16(d: &[u8], v: u16, charset: u8, warn: &mut dyn FnMut(String)) -> 
             runs,
         });
     }
+    if graphics > 0 {
+        warn(format!(
+            "{graphics} graphic(s) placed in the text not drawn; their letters kept"
+        ));
+    }
     Some(out)
 }
 
-/// Text with its line breaks as `\n`: files end lines with a carriage
-/// return (`\r`, version 21 artistic text), a CR LF pair, a line or
-/// paragraph separator or a vertical tab.
+/// How many line breaks a text's spans start with.
+pub(crate) fn leading_breaks(spans: &[tracedraw_core::TextSpan]) -> usize {
+    spans
+        .iter()
+        .flat_map(|s| s.text.chars())
+        .take_while(|c| *c == '\n')
+        .count()
+}
+
+/// Drop the first `n` characters of a text's spans, and the spans left
+/// empty.
+pub(crate) fn drop_leading_chars(spans: &mut Vec<tracedraw_core::TextSpan>, mut n: usize) {
+    for s in spans.iter_mut() {
+        if n == 0 {
+            break;
+        }
+        let len = s.text.chars().count();
+        let k = n.min(len);
+        s.text = s.text.chars().skip(k).collect();
+        n -= k;
+    }
+    spans.retain(|s| !s.text.is_empty());
+}
+
+/// Text with its paragraph ends as `\n`: files end lines with a carriage
+/// return (`\r`, version 21 artistic text), a CR LF pair, a paragraph
+/// separator or a vertical tab. A line separator (U+2028) stays: it is
+/// the line break inside a paragraph (Shift+Enter), which TraceDraw
+/// writes as it is, so a saved break came back as a new paragraph, with
+/// the first-line indent, the space before and a bullet of its own.
 pub(crate) fn line_breaks(text: &str) -> String {
-    if !text.contains(['\r', '\u{2028}', '\u{2029}', '\u{0B}']) {
+    if !text.contains(['\r', '\u{2029}', '\u{0B}']) {
         return text.to_string();
     }
     text.replace("\r\n", "\n")
-        .replace(['\r', '\u{2028}', '\u{2029}', '\u{0B}'], "\n")
+        .replace(['\r', '\u{2029}', '\u{0B}'], "\n")
 }
 
 /// Minimal JSON value for the version 16+ style strings.
@@ -1835,12 +1981,43 @@ impl Json {
     }
 }
 
-/// Lenient recursive-descent JSON parser (depth and size bounded).
-fn parse_json(s: &str) -> Option<Json> {
-    let chars: Vec<char> = s.chars().collect();
-    let mut pos = 0usize;
-    let v = json_value(&chars, &mut pos, 0)?;
-    Some(v)
+/// Lenient recursive-descent JSON parser (depth and size bounded). An
+/// object's style string is asked for each of its sections in turn (the
+/// mitre limit, the winding, the transparency...), and many objects share
+/// one, so the strings parsed last are kept, each parsed once (#3200: a
+/// drawing of 50 000 objects opened half a second slower than in 0.42,
+/// most of it parsing the same strings again).
+fn parse_json(s: &str) -> Option<std::rc::Rc<Json>> {
+    use std::cell::RefCell;
+    use std::collections::HashMap;
+    use std::rc::Rc;
+    /// Strings kept; past it the cache starts again.
+    const KEEP: usize = 4096;
+    /// Longer strings (a whole text's styles) are parsed each time.
+    const LONGEST: usize = 64 * 1024;
+    thread_local! {
+        static PARSED: RefCell<HashMap<String, Option<Rc<Json>>>> = RefCell::new(HashMap::new());
+    }
+    let parse = || {
+        let chars: Vec<char> = s.chars().collect();
+        let mut pos = 0usize;
+        json_value(&chars, &mut pos, 0).map(Rc::new)
+    };
+    if s.len() > LONGEST {
+        return parse();
+    }
+    if let Some(hit) = PARSED.with(|p| p.borrow().get(s).cloned()) {
+        return hit;
+    }
+    let v = parse();
+    PARSED.with(|p| {
+        let mut p = p.borrow_mut();
+        if p.len() >= KEEP {
+            p.clear();
+        }
+        p.insert(s.to_string(), v.clone());
+    });
+    v
 }
 
 fn json_ws(c: &[char], pos: &mut usize) {
@@ -2135,16 +2312,21 @@ fn apply_style_object(s: &mut RunStyle, obj: &Json, depth: usize) {
                         s.fill_color = Some(c);
                     }
                 }
-                // An inline outline, the frame and the settings for
-                // right-to-left scripts are not read; the Latin font
-                // settings apply to the text, the East Asian ones to its
-                // East Asian letters.
-                ("outline" | "frame" | "RTL", Json::Obj(_)) => {}
-                ("farEast", Json::Obj(_)) => {
+                // An inline outline and the frame are not read; the Latin
+                // font settings apply to the text, the East Asian ones to
+                // its East Asian letters, the right-to-left ones to its
+                // Arabic, Persian or Hebrew letters (#2886).
+                ("outline" | "frame", Json::Obj(_)) => {}
+                ("farEast" | "RTL", Json::Obj(_)) => {
                     let mut f = RunStyle::default();
                     apply_style_object(&mut f, v, depth + 1);
                     if f.font_id.is_some() || f.family.is_some() || f.size_pt.is_some() {
-                        s.asian = Some(ScriptFont::of(&f));
+                        let font = Some(ScriptFont::of(&f));
+                        if k == "RTL" {
+                            s.rtl = font;
+                        } else {
+                            s.asian = font;
+                        }
                     }
                 }
                 ("paragraph", Json::Obj(p)) => apply_paragraph_object(s, p),
@@ -2229,7 +2411,8 @@ fn apply_paragraph_object(s: &mut RunStyle, items: &[(String, Json)]) {
 /// outline its program shows with a limit of 29 degrees, #384).
 pub(crate) fn object_miter_limit(style: &str) -> Option<f64> {
     let t = style.trim_matches(|c: char| c == '\0' || c.is_whitespace());
-    let Json::Obj(items) = parse_json(t)? else {
+    let json = parse_json(t)?;
+    let Json::Obj(items) = &*json else {
         return None;
     };
     let Json::Obj(outline) = &items.iter().find(|(k, _)| k == "outline")?.1 else {
@@ -2255,7 +2438,8 @@ pub(crate) fn object_miter_limit(style: &str) -> Option<f64> {
 /// "0" (even-odd). `None` without it.
 pub(crate) fn object_fill_winding(style: &str) -> Option<bool> {
     let t = style.trim_matches(|c: char| c == '\0' || c.is_whitespace());
-    let Json::Obj(items) = parse_json(t)? else {
+    let json = parse_json(t)?;
+    let Json::Obj(items) = &*json else {
         return None;
     };
     let Json::Obj(fill) = &items.iter().find(|(k, _)| k == "fill")?.1 else {
@@ -2279,7 +2463,8 @@ pub(crate) fn object_fill_winding(style: &str) -> Option<bool> {
 /// transparency drawn uniform, assumed). `None` for an empty section.
 pub(crate) fn object_opacity(style: &str) -> Option<f64> {
     let t = style.trim_matches(|c: char| c == '\0' || c.is_whitespace());
-    let Json::Obj(items) = parse_json(t)? else {
+    let json = parse_json(t)?;
+    let Json::Obj(items) = &*json else {
         return None;
     };
     let Json::Obj(tr) = &items.iter().find(|(k, _)| k == "transparency")?.1 else {
@@ -2304,7 +2489,8 @@ pub(crate) fn object_opacity(style: &str) -> Option<f64> {
 /// the style string (#1706).
 pub(crate) fn object_transparency_is_uniform_fill(style: &str) -> bool {
     let t = style.trim_matches(|c: char| c == '\0' || c.is_whitespace());
-    let Some(Json::Obj(items)) = parse_json(t) else {
+    let json = parse_json(t);
+    let Some(Json::Obj(items)) = json.as_deref() else {
         return false;
     };
     let Some((_, Json::Obj(tr))) = items.iter().find(|(k, _)| k == "transparency") else {
@@ -2319,6 +2505,40 @@ pub(crate) fn object_transparency_is_uniform_fill(style: &str) -> bool {
         .is_some_and(|n| n == 1.0)
 }
 
+/// The `type` of the `fill` of an object's version 16+ style string
+/// `transparency` section: 0 or 1 uniform, 2 fountain, others patterns
+/// and textures, as in fill sections (#2960).
+pub(crate) fn object_transparency_fill_type(style: &str) -> Option<i64> {
+    let t = style.trim_matches(|c: char| c == '\0' || c.is_whitespace());
+    let json = parse_json(t)?;
+    let Json::Obj(items) = &*json else {
+        return None;
+    };
+    let (_, Json::Obj(tr)) = items.iter().find(|(k, _)| k == "transparency")? else {
+        return None;
+    };
+    let (_, Json::Obj(fill)) = tr.iter().find(|(k, _)| k == "fill")? else {
+        return None;
+    };
+    let n = fill.iter().find(|(k, _)| k == "type")?.1.num()?;
+    n.is_finite().then_some(n as i64)
+}
+
+/// Whether an object's version 16+ style string holds an empty
+/// `transparency` section (`{}`): no transparency, whatever argument 8000
+/// holds (#1706, #2960).
+pub(crate) fn object_transparency_is_empty(style: &str) -> bool {
+    let t = style.trim_matches(|c: char| c == '\0' || c.is_whitespace());
+    let json = parse_json(t);
+    let Some(Json::Obj(items)) = json.as_deref() else {
+        return false;
+    };
+    matches!(
+        items.iter().find(|(k, _)| k == "transparency"),
+        Some((_, Json::Obj(tr))) if tr.is_empty()
+    )
+}
+
 /// The merge mode code of an object's version 16+ style string
 /// transparency (`transparency` > `mode`), when it is not 0. Every
 /// file seen so far holds 0 there (#1666: 126 files attached to issues,
@@ -2327,7 +2547,8 @@ pub(crate) fn object_transparency_is_uniform_fill(style: &str) -> bool {
 /// object as Normal.
 pub(crate) fn object_transparency_merge_code(style: &str) -> Option<i64> {
     let t = style.trim_matches(|c: char| c == '\0' || c.is_whitespace());
-    let Some(Json::Obj(items)) = parse_json(t) else {
+    let json = parse_json(t);
+    let Some(Json::Obj(items)) = json.as_deref() else {
         return None;
     };
     let (_, Json::Obj(tr)) = items.iter().find(|(k, _)| k == "transparency")? else {
@@ -2354,13 +2575,14 @@ pub(crate) fn object_transparency_merge_code(style: &str) -> Option<i64> {
 pub(crate) fn object_transparency_mask(style: &str) -> Option<(tracedraw_core::Fill, u8)> {
     use tracedraw_core::{Color, Fill, Fountain, FountainKind, Stop};
     let t = style.trim_matches(|c: char| c == '\0' || c.is_whitespace());
-    let Json::Obj(items) = parse_json(t)? else {
+    let json = parse_json(t)?;
+    let Json::Obj(items) = &*json else {
         return None;
     };
     let field = |obj: &[(String, Json)], key: &str| -> Option<Json> {
         obj.iter().find(|(k, _)| k == key).map(|(_, v)| v.clone())
     };
-    let Json::Obj(tr) = field(&items, "transparency")? else {
+    let Json::Obj(tr) = field(items, "transparency")? else {
         return None;
     };
     let Json::Obj(fill) = field(&tr, "fill")? else {
@@ -2379,11 +2601,15 @@ pub(crate) fn object_transparency_mask(style: &str) -> Option<(tracedraw_core::F
             return None;
         };
         let mut parts = s.split(',');
-        if !parts.next()?.starts_with("GRAY") {
-            return None;
+        if parts.next()?.starts_with("GRAY") {
+            let v: f32 = parts.nth(1)?.trim().parse().ok()?;
+            return Some((v / 255.0).clamp(0.0, 1.0));
         }
-        let v: f32 = parts.nth(1)?.trim().parse().ok()?;
-        Some((v / 255.0).clamp(0.0, 1.0))
+        // A node given in another model (RGB, CMYK) counts by its
+        // lightness, as the record's fountain does (#3095: only greys
+        // were read, and such a transparency opened solid).
+        let [r, g, b] = parse_color_spec(&s)?.to_rgb_f32_builtin();
+        Some((r * 0.2126 + g * 0.7152 + b * 0.0722).clamp(0.0, 1.0))
     };
     let (mut first, mut last) = (grey("primaryColor")?, grey("secondaryColor")?);
     // The section's start and end amounts run the nodes' transparency
@@ -2461,7 +2687,8 @@ pub(crate) fn object_transparency_mask(style: &str) -> Option<(tracedraw_core::F
 /// columns assumed listed alike, as TraceDraw writes them).
 pub(crate) fn frame_columns(style: &str) -> Option<(u32, f64)> {
     let t = style.trim_matches(|c: char| c == '\0' || c.is_whitespace());
-    let Json::Obj(items) = parse_json(t)? else {
+    let json = parse_json(t)?;
+    let Json::Obj(items) = &*json else {
         return None;
     };
     let Json::Obj(frame) = &items.iter().find(|(k, _)| k == "frame")?.1 else {
@@ -2489,7 +2716,8 @@ pub(crate) fn frame_columns(style: &str) -> Option<(u32, f64)> {
 /// 21 file with one column; several columns assumed alike).
 pub(crate) fn frame_width_units(style: &str) -> Option<f64> {
     let t = style.trim_matches(|c: char| c == '\0' || c.is_whitespace());
-    let Json::Obj(items) = parse_json(t)? else {
+    let json = parse_json(t)?;
+    let Json::Obj(items) = &*json else {
         return None;
     };
     let Json::Obj(frame) = &items.iter().find(|(k, _)| k == "frame")?.1 else {
@@ -2629,6 +2857,21 @@ mod tests {
     }
 
     use super::*;
+
+    /// A style string asked for several sections is parsed once; a
+    /// string that is not JSON stays unread every time (#3200).
+    #[test]
+    fn a_style_string_is_parsed_once() {
+        let st = r#"{"fill":{"winding":"1"},"outline":{"miterLimit":"45"},"transparency":{}}"#;
+        let a = parse_json(st).expect("parsed");
+        let b = parse_json(st).expect("parsed");
+        assert!(std::rc::Rc::ptr_eq(&a, &b));
+        assert_eq!(object_fill_winding(st), Some(true));
+        assert_eq!(object_miter_limit(st), Some(45.0));
+        assert!(object_transparency_is_empty(st));
+        assert!(parse_json("{not json").is_none());
+        assert!(parse_json("{not json").is_none());
+    }
 
     /// Style strings of version 17 on are UTF-8: a font named in Chinese
     /// keeps its name; bytes that are not UTF-8 read in the code page of
@@ -3103,7 +3346,7 @@ mod tests {
         assert_eq!(line_breaks("Fazendo\rum bolo"), "Fazendo\num bolo");
         assert_eq!(
             line_breaks("a\r\nb\u{2028}c\u{2029}d\u{0B}e"),
-            "a\nb\nc\nd\ne"
+            "a\nb\u{2028}c\nd\ne"
         );
         assert_eq!(line_breaks("plain"), "plain");
     }
@@ -3134,23 +3377,52 @@ mod tests {
         assert_eq!(parse_style_string("{broken").size_pt, None);
     }
 
+    /// A Latin font in its vertical form (`@`) gives the East Asian font
+    /// of the run the `@` too, as the ideographs of a version 22 column
+    /// of #3217 are set in faces named without it under an `@` Latin face.
+    #[test]
+    fn a_vertical_latin_font_makes_the_east_asian_one_vertical() {
+        for (east, read) in [
+            ("站酷文艺体", "@站酷文艺体"),
+            ("Arial", "@Arial"),
+            ("@宋体", "@宋体"),
+        ] {
+            let s = parse_style_string(&format!(
+                r#"{{"character":{{"latin":{{"font":"@站酷文艺体"}},"farEast":{{"font":"{east}"}}}}}}"#
+            ));
+            assert_eq!(s.for_east_asian().family.as_deref(), Some(read), "{east}");
+        }
+        // Under a horizontal Latin face the East Asian one stays as named.
+        let s = parse_style_string(
+            r#"{"character":{"latin":{"font":"Arial"},"farEast":{"font":"SimSun"}}}"#,
+        );
+        assert_eq!(s.for_east_asian().family.as_deref(), Some("SimSun"));
+    }
+
     #[test]
     fn split_scripts_cuts_east_asian_runs() {
         assert!(is_east_asian('荣') && is_east_asian('〇') && is_east_asian('ア'));
         assert!(!is_east_asian('A') && !is_east_asian('é') && !is_east_asian('5'));
+        let (l, a) = (Script::Latin, Script::EastAsian);
         assert_eq!(
-            split_scripts("Ab 荣誉, 250g铜版纸\n"),
+            split_scripts("Ab 荣誉, 250g铜版纸\n", true, false),
             vec![
-                ("Ab ".to_string(), false),
-                ("荣誉, ".to_string(), true),
-                ("250g".to_string(), false),
-                ("铜版纸\n".to_string(), true),
+                ("Ab ".to_string(), l),
+                ("荣誉, ".to_string(), a),
+                ("250g".to_string(), l),
+                ("铜版纸\n".to_string(), a),
             ]
         );
         // Neutral characters at the start go with the first run.
-        assert_eq!(split_scripts(" 在"), vec![(" 在".to_string(), true)]);
-        assert_eq!(split_scripts(" \n"), vec![(" \n".to_string(), false)]);
-        assert!(split_scripts("").is_empty());
+        assert_eq!(
+            split_scripts(" 在", true, false),
+            vec![(" 在".to_string(), a)]
+        );
+        assert_eq!(
+            split_scripts(" \n", true, false),
+            vec![(" \n".to_string(), l)]
+        );
+        assert!(split_scripts("", true, false).is_empty());
     }
 
     #[test]
@@ -3189,6 +3461,50 @@ mod tests {
             r#"{"character":{"latin":{"font":"Arial","size":"42333"},"farEast":{"font":"Arial","size":"42333"}}}"#,
         );
         assert!(!same.asian.as_ref().unwrap().differs_from(&same));
+    }
+
+    /// #2886: the `RTL` section of a style string is the font of the
+    /// Arabic, Persian and Hebrew letters; a run changing only the size
+    /// keeps it at that size; the joiners and direction marks between
+    /// letters stay in their word's run.
+    #[test]
+    fn style_string_rtl_section_is_the_right_to_left_font() {
+        let s = parse_style_string(
+            r#"{"character":{"RTL":{"font":"IRNazanin","size":"543325"},"latin":{"font":"Arial","size":"84667"}}}"#,
+        );
+        assert_eq!(s.family.as_deref(), Some("Arial"));
+        let r = s.rtl.as_ref().expect("right-to-left font");
+        assert_eq!(r.family.as_deref(), Some("IRNazanin"));
+        assert!(r.differs_from(&s));
+        let rs = s.for_rtl();
+        assert_eq!(rs.family.as_deref(), Some("IRNazanin"));
+        assert!(
+            (rs.size_pt.unwrap() - 154.0).abs() < 0.1,
+            "{:?}",
+            rs.size_pt
+        );
+        assert!(rs.rtl.is_none());
+        let sized = RunStyle {
+            size_pt: Some(20.0),
+            ..RunStyle::default()
+        };
+        assert_eq!(sized.over(&s).rtl.and_then(|r| r.size_pt), Some(20.0));
+        assert!(is_rtl_script('ب') && is_rtl_script('ש') && is_rtl_script('ﻻ'));
+        assert!(!is_rtl_script('A') && !is_rtl_script('5') && !is_rtl_script('荣'));
+        let (l, r) = (Script::Latin, Script::Rtl);
+        assert_eq!(
+            split_scripts("Ab می\u{200c}بینید 12", false, true),
+            vec![
+                ("Ab ".to_string(), l),
+                ("می\u{200c}بینید ".to_string(), r),
+                ("12".to_string(), l),
+            ]
+        );
+        // East Asian letters are cut off only when asked for.
+        assert_eq!(
+            split_scripts("荣ب", false, true),
+            vec![("荣".to_string(), l), ("ب".to_string(), r)]
+        );
     }
 
     #[test]
@@ -3358,5 +3674,156 @@ mod tests {
         // Records that all name style 0 leave the lengths to cut the runs.
         let t = read_txsm(&txsm8(b"x\xc4y", &[0, 0, 0]), 8, 0, &mut |_| {}).expect("txsm");
         assert_eq!(t.paragraphs[0].runs[0].text, "x\u{c4}y");
+    }
+
+    /// A version 24 artistic text whose second style record is a print
+    /// merge field (bit 3 of its third word), as in the file of #2969.
+    fn txsm24_merge_field(field: &str, text: &[u8]) -> Vec<u8> {
+        fn style(b: &mut Vec<u8>, s: &str) {
+            b.extend_from_slice(&(s.len() as u32).to_le_bytes());
+            b.extend_from_slice(s.as_bytes());
+        }
+        fn utf16(b: &mut Vec<u8>, s: &str) {
+            for u in s.encode_utf16() {
+                b.extend_from_slice(&u.to_le_bytes());
+            }
+        }
+        let mut b = Vec::new();
+        b.extend_from_slice(&u32::MAX.to_le_bytes()); // frame layout
+        b.extend_from_slice(&[0; 32]);
+        b.extend_from_slice(&1800u16.to_le_bytes());
+        b.extend_from_slice(&[0; 3]);
+        b.extend_from_slice(&1u32.to_le_bytes()); // one frame
+        b.extend_from_slice(&32u32.to_le_bytes());
+        b.extend_from_slice(&[0; 48]);
+        b.extend_from_slice(&0u32.to_le_bytes()); // not on a path
+        b.extend_from_slice(&[0; 8]);
+        b.extend_from_slice(&1u32.to_le_bytes()); // one paragraph
+        b.extend_from_slice(&13u32.to_le_bytes());
+        b.extend_from_slice(&[0, 0]);
+        style(
+            &mut b,
+            r#"{"character":{"latin":{"font":"Arial","size":"12700"}}}"#,
+        );
+        b.extend_from_slice(&2u32.to_le_bytes()); // two records
+        for (st, merge) in [([7u16, 0, 0x04], false), ([1, 0x3fff, 0x1c], true)] {
+            for w in st {
+                b.extend_from_slice(&w.to_le_bytes());
+            }
+            b.extend_from_slice(&3u32.to_le_bytes());
+            utf16(&mut b, "PTB");
+            if merge {
+                b.extend_from_slice(&0u16.to_le_bytes());
+                b.extend_from_slice(&(field.len() as u16).to_le_bytes());
+                utf16(&mut b, field);
+                style(&mut b, r#"{"character":{"latin":{"font":"Gabriola"}}}"#);
+            } else {
+                style(&mut b, r#"{"character":{}}"#);
+            }
+        }
+        b.extend_from_slice(&(text.len() as u32).to_le_bytes());
+        for _ in text {
+            b.extend_from_slice(&[0, 0, 1 << 1, 0, 0, 0, 0, 0]);
+        }
+        b.extend_from_slice(&(text.len() as u32).to_le_bytes());
+        b.extend_from_slice(text);
+        b.push(0); // no letter positions
+        b
+    }
+
+    #[test]
+    fn version_24_text_of_a_print_merge_field_is_read() {
+        let d = txsm24_merge_field("EVTI", b"\xa0<EVTI>");
+        let t = read_txsm(&d, 24, 0, &mut |w| panic!("{w}")).expect("txsm");
+        let runs: Vec<(&str, Option<&str>)> = t.paragraphs[0]
+            .runs
+            .iter()
+            .map(|r| (r.text.as_str(), r.style.family.as_deref()))
+            .collect();
+        assert_eq!(runs, [("\u{a0}<EVTI>", Some("Gabriola"))]);
+        // Field names of other lengths keep the records after them in step.
+        let d = txsm24_merge_field("DS", b"\xa0<DS>");
+        let t = read_txsm(&d, 24, 0, &mut |w| panic!("{w}")).expect("txsm");
+        assert_eq!(t.paragraphs[0].runs[0].text, "\u{a0}<DS>");
+        // A record cut inside the field name is not read past the end.
+        for cut in 0..d.len() {
+            let _ = read_txsm(&d[..cut], 24, 0, &mut |_| {});
+        }
+    }
+
+    /// A version 18 artistic text whose second style record is a graphic
+    /// placed in the line (bit 1 of its third word: a word, the graphic's
+    /// byte count and its bytes before the locale), as the two texts of
+    /// the file of #3181 hold one after their first letter. The text is
+    /// read, the graphic left out with a warning.
+    #[test]
+    fn version_18_text_with_a_graphic_in_the_line_is_read() {
+        fn style(b: &mut Vec<u8>, s: &str) {
+            b.extend_from_slice(&(s.len() as u32).to_le_bytes());
+            b.extend_from_slice(s.as_bytes());
+        }
+        let graphic = b"CMX3\x1b\0\0\0\x16\0\0\0Corel Binary Meta File\x01\0\0\0";
+        let mut b = Vec::new();
+        b.extend_from_slice(&1u32.to_le_bytes()); // frame layout
+        b.extend_from_slice(&[0; 32]);
+        b.extend_from_slice(&1700u16.to_le_bytes());
+        b.extend_from_slice(&[0; 3]);
+        b.extend_from_slice(&1u32.to_le_bytes()); // one frame
+        b.extend_from_slice(&32u32.to_le_bytes());
+        b.extend_from_slice(&[0; 48]);
+        b.extend_from_slice(&0u32.to_le_bytes()); // not on a path
+        b.extend_from_slice(&[0; 8]);
+        b.extend_from_slice(&1u32.to_le_bytes()); // one paragraph
+        b.extend_from_slice(&66u32.to_le_bytes());
+        b.extend_from_slice(&[0, 0]);
+        style(
+            &mut b,
+            r#"{"character":{"latin":{"font":"Arial","size":"12700"}}}"#,
+        );
+        b.extend_from_slice(&2u32.to_le_bytes()); // two records
+        for (st, picture) in [([6u16, 0, 0x04], false), ([1, 0x3fff, 0x06], true)] {
+            for w in st {
+                b.extend_from_slice(&w.to_le_bytes());
+            }
+            if picture {
+                b.extend_from_slice(&0u16.to_le_bytes());
+                b.extend_from_slice(&(graphic.len() as u32).to_le_bytes());
+                b.extend_from_slice(graphic);
+            }
+            b.extend_from_slice(&3u32.to_le_bytes());
+            for u in "ENS".encode_utf16() {
+                b.extend_from_slice(&u.to_le_bytes());
+            }
+            if picture {
+                style(&mut b, r#"{"character":{"latin":{"font":"Gabriola"}}}"#);
+            } else {
+                style(&mut b, r#"{"character":{}}"#);
+            }
+        }
+        let text = b"G\xa0rass";
+        b.extend_from_slice(&(text.len() as u32).to_le_bytes());
+        for k in 0..text.len() {
+            let idx = if k == 1 { 1u8 } else { 0 };
+            b.extend_from_slice(&[0, 0, idx << 1, 0, 0, 0, 0, 0]);
+        }
+        b.extend_from_slice(&(text.len() as u32).to_le_bytes());
+        b.extend_from_slice(text);
+        b.push(0); // no letter positions
+        let mut warnings = Vec::new();
+        let t = read_txsm(&b, 18, 0, &mut |w| warnings.push(w)).expect("txsm");
+        let all: String = t.paragraphs[0].runs.iter().map(|r| r.text.as_str()).collect();
+        assert_eq!(all, "G\u{a0}rass");
+        assert_eq!(
+            t.paragraphs[0].runs[1].style.family.as_deref(),
+            Some("Gabriola")
+        );
+        assert!(
+            warnings.iter().any(|w| w.contains("graphic")),
+            "{warnings:?}"
+        );
+        // A record cut inside the graphic is not read past the end.
+        for cut in 0..b.len() {
+            let _ = read_txsm(&b[..cut], 18, 0, &mut |_| {});
+        }
     }
 }

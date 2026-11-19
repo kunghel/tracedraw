@@ -37,6 +37,24 @@ with the last trace's settings, no dialog), Open Last Trace Settings
 presets; a bitmap's right-click menu has the same (#452, `ops2::tests::the_last_trace_can_be_repeated_and_reopened`).
 The last trace is kept for the session.
 
+### Progress window
+
+Automatic, Repeat Last Trace and the dialog's OK (when its preview has
+not traced every selected picture already) trace off the interface
+thread (`trace_job.rs`), so the program keeps answering while a trace
+runs (an enlarged picture with Best optimization and small print can take
+many seconds). A window (`ui/trace_progress.rs`) shows the turning busy
+mark, the step the trace is at (Enlarging the picture, Choosing the best
+detail, Finding the colors, Drawing the curves, Checking against the
+picture, Matching the letters), "Picture 2 of 3" when several bitmaps
+are traced, a bar with the percentage and the time taken. The steps
+report through the trace's cancel flag (`trace_progress.rs`); the bar
+counts only the steps the trace takes, weighted by about how long each
+takes. Cancel, Esc and the close button stop the trace and place
+nothing. When every picture is traced the window closes and the curves
+are placed as one undo step, as before. The browser traces in the frame
+(`trace_job::tests`, `trace_progress::tests`).
+
 ## The dialog
 
 A window the user sizes (1040 x 700 points at first, never under 780 x

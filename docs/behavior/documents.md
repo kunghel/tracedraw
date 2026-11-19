@@ -30,6 +30,8 @@ rulers:
   never holds the window; a missing file shows neither. A narrower
   window and a phone keep the list of name over folder
   (`ui::welcome::tests::the_recent_documents_are_a_table_with_size_and_date`).
+  The table and its scroll bar stop 24 points short of the window's right
+  edge, as far as the New and Open buttons stand from its left (#2867).
 - The Welcome Screen tab has a close button on hover (a middle click
   also closes it): the tab shrinks to its house alone (a 26 px square,
   the title as its tip) and the active drawing shows. With no drawing
