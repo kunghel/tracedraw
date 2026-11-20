@@ -65,7 +65,7 @@ Alguns efeitos, como desfoques, passam das bordas de um bitmap.
   [[tool.crop]]; arrastar um canto de um bitmap com a ferramenta
   [[tool.shape]] também o recorta.
 - [[menu.bitmaps.edit_bitmap]] abre o bitmap em outro programa.
-- [[menu.bitmaps.edit_inside]] (ou um duplo clique na imagem com a ferramenta Seleção) edita os pixels ali mesmo, dentro do TraceDraw: seleções, pincel, borracha suave, clone, correção, desfoque, preenchimento pelo conteúdo, olhos vermelhos e qualquer efeito de bitmap só na seleção. Enter conclui, num único passo de desfazer.
+- [[menu.bitmaps.edit_inside]] (ou um duplo clique na imagem com a ferramenta Seleção) edita os pixels ali mesmo, dentro do TraceDraw: seleções, pincel, borracha suave, clone, correção, desfoque, preenchimento pelo conteúdo, olhos vermelhos, camadas com opacidade e modos de mesclagem, e qualquer efeito de bitmap só na seleção. Enter conclui, num único passo de desfazer.
 - [[menu.bitmaps.remove_background_local]] deixa transparente o fundo de uma
   foto neste computador (veja [Remover o fundo](remove-background.md));
   [[menu.bitmaps.remove_background]] faz isso com o serviço de IA.

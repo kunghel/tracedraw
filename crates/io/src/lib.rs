@@ -569,6 +569,7 @@ mod tests {
                         start_deg: 200.0,
                         end_deg: 90.0,
                         pie,
+                        inner: 0.0,
                     }),
                 },
             );
@@ -692,6 +693,7 @@ mod tests {
                 skew: 5.0,
                 shift_percent: 25.0,
                 shift: TileShift::Column,
+                overlap_percent: 10.0,
                 size: Some(Size::new(8.0, 4.0)),
                 transform_with_object: true,
             },

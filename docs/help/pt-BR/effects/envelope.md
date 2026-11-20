@@ -6,7 +6,8 @@ Um envelope é uma moldura de nós em volta de um objeto; o objeto é curvado pa
 preencher a moldura e acompanha quando você move os nós. Use-o para arquear
 texto, inflar uma forma ou encaixar uma arte em uma bandeira ou um círculo. O
 objeto mantém a própria forma, então o envelope pode ser mudado ou removido a
-qualquer momento.
+qualquer momento. Imagens também se deformam, sozinhas ou dentro de um grupo ou
+quadro de recorte.
 
 ## Para acrescentar um envelope {#create}
 

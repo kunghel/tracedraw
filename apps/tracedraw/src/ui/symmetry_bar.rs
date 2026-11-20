@@ -158,6 +158,16 @@ pub fn show(app: &mut App, ctx: &Context) {
                         if changed {
                             app.set_symmetry_of(id, c, a, n.clamp(1, 12) as u8);
                         }
+                        // Rotational: the copies turned round the centre,
+                        // none mirrored (#2999).
+                        let mut turns = app.edited_symmetry_turns();
+                        if ui
+                            .checkbox(&mut turns, tr("symmetry.rotational"))
+                            .rich_tip(tr("symmetry.rotational_tip"))
+                            .changed()
+                        {
+                            app.set_symmetry_turns(id, turns);
+                        }
                         ui.separator();
                         let mut full = app.settings.symmetry_full_preview;
                         if toggle(ui, &mut full, &tr("symmetry.full_preview"), |p, r, col| {

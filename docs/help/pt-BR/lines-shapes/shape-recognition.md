@@ -33,6 +33,12 @@ facilidade os traços viram formas, e **Suavização** quanto as curvas que sobr
 são suavizadas. Cada um vai de Nenhum, Mínimo, Baixo, Médio (de início), Alto
 até Máximo. Com o reconhecimento em Nenhum, todo traço continua uma curva.
 
+**Rabisco apaga** (desligado de início) faz da ferramenta uma borracha de
+objetos inteiros: rabisque de um lado para o outro sobre objetos, com várias
+voltas fechadas, e os objetos por onde o rabisco passa são apagados, num só
+passo de desfazer. Um rabisco sobre o vazio é desenhado como curva, como
+sempre.
+
 ## Esboço {#sketch}
 
 A ferramenta [[tool.sketch]] (<kbd>S</kbd>) permite montar uma linha a partir de

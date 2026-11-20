@@ -11135,6 +11135,31 @@ fn finished_symmetry() -> (egui::Context, App, ShapeId) {
     (ctx, app, id)
 }
 
+/// Rotational on the symmetry bar (#2999) turns the copy round the
+/// centre instead of mirroring it: two at least, none a mirror image,
+/// one undo step that brings the mirror back.
+#[test]
+fn a_symmetry_turned_rotational_turns_its_copies() {
+    use tracedraw_core::live::Effect;
+    let (_ctx, mut app, id) = setup();
+    app.create_symmetry();
+    assert!(!app.edited_symmetry_turns());
+    app.set_symmetry_turns(id, true);
+    assert!(app.edited_symmetry_turns());
+    assert_eq!(app.edited_symmetry().map(|s| s.3), Some(2));
+    let s = app.doc().find_shape(id).expect("shape").clone();
+    let ev = tracedraw_core::live::evaluate(&s);
+    assert_eq!(ev.above.len(), 1);
+    let [a, b, c, d, _, _] = ev.above[0].transform.as_coeffs();
+    assert!(a * d - b * c > 0.0, "turned, not mirrored");
+    app.undo();
+    let s = app.doc().find_shape(id).expect("shape");
+    assert!(s
+        .effects
+        .iter()
+        .any(|e| matches!(e, Effect::Symmetry { rotate: false, .. })));
+}
+
 /// After Finish a drag on the copy moves the whole symmetry: the copy and
 /// the mirror line go with the rectangle (the copy used to mirror the
 /// move about the line left where it was, as while editing), and the
@@ -11355,6 +11380,7 @@ fn joining_curves_leaves_a_symmetry_where_it_was() {
                 center: Point::new(5.0, 60.0),
                 angle: 0.0,
                 lines: 1,
+                rotate: false,
             }],
         });
         id
@@ -18150,6 +18176,58 @@ fn a_right_click_on_any_toolbar_keeps_the_bar_menu_open() {
     );
 }
 
+/// A right click on a toolbox button opens the toolbox's menu with the
+/// tool's Properties first: it opens Options > Customization > Commands
+/// at that tool, on its Shortcut Keys tab, where a key is given to it
+/// (#3326).
+#[test]
+fn a_right_click_on_a_tool_button_opens_its_properties() {
+    use crate::ui::bars::Bar;
+    let (ctx, mut app, _) = setup();
+    let toolbox = ctx
+        .read_response(egui::Id::new(("bar_background", Bar::Toolbox.salt())))
+        .map(|r| r.rect)
+        .expect("the toolbox");
+    let props = crate::i18n::tr("bars.button_properties");
+    let find = |shapes: &[egui::Shape]| {
+        shapes.iter().find_map(|s| match s {
+            egui::Shape::Text(t) if t.galley.text() == props => Some(t.pos + egui::vec2(4.0, 4.0)),
+            _ => None,
+        })
+    };
+    let at = egui::pos2(toolbox.center().x, toolbox.top() + 30.0);
+    assert!(right_click_menu(&ctx, &mut app, at, false)
+        .iter()
+        .all(|s| *s));
+    let entry = find(&frame_shapes(&ctx, &mut app, Vec::new())).expect("the tool's Properties");
+    let none = Modifiers::NONE;
+    frame(&ctx, &mut app, vec![Event::PointerMoved(entry)], none);
+    frame(
+        &ctx,
+        &mut app,
+        vec![button(entry, true, PointerButton::Primary, none)],
+        none,
+    );
+    frame(
+        &ctx,
+        &mut app,
+        vec![button(entry, false, PointerButton::Primary, none)],
+        none,
+    );
+    assert!(matches!(app.dialog, crate::ui::dialogs::Dialog::Options));
+    assert_eq!(app.options_page, crate::ui::options::OptionsPage::Commands);
+    let picked = app
+        .shortcut_editor
+        .selected
+        .clone()
+        .expect("a command picked");
+    assert!(
+        crate::tools::Tool::ALL.iter().any(|t| t.id() == picked),
+        "{picked} is a tool"
+    );
+    assert!(app.shortcut_editor.keys_tab);
+}
+
 /// A dimension without arrowheads drawn across the page with its tool
 /// and dragged with the Pick tool keeps its selection box around its
 /// line and label, moved sideways and upwards (#996).
@@ -22563,6 +22641,70 @@ fn smart_fill_lists_offer_specify_then_default_then_none() {
     // The first entry gives the new objects a colour of their own.
     click_at(&ctx, &mut app, listed[0].1.center(), Modifiers::NONE);
     assert_eq!(app.area_fill_mode, 1);
+}
+
+/// Smart Fill with Live on: a click inside a group's square paints the
+/// cell its lines close off as a live fill of the group, no new object;
+/// the fill follows a line of the group that moves, and one undo takes
+/// the fill away.
+#[test]
+fn live_smart_fill_paints_a_cell_that_follows_its_lines() {
+    let (ctx, mut app, _) = setup();
+    app.select(Vec::new());
+    let line = |a: (f64, f64), b: (f64, f64)| {
+        let mut p = tracedraw_core::BezPath::new();
+        p.move_to(a);
+        p.line_to(b);
+        ShapeKind::Path {
+            path: p,
+            closed: false,
+        }
+    };
+    let mut ids = Vec::new();
+    for (a, b) in [
+        ((100.0, 100.0), (130.0, 100.0)),
+        ((130.0, 100.0), (130.0, 130.0)),
+        ((130.0, 130.0), (100.0, 130.0)),
+        ((100.0, 130.0), (100.0, 100.0)),
+        ((110.0, 95.0), (110.0, 135.0)),
+    ] {
+        ids.push(app.new_shape(line(a, b)).expect("line"));
+    }
+    app.select(ids.clone());
+    app.group_selection();
+    let group = app.selection[0];
+    app.select(Vec::new());
+    let count = shape_count(&app);
+    app.set_tool(Tool::AreaFill);
+    app.area_fill_live = true;
+    app.area_fill_mode = 1;
+    app.area_fill_color = tracedraw_core::Color::rgb8(255, 0, 0);
+    click_page(&ctx, &mut app, Point::new(105.0, 115.0));
+    assert_eq!(shape_count(&app), count);
+    let painted = |app: &App| {
+        let g = app.doc().find_shape(group).expect("group").clone();
+        tracedraw_core::live::evaluate(&g)
+            .below
+            .iter()
+            .map(|s| tracedraw_core::geometry::Shape::bounding_box(&s.page_path()))
+            .collect::<Vec<_>>()
+    };
+    let cells = painted(&app);
+    assert_eq!(cells.len(), 1, "{cells:?}");
+    assert!((cells[0].x1 - 110.0).abs() < 1e-6, "{:?}", cells[0]);
+    // The middle line moves right: the painted cell widens with it.
+    let mut doc_group = app.doc().find_shape(group).expect("group").clone();
+    if let ShapeKind::Group { children } = &mut doc_group.kind {
+        children[4].transform = Affine::translate((8.0, 0.0));
+    }
+    let cells = tracedraw_core::live::evaluate(&doc_group)
+        .below
+        .iter()
+        .map(|s| tracedraw_core::geometry::Shape::bounding_box(&s.page_path()))
+        .collect::<Vec<_>>();
+    assert!((cells[0].x1 - 118.0).abs() < 1e-6, "{:?}", cells[0]);
+    app.undo();
+    assert!(painted(&app).is_empty());
 }
 
 /// The Shape tool reads Ctrl while a node is dragged, not only at the
@@ -29150,6 +29292,93 @@ fn the_text_bar_has_more_settings_and_a_plus_list() {
     assert!(!app.settings.bar_items.contains_key(text_bar::HIDDEN));
 }
 
+/// Paragraph text selected with the Pick tool: the object fields come
+/// first, and the Bullets button is still in view on the bar without
+/// sliding it, next to the alignment, as with the Text tool (#3586,
+/// #3592).
+#[test]
+fn bullets_stay_in_view_with_paragraph_text_picked() {
+    use crate::ui::text_bar;
+    let (ctx, mut app, _) = setup();
+    let id = paragraph_frame(&ctx, &mut app, 12);
+    let mut at = Vec::new();
+    for tool in [Tool::Pick, Tool::Text] {
+        app.set_tool(tool);
+        app.select(vec![id]);
+        for _ in 0..3 {
+            frame(&ctx, &mut app, Vec::new(), Modifiers::NONE);
+        }
+        let b = text_bar::bullets_rect(&ctx).expect("the Bullets button on the bar");
+        // The window is 1600 wide: in view, short of the bar's » button.
+        assert!(
+            b.left() > 0.0 && b.right() < 1600.0 - 2.0 * crate::ui::overflow::BUTTON,
+            "{tool:?}: {b:?}"
+        );
+        at.push(b);
+    }
+    assert!(at[0].left() > at[1].left(), "the object fields come first");
+}
+
+/// Ctrl+Shift+L turns bullets on and off (#3593): for the selected
+/// paragraph text, and for the paragraph at the caret while it is typed
+/// in; the bullet set for the text stays as it was.
+#[test]
+fn ctrl_shift_l_turns_bullets_on_and_off() {
+    let (ctx, mut app, _) = setup();
+    let id = paragraph_frame(&ctx, &mut app, 12);
+    let bullets = |app: &App| {
+        let s = app.doc().find_shape(id).cloned().expect("text");
+        app.paragraph_style_of(&s).expect("paragraph").1.bullets
+    };
+    let press = |ctx: &egui::Context, app: &mut App| {
+        let mods = Modifiers::COMMAND | Modifiers::SHIFT;
+        frame(
+            ctx,
+            app,
+            vec![key(egui::Key::L, mods), key_up(egui::Key::L, mods)],
+            mods,
+        );
+        frame(ctx, app, Vec::new(), Modifiers::NONE);
+    };
+    app.set_tool(Tool::Pick);
+    app.select(vec![id]);
+    assert!(!bullets(&app));
+    press(&ctx, &mut app);
+    assert!(bullets(&app), "on");
+    press(&ctx, &mut app);
+    assert!(!bullets(&app), "off");
+    // A bullet of the text's own comes back as it was.
+    app.edit_paragraph_style(id, |p| p.bullet.size_pct = 150.0);
+    press(&ctx, &mut app);
+    let s = app.doc().find_shape(id).cloned().expect("text");
+    let p = app.paragraph_style_of(&s).expect("paragraph").1;
+    assert!(
+        p.bullets && (p.bullet.size_pct - 150.0).abs() < 1e-9,
+        "{p:?}"
+    );
+    press(&ctx, &mut app);
+    // While typing: the key turns bullets on and types nothing.
+    app.set_tool(Tool::Text);
+    app.begin_text_edit(id);
+    frame(&ctx, &mut app, Vec::new(), Modifiers::NONE);
+    let text = |app: &App| match &app.doc().find_shape(id).expect("text").kind {
+        ShapeKind::Text { spans, .. } => spans.iter().map(|s| s.text.clone()).collect::<String>(),
+        _ => String::new(),
+    };
+    let before = text(&app);
+    press(&ctx, &mut app);
+    assert!(app.text_edit.is_some(), "still typing");
+    assert!(bullets(&app), "on at the caret");
+    assert_eq!(text(&app), before);
+    // The menu lists it with its key.
+    let entries = crate::ui::menus::commands(&mut app, &ctx);
+    let row = entries
+        .iter()
+        .find(|e| e.key == "menu.text.toggle_bullets")
+        .expect("Text > Bullets On/Off");
+    assert_eq!(row.shortcut, "Ctrl+Shift+L");
+}
+
 /// File > Import of several files at once (discussion #2695): each waits
 /// for its own click in turn, and all of them end up selected together;
 /// Esc calls off the one waiting and those after it.
@@ -29208,6 +29437,57 @@ fn several_imported_files_are_placed_one_after_another() {
     assert!(app.import_placing.is_none());
     assert_eq!(shape_count(&app), n + 1, "only the first came in");
     assert_eq!(app.selection.len(), 1);
+}
+
+/// Several files picked at once, placed with a drag: the arrow keys
+/// pressed during it lay them out in columns and rows, each file fitted
+/// in its own cell; a drag without them still sizes only the first.
+#[test]
+fn a_drag_with_the_arrows_lays_several_imported_files_out_in_a_grid() {
+    let (ctx, mut app, _id) = setup();
+    let files: Vec<_> = ["grid-a", "grid-b", "grid-c", "grid-d"]
+        .iter()
+        .map(|t| import_square_svg(t))
+        .collect();
+    let n = shape_count(&app);
+    app.import_picked_many(files.clone());
+    frame(&ctx, &mut app, Vec::new(), Modifiers::NONE);
+    assert!(app.import_placing.is_some());
+    let from = app.view.to_screen(Point::new(20.0, 220.0));
+    let to = app.view.to_screen(Point::new(120.0, 120.0));
+    let arrows = vec![
+        key(egui::Key::ArrowRight, Modifiers::NONE),
+        key_up(egui::Key::ArrowRight, Modifiers::NONE),
+        key(egui::Key::ArrowUp, Modifiers::NONE),
+        key_up(egui::Key::ArrowUp, Modifiers::NONE),
+    ];
+    drag(&ctx, &mut app, from, to, Modifiers::NONE, arrows);
+    for _ in 0..6 {
+        frame(&ctx, &mut app, Vec::new(), Modifiers::NONE);
+    }
+    assert!(app.import_placing.is_none(), "no file waits");
+    assert!(app.import_cells.is_empty());
+    assert_eq!(shape_count(&app), n + 4, "all four came in");
+    assert_eq!(app.selection.len(), 4, "selected together");
+    // Each 50 x 50 cell holds one file, in its middle.
+    let doc = app.doc();
+    let mut centres: Vec<Point> = app
+        .selection
+        .iter()
+        .filter_map(|id| doc.find_shape(*id).map(|s| s.bounds().center()))
+        .collect();
+    centres.sort_by(|a, b| b.y.total_cmp(&a.y).then(a.x.total_cmp(&b.x)));
+    let want = [
+        Point::new(45.0, 195.0),
+        Point::new(95.0, 195.0),
+        Point::new(45.0, 145.0),
+        Point::new(95.0, 145.0),
+    ];
+    for (c, w) in centres.iter().zip(want) {
+        assert!((*c - w).hypot() < 1.0, "{centres:?}");
+    }
+    let b = app.selection_bounds().expect("bounds");
+    assert!(b.width() > 90.0 && b.height() > 90.0, "{b:?}");
 }
 
 /// Without the placement cursor, several files picked at once all come
@@ -30088,4 +30368,56 @@ fn the_guidelines_panel_works_from_the_keyboard() {
     frame(&ctx, &mut app, vec![key(egui::Key::A, Modifiers::ALT)], Modifiers::ALT);
     frame(&ctx, &mut app, vec![key_up(egui::Key::A, Modifiers::ALT)], Modifiers::NONE);
     assert_eq!(app.page_guides().len(), 2, "Alt+A adds");
+}
+
+/// A straight vertical or horizontal line (#3523): the three handles of
+/// each side stand apart with a gap between them, and dragging the
+/// middle handle along the line still stretches it by the drag.
+#[test]
+fn the_handles_of_a_straight_line_do_not_overlap() {
+    let (ctx, mut app, rect) = setup();
+    app.select(Vec::new());
+    let mut ids = Vec::new();
+    for (a, b) in [((40.0, 20.0), (40.0, 120.0)), ((20.0, 150.0), (120.0, 150.0))] {
+        let mut p = tracedraw_core::geometry::BezPath::new();
+        p.move_to(a);
+        p.line_to(b);
+        let id = app
+            .new_shape(ShapeKind::Path {
+                path: p,
+                closed: false,
+            })
+            .expect("line");
+        ids.push(id);
+    }
+    let _ = rect;
+    let size = app.handle_size();
+    for id in ids.clone() {
+        app.select(vec![id]);
+        frame(&ctx, &mut app, Vec::new(), Modifiers::NONE);
+        let hs: Vec<Pos2> = app
+            .handle_positions(app.selection_bounds().expect("bounds"))
+            .iter()
+            .map(|(_, p)| *p)
+            .collect();
+        for (i, a) in hs.iter().enumerate() {
+            for b in &hs[i + 1..] {
+                let apart = (a.x - b.x).abs().max((a.y - b.y).abs());
+                assert!(
+                    apart >= size + crate::interaction::HANDLE_GAP - 1e-3,
+                    "{a:?} {b:?} {hs:?}"
+                );
+            }
+        }
+    }
+    // The vertical line: its bottom handle drags it 30 points longer.
+    app.select(vec![ids[0]]);
+    frame(&ctx, &mut app, Vec::new(), Modifiers::NONE);
+    let before = bounds(&app, ids[0]);
+    let s = handle(&app, Handle::S);
+    drag(&ctx, &mut app, s, s + egui::vec2(0.0, 30.0), Modifiers::NONE, Vec::new());
+    let after = bounds(&app, ids[0]);
+    let grown = 30.0 / app.view.zoom as f64;
+    assert!(close(after.height(), before.height() + grown), "{before:?} {after:?}");
+    assert!(close(after.width(), before.width()), "{before:?} {after:?}");
 }

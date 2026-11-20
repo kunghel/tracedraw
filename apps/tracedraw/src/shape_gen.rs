@@ -51,10 +51,15 @@ pub enum GenKind {
     Guilloche,
     Fractal,
     Tiling,
+    Hatch,
+    Contour,
+    Maze,
+    SpaceCurve,
+    SliceGrid,
 }
 
 impl GenKind {
-    pub const ALL: [GenKind; 15] = [
+    pub const ALL: [GenKind; 20] = [
         GenKind::DotGrid,
         GenKind::Truchet,
         GenKind::Tessellation,
@@ -70,6 +75,11 @@ impl GenKind {
         GenKind::Guilloche,
         GenKind::Fractal,
         GenKind::Tiling,
+        GenKind::Hatch,
+        GenKind::Contour,
+        GenKind::Maze,
+        GenKind::SpaceCurve,
+        GenKind::SliceGrid,
     ];
     pub fn key(self) -> &'static str {
         match self {
@@ -88,6 +98,11 @@ impl GenKind {
             GenKind::Guilloche => "shapegen.kind_guilloche",
             GenKind::Fractal => "shapegen.kind_fractal",
             GenKind::Tiling => "shapegen.kind_tiling",
+            GenKind::Hatch => "shapegen.kind_hatch",
+            GenKind::Contour => "shapegen.kind_contour",
+            GenKind::Maze => "shapegen.kind_maze",
+            GenKind::SpaceCurve => "shapegen.kind_space_curve",
+            GenKind::SliceGrid => "shapegen.kind_slice",
         }
     }
     /// Whether the generator works from the panel's picked selection (an
@@ -95,12 +110,21 @@ impl GenKind {
     pub fn uses_source(self) -> bool {
         matches!(
             self,
-            GenKind::Voronoi | GenKind::Stipple | GenKind::Halftone
+            GenKind::Voronoi
+                | GenKind::Stipple
+                | GenKind::Halftone
+                | GenKind::Hatch
+                | GenKind::Contour
+                | GenKind::Maze
+                | GenKind::SpaceCurve
         )
     }
     /// Whether it reads the picked picture's tones.
     pub fn uses_tone(self) -> bool {
-        matches!(self, GenKind::Stipple | GenKind::Halftone)
+        matches!(
+            self,
+            GenKind::Stipple | GenKind::Halftone | GenKind::Hatch | GenKind::Contour
+        )
     }
     /// Whether the generator draws inside the Width x Height box (the
     /// cone template takes its size from its own measures).
@@ -456,6 +480,52 @@ pub struct ShapeGenSettings {
     pub tile_rotation: f64,
     /// Penrose: thin and thick rhombs filled light and dark.
     pub tile_fill: bool,
+
+    // Hatching.
+    pub hatch_mode: crate::shape_gen_fill::HatchMode,
+    /// Distance between lines, mm; angle and the crossing lines' turn
+    /// from it, degrees.
+    pub hatch_spacing: f64,
+    pub hatch_angle: f64,
+    pub hatch_cross: f64,
+    /// By tone: layers of lines, 1 to 8.
+    pub hatch_layers: u32,
+
+    // Contour lines.
+    pub contour_mode: crate::shape_gen_fill::ContourMode,
+    /// Offset rings: distance between rings, mm, and the most rings.
+    pub contour_spacing: f64,
+    pub contour_rings: u32,
+    /// Tone lines: how many levels, 1 to 40.
+    pub contour_levels: u32,
+
+    // Maze.
+    /// Cell size, mm.
+    pub maze_cell: f64,
+    pub maze_style: crate::shape_gen_fill::MazeStyle,
+    /// An entrance at the bottom and an exit at the top.
+    pub maze_openings: bool,
+
+    // Space-filling curve.
+    pub curve_type: crate::shape_gen_fill::SpaceCurve,
+    pub curve_order: u32,
+    pub curve_round: bool,
+
+    // Slice grid.
+    pub slice_layout: crate::shape_gen_slice::SliceLayout,
+    /// Columns and rows, 1 to 200.
+    pub slice_cols: u32,
+    pub slice_rows: u32,
+    pub slice_pattern: crate::shape_gen_slice::SlicePattern,
+    /// The largest move sideways and up or down, mm.
+    pub slice_dx: f64,
+    pub slice_dy: f64,
+    /// Waves across the strips, for the wave pattern.
+    pub slice_waves: f64,
+    /// Space between pieces, mm.
+    pub slice_gap: f64,
+    /// Leave the selection in place.
+    pub slice_keep: bool,
 }
 
 impl Default for ShapeGenSettings {
@@ -577,6 +647,30 @@ impl Default for ShapeGenSettings {
             tile_angle: 67.5,
             tile_rotation: 0.0,
             tile_fill: false,
+            hatch_mode: crate::shape_gen_fill::HatchMode::Parallel,
+            hatch_spacing: 2.0,
+            hatch_angle: 45.0,
+            hatch_cross: 90.0,
+            hatch_layers: 4,
+            contour_mode: crate::shape_gen_fill::ContourMode::Offset,
+            contour_spacing: 3.0,
+            contour_rings: 100,
+            contour_levels: 8,
+            maze_cell: 5.0,
+            maze_style: crate::shape_gen_fill::MazeStyle::Walls,
+            maze_openings: true,
+            curve_type: crate::shape_gen_fill::SpaceCurve::Hilbert,
+            curve_order: 5,
+            curve_round: false,
+            slice_layout: crate::shape_gen_slice::SliceLayout::Rows,
+            slice_cols: 8,
+            slice_rows: 12,
+            slice_pattern: crate::shape_gen_slice::SlicePattern::Random,
+            slice_dx: 6.0,
+            slice_dy: 0.0,
+            slice_waves: 1.0,
+            slice_gap: 0.0,
+            slice_keep: false,
         }
     }
 }
@@ -789,6 +883,24 @@ impl ShapeGenSettings {
             .max((side / 200.0).max(0.2));
         s.tile_angle = clampf(s.tile_angle, 20.0, 85.0, d.tile_angle);
         s.tile_rotation = clampf(s.tile_rotation, -360.0, 360.0, 0.0);
+        let fine = (side / 1000.0).max(0.05);
+        s.hatch_spacing = clampf(s.hatch_spacing, fine, 1000.0, d.hatch_spacing).max(fine);
+        s.hatch_angle = clampf(s.hatch_angle, -360.0, 360.0, d.hatch_angle);
+        s.hatch_cross = clampf(s.hatch_cross, -180.0, 180.0, d.hatch_cross);
+        s.hatch_layers = s.hatch_layers.clamp(1, 8);
+        let ring = (side / 500.0).max(0.05);
+        s.contour_spacing = clampf(s.contour_spacing, ring, 1000.0, d.contour_spacing).max(ring);
+        s.contour_rings = s.contour_rings.clamp(1, 500);
+        s.contour_levels = s.contour_levels.clamp(1, 40);
+        let cell = (side / 300.0).max(0.1);
+        s.maze_cell = clampf(s.maze_cell, cell, 1000.0, d.maze_cell).max(cell);
+        s.curve_order = s.curve_order.clamp(1, s.curve_type.max_order());
+        s.slice_cols = s.slice_cols.clamp(1, 200);
+        s.slice_rows = s.slice_rows.clamp(1, 200);
+        s.slice_dx = clampf(s.slice_dx, -1000.0, 1000.0, d.slice_dx);
+        s.slice_dy = clampf(s.slice_dy, -1000.0, 1000.0, 0.0);
+        s.slice_waves = clampf(s.slice_waves, 0.1, 50.0, d.slice_waves);
+        s.slice_gap = clampf(s.slice_gap, 0.0, 1000.0, 0.0);
         s
     }
 }
@@ -813,6 +925,11 @@ pub fn generate(settings: &ShapeGenSettings) -> Generated {
         GenKind::Guilloche => crate::shape_gen_curves::guilloche(&s, &mut out),
         GenKind::Fractal => crate::shape_gen_curves::fractal(&s, &mut out),
         GenKind::Tiling => crate::shape_gen_curves::tiling(&s, &mut out),
+        GenKind::Hatch => crate::shape_gen_fill::hatch(&s, &mut out),
+        GenKind::Contour => crate::shape_gen_fill::contour(&s, &mut out),
+        GenKind::Maze => crate::shape_gen_fill::maze(&s, &mut out),
+        GenKind::SpaceCurve => crate::shape_gen_fill::space_curve(&s, &mut out),
+        GenKind::SliceGrid => crate::shape_gen_slice::slice_grid(&s, &mut out),
     }
     out
 }

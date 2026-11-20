@@ -15,6 +15,10 @@ seguir um padrão ou uma textura.
   para mudar onde a mistura chega à metade; dê um duplo clique na linha para
   acrescentar um nó, e num nó para removê-lo.
 - Na seção [[docker.transparency]] do painel [[docker.properties]].
+- Com **Objeto > Aplicar transparência uniforme** (uma transparência uniforme
+  no preenchimento e no contorno, com a quantidade usada por último, 50% de
+  início) e **Objeto > Remover transparência**. Os dois podem receber um atalho
+  de teclado em Personalização > Comandos.
 
 ## Configurações {#settings}
 
@@ -35,6 +39,13 @@ seguir um padrão ou uma textura.
 
 Para removê-la, clique em [[toolbar.clear_transparency]] no fim da barra de
 propriedades (ou escolha [[transparency.none]] como tipo).
+
+No painel Propriedades, uma transparência de padrão também tem o tamanho, a
+rotação e a inclinação dos ladrilhos e os botões de espelhar ladrilhos, e uma
+textura tem a sua **Biblioteca de texturas** (nuvens, mármore, ruído, madeira)
+com o tamanho e **Regenerar**. O botão **+** ao lado de **Editar transparência**
+(**Salvar como nova**) guarda a transparência atual no seletor do seu tipo,
+para qualquer desenho; um clique com o botão direito numa salva a remove.
 
 Para copiar a transparência de outro objeto, use
 [[menu.object > menu.object.copy_effect > menu.object.copy_transparency_from]].

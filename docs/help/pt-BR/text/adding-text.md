@@ -160,6 +160,9 @@ Ou clique no contorno de um caminho com a ferramenta [[tool.text]] e digite. O
 texto em uma forma fechada fica do lado de fora dela, centralizado no alto;
 clicado na parte de baixo de uma elipse, ele começa ali.
 
+Um texto que você estreitou ou alargou com uma alça lateral mantém a forma das
+letras no caminho: a mudança vai para a largura dos caracteres.
+
 Com texto em um caminho selecionado (também com a ferramenta [[tool.pick]]), a
 barra de propriedades mostra primeiro os campos do caminho e depois os campos
 de texto de sempre:
@@ -178,6 +181,10 @@ de texto de sempre:
   círculo continua centralizada ao se afastar ou se aproximar.
 - Os dois botões de espelhar, que põem o texto do outro lado do caminho ou o
   viram, e [[menu.text.straighten_text]], que o tira do caminho.
+- **Seguir caminho** (desligado): pressionado, o texto é ajustado de novo ao
+  caminho sempre que o caminho é movido, redimensionado ou remodelado,
+  mantendo seu lugar ao longo dele. Desfazer volta a mudança do caminho e a do
+  texto juntas. Apagar o caminho deixa o texto como está.
 
 Arraste o texto para deslizá-lo pelo caminho, ou através do caminho para
 afastá-lo dele.

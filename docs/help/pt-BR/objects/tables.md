@@ -56,6 +56,9 @@ O menu [[menu.text > menu.table]] age sobre a célula ativa e as células seleci
 - [[menu.table.split_into_rows]] e [[menu.table.split_into_columns]] dividem a
   linha ou coluna ativa em duas metades.
 
+Os mesmos comandos estão no menu do botão direito de uma tabela
+selecionada, inclusive de uma planilha importada, em Tabela.
+
 ## Converter texto e tabelas {#convert}
 
 - [[menu.table.convert_text_to_table]]: cada parágrafo do texto selecionado

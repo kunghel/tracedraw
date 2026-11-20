@@ -125,7 +125,7 @@ Ellipse (ellipse, pie or arc and its angles; Direction,
 counterclockwise at first or clockwise, which swaps the starting and
 ending angles of new pies and arcs, the same setting as the property
 bar's direction button, `settings.ellipse_clockwise`), Polygon (points, sharpness),
-Graph Paper (rows, columns), Spiral (revolutions, symmetrical or
+Graph Paper (rows, columns; Radial with its rings and spokes), Spiral (revolutions, symmetrical or
 logarithmic; Expansion, 1 to 100, 100 at first, enabled for logarithmic
 spirals and also on the property bar: the radius grows as
 (e^(kt) - 1) / (e^k - 1) with k = expansion / 25, so 1 is almost even;

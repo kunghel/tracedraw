@@ -11,7 +11,7 @@ use crate::app::{App, Drag};
 use crate::tools::Tool;
 use egui::{Color32, Modifiers, Painter, PointerButton, Response};
 use tracedraw_core::geometry::{Affine, BezPath, ParamCurve as _, Point, Shape as _};
-use tracedraw_core::shaping::{overlay, overlay_parts, Op};
+use tracedraw_core::shaping::{onto_sources, overlay, overlay_parts, Op};
 use tracedraw_core::{Command, Shape, ShapeId, ShapeKind};
 
 /// The tool's state: the parts the drag has crossed so far, on the page,
@@ -69,20 +69,32 @@ pub fn part_at(areas: &[BezPath], p: Point) -> Option<BezPath> {
         }
         part = overlay(&part, a, Op::Trim);
     }
-    overlay_parts(&part, &BezPath::new(), Op::Weld)
+    let piece = overlay_parts(&part, &BezPath::new(), Op::Weld)
         .into_iter()
-        .find(|piece| inside(piece, p))
+        .find(|piece| inside(piece, p))?;
+    // Laid back onto the objects, so a curve cut by an object that does
+    // not bound the part is one piece again (#3587).
+    let sources: Vec<&BezPath> = areas.iter().collect();
+    Some(onto_sources(&piece, &sources))
 }
 
-/// The parts crossed merged into one area.
-pub fn merged(parts: &[BezPath]) -> BezPath {
+/// The parts crossed merged into one area, its curves those of the
+/// `areas` the parts were cut from: each part has nodes where the others
+/// cut it, and the merge kept them where the cut was gone, a curve in
+/// many short pieces (#3587).
+pub fn merged(parts: &[BezPath], areas: &[BezPath]) -> BezPath {
     let mut it = parts.iter();
     let Some(first) = it.next() else {
         return BezPath::new();
     };
-    it.fold(overlay(first, &BezPath::new(), Op::Weld), |acc, p| {
+    let all = it.fold(overlay(first, &BezPath::new(), Op::Weld), |acc, p| {
         overlay(&acc, p, Op::Weld)
-    })
+    });
+    if all.elements().is_empty() || areas.is_empty() {
+        return all;
+    }
+    let sources: Vec<&BezPath> = areas.iter().collect();
+    onto_sources(&all, &sources)
 }
 
 /// Whether the tool can cut `s`: a closed curve, rectangle, ellipse or
@@ -200,11 +212,12 @@ impl App {
         if parts.is_empty() {
             return;
         }
-        let area = merged(&parts);
+        let pieces = self.builder_pieces();
+        let areas: Vec<BezPath> = pieces.iter().map(|q| q.area.clone()).collect();
+        let area = merged(&parts, &areas);
         if area.elements().is_empty() {
             return;
         }
-        let pieces = self.builder_pieces();
         // The new object looks like the front object over the first part.
         let probe = parts[0]
             .segments()
@@ -465,8 +478,47 @@ mod tests {
             assert!((area(p) - 200.0).abs() < 1e-6, "{}", area(p));
         }
         assert!(part_at(&areas, Point::new(40.0, 10.0)).is_none());
-        let both = merged(&[left, mid]);
+        let both = merged(&[left, mid], &areas);
         assert!((area(&both) - 400.0).abs() < 1e-6);
+    }
+
+    /// Three circles overlapping (#3587): two parts merged come out with
+    /// one curve for each stretch of a circle, as the circles draw it,
+    /// not split again where the third circle had cut the parts; the
+    /// merge covers the same area as the two parts.
+    #[test]
+    fn merged_parts_keep_the_curves_of_their_objects() {
+        use tracedraw_core::geometry::{Circle, PathEl, Shape as _};
+        let circle = |x: f64, y: f64| Circle::new((x, y), 10.0).to_path(0.1);
+        let areas = vec![circle(0.0, 0.0), circle(12.0, 0.0), circle(6.0, 9.0)];
+        let a = part_at(&areas, Point::new(-5.0, -3.0)).unwrap();
+        let b = part_at(&areas, Point::new(6.0, -3.0)).unwrap();
+        let both = merged(&[a.clone(), b.clone()], &areas);
+        let curves = both
+            .elements()
+            .iter()
+            .filter(|e| matches!(e, PathEl::CurveTo(..)))
+            .count();
+        // The left circle's outside run (two of its quarters and a piece
+        // up to its own node at the left of the top circle), the right
+        // circle's run inside, the top circle's run back: six, not eight.
+        assert_eq!(curves, 6, "{:?}", both.elements());
+        assert!(
+            (area(&both) - area(&a) - area(&b)).abs() < 1e-2,
+            "{} {} {}",
+            area(&both),
+            area(&a),
+            area(&b)
+        );
+        // Every node lies on one of the circles.
+        for el in both.elements() {
+            if let PathEl::MoveTo(p) | PathEl::CurveTo(_, _, p) = el {
+                let on = [(0.0, 0.0), (12.0, 0.0), (6.0, 9.0)].iter().any(|c| {
+                    ((p.to_vec2() - Point::new(c.0, c.1).to_vec2()).hypot() - 10.0).abs() < 1e-3
+                });
+                assert!(on, "{p:?}");
+            }
+        }
     }
 
     /// The same place inside the same objects in two pieces apart: only

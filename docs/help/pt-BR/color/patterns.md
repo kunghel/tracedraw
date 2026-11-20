@@ -28,6 +28,12 @@ Na seção de preenchimento do painel [[docker.properties]], escolha
 padrão vetorial, o painel mostra quantos objetos o ladrilho contém e a largura e
 a altura dele: mudá-las escalona o conteúdo do ladrilho junto.
 
+Os ladrilhos podem ficar em grade, em tijolo ou em hexágonos:
+**Deslocamento de linha ou coluna** desloca cada linha (ou coluna) parte de um
+ladrilho, e **Sobreposição de linha ou coluna** põe cada linha (ou coluna) sobre a
+anterior. Para ladrilhos hexagonais, use deslocamento de 50% e sobreposição
+de 25%: as linhas encaixam sem falhas.
+
 ## Padrões em arquivos exportados {#export}
 
 Arquivos SVG mantêm os padrões vetoriais como vetores. Arquivos PDF e EPS os

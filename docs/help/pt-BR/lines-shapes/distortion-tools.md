@@ -65,3 +65,12 @@ define quantas, e **Tamanho da ponta** (2 mm de início) a altura. As pontas sã
 retas, então ficam afiadas. Passar de novo sobre o contorno num novo traço o
 deixa mais áspero; pontas que cruzam o contorno continuam preenchidas, sem
 frestas brancas entre elas.
+
+**Borda** define o tipo de borda que a ferramenta faz:
+
+- **Serrilhada** (de início): pontas para dentro e para fora ao acaso.
+- **Espinhos**: pontas afiadas que saem da forma.
+- **Pétalas**: pontas puxadas para dentro da forma, com lóbulos redondos entre
+  elas, como a borda de uma pétala ou de uma toalhinha de renda.
+- **Amassada**: ondas suaves para dentro e para fora ao acaso; o contorno
+  continua liso.

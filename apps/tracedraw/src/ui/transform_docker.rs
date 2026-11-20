@@ -17,6 +17,12 @@
 //! selection's width and height that way, so Apply puts the selection (or
 //! each copy) right next to the last one; the centre fills 0. The offset
 //! follows the selection until a field is typed into.
+//!
+//! The Skew page also holds the isometric faces: each button sets every
+//! selected object onto a face of an isometric cube (the top, the left or
+//! the right face, each read two ways) about its own middle, keeping its
+//! size, whatever slant it had before; Reset sets it flat again. It is
+//! the object's transform alone, so a text stays text.
 
 use crate::app::{App, TransformTab, Units};
 use crate::i18n::tr;
@@ -26,6 +32,146 @@ use crate::ui::tips::RichTip;
 use egui::{Color32, Rect, Sense, Stroke, Ui, Vec2};
 use tracedraw_core::geometry::{Affine, Point, Rect as PageRect, Vec2 as PageVec};
 use tracedraw_core::{Command, ShapeId};
+
+/// A face of an isometric cube an object can be set on (Skew page).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IsoFace {
+    Left,
+    Right,
+    Top,
+    /// The left face, read up its upright edge.
+    LeftUp,
+    /// The right face, read up its upright edge.
+    RightUp,
+    /// The top face, read along its other edge.
+    TopTurned,
+}
+
+impl IsoFace {
+    pub const ALL: [IsoFace; 6] = [
+        IsoFace::Left,
+        IsoFace::Right,
+        IsoFace::Top,
+        IsoFace::LeftUp,
+        IsoFace::RightUp,
+        IsoFace::TopTurned,
+    ];
+
+    pub fn key(self) -> &'static str {
+        match self {
+            IsoFace::Left => "docker.iso_left",
+            IsoFace::Right => "docker.iso_right",
+            IsoFace::Top => "docker.iso_top",
+            IsoFace::LeftUp => "docker.iso_left_up",
+            IsoFace::RightUp => "docker.iso_right_up",
+            IsoFace::TopTurned => "docker.iso_top_turned",
+        }
+    }
+
+    /// Where the face takes the object's x and y directions (page y up):
+    /// the cube's edges run at 30 degrees either side of the horizontal
+    /// and upright, at their full length.
+    pub fn matrix(self) -> Affine {
+        let c = 30f64.to_radians().cos();
+        let s = 0.5;
+        Affine::new(match self {
+            IsoFace::Left => [c, -s, 0.0, 1.0, 0.0, 0.0],
+            IsoFace::Right => [c, s, 0.0, 1.0, 0.0, 0.0],
+            IsoFace::Top => [c, s, -c, s, 0.0, 0.0],
+            IsoFace::LeftUp => [0.0, 1.0, -c, s, 0.0, 0.0],
+            IsoFace::RightUp => [0.0, 1.0, -c, -s, 0.0, 0.0],
+            IsoFace::TopTurned => [c, -s, c, s, 0.0, 0.0],
+        })
+    }
+}
+
+/// The transform that sets an object with local box `b` and transform
+/// `t` onto `face` (flat with none), about the middle of its box and
+/// keeping its width and height (and a mirror).
+pub fn face_transform(b: PageRect, t: Affine, face: Option<IsoFace>) -> Affine {
+    let [a, bb, c, d, _, _] = t.as_coeffs();
+    let sx = a.hypot(bb);
+    let mut sy = c.hypot(d);
+    if t.determinant() < 0.0 {
+        sy = -sy;
+    }
+    let m = face.map_or(Affine::IDENTITY, IsoFace::matrix);
+    let mid = b.center();
+    let at = t * mid;
+    Affine::translate(at.to_vec2())
+        * m
+        * Affine::scale_non_uniform(sx, sy)
+        * Affine::translate(-mid.to_vec2())
+}
+
+impl App {
+    /// Set each selected object onto an isometric face (flat with none),
+    /// as one undo step.
+    pub fn set_iso_face(&mut self, face: Option<IsoFace>) {
+        use tracedraw_core::geometry::Shape as _;
+        let doc = self.doc();
+        let mut cmds = Vec::new();
+        for id in &self.selection {
+            let Some(shape) = doc.find_shape(*id) else {
+                continue;
+            };
+            let parent = doc.parent_transform(*id).unwrap_or(Affine::IDENTITY);
+            let b = shape.local_path().bounding_box();
+            let now = parent * shape.transform;
+            let want = parent * face_transform(b, shape.transform, face);
+            let det = now.determinant();
+            if !det.is_finite() || det.abs() < 1e-12 {
+                continue;
+            }
+            let delta = want * now.inverse();
+            cmds.push(Command::TransformShapes {
+                shapes: vec![*id],
+                transform: delta,
+            });
+        }
+        if cmds.is_empty() {
+            return;
+        }
+        let label = if face.is_some() { "Isometric Face" } else { "Reset Face" };
+        if let Err(e) = self.engine.run_batch(label, &cmds) {
+            self.status = e.to_string();
+        }
+    }
+}
+
+/// The isometric face buttons of the Skew page.
+fn iso_faces(app: &mut App, ui: &mut Ui) {
+    ui.label(tr("docker.iso_faces"))
+        .rich_tip(tr("docker.iso_faces_tip"));
+    let has = !app.selection.is_empty();
+    ui.add_enabled_ui(has, |ui| {
+        egui::Grid::new("iso_faces")
+            .num_columns(3)
+            .spacing([4.0, 4.0])
+            .show(ui, |ui| {
+                for (i, face) in IsoFace::ALL.into_iter().enumerate() {
+                    if ui
+                        .add_sized([70.0, 22.0], egui::Button::new(tr(face.key())))
+                        .rich_tip(tr("docker.iso_faces_tip"))
+                        .clicked()
+                    {
+                        app.set_iso_face(Some(face));
+                    }
+                    if i % 3 == 2 {
+                        ui.end_row();
+                    }
+                }
+            });
+        let width = ui.available_width().min(218.0);
+        if ui
+            .add_sized([width, 22.0], egui::Button::new(tr("docker.iso_reset")))
+            .rich_tip(tr("docker.iso_reset_tip"))
+            .clicked()
+        {
+            app.set_iso_face(None);
+        }
+    });
+}
 
 /// At most this many copies come from one Apply.
 pub const MAX_COPIES: u32 = 500;
@@ -805,6 +951,11 @@ pub fn transformations(app: &mut App, ui: &mut Ui) {
     if clicked {
         apply(app);
     }
+    if app.transform.tab == TransformTab::Skew {
+        ui.add_space(8.0);
+        ui.separator();
+        iso_faces(app, ui);
+    }
 }
 
 #[cfg(test)]
@@ -849,6 +1000,49 @@ mod tests {
         apply(&mut app);
         let b = bounds(&app);
         assert!((b.x0 - origin.x).abs() < 1e-6 && (b.y0 - origin.y).abs() < 1e-6);
+    }
+
+    /// An isometric face sets the object's slant outright about its
+    /// middle (a second face replaces the first), Reset sets it flat,
+    /// each one undo step; every face keeps the object the right way
+    /// round, and the Skew page draws its buttons.
+    #[test]
+    fn isometric_faces_set_the_slant_and_reset_takes_it_away() {
+        let mut app = App::headless();
+        let id = square(&mut app);
+        let t = |app: &App| app.doc().find_shape(id).expect("shape").transform;
+        let middle = |app: &App| bounds(app).center();
+        let before = middle(&app);
+        for face in IsoFace::ALL {
+            assert!(face.matrix().determinant() > 0.0, "{face:?}");
+            app.set_iso_face(Some(face));
+            let lin = t(&app).as_coeffs();
+            let want = face.matrix().as_coeffs();
+            for k in 0..4 {
+                assert!((lin[k] - want[k]).abs() < 1e-9, "{face:?} {lin:?}");
+            }
+            assert!((middle(&app) - before).hypot() < 1e-6, "{face:?}");
+        }
+        app.set_iso_face(None);
+        let lin = t(&app).as_coeffs();
+        assert!((lin[0] - 1.0).abs() < 1e-9 && lin[1].abs() < 1e-9);
+        assert!(lin[2].abs() < 1e-9 && (lin[3] - 1.0).abs() < 1e-9);
+        close(bounds(&app), (10.0, 10.0, 30.0, 20.0));
+        app.undo();
+        assert!((t(&app).as_coeffs()[2] - 30f64.to_radians().cos()).abs() < 1e-9);
+        // A scaled object keeps its width and height on the face.
+        app.set_iso_face(None);
+        app.run(Command::TransformShapes {
+            shapes: vec![id],
+            transform: Affine::scale_non_uniform(2.0, 3.0),
+        });
+        app.set_iso_face(Some(IsoFace::Right));
+        let [a, b, c, d, _, _] = t(&app).as_coeffs();
+        assert!((a.hypot(b) - 2.0).abs() < 1e-9 && (c.hypot(d) - 3.0).abs() < 1e-9);
+        app.transform.tab = TransformTab::Skew;
+        let ctx = crate::theme::ui_context();
+        let mut out = ctx.run_ui(Default::default(), |ui| transformations(&mut app, ui));
+        out.textures_delta.clear();
     }
 
     #[test]

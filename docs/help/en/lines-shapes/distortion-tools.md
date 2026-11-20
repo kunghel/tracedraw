@@ -69,3 +69,11 @@ sharp. A stroke roughens each part of the outline once: going back over the
 same place, or holding the button, adds no more spikes. Going over an outline
 again in a new stroke makes it rougher; spikes that cross the outline stay
 filled, with no white gaps between them.
+
+**Edge** sets the kind of edge the tool makes:
+
+- **Jagged** (at first): spikes in and out at random.
+- **Thorns**: sharp points that stick out of the shape.
+- **Petals**: points pulled into the shape with round lobes between them,
+  like the edge of a petal or a doily.
+- **Crumple**: soft waves in and out at random; the outline stays smooth.

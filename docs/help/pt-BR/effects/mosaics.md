@@ -38,6 +38,13 @@ Abra o painel [[docker.vector_mosaic]] com
      um mosaico claro sobre fundo escuro.
    - **Uma cor**: todos os ladrilhos na cor ao lado em vez das cores da
      imagem.
+   - **Remover fundo**: deixa de fora os ladrilhos da cor do fundo, para
+     que um logotipo sobre um fundo liso vire ladrilhos só onde está o
+     logotipo. **Automática** encontra o fundo nas bordas da seleção;
+     desligue para escolher a cor. A porcentagem diz quão perto a cor de um
+     ladrilho precisa estar para sair. Escolha uma curva sua (um sinal de
+     mais, por exemplo) em **Forma** > **Personalizado** e **Selecionar**
+     para preencher o logotipo com ela.
 3. Clique em [[docker.apply]].
 
 O mosaico é um grupo colocado por cima da seleção, e fica selecionado.

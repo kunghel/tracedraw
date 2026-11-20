@@ -18,6 +18,9 @@
 ## 其他效果命令 {#commands}
 
 - [[menu.effects > menu.effects.flatten]] 将所选对象的效果变为普通对象。
+- [[menu.effects > menu.effects.merge_shapes]] 把所选对象编组，并给该组一个实时的
+  [[effect.offset_path]]，将它们合成一个轮廓，相接处变圆，颜色取最下面的对象：移动组中的对象，
+  形状会融合或分开。在面板顶部的图层效果中设置“平滑”。
 - [[menu.effects.picker]] 显示可应用到所选内容的效果列表。
 - [[menu.object > menu.object.clear_effect]] 删除所选内容的效果。
 - [[menu.object > menu.object.copy_effect]] 从另一个对象复制效果，[[menu.object.clone_effect]] 创建跟随它的克隆；请参阅 [复制和克隆效果](copy-and-clone.md)。

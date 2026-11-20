@@ -1074,6 +1074,12 @@ impl PageWriter<'_> {
                         main.fill = Fill::Solid(*color);
                         main.opacity *= rate / 100.0;
                     }
+                    // A Cut lens changes the objects beneath on the screen only:
+                    // the lens itself shows nothing (Frozen bakes what it does).
+                    tracedraw_core::live::Effect::Lens(tracedraw_core::live::Lens::Cut { .. }) => {
+                        main.fill = Fill::None;
+                        main.opacity = 0.0;
+                    }
                     tracedraw_core::live::Effect::Lens(_) => main.opacity *= 0.5,
                     _ => {}
                 }
@@ -1176,6 +1182,17 @@ impl PageWriter<'_> {
             || matches!(shape.kind, ShapeKind::ClipFrame { .. }) && shape.opacity_mask.is_none()
         {
             self.drop_shadow(shape, parent);
+        }
+        if let (ShapeKind::Group { .. }, Some(look)) = (&shape.kind, shape.group_look) {
+            // A knockout, or a see-through group drawn as one, has no
+            // plain PDF form here: it goes in as a picture with its
+            // transparency, as the canvas draws it.
+            if look.knockout || (look.as_one && shape.opacity < 1.0) {
+                if let Some(raster) = raster_of(shape, parent, self.symbols, MASK_DPI) {
+                    self.shape(&raster, Affine::IDENTITY);
+                }
+                return;
+            }
         }
         if let ShapeKind::Group { children } = &shape.kind {
             for c in children {
@@ -2483,7 +2500,7 @@ fn pdf_blend_mode(merge: tracedraw_core::live::MergeMode) -> &'static str {
 /// `shape` (placed by `parent`) drawn on its own as a bitmap object with
 /// its transparency, covering its bounds; the resolution drops so the
 /// picture stays within 40 million pixels.
-fn raster_of(
+pub(crate) fn raster_of(
     shape: &Shape,
     parent: Affine,
     symbols: &[tracedraw_core::Symbol],
@@ -4126,6 +4143,40 @@ mod tests {
     }
 
     #[test]
+    fn knockout_groups_go_in_as_pictures() {
+        use tracedraw_core::document::GroupLook;
+        let pdf_of = |look: Option<GroupLook>| {
+            let mut doc = Document::default();
+            let layer = doc.pages[0].layers[0].id;
+            let mut kids = Vec::new();
+            for x in [10.0, 20.0] {
+                let mut r = Shape::new(
+                    doc.ids_mut().shape(),
+                    ShapeKind::Rect {
+                        rect: tracedraw_core::geometry::Rect::new(x, 10.0, x + 20.0, 30.0),
+                        radius: 0.0,
+                        corners: None,
+                    },
+                );
+                r.fill = Fill::Solid(Color::rgb8(200, 0, 0));
+                r.opacity = 0.5;
+                kids.push(r);
+            }
+            let mut g = Shape::new(doc.ids_mut().shape(), ShapeKind::Group { children: kids });
+            g.group_look = look;
+            doc.layer_mut(layer).unwrap().shapes.push(g);
+            String::from_utf8_lossy(&document_to_pdf(&doc)).into_owned()
+        };
+        let ko = pdf_of(Some(GroupLook {
+            as_one: false,
+            knockout: true,
+        }));
+        assert!(ko.contains("/Subtype /Image"), "a picture");
+        let plain = pdf_of(None);
+        assert!(!plain.contains("/Subtype /Image"), "vector members");
+    }
+
+    #[test]
     fn opacity_masks_go_in_as_transparent_pictures() {
         let mut doc = Document::default();
         let layer = doc.pages[0].layers[0].id;
@@ -5435,6 +5486,22 @@ pub(crate) mod text_tests {
             .filter(|s| matches!(s.kind, tracedraw_core::ShapeKind::Path { .. }))
             .collect();
         assert!(!paths.is_empty());
+        // Letters fill by the nonzero rule, so overlapping letters stay
+        // filled where they cross (#3525).
+        // (A one-contour letter is the same under both rules.)
+        let subpaths = |p: &&tracedraw_core::Shape| match &p.kind {
+            tracedraw_core::ShapeKind::Path { path, .. } => path
+                .elements()
+                .iter()
+                .filter(|e| matches!(e, tracedraw_core::geometry::PathEl::MoveTo(_)))
+                .count(),
+            _ => 0,
+        };
+        assert!(paths.iter().any(|p| subpaths(p) > 1));
+        assert!(paths
+            .iter()
+            .filter(|p| subpaths(p) > 1)
+            .all(|p| p.fill_rule == tracedraw_core::shaping::FillRule::NonZero));
         // The letters stand about as high as 24 pt capitals (8.5 mm em).
         let b = paths
             .iter()

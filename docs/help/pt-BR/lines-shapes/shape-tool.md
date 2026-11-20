@@ -150,7 +150,9 @@ direita, <kbd>T</kbd> e <kbd>B</kbd> com o nó de cima ou de baixo, e
 - Clique duas vezes em um retângulo, elipse ou polígono para transformá-lo em
   curva.
 - Arraste um canto de uma imagem para recortá-la: a imagem vai para uma moldura
-  cujos nós você edita como uma curva.
+  cujos nós você edita como uma curva. Arraste uma borda da imagem, longe dos
+  cantos, para recortá-la por aquele lado: os dois cantos da borda se movem
+  juntos.
 - Com texto, a ferramenta [[tool.shape]] move caracteres individuais; veja
   [Adicionar e editar texto](../text/adding-text.md).
 

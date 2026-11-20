@@ -238,7 +238,12 @@ window shows.
   is ready (discussion #2389). The bands of a render that gave up are
   not shown; the pages beside the current one come whole.
   (`band_tests::a_picture_comes_a_band_at_a_time_from_the_middle` in the
-  render crate.)
+  render crate.) Under the bands that have come, the last picture is
+  left out: both pictures are see-through where the page is, so a
+  see-through object (a bitmap with transparency, a fill with opacity)
+  showed twice as dark there, with a seam where the bands ended, and
+  flickered while kerning or dragging re-rendered it every frame
+  (#3639, `raster::tests::the_bands_so_far_cover_their_rows_on_screen`).
 - Only what can show is drawn: an object (or, inside a group, each of
   its objects) whose bounds, grown by what its outline may reach, lie
   wholly off the canvas is skipped, while objects with effects or a

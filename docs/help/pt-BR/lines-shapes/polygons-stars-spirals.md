@@ -92,5 +92,11 @@ um grupo de retângulos que preenchem exatamente a caixa. Defina as **linhas** e
 **colunas** (4 por 3 de início) na barra de propriedades. Mantenha
 <kbd>Ctrl</kbd> pressionado para células quadradas.
 
+Escolha **Radial** na barra de propriedades (**Células** volta) para uma grade
+radial: **Anéis** (5 de início) com o mesmo espaço entre eles, do centro até a
+borda da caixa, cortados por **Raios** (8 de início) do centro até o anel de
+fora, o primeiro apontando para cima. É um grupo de elipses e linhas, o anel
+de fora atrás; mantenha <kbd>Ctrl</kbd> pressionado para anéis redondos.
+
 Os valores padrão de pontas, voltas, linhas e colunas também estão nas páginas
 de ferramentas das opções; veja [Opções das ferramentas](../customize/tool-options.md).

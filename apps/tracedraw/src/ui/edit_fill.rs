@@ -867,6 +867,12 @@ fn band(ui: &mut Ui, f: &mut Fountain, node: &mut usize) {
     } else if resp.drag_started() || resp.clicked() {
         if let Some(i) = at.and_then(hit) {
             *node = i;
+            // Alt and a drag: the node is copied and the copy moves.
+            if resp.drag_started() && ui.input(|i| i.modifiers.alt) {
+                if let Some(j) = duplicate_node(f, i) {
+                    *node = j;
+                }
+            }
         }
     }
     if resp.dragged() {
@@ -911,6 +917,17 @@ pub fn add_node(f: &mut Fountain, t: f64) -> Option<usize> {
         },
     );
     Some(i)
+}
+
+/// Copy node `i` to the same place, as a node between the ends (a copy
+/// of the end goes just before it); the copy's index. Pulled apart, the
+/// two make a band of one colour; set against a neighbour, a hard edge.
+pub fn duplicate_node(f: &mut Fountain, i: usize) -> Option<usize> {
+    let n = f.stops.len();
+    let s = *f.stops.get(i)?;
+    let j = if i + 1 == n { i } else { i + 1 };
+    f.stops.insert(j, s);
+    Some(j)
 }
 
 /// Move node `i` to `t`, kept between its neighbours (the ends stay).

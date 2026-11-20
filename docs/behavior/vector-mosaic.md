@@ -19,6 +19,7 @@ top of the selection, in one undo step ("Vector Mosaic"), and selects it.
 | Weld adjacent overlap | on | | One curve per colour instead of one object per tile |
 | Shape | Circle | Circle, Square, Custom, Glyphs, Characters | The tile; squares, custom tiles, glyphs and characters turn with the screen |
 | One color | off, black | | Every tile in that colour (Limit colors is then ignored) |
+| Remove background | off, Auto, 15 % | 0 to 100 % | Tiles within the tolerance of the background colour are left out; Auto takes the commonest colour along the source's edges (steps of 16 per channel, averaged), otherwise the picked colour |
 | Random symbols | off, seed 1 | seed 0 to 9999 | Glyphs: each tile's symbol from the seed instead of its tone |
 | Character set | ` .:-=+*#%@` | up to 256 characters | Characters: the letters, lightest first; a space leaves the cell empty |
 | Invert tones | off | | Glyphs and Characters: dark cells take the light end of the set |

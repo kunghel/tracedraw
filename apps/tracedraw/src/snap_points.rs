@@ -1102,6 +1102,7 @@ mod tests {
                 start_deg: 0.0,
                 end_deg: 90.0,
                 pie: false,
+                inner: 0.0,
             }),
         };
         let g = geo_of(&[e]);

@@ -139,9 +139,20 @@ the dialog keeps what was read until OK or Cancel.
 - Text: `BT`/`ET` blocks with Tf, Td, TD, Tm, T*, TL, Tc, Tw, Tz, Ts, Tr,
   Tj, TJ, ' and ". Consecutive strings on the same baseline merge into
   one artistic text object; a gap over 0.18 em (or a TJ adjustment under
-  -180) inserts a space. Font family comes from BaseFont without the
-  subset prefix (`Arial-BoldMT` becomes Arial, bold), bold and italic
-  from the name, the descriptor flags and StemV. Characters decode
+  -180) inserts a space. A TJ adjustment of more than an em back (over
+  1000) or more than three ems on (under -3000) ends the text: the next
+  string is a text of its own at its place, as drawing programs write the
+  labels of a column in one array (#3508,
+  `pdf_import::tests::labels_set_apart_in_one_array_keep_their_places`).
+  Font family comes from BaseFont without the
+  subset prefix (`Arial-BoldMT` becomes Arial, bold); a part after the
+  dash that holds a number stays, so `Raj-01` keeps its
+  whole name in the missing fonts list (#3554,
+  `pdf_import::tests::a_numbered_font_keeps_its_number`). Only the parts
+  that name a style go: a word of the family's own name stays, its dash
+  read as a space, so `Lohit-Devanagari` is Lohit Devanagari, not Lohit,
+  while `Khand-Bold` is Khand, bold (#3651). Bold and italic
+  come from the name, the descriptor flags and StemV. Characters decode
   through ToUnicode CMaps (bfchar, bfrange), then the font's Encoding
   (WinAnsi, MacRoman, Standard, Differences with glyph names), then
   Latin-1. Advances use Widths, W/DW for CID fonts, and Helvetica metrics
@@ -159,7 +170,10 @@ the dialog keeps what was read until OK or Cancel.
   simple CFF fonts (`pdf_glyphs.rs`). Each glyph sits at
   `Trm * translate(advance) * scale(Tfs * Th, Tfs)` with the font's units
   per em (CFF: its FontMatrix); the fill colour and opacity are the
-  text's, clipping as for text. Text whose font is not embedded (or a
+  text's, clipping as for text. The curve fills by the nonzero rule, as
+  the font does, so letters that touch or overlap, and a letter whose own
+  contours cross, stay filled there instead of showing a hole (#3525).
+  Text whose font is not embedded (or a
   Type 3 font) stays text, and the app turns it into curves with the
   installed font that stands in (`remaining_text_to_curves`).
 - Paragraph text (#2323, `ImportOptions::text_as_paragraphs`, the Join
@@ -172,7 +186,11 @@ the dialog keeps what was read until OK or Cancel.
   same font, size, turn and opacity, each 0.8 to 2.5 em under the last
   at the same spacing, and lined up on the left (the first line may be
   indented, and so may the first line of each paragraph after it),
-  centred or on the right. A line with room left for the next line's
+  centred or on the right. A line that starts with a piece in another
+  font than its own (a list item's bullet in a symbol font) starts an
+  item of its own and is not run on into the line above (#3551,
+  `pdf_paragraphs::tests::a_bulleted_line_is_not_run_on`). A line with
+  room left for the next line's
   first word (letters of 0.65 em) ends its paragraph (a line break);
   the others run on with a space (none after a hyphen). Lines lined up
   on the left whose full lines all end within 0.3 mm of one another are

@@ -27,6 +27,7 @@ impl App {
             || self.pending_clone_effect.is_some()
             || self.pending_blend_path
             || self.pending_text_path
+            || self.pending_rotate_lines.is_some()
             || self.pending_palette_sample;
         if !waiting {
             return false;
@@ -42,11 +43,18 @@ impl App {
             self.pending_clone_effect = None;
             self.pending_blend_path = false;
             self.pending_text_path = false;
+            self.pending_rotate_lines = None;
             self.pending_palette_sample = false;
             self.status = tr("status.cancelled");
             return true;
         }
         if !response.clicked_by(PointerButton::Primary) {
+            return true;
+        }
+        if self.pending_rotate_lines.is_some() {
+            // Rotate by Two Lines: each click snaps as a drawing click.
+            let q = self.snap_point(p);
+            self.rotate_lines_click(q);
             return true;
         }
         if self.pending_palette_sample {
@@ -254,7 +262,9 @@ impl App {
             Tool::Extrude => self.extrude_input(response, p),
             Tool::Distort => self.distort_input(response, p),
             Tool::AreaFill => {
-                if response.clicked_by(PointerButton::Primary) {
+                if response.clicked_by(PointerButton::Primary)
+                    && !(self.area_fill_live && self.live_paint_at(p))
+                {
                     self.area_fill_at(p);
                 }
             }
@@ -597,6 +607,72 @@ impl App {
         }
     }
 
+    /// Smart Fill with Live on: paint the area the lines of a group close
+    /// off around `p` as a live fill of the group (the selected group, or
+    /// else the topmost one whose bounds hold `p`), in the bar's fill
+    /// colour; with the fill set to none, take the fill there away.
+    /// Whether a group took the click: when none does, the click makes an
+    /// ordinary area as without Live.
+    pub fn live_paint_at(&mut self, p: Point) -> bool {
+        let is_group = |s: &Shape| matches!(s.kind, ShapeKind::Group { .. });
+        let selected = match self.selection[..] {
+            [id] => self.doc().find_shape(id).filter(|s| is_group(s)).cloned(),
+            _ => None,
+        };
+        let group = selected.or_else(|| {
+            self.doc()
+                .layers_for_page(self.page)
+                .unwrap_or_default()
+                .iter()
+                .rev()
+                .filter(|l| l.visible && !l.locked)
+                .flat_map(|l| l.shapes.iter().rev())
+                .find(|s| is_group(s) && kurbo::Shape::bounding_box(&s.page_path()).contains(p))
+                .cloned()
+        });
+        let Some(group) = group else {
+            return false;
+        };
+        let color = match self.area_fill_mode {
+            1 => Some(self.area_fill_color),
+            2 => None,
+            _ => match self.default_fill() {
+                Fill::Solid(c) => Some(c),
+                _ => Some(self.area_fill_color),
+            },
+        };
+        let mut effects = group.effects.clone();
+        let mut fills = effects
+            .iter()
+            .find_map(|e| match e {
+                Effect::LivePaint { fills } => Some(fills.clone()),
+                _ => None,
+            })
+            .unwrap_or_default();
+        let parent = self
+            .doc()
+            .parent_transform(group.id)
+            .unwrap_or(Affine::IDENTITY);
+        let local = (parent * group.transform).inverse() * p;
+        if !tracedraw_core::live_paint::paint_at(&group, &mut fills, local, color) {
+            return tracedraw_core::live_paint::region_at(&group, local).is_some();
+        }
+        match effects
+            .iter_mut()
+            .find(|e| matches!(e, Effect::LivePaint { .. }))
+        {
+            Some(e) => *e = Effect::LivePaint { fills },
+            None => effects.insert(0, Effect::LivePaint { fills }),
+        }
+        effects.retain(|e| !matches!(e, Effect::LivePaint { fills } if fills.is_empty()));
+        self.run(Command::SetEffects {
+            shape: group.id,
+            effects,
+        });
+        self.select(vec![group.id]);
+        true
+    }
+
     /// The symmetry object an Area Fill click at `p` falls in, among the
     /// page's top-level `shapes` (the one being edited first), and the
     /// transformation taking the click's copy back to the original's side
@@ -608,7 +684,8 @@ impl App {
                     center,
                     angle,
                     lines,
-                } => Some((*center, *angle, *lines)),
+                    rotate,
+                } => Some((*center, *angle, *lines, *rotate)),
                 _ => None,
             })
         };
@@ -619,7 +696,7 @@ impl App {
             order.sort_by_key(|s| s.id != edit);
         }
         for s in order {
-            let (center, angle, lines) = sym_of(s)?;
+            let (center, angle, lines, rotate) = sym_of(s)?;
             let ev = tracedraw_core::live::evaluate(s);
             let mut whole = ev.main.bounds();
             for part in ev.above.iter().chain(&ev.below) {
@@ -629,7 +706,9 @@ impl App {
                 continue;
             }
             let origin = ev.main.bounds().center();
-            let back = tracedraw_core::live::symmetry_back_to(center, angle, lines, origin, p);
+            let back = tracedraw_core::live::symmetry_back_to_turned(
+                center, angle, lines, rotate, origin, p,
+            );
             return Some((s.id, back));
         }
         None

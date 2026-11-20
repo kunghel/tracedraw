@@ -678,6 +678,21 @@ impl SegmentGrid {
     }
 }
 
+/// `path` with the curves of `sources` put back along it, as a combine
+/// does: the flattening of `path` where it follows a source outline
+/// becomes that stretch of the source, whole. A path made by several
+/// combines in turn (the Shape Builder's parts, cut by every object and
+/// then merged) keeps a node wherever an earlier one cut a curve, even
+/// where the cut is gone; laid back onto the objects it came from, each
+/// stretch along one of them is one piece again (#3587).
+pub fn onto_sources(path: &BezPath, sources: &[&BezPath]) -> BezPath {
+    let polygon = from_shapes(vec![contours(path)]);
+    if polygon.elements().is_empty() {
+        return path.clone();
+    }
+    recover_curves(&polygon, sources)
+}
+
 /// `result`, a polygon path made from the flattened `sources`, with the
 /// sources' curves put back: a vertex lying on a source outline is placed
 /// on it, and a stretch of consecutive vertices along one source subpath
@@ -1217,6 +1232,47 @@ pub fn offset_filled(path: &BezPath, d: f64, join: Join, fill: FillRule) -> BezP
     }
     fit_polygon_curves(&offset_polygon_with(path, d, join, fill), fit_tolerance(d))
 }
+
+/// The area `path` fills read with `fill`, as straight-sided contours
+/// with the outer ones turning one way and the holes the other (no
+/// contour crossing another): several such areas put in one path fill
+/// their union under the nonzero rule.
+pub fn oriented_area(path: &BezPath, fill: FillRule) -> BezPath {
+    use i_overlay::float::simplify::SimplifyShape;
+    let clean = contours(path).simplify_shape(match fill {
+        FillRule::EvenOdd => IFill::EvenOdd,
+        FillRule::NonZero => IFill::NonZero,
+    });
+    from_shapes(clean)
+}
+
+/// Offset Path: `path` (its area read with `fill`) moved out by `d` mm
+/// (in when negative), its corners turned as `join` says, then smoothed
+/// by `smooth` mm: grown and shrunk back by that much with round corners,
+/// which rounds every hollow (where two parts meet) and leaves the rest
+/// as it was. With both zero, the area as one clean outline. The result
+/// fills alike with either rule.
+pub fn offset_smooth(path: &BezPath, d: f64, smooth: f64, join: Join, fill: FillRule) -> BezPath {
+    if !(d.is_finite() && smooth.is_finite()) {
+        return path.clone();
+    }
+    let d = d.clamp(-MAX_OFFSET, MAX_OFFSET);
+    let smooth = smooth.clamp(0.0, MAX_OFFSET);
+    let mut poly = if d.abs() > 1e-9 {
+        offset_polygon_with(path, d, join, fill)
+    } else {
+        oriented_area(path, fill)
+    };
+    if smooth > 1e-9 && !poly.elements().is_empty() {
+        poly = offset_polygon_with(&poly, smooth, Join::Round, FillRule::NonZero);
+        poly = offset_polygon_with(&poly, -smooth, Join::Round, FillRule::NonZero);
+    }
+    let tol = fit_tolerance(d.abs().max(smooth));
+    fit_polygon_curves(&poly, tol)
+}
+
+/// The largest Offset Path distance or smoothing, mm.
+pub const MAX_OFFSET: f64 = 1000.0;
 
 /// The area `path` fills read with `fill`, in square units of its
 /// coordinates: holes taken out, overlaps counted once. The curves are

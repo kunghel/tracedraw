@@ -1152,9 +1152,9 @@ pub const ADD_DIMENSIONS_GAP: f64 = 5.0;
 
 /// The dimensions Add Dimensions draws for the box `r` (page space, y
 /// up): its width along the bottom and its height along the right, each
-/// [`ADD_DIMENSIONS_GAP`] away from it.
-pub fn box_measures(r: Rect) -> [Measure; 2] {
-    let gap = ADD_DIMENSIONS_GAP;
+/// `gap` (mm, [`ADD_DIMENSIONS_GAP`] unless set in the Dimension tool's
+/// options, #3530) away from it.
+pub fn box_measures(r: Rect, gap: f64) -> [Measure; 2] {
     [
         Measure::Linear {
             a: Point::new(r.x0, r.y0),
@@ -1221,8 +1221,9 @@ impl App {
         };
         let mut cmds = Vec::new();
         let mut ids = Vec::new();
+        let gap = self.add_dimensions_gap();
         for r in boxes {
-            for (i, m) in box_measures(r).into_iter().enumerate() {
+            for (i, m) in box_measures(r, gap).into_iter().enumerate() {
                 // A flat box has no height (or width) to measure.
                 let extent = if i == 0 { r.width() } else { r.height() };
                 if extent <= 1e-9 {
@@ -1242,6 +1243,18 @@ impl App {
         }
         self.note_recorded(&cmds);
         self.select(ids);
+    }
+
+    /// How far Add Dimensions puts its lines from the box, mm: the
+    /// distance set in the Dimension tool's options, never less than 0 or
+    /// more than a metre.
+    pub fn add_dimensions_gap(&self) -> f64 {
+        let g = self.settings.add_dimensions_gap;
+        if g.is_finite() {
+            g.clamp(0.0, 1000.0)
+        } else {
+            ADD_DIMENSIONS_GAP
+        }
     }
 
     /// A dimension group for `measure` in the bar's style, its points held
@@ -1955,6 +1968,40 @@ mod tests {
             ShapeKind::Text { spans, .. } => spans.iter().map(|s| s.text.as_str()).collect(),
             other => panic!("{other:?}"),
         }
+    }
+
+    /// Add Dimensions puts its lines as far from the box as the distance
+    /// set in the Dimension tool's options (#3530); 5 mm unless set.
+    #[test]
+    fn add_dimensions_takes_the_distance_set() {
+        let mut app = App::headless();
+        assert_eq!(app.add_dimensions_gap(), ADD_DIMENSIONS_GAP);
+        let a = app
+            .new_shape(ShapeKind::Rect {
+                rect: Rect::new(10.0, 10.0, 60.0, 40.0),
+                radius: 0.0,
+                corners: None,
+            })
+            .expect("rect");
+        app.settings.add_dimensions_gap = 12.0;
+        app.select(vec![a]);
+        app.add_dimensions(false);
+        let ats: Vec<Point> = app
+            .selection
+            .iter()
+            .map(|id| {
+                let g = app.doc().find_shape(*id).expect("dimension");
+                match Dimension::of(g).expect("a dimension").measure {
+                    Measure::Linear { at, .. } | Measure::Angular { at, .. } => at,
+                }
+            })
+            .collect();
+        assert_eq!(ats, [Point::new(35.0, -2.0), Point::new(72.0, 25.0)]);
+        // Nothing odd comes of a value out of range.
+        app.settings.add_dimensions_gap = f64::NAN;
+        assert_eq!(app.add_dimensions_gap(), ADD_DIMENSIONS_GAP);
+        app.settings.add_dimensions_gap = -4.0;
+        assert_eq!(app.add_dimensions_gap(), 0.0);
     }
 
     /// Add Dimensions: the width along the bottom and the height along

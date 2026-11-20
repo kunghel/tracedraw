@@ -141,7 +141,13 @@ pixels more when that is larger, #2731):
   `contour_bar::tests::enter_in_a_box_of_the_panel_applies_the_contour`);
   Clear Contour
   removes it; Break Apart turns the steps into objects, grouped beside
-  the object when there are several (`App::break_effect_groups`).
+  the object when there are several (`App::break_effect_groups`). Apply
+  is offered for a selected group too; it was not, so a group seemed
+  unable to take a contour from the bar (d#3667). Copy Contour From...
+  waits for a click on another object and gives the selected objects
+  its contour, as Object > Copy Effect > Contour From does; a right
+  click cancels (d#3667,
+  `contour_bar::tests::a_group_is_offered_apply_and_a_contour_can_be_copied`).
 - Object > Break Contour Group Apart (Ctrl+K, and the right-click
   menu), which takes the place of Break Apart while a selected object
   has a contour, does the same (#424;

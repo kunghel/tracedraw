@@ -38,6 +38,17 @@ The [[tool.two_point_line]] tool draws one straight segment: press where it
 starts and release where it ends, or click twice. Hold <kbd>Ctrl</kbd> to
 keep it to steps of 15 degrees.
 
+Turn on **Arc** on the property bar to drag a quarter arc
+instead: it leaves the press upright and arrives across at the release
+(round, as a quarter circle, when the drag is as tall as it is wide; hold
+<kbd>Ctrl</kbd> for that). **Flip arc** bows it the other way.
+
+Hold <kbd>C</kbd> while you drag an arc, or a rectangle, ellipse, polygon or
+star with its own tool, to leave a copy of the shape at every move of the
+pointer: a fan of arcs from one point, or a tunnel of rectangles, in one
+drag. The copies and the shape you release are one undo step and stay
+selected, ready to group, mirror or color.
+
 ## Bezier {#bezier}
 
 The [[tool.bezier]] tool draws precise curves node by node.
@@ -165,6 +176,17 @@ style and start and end arrowheads, and a button that closes an open curve.
 The [[tool.freehand]] tool adds the smoothing. With nothing selected, it
 reminds you how to finish a curve. See [Outlines](outlines.md) for the
 outline settings.
+
+**Parallel lines** (with the Freehand, Bezier, Pen, Polyline, 2-Point Line and
+3-Point Curve tools) draws lines alongside each new curve: set how many
+**Lines** on each side, the **Gap** from one line to the next, and whether
+they go on **Both sides** or only on the curve's left. The lines are curves of
+their own with the curve's outline, selected with it; one Undo takes them away
+and leaves the curve. It is off at first.
+
+While you pull the handle of the first node of a curve with the Pen or Bezier
+tool, the opposite handle shows too, so you see the direction the curve leaves
+in both ways.
 
 ## Editing curves afterwards {#edit}
 

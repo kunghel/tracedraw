@@ -505,6 +505,10 @@ pub fn project_menu_key(project: &str) -> String {
 /// A macro command's name ("Module.Macro") and project, for
 /// Options > Customization.
 pub fn command_name(key: &str) -> Option<(String, String)> {
+    // A plugin's command is named the same way (#3519).
+    if let Some(named) = crate::plugins::command_name(key) {
+        return Some(named);
+    }
     let rest = key.strip_prefix("menu.macro.")?;
     let mut parts = rest.splitn(3, '|');
     let project = parts.next()?.to_string();

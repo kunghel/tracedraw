@@ -125,6 +125,18 @@ Nunca há mais de 1000 objetos ao todo.
 - [[docker.fit_to_path_reverse]] (desligado): começa pela outra ponta do
   caminho.
 
+## Manter os objetos no caminho {#live}
+
+Ligue [[docker.fit_to_path_live]] antes de Aplicar e os objetos ficam no
+caminho: mova, redimensione ou altere o caminho e eles acompanham;
+redimensione ou mude a cor de um objeto e ele é encaixado de novo, com as
+suas cópias. Selecione o caminho ou um dos objetos para mudar as
+configurações no painel e ver os objetos se moverem na hora. Com a
+ferramenta Seleção aparecem duas alças: arraste o losango do segundo
+objeto ao longo do caminho para mudar o espaçamento, ou o anel abaixo do
+caminho para girar todos os objetos (Ctrl gira de 15 em 15 graus).
+Desligue [[docker.fit_to_path_live]] para deixar os objetos onde estão.
+
 ## Dicas e limites {#tips}
 
 - Numa forma fechada, os objetos dão a volta inteira, o lado de fechamento

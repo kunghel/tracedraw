@@ -4,6 +4,8 @@
 //! others so the drawing's shading stays (`Command::Recolor`, see
 //! `tracedraw_core::recolor`). The change shows on the drawing while the
 //! dialog is open; OK keeps it as one undo step, Cancel takes it back.
+//! Each colour of the selection is listed with the colour it becomes, so
+//! any of them can be swapped for another one by one (#3609).
 //! See docs/behavior/recolor.md.
 
 use crate::app::App;
@@ -22,6 +24,9 @@ pub struct RecolorState {
     pub tint_color: Color,
     /// The objects it works on (the selection when it opened).
     pub shapes: Vec<ShapeId>,
+    /// Each colour of those objects and the colour it becomes (the same
+    /// colour until one is picked for it).
+    pub colors: Vec<(Color, Color)>,
     /// What the drawing shows now.
     shown: Option<Recolor>,
 }
@@ -33,6 +38,7 @@ impl RecolorState {
             tint_on: false,
             tint_color: Color::rgb8(30, 110, 220),
             shapes,
+            colors: Vec::new(),
             shown: None,
         }
     }
@@ -41,9 +47,34 @@ impl RecolorState {
     pub fn asked(&self) -> Recolor {
         Recolor {
             tint: self.tint_on.then_some(self.tint_color),
-            ..self.recolor
+            swaps: self
+                .colors
+                .iter()
+                .filter(|(from, to)| from != to)
+                .copied()
+                .collect(),
+            ..self.recolor.clone()
         }
     }
+}
+
+/// Every colour of `shapes` (and what they hold), each once, in the order
+/// met; registration colour left out.
+pub fn colors_of(doc: &tracedraw_core::Document, shapes: &[ShapeId]) -> Vec<Color> {
+    let seen = std::cell::RefCell::new(Vec::<Color>::new());
+    for id in shapes {
+        if let Some(s) = doc.find_shape(*id) {
+            let mut s = s.clone();
+            tracedraw_core::color_convert::map_shape_colors(&mut s, &|c| {
+                let mut seen = seen.borrow_mut();
+                if !matches!(c, Color::Registration) && !seen.contains(&c) {
+                    seen.push(c);
+                }
+                c
+            });
+        }
+    }
+    seen.into_inner()
 }
 
 impl App {
@@ -53,8 +84,12 @@ impl App {
             self.status = tr("recolor.nothing_selected");
             return;
         }
-        self.dialog =
-            crate::ui::dialogs::Dialog::Recolor(RecolorState::new(self.selection.clone()));
+        let mut st = RecolorState::new(self.selection.clone());
+        st.colors = colors_of(self.doc(), &st.shapes)
+            .into_iter()
+            .map(|c| (c, c))
+            .collect();
+        self.dialog = crate::ui::dialogs::Dialog::Recolor(st);
     }
 
     /// Recolour `shapes` by `r` as one undo step; the status line says how
@@ -79,7 +114,7 @@ impl App {
     /// only when a value changes.
     pub fn preview_recolor(&mut self, st: &mut RecolorState) {
         let now = st.asked();
-        if st.shown == Some(now) && self.recolor_preview != now.is_identity() {
+        if st.shown.as_ref() == Some(&now) && self.recolor_preview != now.is_identity() {
             return;
         }
         self.end_recolor_preview();
@@ -88,7 +123,7 @@ impl App {
             self.recolor_preview = true;
             let _ = self.engine.run(&Command::Recolor {
                 shapes: st.shapes.clone(),
-                recolor: now,
+                recolor: now.clone(),
             });
         }
         st.shown = Some(now);
@@ -100,6 +135,21 @@ impl App {
             self.engine.withdraw_preview();
         }
     }
+}
+
+/// A swatch of `c` (not clickable), with its values as the tip.
+fn color_chip(ui: &mut egui::Ui, c: Color) {
+    let (rect, resp) = ui.allocate_exact_size(egui::Vec2::new(18.0, 18.0), egui::Sense::hover());
+    let [r, g, b] = c.to_rgb8();
+    ui.painter()
+        .rect_filled(rect, 2.0, egui::Color32::from_rgb(r, g, b));
+    ui.painter().rect_stroke(
+        rect,
+        2.0,
+        egui::Stroke::new(1.0, crate::theme::Tokens::control_border()),
+        egui::StrokeKind::Inside,
+    );
+    resp.on_hover_text(crate::ui::palette::swatch_tip("", c));
 }
 
 /// A slider row: label, slider, value.
@@ -144,6 +194,28 @@ pub fn dialog(app: &mut App, ctx: &Context, st: &mut RecolorState, close: &mut b
                     -100.0..=100.0,
                 );
             });
+        // Each colour of the selection and the one it becomes (#3609).
+        if !st.colors.is_empty() {
+            ui.add_space(6.0);
+            ui.strong(tr("recolor.colors"));
+            egui::ScrollArea::vertical()
+                .max_height(150.0)
+                .show(ui, |ui| {
+                    ui.horizontal_wrapped(|ui| {
+                        for (i, (from, to)) in st.colors.iter_mut().enumerate() {
+                            ui.push_id(("recolor_swap", i), |ui| {
+                                ui.horizontal(|ui| {
+                                    ui.spacing_mut().item_spacing.x = 2.0;
+                                    color_chip(ui, *from);
+                                    ui.label(">");
+                                    crate::ui::color_picker::color_button(ui, to);
+                                });
+                            });
+                        }
+                    });
+                });
+            ui.label(RichText::new(tr("recolor.colors_note")).weak());
+        }
         ui.add_space(4.0);
         ui.checkbox(&mut st.recolor.spots, tr("recolor.spots"));
         ui.add_space(4.0);
@@ -160,6 +232,9 @@ pub fn dialog(app: &mut App, ctx: &Context, st: &mut RecolorState, close: &mut b
             ..Recolor::default()
         };
         st.tint_on = false;
+        for (from, to) in st.colors.iter_mut() {
+            *to = *from;
+        }
     }
     if help {
         app.open_dialog_help();
@@ -233,6 +308,47 @@ mod tests {
         assert!(app.recolor_shapes(st.shapes.clone(), st.asked()));
         let turned = fill_of(&app, a);
         assert_ne!(turned, Some(Fill::Solid(red)));
+        assert_eq!(app.engine.history_labels().0.len(), steps + 1);
+        app.undo();
+        assert_eq!(fill_of(&app, a), Some(Fill::Solid(red)));
+    }
+
+    /// The dialog lists each colour of the selection; one swapped for
+    /// another changes only where that colour is, in the selection, as
+    /// one step; Reset takes the swaps back (#3609).
+    #[test]
+    fn each_colour_of_the_selection_can_be_swapped() {
+        let mut app = App::headless();
+        app.show_welcome = false;
+        let red = Color::rgb8(200, 40, 40);
+        let blue = Color::rgb8(40, 40, 200);
+        let green = Color::rgb8(40, 160, 40);
+        let a = rect(&mut app, red);
+        let b = rect(&mut app, blue);
+        let c = rect(&mut app, red);
+        for id in [a, b, c] {
+            app.run(Command::SetStroke {
+                shapes: vec![id],
+                stroke: None,
+            });
+        }
+        app.select(vec![a, b]);
+        app.recolor_dialog();
+        let Dialog::Recolor(st) = &app.dialog else {
+            panic!("open");
+        };
+        let mut st = st.clone();
+        assert_eq!(st.colors, vec![(red, red), (blue, blue)]);
+        assert!(st.asked().is_identity());
+        st.colors[0].1 = green;
+        app.preview_recolor(&mut st);
+        assert_eq!(fill_of(&app, a), Some(Fill::Solid(green)), "shown");
+        app.end_recolor_preview();
+        let steps = app.engine.history_labels().0.len();
+        assert!(app.recolor_shapes(st.shapes.clone(), st.asked()));
+        assert_eq!(fill_of(&app, a), Some(Fill::Solid(green)));
+        assert_eq!(fill_of(&app, b), Some(Fill::Solid(blue)), "not swapped");
+        assert_eq!(fill_of(&app, c), Some(Fill::Solid(red)), "not selected");
         assert_eq!(app.engine.history_labels().0.len(), steps + 1);
         app.undo();
         assert_eq!(fill_of(&app, a), Some(Fill::Solid(red)));

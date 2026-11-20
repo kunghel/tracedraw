@@ -63,3 +63,7 @@ formats without opening the program, for batch work.
 ## Macros {#macros}
 
 TraceDraw runs VBA macro projects written for drawing programs (desktop version). [[menu.tools > menu.tools.macros > menu.tools.macros_load]] adds a project (`.gms`) or module files (`.bas`, `.cls`, `.frm`); projects are kept and load at start-up. The [[docker.macros]] lists their macros: double-click one or use [[menu.tools > menu.tools.macros > menu.tools.macros_run]] (<kbd>Alt+Shift+F8</kbd>) to run it. A macro's forms, message boxes and input boxes appear on screen, <kbd>Esc</kbd> or [[menu.tools > menu.tools.macros > menu.tools.macros_stop]] stops it, and everything one run changes is one undo step. [[menu.tools > menu.tools.macros > menu.tools.macro_editor]] (<kbd>Alt+F11</kbd>) shows and edits the code. Macros that call Windows functions or the editor's own object model do not run.
+
+## Workflow {#workflow}
+
+[[menu.tools > menu.tools.workflow]] chains picture steps drawn as boxes joined by wires: Input (the selection or a picture file), Vectorize, Recolor, an Effect, Compare and Export (onto the page as one undo step, or to a PNG or SVG file). Drag from a step's right dot to another step's left dot to wire them; one output can feed several branches, and a Compare step shows up to four results side by side. Preview shows every step's result without changing the drawing, Run also carries out the Export steps, and Run on Picture File runs it once on a picture file. Save keeps the workflow as a `.tdflow` file to run again on other pictures.

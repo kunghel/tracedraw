@@ -109,6 +109,12 @@ struct Actions {
     /// what was done: its eye (hide or show), its padlock, or a click
     /// that selects it (#1775).
     guide_row: Option<(bool, usize, GuideRowAct)>,
+    /// A guideline row dragged onto a Guides row and let go there (#3599):
+    /// its set (`None` the master page's), its index, and the set it was
+    /// dropped on.
+    move_guides: Option<(Option<PageId>, usize, Option<PageId>)>,
+    /// Paste from a Guides row's right-click menu, into its set (#3599).
+    paste_guides: Option<Option<PageId>>,
     /// A layer moved to another page, from its menu (#1477).
     layer_to_page: Option<(LayerId, PageId)>,
     /// A layer's Properties, from its menu (#1477).
@@ -1126,6 +1132,43 @@ fn guides_row(
             act.goto = Some(p);
         }
     }
+    // A guideline row dragged here from another set: the row lights up,
+    // and letting go moves the guideline (with the others selected with
+    // it) into this set (#3599).
+    if let Some((from, index)) = ui
+        .ctx()
+        .data(|d| d.get_temp::<(Option<PageId>, usize)>(egui::Id::new(GUIDE_DRAG)))
+    {
+        let (over, released) = ui.input(|i| {
+            (
+                i.pointer.interact_pos().is_some_and(|p| rect.contains(p)),
+                i.pointer.any_released(),
+            )
+        });
+        if over && from != page {
+            ui.painter().rect_stroke(
+                rect.shrink(1.0),
+                2.0,
+                Stroke::new(1.5, GUIDE_BLUE),
+                egui::StrokeKind::Inside,
+            );
+            if released {
+                act.move_guides = Some((from, index, page));
+            }
+        }
+    }
+    // Right-click: Paste the guidelines copied into this set, also when it
+    // has none yet (#3599).
+    resp.context_menu(|ui| {
+        let can_paste = app.clipboard.as_ref().is_some_and(|c| !c.guides.is_empty());
+        if ui
+            .add_enabled(can_paste, egui::Button::new(tr("menu.edit.paste")))
+            .clicked()
+        {
+            act.paste_guides = Some(page);
+            ui.close();
+        }
+    });
     let base = match page {
         Some(p) => egui::Id::new(("objects_guides", p.raw())),
         None => egui::Id::new("objects_guides"),
@@ -1259,6 +1302,11 @@ fn guide_rows(
         );
         if done.is_none() && resp.clicked() {
             done = Some(GuideRowAct::Select);
+        }
+        // Dragged onto another Guides row, it moves there (#3599).
+        if resp.drag_started() && !g.locked {
+            ui.ctx()
+                .data_mut(|d| d.insert_temp(egui::Id::new(GUIDE_DRAG), (page, i)));
         }
         // Right-click: Delete, Cut, Copy, Paste, Lock or Unlock, Hide or
         // Show (#3012).
@@ -2313,6 +2361,10 @@ fn layer_holding(app: &App, id: ShapeId) -> Option<LayerId> {
 
 /// The object row being dragged, kept in the context's memory.
 const ROW_DRAG: &str = "objects_row_drag";
+
+/// The guideline row being dragged (#3599): its set (`None` the master
+/// page's) and its index, kept in the context's memory.
+const GUIDE_DRAG: &str = "objects_guide_drag";
 /// The object row a finger is held on: (object, where, its page when not
 /// the current one); its menu opens when the finger is lifted there.
 const ROW_HOLD: &str = "objects_row_hold";
@@ -2804,6 +2856,29 @@ fn apply(app: &mut App, ui: &Ui, mut act: Actions) {
             GuideRowAct::Menu(cmd) => guide_menu_command(app, i, cmd),
         }
     }
+    if let Some((from, index, to)) = act.move_guides {
+        // The selected guidelines go with the one dragged when it is one
+        // of them.
+        let edited = from.is_none() == app.edit_master_guides && from.is_none_or(|p| p == app.page);
+        let indices = if edited && app.selected_guides.contains(&index) {
+            app.selected_guides.clone()
+        } else {
+            vec![index]
+        };
+        app.move_guides_between(from, &indices, to);
+    }
+    // The drag of a guideline row ends when the button is let go.
+    if ui.input(|i| i.pointer.any_released() || !i.pointer.any_down()) {
+        ui.ctx()
+            .data_mut(|d| d.remove_temp::<(Option<PageId>, usize)>(egui::Id::new(GUIDE_DRAG)));
+    }
+    if let Some(page) = act.paste_guides {
+        if let Some(i) = page.and_then(|p| app.doc().pages.iter().position(|pg| pg.id == p)) {
+            app.goto_page(i);
+        }
+        app.choose_master_guides(page.is_none());
+        app.paste();
+    }
     if let Some((layer, page)) = act.layer_to_page {
         layer_to_page(app, layer, page);
     }
@@ -3258,6 +3333,76 @@ pub(crate) mod tests {
         assert!(ctx
             .read_response(base.with(("guide", 1)).with("eye"))
             .is_some());
+    }
+
+    /// Guidelines move between sets (#3599): a guideline row dropped on
+    /// the master page's Guides row moves it there, with the guidelines
+    /// selected with it, in one undo step, a locked one staying; a Guides
+    /// row with no guidelines takes a paste from its own menu.
+    #[test]
+    fn guidelines_move_between_sets_and_paste_into_an_empty_one() {
+        use tracedraw_core::document::Guide;
+        let ctx = crate::theme::ui_context();
+        let mut app = App::headless();
+        let page = app.page;
+        app.choose_master_guides(false);
+        app.add_guide(Guide::vertical(50.0));
+        app.add_guide(Guide::horizontal(80.0));
+        app.add_guide(Guide::vertical(120.0));
+        app.set_guides_locked(&[2], true);
+        assert!(app.doc().master_guides.is_empty());
+        let apply_now = |app: &mut App, act: Actions| {
+            let mut act = Some(act);
+            let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+                if let Some(act) = act.take() {
+                    apply(app, ui, act);
+                }
+            });
+            out.textures_delta.clear();
+        };
+        // Dropped on the master page's row: the row's guideline and the
+        // other one selected with it go; the locked one stays.
+        app.selected_guides = vec![0, 2];
+        apply_now(
+            &mut app,
+            Actions {
+                move_guides: Some((Some(page), 0, None)),
+                ..Default::default()
+            },
+        );
+        let master = app.doc().master_guides.clone();
+        assert_eq!(master.len(), 1, "{master:?}");
+        assert!(matches!(master[0].line, GuideLine::Vertical { .. }));
+        assert_eq!(app.doc().page(page).unwrap().guides.len(), 2);
+        assert!(app.edit_master_guides);
+        assert_eq!(app.selected_guides, vec![0]);
+        app.engine.undo().unwrap();
+        assert!(app.doc().master_guides.is_empty());
+        assert_eq!(app.doc().page(page).unwrap().guides.len(), 3);
+        // Two moved back and forth, the selection going with the row.
+        assert_eq!(app.move_guides_between(Some(page), &[0, 1], None), 2);
+        assert_eq!(app.move_guides_between(None, &[1], Some(page)), 1);
+        assert_eq!(app.doc().master_guides.len(), 1);
+        assert_eq!(app.doc().page(page).unwrap().guides.len(), 2);
+        assert_eq!(app.move_guides_between(Some(page), &[0], Some(page)), 0);
+        // An empty set takes a paste from its row's menu.
+        app.engine.undo().unwrap();
+        app.engine.undo().unwrap();
+        app.choose_master_guides(false);
+        app.selected_guides = vec![1];
+        assert!(app.copy_selected_guides());
+        apply_now(
+            &mut app,
+            Actions {
+                paste_guides: Some(None),
+                ..Default::default()
+            },
+        );
+        assert_eq!(app.doc().master_guides.len(), 1);
+        assert!(matches!(
+            app.doc().master_guides[0].line,
+            GuideLine::Horizontal { .. }
+        ));
     }
 
     /// A guideline chosen by its row in the Objects docker goes with the

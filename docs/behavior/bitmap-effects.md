@@ -264,6 +264,7 @@ transparent areas.
 | Deinterlace | Remove: **Even lines**, Odd lines; Replace with: Duplication, **Interpolation** | Even or odd rows are replaced by the row above (Duplication) or the average of the rows above and below (Interpolation). |
 | Invert Colors | none | `255 - v` per channel. |
 | Posterize | Level 4 (2 to 32) | Each channel rounded to Level evenly spaced values. |
+| Broadcast Safe Colors | TV standard: **NTSC**, PAL | Luma limited to 16..235 and chroma (YIQ or YUV) reduced so that luma plus or minus chroma stays inside the signal range. |
 
 ### Correction
 
@@ -300,6 +301,23 @@ transparent areas.
 | Watercolor | Brush size 3 (1 to 10); Granulation 50 (1 to 100); Water 50 (1 to 100); Bleed 50 (1 to 100); Brightness 50 (0 to 100) | Colours washed by a median of Brush size and a blur (Bleed), lightened by Water with darker rims, Granulation noise and Brightness. |
 | Felt Marker | Variation: **Default**, Order, Random; Size 5 (1 to 20); Color variation 20 (0 to 100) | Rectangular marker strokes of Size that multiply where they overlap; Variation sets their angle (fixed, level or random) and Color variation jitters their colours. |
 | Paper Grain | Paint: **Color**, Black and white; Brush pressure 50 (1 to 100) | The image on paper with a wavy grain, stronger with Brush pressure, in colour or black and white. |
+| Paper Layers | Levels 4 (2 to 8); Smoothness 4 (0 to 10); Detail 5 (1 to 10) | The image softened by Smoothness and flattened by a median (smaller with more Detail), each channel then cut into Levels steps: flat shapes of a few colours, like layers of cut paper. |
+| Bristle Paint | Brush size 2 (1 to 10); Detail 8 (0 to 10); Texture 50 (0 to 100); Seed 1 | A median of Brush size flattens the colours (cut into more steps with more Detail); noise stretched along the stroke lightens and darkens it like the bristles of a dry brush, stronger with Texture. |
+| Mural | Brush size 2 (1 to 10); Detail 8 (0 to 10); Texture 50 (0 to 100); Seed 1 | Short thick strokes: a blur and median of Brush size, more contrast, the edges taken toward the darkest nearby colour (less with more Detail) and blotchy wall texture (Texture). |
+| Luminous Wash | Radius 5 (0 to 24); Brightness 15 (0 to 50); Light color (#2BC8FF) | The picture dimmed and the light colour screened over it where it is bright, the glow spread by Radius and stronger with Brightness. |
+| Inked Poster | Edge 2 (0 to 10); Intensity 1 (0 to 10); Levels 3 (2 to 8) | Each channel cut into Levels steps and the edges inked black, thicker with Edge, more of them with Intensity. |
+| Diagonal Smear | Length 4 (0 to 10); Highlights 0 (0 to 20); Intensity 10 (0 to 10) | The dark areas smeared along a 45° diagonal over 2 x Length + 1 pixels (Intensity how much); Highlights lifts the light areas. |
+| Blotted Color | Brush size 2 (0 to 10); Contrast 12 (0 to 25); Smoothness 5 (1 to 15); Seed 1 | Blots of about Brush size, their edges softened by Smoothness, lighten and darken the (median-flattened) colours by Contrast, as if dabbed on. |
+| Primed Canvas | Brush size 6 (0 to 40); Density 16 (0 to 40); Relief 4 (0 to 50); Angle 135° | A muted underlayer (blurred by Brush size, less saturated) shows through the paint as Density falls; the whole lit as a woven canvas from Angle, raised by Relief. |
+| Chalked Edges | Width 2 (1 to 14); Brightness 38 (0 to 50); Smoothness 5 (1 to 15) | The image softened by Smoothness with its edges (widened by Width) drawn over it: whitened like chalk when Brightness is above 25, darkened like ink below it. |
+| Diagonal Hatching | Midpoint 50 (0 to 100); Length 15 (3 to 50); Contrast 3 (0 to 10) | Areas lighter than Midpoint are stroked along 45°, darker ones along -45°, each stroke Length pixels; Contrast sharpens the result. |
+| Pencil Weave | Length 9 (3 to 50); Contrast 6 (0 to 20); Intensity 1 (1 to 3); Seed 1 | Pencil strokes of Length along 45° darken the picture where it is dark, a second set along -45° joins in the darkest areas, more with Intensity; Contrast raises the contrast underneath. |
+| Light and Shadow Strokes | Midpoint 5 (0 to 10); Highlights 2 (0 to 10); Shadows 6 (0 to 10) | Above Midpoint the picture is stroked with long light strokes along -45° (lighter with Highlights); below it with short dark strokes along 45° (darker with Shadows). |
+| Spray Streaks | Length 12 (0 to 20); Radius 7 (0 to 25); Angle 45°; Seed 1 | Each pixel takes the colour from a random point within Radius, then everything is streaked over Length pixels along Angle. |
+| Ink Wash | Brush size 10 (3 to 15); Pressure 2 (0 to 15); Contrast 16 (0 to 40); Paper color (#F4EFE2) | The darkness, softened by Brush size and steepened by Contrast, laid as black ink on the paper colour; Pressure lets the ink bleed outward; faint paper fibres show through. |
+| Copier Toner | Detail 7 (1 to 24); Intensity 8 (1 to 50) | Black toner where a pixel is darker than its surroundings (over Detail pixels, more with Intensity) and in the darkest areas, white elsewhere. |
+| Rubber Print | Threshold 50 (0 to 100); Smoothness 5 (1 to 50); Dark color (#000000); Paper color (#FFFFFF); Seed 1 | The brightness, smoothed by Smoothness, split at Threshold into the dark colour and the paper colour, with specks where the block took no ink. |
+| Wet Fiber Paper | Length 8 (3 to 50); Brightness 60 (0 to 100); Contrast 80 (0 to 100); Seed 1 | Each colour runs Length pixels along the direction of the fibres there (a smooth random field), over visible paper fibres; Brightness and Contrast adjust the result. |
 
 ### Blur
 
@@ -336,6 +354,7 @@ transparent areas.
 | Solarize | Level 128 (0 to 255) | Levels at or above `255 - Level` are inverted. |
 | Riso Print | Inks: **pink and blue**, orange and teal, red and black, yellow and purple, custom (First ink #FF48B0, Second ink #0078BF); Size 6 (2 to 40); Angle 15°; Distance 3 (0 to 40); Grain 40 (0 to 100); Paper color #F5F0E4; Seed 1 | The picture is split into two inks by a least-squares fit of each pixel's optical density to the inks' densities, so each colour goes to the ink that makes it best; each ink is a screen of round dots (cells of Size pixels, the first at Angle, the second 30° from it) whose area follows its coverage, the second moved by Distance (out of register); Grain lays the ink unevenly (soft blotches, speckles of missing ink) and shows paper fibres; inks multiply over the paper. |
 | Newsprint | Inks: **black**, four colors; Size 5 (2 to 40); Angle 45°; Dot gain 30 (0 to 100); Distance 1 (0 to 20, four colours only); Grain 35 (0 to 100); Paper color #E8E2D2; Seed 1 | Black: the darkness as one screen of round dots at Angle. Four colors: cyan, magenta, yellow and black (black generation from the darkest channel) at Angle - 30°, Angle + 30°, Angle - 45° and Angle, cyan and magenta moved apart by Distance. Dot gain swells the middle tones as ink spreads; Grain shows paper fibres and blotchy ink; inks multiply over the paper. |
+| Grit Screen | Screen: **Fine dots**, Coarse dots, Grain, Short lines, Long lines, Strokes; Seed 1 | Each channel set to full or none by comparing it with a random screen (dots, grain, horizontal lines or diagonal strokes), so the tones become a pattern of pure colours. |
 
 ### Contour
 
@@ -344,6 +363,7 @@ transparent areas.
 | Edge Detect | Background: **White**, Black, Other; Other color (#808080); Sensitivity 5 (1 to 10) | Sobel edges of the brightness times Sensitivity / 5: dark lines on white or the other colour, light lines on black. |
 | Find Edges | Edge type: **Soft**, Solid; Level 50 (0 to 100) | Sobel edges in the pixels' own colours on white; Solid cuts them at 0.3. |
 | Trace Contour | Level 128 (0 to 255); Edge type: **Lower**, Upper | Pixels on the border of the area below (Lower) or above (Upper) Level keep their colour; everything else turns white. |
+| Neon Outline | Width 2 (1 to 14); Brightness 6 (0 to 20); Smoothness 5 (1 to 15) | The colour edges of the image (softened by Smoothness, widened by Width) glow on black, brighter with Brightness. |
 
 ### Creative
 
@@ -413,6 +433,11 @@ transparent areas.
 | Plastic | Highlight 50 (1 to 100); Depth 20 (1 to 100); Smoothness 50 (1 to 100); Light direction 135°; Light color (#FFFFFF) | The image blurred by Smoothness and lit as a glossy surface, with highlights in the light colour. |
 | Relief Sculpture | Detail 50 (1 to 100); Depth 50 (1 to 100); Smoothness 50 (1 to 100); Light direction 135°; Surface color (#C8C0B0) | The image's relief in the surface colour, lit from Light direction; Detail, Depth, Smoothness. |
 | Stone | Detail 50 (1 to 100); Density 50 (1 to 100); Light direction 135° | A fractal stone texture (Detail, Density) lit from Light direction over the image. |
+| Embossed Paper | Threshold 50 (0 to 100); Grain 10 (0 to 20); Relief 11 (0 to 25); Paper color (#EDEAE0) | Parts darker than Threshold are pressed up out of the paper colour (slightly darker), the sheet grainy with Grain and lit from the upper left by Relief. |
+| Gypsum Cast | Threshold 40 (0 to 100); Smoothness 2 (1 to 15); Angle 135°; Paper color (#F2F0EA) | Parts darker than Threshold are raised, rounded by Smoothness, and the cast in the paper colour is lit from Angle. |
+| Film Clumping | Density 12 (0 to 50); Black point 40 (0 to 50); White point 5 (0 to 50); Seed 1 | Gray grain that clumps where the picture is dark and opens where it is light, coarser with Density; Black point and White point lift the darkest and lower the lightest tones. |
+| Cracked Surface | Spacing 15 (2 to 100); Depth 6 (0 to 10); Brightness 9 (0 to 10); Seed 1 | Fine cracks between random cells about Spacing pixels across, darker and deeper with Depth, over the picture lit as a raised surface; Brightness sets its lightness. |
+| Quilt Squares | Size 8 (2 to 20); Relief 8 (0 to 25); Seed 1 | Squares of Size pixels, each in the colour at its centre, raised by random amounts with dark seams between them, lit by Relief. |
 
 ### Tone Curve settings
 

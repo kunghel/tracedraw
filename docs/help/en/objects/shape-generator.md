@@ -50,6 +50,11 @@ preview counts the curves.
   see [L-systems](#lsystems).
 - [[shapegen.kind_tiling]]: Penrose rhombs, which never repeat, and star
   patterns on squares or hexagons shaped by the [[shapegen.tile_angle]].
+- [[shapegen.kind_hatch]], [[shapegen.kind_contour]], [[shapegen.kind_maze]]
+  and [[shapegen.kind_space_curve]]: lines that fill a shape, see
+  [Filling a shape](#fills).
+- [[shapegen.kind_slice]]: cuts the selection into strips or a grid and
+  moves each piece, see [Slicing a selection](#slice).
 
 Generators that make random choices have a [[shapegen.seed]]: the same seed
 always gives the same result, and [[shapegen.new_seed]] picks another one.
@@ -130,3 +135,40 @@ the [[shapegen.frac_rules]] as `F=F+F--F+F`, one per line or separated by
 semicolons. [[shapegen.frac_edit]] copies a built-in fractal into a
 custom one to change it. Very deep levels stop growing at 400,000
 symbols.
+
+## Filling a shape {#fills}
+
+These fill the box, or the outline picked with [[shapegen.use_selection]]
+with its holes left empty; Create puts the result over the selection.
+
+- [[shapegen.kind_hatch]]: lines [[shapegen.hatch_spacing]] apart at an
+  [[shapegen.hatch_angle]], cut exactly at the outline. Crossed adds a
+  second set turned by the [[shapegen.hatch_cross]]. By tone draws
+  [[shapegen.hatch_layers]] sets at different angles, each only where the
+  picked picture is darker, so shading builds up as in a pen drawing.
+- [[shapegen.kind_contour]]: rings [[shapegen.contour_spacing]] apart, offset
+  inward from the outline until no room is left, or lines that follow the
+  picture's tones at a number of [[shapegen.contour_levels]], like the
+  height lines of a map.
+- [[shapegen.kind_maze]]: a maze with exactly one way between any two
+  cells, its passages [[shapegen.maze_cell]] wide. Draw its walls, with an
+  entrance at the bottom and an exit at the top, or its passages as one
+  line through the cells (good for a single stroke on a plotter or laser).
+  [[shapegen.new_seed]] makes another maze.
+- [[shapegen.kind_space_curve]]: one line that winds through every cell of
+  a grid without crossing itself. Each [[shapegen.curve_order]] makes it
+  finer; inside an outline it breaks where it leaves the shape.
+
+## Slicing a selection {#slice}
+
+Select objects, text or pictures, choose how to [[shapegen.slice_layout]]
+(rows, columns or a grid) and the [[shapegen.slice_pattern]], then click
+[[shapegen.slice_apply]]. Each piece moves by up to
+[[shapegen.slice_dx]] and [[shapegen.slice_dy]]: at random, along a wave,
+from one side to the other, or every other piece each way. A
+[[shapegen.slice_gap]] leaves space between the pieces. The preview shows
+the cells as they will move.
+
+Every piece is a PowerClip holding a copy of the selection, so text stays
+editable text and pictures keep their pixels; the pieces come in one
+group, and [[shapegen.slice_keep]] leaves the original in place.

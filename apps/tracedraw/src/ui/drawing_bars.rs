@@ -55,6 +55,11 @@ pub fn drawing_bar(app: &mut App, ui: &mut Ui) {
                 "recognize.smoothing_tip",
                 &mut app.recognize.smoothing,
             );
+            ui.checkbox(
+                &mut app.recognize.scribble_erases,
+                tr("recognize.scribble_erases"),
+            )
+            .rich_tip(crate::ui::tips::keyed("recognize.scribble_erases"));
             crate::ui::propbar::sep(ui);
             dim(ui, tr("status_hint.shape_recognition"));
         }

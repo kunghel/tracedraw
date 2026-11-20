@@ -1,7 +1,10 @@
 //! Brush Strokes modes: Preset (tapered strokes), Brush (textured
 //! strokes), Sprayer (objects along the path), Calligraphic, Expression
-//! (pressure-like variable width). Each mode turns a freehand polyline
-//! into geometry; "Apply to curve" does the same to an existing curve.
+//! (pressure-like variable width), Tiles (a small picture repeated along
+//! the path, bent to follow it) and Merge (a round stroke that becomes
+//! one filled object with the same-coloured objects it touches). Each
+//! mode turns a freehand polyline into geometry; "Apply to curve" does
+//! the same to an existing curve.
 
 use crate::app::App;
 use tracedraw_core::{
@@ -20,15 +23,19 @@ pub enum MediaMode {
     #[default]
     Calligraphic,
     Expression,
+    Tiles,
+    Merge,
 }
 
 impl MediaMode {
-    pub const ALL: [MediaMode; 5] = [
+    pub const ALL: [MediaMode; 7] = [
         MediaMode::Preset,
         MediaMode::Brush,
         MediaMode::Sprayer,
         MediaMode::Calligraphic,
         MediaMode::Expression,
+        MediaMode::Tiles,
+        MediaMode::Merge,
     ];
     pub fn key(self) -> &'static str {
         match self {
@@ -37,9 +44,21 @@ impl MediaMode {
             MediaMode::Sprayer => "media.sprayer",
             MediaMode::Calligraphic => "media.calligraphic",
             MediaMode::Expression => "media.expression",
+            MediaMode::Tiles => "media.tiles",
+            MediaMode::Merge => "media.merge",
         }
     }
 }
+
+/// The Tiles mode's pictures, in the order of `tracedraw_core::tiles`.
+pub const TILE_KEYS: [&str; 6] = [
+    "media.tiles_chain",
+    "media.tiles_rope",
+    "media.tiles_zigzag",
+    "media.tiles_dash_dot",
+    "media.tiles_waves",
+    "media.tiles_beads",
+];
 
 pub const BRUSH_KEYS: [&str; 6] = [
     "media.taper_both",
@@ -120,12 +139,14 @@ impl App {
             s.name = Some(self.media_mode_name().into());
             return vec![s];
         }
-        // The sprayer: the path drawn, with its objects along it as a
-        // live effect, so they follow it when it is edited and break apart
-        // into a group (#3435).
-        if self.media_mode != MediaMode::Sprayer {
-            return Vec::new();
-        }
+        // The sprayer and the tiles: the path drawn, with its objects
+        // along it as a live effect, so they follow it when it is edited
+        // and break apart into a group (#3435).
+        let effect = match self.media_mode {
+            MediaMode::Sprayer => self.spray_effect(color),
+            MediaMode::Tiles => self.tiles_effect(color),
+            _ => return Vec::new(),
+        };
         let id = self.engine.new_shape_id();
         let path = tracedraw_core::geometry::smooth_path(&pts, false);
         let mut s = Shape::new(
@@ -138,8 +159,107 @@ impl App {
         s.fill = Fill::None;
         s.stroke = None;
         s.name = Some(self.media_mode_name().into());
-        s.effects.push(self.spray_effect(color));
+        s.effects.push(effect);
         vec![s]
+    }
+
+    /// The tiles effect of the Brush Strokes settings in `color`: the
+    /// picture chosen, as wide across as the width.
+    pub fn tiles_effect(&self, color: Color) -> tracedraw_core::live::Effect {
+        tracedraw_core::live::Effect::Tiles {
+            preset: self.media_preset.min(TILE_KEYS.len() - 1) as u8,
+            width: self.media_width,
+            color,
+        }
+    }
+
+    /// Brush Strokes in Merge mode: the stroke along `points` as a round
+    /// nib of the width draws it, as a filled object in the outline
+    /// colour (black with none), made one with every object of the
+    /// active layer it overlaps that is filled with that same colour (as
+    /// it shows on screen) and
+    /// has no outline and no effects (unlocked, shown). One undo step;
+    /// the merged object is selected and stands where the bottom one
+    /// of those it took in stood. `None` when nothing was drawn.
+    pub fn merge_brush_stroke(&mut self, points: &[Point]) -> Option<tracedraw_core::ShapeId> {
+        use tracedraw_core::geometry::Shape as _;
+        use tracedraw_core::shaping::{self, FillRule, Op};
+        let layer = self.active_layer()?;
+        let pts =
+            tracedraw_core::geometry::simplify(points, 0.1 + self.media_smoothing / 100.0 * 1.5);
+        let pts = if pts.is_empty() { points.to_vec() } else { pts };
+        let band = shaping::stroke_band(&pts, self.media_width, false);
+        if band.elements().is_empty() {
+            return None;
+        }
+        let color = self.default_stroke().map_or(Color::BLACK, |st| st.color);
+        let fill = Fill::Solid(color);
+        let mut merged = band;
+        let mut taken: Vec<tracedraw_core::ShapeId> = Vec::new();
+        let mut at: Option<usize> = None;
+        let shapes: Vec<Shape> = self
+            .doc()
+            .page(self.page)
+            .ok()
+            .and_then(|p| p.layers.iter().find(|l| l.id == layer))
+            .map(|l| l.shapes.clone())
+            .unwrap_or_default();
+        for (i, s) in shapes.iter().enumerate() {
+            // The same colour as it shows (a black in CMYK and one in
+            // RGB are one).
+            let same = matches!(&s.fill, Fill::Solid(c) if c.to_rgb8() == color.to_rgb8());
+            let alike = same
+                && s.stroke.is_none()
+                && s.effects.is_empty()
+                && s.visible
+                && !s.locked
+                && matches!(
+                    s.kind,
+                    ShapeKind::Path { .. }
+                        | ShapeKind::Rect { .. }
+                        | ShapeKind::Ellipse { .. }
+                        | ShapeKind::Polygon { .. }
+                );
+            if !alike {
+                continue;
+            }
+            let p = s.page_path();
+            let (a, b) = (p.bounding_box(), merged.bounding_box());
+            if a.x0 > b.x1 || b.x0 > a.x1 || a.y0 > b.y1 || b.y0 > a.y1 {
+                continue;
+            }
+            let meet = shaping::overlay(&merged, &p, Op::Intersect);
+            if shaping::filled_area(&meet, FillRule::EvenOdd) < 1e-6 {
+                continue;
+            }
+            merged = shaping::overlay(&merged, &p, Op::Weld);
+            taken.push(s.id);
+            at.get_or_insert(i);
+        }
+        let path = shaping::fit_polygon_curves(&merged, 0.02);
+        let id = self.engine.new_shape_id();
+        let mut s = Shape::new(id, ShapeKind::Path { path, closed: true });
+        s.fill = fill;
+        s.stroke = None;
+        s.name = Some(self.media_mode_name().into());
+        let mut cmds = Vec::new();
+        if !taken.is_empty() {
+            cmds.push(Command::DeleteShapes {
+                shapes: taken.clone(),
+            });
+        }
+        cmds.push(Command::AddShape { layer, shape: s });
+        // In the place of the bottom object it took in.
+        if let Some(index) = at {
+            cmds.push(Command::Reorder {
+                shape: id,
+                layer,
+                index,
+            });
+        }
+        self.engine.run_batch("Brush Strokes", &cmds).ok()?;
+        self.selection = vec![id];
+        Some(id)
     }
 
     /// The sprayer effect of the Brush Strokes settings in `color`.
@@ -240,7 +360,7 @@ impl App {
                 };
                 st.widths = widths(EXPRESSION_NODES, &at_point);
             }
-            MediaMode::Sprayer => return None,
+            MediaMode::Sprayer | MediaMode::Tiles | MediaMode::Merge => return None,
         }
         Some(st)
     }
@@ -253,6 +373,8 @@ impl App {
             MediaMode::Brush => "Brush stroke",
             MediaMode::Expression => "Expression stroke",
             MediaMode::Sprayer => "Sprayed objects",
+            MediaMode::Tiles => "Tiles",
+            MediaMode::Merge => "Merged stroke",
         }
     }
 
@@ -281,11 +403,23 @@ impl App {
                 });
                 continue;
             }
-            // The sprayer: the curve stays, with its objects along it as
-            // a live effect (#3435), one in place of any it had.
+            // The sprayer and the tiles: the curve stays, with its
+            // objects along it as a live effect (#3435), one in place of
+            // any it had. Merge does nothing to a curve.
+            let effect = match self.media_mode {
+                MediaMode::Sprayer => self.spray_effect(color),
+                MediaMode::Tiles => self.tiles_effect(color),
+                _ => continue,
+            };
             let mut effects = c.effects.clone();
-            effects.retain(|e| !matches!(e, tracedraw_core::live::Effect::Spray { .. }));
-            effects.push(self.spray_effect(color));
+            effects.retain(|e| {
+                !matches!(
+                    e,
+                    tracedraw_core::live::Effect::Spray { .. }
+                        | tracedraw_core::live::Effect::Tiles { .. }
+                )
+            });
+            effects.push(effect);
             new_sel.push(c.id);
             cmds.push(Command::SetEffects {
                 shape: c.id,
@@ -410,6 +544,132 @@ mod tests {
             panic!("{:?}", ev.above);
         };
         assert!(children.len() > 1);
+    }
+
+    /// Tiles: the path drawn with its tiles along it as a live effect,
+    /// each tile as wide across as the width; Apply to curve gives a
+    /// curve the same, one in place of any it had.
+    #[test]
+    fn tiles_lie_along_the_stroke_as_a_live_effect() {
+        let mut app = App::headless();
+        let pts: Vec<Point> = (0..=100)
+            .map(|i| Point::new(10.0 + i as f64, 50.0))
+            .collect();
+        app.media_width = 6.0;
+        app.media_mode = MediaMode::Tiles;
+        app.media_preset = 5;
+        let shapes = app.media_shapes(&pts);
+        assert_eq!(shapes.len(), 1);
+        assert!(shapes[0].stroke.is_none());
+        assert!(matches!(
+            shapes[0].effects[..],
+            [tracedraw_core::live::Effect::Tiles { preset: 5, .. }]
+        ));
+        let ev = tracedraw_core::live::evaluate(&shapes[0]);
+        let ShapeKind::Group { children } = &ev.above[0].kind else {
+            panic!("{:?}", ev.above);
+        };
+        // 100 mm of 6 mm beads.
+        assert_eq!(children.len(), 17);
+        let b = ev.above[0].bounds();
+        assert!(b.height() > 4.0 && b.height() <= 6.0 + 1e-6, "{b:?}");
+        // Apply to curve on a curve with a sprayer: tiles in its place.
+        let mut line = BezPath::new();
+        line.move_to((0.0, 0.0));
+        line.line_to((50.0, 0.0));
+        let id = app
+            .new_shape(ShapeKind::Path {
+                path: line,
+                closed: false,
+            })
+            .expect("curve");
+        app.selection = vec![id];
+        app.media_mode = MediaMode::Sprayer;
+        app.apply_media_to_selection();
+        app.media_mode = MediaMode::Tiles;
+        app.apply_media_to_selection();
+        let fx = &app.doc().find_shape(id).expect("curve").effects;
+        assert!(
+            matches!(fx[..], [tracedraw_core::live::Effect::Tiles { .. }]),
+            "{fx:?}"
+        );
+    }
+
+    /// Merge: a stroke over two squares of its colour with no outline
+    /// makes one object of the three, where the lower square stood; a red
+    /// square and an outlined one stay as they were; one undo brings
+    /// the squares back.
+    #[test]
+    fn a_merge_stroke_becomes_one_object_with_what_it_touches() {
+        let mut app = App::headless();
+        app.media_mode = MediaMode::Merge;
+        app.media_width = 4.0;
+        let sq = |app: &mut App, x: f64, fill: Fill, stroke: Option<Stroke>| {
+            app.new_shape_styled(
+                ShapeKind::Rect {
+                    rect: tracedraw_core::geometry::Rect::new(x, 0.0, x + 10.0, 10.0),
+                    radius: 0.0,
+                    corners: None,
+                },
+                |s| {
+                    s.fill = fill;
+                    s.stroke = stroke;
+                },
+            )
+            .expect("square")
+        };
+        // The outline colour new objects get, the stroke's colour.
+        let ink = app.default_stroke().map_or(Color::BLACK, |st| st.color);
+        let below = sq(&mut app, 100.0, Fill::Solid(ink), None);
+        let a = sq(&mut app, 0.0, Fill::Solid(ink), None);
+        let b = sq(&mut app, 30.0, Fill::Solid(ink), None);
+        let red = sq(&mut app, 60.0, Fill::Solid(Color::rgb8(255, 0, 0)), None);
+        let lined = sq(
+            &mut app,
+            80.0,
+            Fill::Solid(ink),
+            Some(Stroke::new(ink, 0.5)),
+        );
+        let pts: Vec<Point> = (0..=90).map(|i| Point::new(5.0 + i as f64, 5.0)).collect();
+        let before = app.doc().clone();
+        let id = app.merge_brush_stroke(&pts).expect("merged");
+        assert_eq!(app.selection, vec![id]);
+        for gone in [a, b] {
+            assert!(app.doc().find_shape(gone).is_none());
+        }
+        for kept in [below, red, lined] {
+            assert!(app.doc().find_shape(kept).is_some());
+        }
+        let m = app.doc().find_shape(id).expect("merged").clone();
+        assert_eq!(m.fill, Fill::Solid(ink));
+        assert!(m.stroke.is_none());
+        let bb = m.bounds();
+        assert!(bb.x0 < 0.5 && bb.y1 > 9.5, "{bb:?}");
+        // One object: the band and both squares joined.
+        let parts = m
+            .local_path()
+            .elements()
+            .iter()
+            .filter(|e| matches!(e, tracedraw_core::geometry::PathEl::MoveTo(_)))
+            .count();
+        assert_eq!(parts, 1);
+        // Where square a stood: just above the lower square.
+        let layer = app.active_layer().expect("layer");
+        let order: Vec<_> = app
+            .doc()
+            .page(app.page)
+            .expect("page")
+            .layers
+            .iter()
+            .find(|l| l.id == layer)
+            .expect("layer")
+            .shapes
+            .iter()
+            .map(|s| s.id)
+            .collect();
+        assert_eq!(order[..2], [below, id]);
+        app.undo();
+        assert_eq!(app.doc().pages, before.pages);
     }
 
     /// The sprayer leaves the path drawn with its objects along it as one

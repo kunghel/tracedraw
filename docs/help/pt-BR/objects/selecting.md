@@ -13,6 +13,9 @@ o mesmo, mas seleciona com um laço à mão livre.
   está preenchido; um sem preenchimento, no contorno. Texto, grupos, tabelas e
   imagens contam em qualquer lugar dentro da caixa.
 - <kbd>Shift</kbd>+clique acrescenta um objeto à seleção ou o tira dela.
+  Com páginas espelhadas ele também acrescenta um objeto da página ao lado, e
+  arrastar em volta de objetos pega os das duas páginas: eles passam para a
+  página atual, onde aparecem, para você alinhá-los juntos.
 - **Arraste** em volta de objetos, começando em um lugar vazio: os objetos
   totalmente dentro da moldura tracejada são selecionados. Mantenha
   <kbd>Alt</kbd> pressionado ao terminar o arraste para selecionar todos os
@@ -81,7 +84,8 @@ ferramenta Texto mantêm os cliques delas.
   mm de início), com <kbd>Shift</kbd> pela distância maior e com
   <kbd>Ctrl</kbd> pela menor. Defina-as na página [[options.rulers]] das opções
   do documento.
-- <kbd>+</kbd> duplica a seleção no mesmo lugar.
+- <kbd>+</kbd> duplica a seleção no mesmo lugar. Mova, gire ou redimensione a
+  cópia enquanto está selecionada, e cada <kbd>Ctrl+D</kbd> depois faz o mesmo de novo.
 
 ### Arrastar com o botão direito {#right-drag}
 
@@ -125,6 +129,11 @@ parecidos com os selecionados:
   tamanho do texto selecionado (em qualquer um dos seus caracteres).
 - [[menu.edit.similar_kind]]: o mesmo tipo de objeto (retângulos, elipses,
   curvas, texto artístico, texto de parágrafo, grupos, bitmaps...).
+- **Aparência parecida**: uma aparência próxima da do objeto selecionado,
+  dentro da **Tolerância** no fim do submenu (10 % de início): cores de
+  preenchimento, cores e larguras de contorno e transparência perto o
+  bastante. Clique num objeto e escolha este item para pegar tudo o que se
+  parece com ele.
 
 Com vários objetos selecionados, vale um objeto parecido com qualquer um
 deles. Os objetos de dentro de grupos também são comparados, cada um por

@@ -635,7 +635,15 @@ impl App {
             return true;
         }
         let path = st.target();
-        if files::exists(&path) && st.replace.as_ref() != Some(&path) {
+        // The file the drawing was opened from (a `.cdr`, say) is the one
+        // Save writes back to: the dialog already showed it, so it is not
+        // asked about again (#3618).
+        let own = self.file.is_none()
+            && self
+                .opened_from
+                .as_deref()
+                .is_some_and(|f| files::same_path(&files::canonical(&path), f));
+        if files::exists(&path) && !own && st.replace.as_ref() != Some(&path) {
             st.replace = Some(path);
             return false;
         }
@@ -2105,8 +2113,21 @@ mod tests {
             st.dir
         );
         assert_eq!(st.name, "card.cdr");
-        // Typed in the bar, not confirmed with Enter: Save writes there.
         let mut st = st.clone();
+        // Saved back over the file it came from, it is not asked about
+        // again (#3618); the drawing then has that file as its own.
+        let mut back = st.clone();
+        assert!(app.finish_save_as(&mut back), "{:?}", back.replace);
+        assert!(back.replace.is_none());
+        assert_eq!(version_of(&path), Some(24));
+        assert!(app.file.is_some());
+        // Another file of that name, not the one it came from, still asks.
+        std::fs::write(work.join("other.cdr"), b"x").expect("written");
+        let mut other_st = st.clone();
+        other_st.name = "other".into();
+        assert!(!app.finish_save_as(&mut other_st));
+        assert!(other_st.replace.is_some());
+        // Typed in the bar, not confirmed with Enter: Save writes there.
         st.dir_text = other.display().to_string();
         st.name = "copy".into();
         assert!(app.finish_save_as(&mut st));

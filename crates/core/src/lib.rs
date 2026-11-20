@@ -31,20 +31,25 @@ pub mod jpeg_source;
 pub mod join;
 pub mod linked_text;
 pub mod live;
+pub mod live_paint;
 pub mod nodes;
 pub mod painterly;
 pub mod paragraphs;
+pub mod parallel;
 pub mod patch;
 pub mod picture_inks;
 mod press;
 pub mod procedural;
 pub mod recolor;
+pub mod scale_grid;
 pub mod shadow;
 pub mod shaping;
 pub mod spreads;
 pub mod style;
+pub mod surface_map;
 pub mod table;
 pub mod text_flow;
+pub mod tiles;
 pub mod toc;
 
 pub use bytes::SharedBytes;
@@ -100,6 +105,8 @@ pub enum Error {
     SelectionGroup(u8),
     #[error("object {0:?} is not a clip frame")]
     NotClipFrame(ShapeId),
+    #[error("object {0:?} is not a group")]
+    NotGroup(ShapeId),
     #[error("object {0:?} is not a bitmap")]
     NotBitmap(ShapeId),
     #[error("object {0:?} is not a text")]

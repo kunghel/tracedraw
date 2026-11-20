@@ -60,6 +60,8 @@ pub fn show(app: &mut App, ui: &mut Ui, tab: DockerTab) {
         DockerTab::PictureMosaic => crate::ui::picture_mosaic_docker::picture_mosaic(app, ui),
         DockerTab::ShapeGenerator => crate::ui::shape_gen_docker::shape_generator(app, ui),
         DockerTab::SymbolScatter => crate::ui::symbol_scatter_docker::symbol_scatter(app, ui),
+        DockerTab::FrameGenerator => crate::ui::frame_gen_docker::frame_generator(app, ui),
+        DockerTab::Shape3d => crate::ui::shape3d_docker::shape_3d(app, ui),
         DockerTab::Shelf => crate::ui::shelf_docker::shelf(app, ui),
         DockerTab::Export => crate::ui::export_docker::export_docker(app, ui),
         DockerTab::Comments => crate::ui::comments_docker::comments_docker(app, ui),
@@ -1421,6 +1423,11 @@ fn lens(app: &mut App, ui: &mut Ui) {
                     if i == 9 && app.lens.color == tracedraw_core::Color::WHITE {
                         app.lens.color = tracedraw_core::Color::BLACK;
                     }
+                    // Cut starts with a black shadow at 60 %.
+                    if i == 13 && app.lens.color == tracedraw_core::Color::WHITE {
+                        app.lens.color = tracedraw_core::Color::BLACK;
+                        app.lens.rate = 60.0;
+                    }
                 }
             }
         })
@@ -1488,6 +1495,54 @@ fn lens(app: &mut App, ui: &mut Ui) {
                 color_button(ui, &mut l.color_to);
                 ui.label(tr("docker.fill"));
                 color_button(ui, &mut l.color);
+            });
+        }
+        13 => {
+            // Cut: the spurs where the lens's middle line crosses the
+            // objects beneath, the cut itself and the shadow under it.
+            ui.add(
+                crate::ui::Slider::new(&mut l.spur_length, 0.0..=50.0)
+                    .text(tr("lens.cut_spur_length"))
+                    .suffix(" mm"),
+            )
+            .rich_tip(crate::ui::tips::pair(
+                "lens.cut_spur_length",
+                "lens.cut_spur_length_desc",
+            ));
+            ui.add(
+                crate::ui::Slider::new(&mut l.spur_width, 0.0..=50.0)
+                    .text(tr("lens.cut_spur_width"))
+                    .suffix(" mm"),
+            )
+            .rich_tip(crate::ui::tips::pair(
+                "lens.cut_spur_width",
+                "lens.cut_spur_width_desc",
+            ));
+            ui.add(
+                crate::ui::Slider::new(&mut l.curve, 0.5..=6.0).text(tr("lens.cut_curve")),
+            )
+            .rich_tip(crate::ui::tips::pair(
+                "lens.cut_curve",
+                "lens.cut_curve_desc",
+            ));
+            ui.add(crate::ui::Slider::new(&mut l.gap, 0.0..=10.0).text(tr("lens.cut_gap")).suffix(" mm"))
+                .rich_tip(crate::ui::tips::pair("lens.cut_gap", "lens.cut_gap_desc"));
+            ui.add(
+                crate::ui::Slider::new(&mut l.rate, 0.0..=100.0).text(tr("lens.cut_shadow"))
+                    .suffix(" %"),
+            )
+            .rich_tip(crate::ui::tips::pair(
+                "lens.cut_shadow",
+                "lens.cut_shadow_desc",
+            ));
+            ui.horizontal(|ui| {
+                ui.label(tr("docker.color"));
+                color_button(ui, &mut l.color);
+                ui.checkbox(&mut l.shadow_up, tr("lens.cut_shadow_up"))
+                    .rich_tip(crate::ui::tips::pair(
+                        "lens.cut_shadow_up",
+                        "lens.cut_shadow_up_desc",
+                    ));
             });
         }
         12 => {
@@ -2282,6 +2337,20 @@ fn brush_strokes(app: &mut App, ui: &mut Ui) {
                 "docker.spray_spacing_desc",
             ));
         }
+        crate::media::MediaMode::Tiles => {
+            ui.horizontal_wrapped(|ui| {
+                for (i, k) in crate::media::TILE_KEYS.iter().enumerate() {
+                    if ui
+                        .selectable_label(app.media_preset == i, tr(k))
+                        .rich_tip_with(|| format!("{}\n{}", tr(k), tr("docker.media_preset_desc")))
+                        .clicked()
+                    {
+                        app.media_preset = i;
+                    }
+                }
+            });
+        }
+        crate::media::MediaMode::Merge => {}
         crate::media::MediaMode::Expression => {
             ui.add(
                 crate::ui::Slider::new(&mut app.media_pressure, 0.0..=1.0)
@@ -3309,7 +3378,10 @@ fn fit_to_path(app: &mut App, ui: &mut Ui) {
     };
     let u = app.units;
     app.fit_path_follow_selection();
-    let mut f = app.fit_path;
+    // A live fit selected (its path, an object or a copy): the panel
+    // shows its settings and a change refits at once.
+    let live = app.live_fit_for_selection();
+    let mut f = live.as_ref().map_or(app.fit_path, |(_, l)| l.settings);
     let field = |ui: &mut Ui, key: &str, mm: &mut f64, min: f64| {
         ui.horizontal(|ui| {
             ui.label(tr(key));
@@ -3370,7 +3442,11 @@ fn fit_to_path(app: &mut App, ui: &mut Ui) {
 
     // What is fitted: the objects (all but the last selected) and the path.
     ui.strong(tr("docker.fit_to_path_objects"));
-    let objects = app.selection.len().saturating_sub(1);
+    let objects = live
+        .as_ref()
+        .map_or(app.selection.len().saturating_sub(1), |(_, l)| {
+            l.members.len()
+        });
     dim(
         ui,
         trf(
@@ -3383,7 +3459,13 @@ fn fit_to_path(app: &mut App, ui: &mut Ui) {
         &mut f.keep_originals,
         "docker.fit_to_path_keep_originals",
     );
-    check(ui, &mut f.group, "docker.fit_to_path_group");
+    // Live sits beside Group all objects, so the panel keeps its height.
+    ui.horizontal(|ui| {
+        if live.is_none() {
+            check(ui, &mut f.group, "docker.fit_to_path_group");
+        }
+        check(ui, &mut f.live, "docker.fit_to_path_live");
+    });
     ui.add_space(4.0);
     ui.strong(tr("docker.fit_to_path_path"));
     if app.selection.len() >= 2 {
@@ -3711,6 +3793,17 @@ fn fit_to_path(app: &mut App, ui: &mut Ui) {
     }
     ui.checkbox(&mut f.reverse, tr("docker.fit_to_path_reverse"))
         .rich_tip(crate::ui::tips::keyed("docker.fit_to_path_reverse"));
+    if let Some((path, l)) = live {
+        // Live off lets the objects go where they are.
+        if f != l.settings {
+            if f.live {
+                app.set_live_fit_settings(path, f);
+            } else {
+                app.release_live_fit(path);
+            }
+        }
+        return;
+    }
     if f != app.fit_path {
         app.fit_path_edited = true;
     }

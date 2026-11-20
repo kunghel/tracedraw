@@ -12,6 +12,7 @@ colours. It is enabled while objects are selected.
 | Saturation | -100 to 100 % | 0 |
 | Lightness | -100 to 100 % | 0 |
 | Recolor spot colors too | on, off | off |
+| Colors of the selection: each colour, and the colour it becomes | any colour | each its own colour |
 
 The change shows on the drawing while the dialog is open (an engine
 preview, made again only when a value changes). OK keeps it as one undo
@@ -20,6 +21,16 @@ and the close button take it back with nothing left on the Undo list.
 Reset puts the values back. Edit > Repeat repeats it on the selection
 of the time and Edit > Repeat on Similar on the objects like the ones it
 was done to (see `shortcuts.md`).
+
+## Colours of the selection
+
+The dialog lists every colour of the selected objects (and of what they
+hold), each once, in the order met, registration colour left out. Each
+has a colour button beside it, set to the colour itself. A colour given
+another becomes exactly that one wherever it is in the selection (a
+spot colour too); it does not take the tint, hue, saturation or
+lightness change, which apply to the colours left as they are (#3609).
+Reset sets every colour back to itself.
 
 ## What changes
 

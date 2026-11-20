@@ -18,6 +18,7 @@
 mod action_lines;
 mod ai;
 mod ai_image;
+mod ai_photo;
 mod ai_retry;
 mod ai_vectorize;
 mod anchors;
@@ -75,6 +76,9 @@ mod documents;
 mod drawing_scale;
 mod drop_files;
 mod draw_inside;
+mod rotate_lines;
+mod grid_handles;
+mod drag_copies;
 mod drop_menu;
 mod effect_line;
 #[cfg(test)]
@@ -92,11 +96,15 @@ mod file_hold;
 mod file_presence;
 mod files;
 mod fill_page;
+mod shape3d;
 mod shape_gen;
 mod shape_gen_cells;
 mod shape_gen_curves;
+mod shape_gen_fill;
+mod shape_gen_slice;
 mod fill_tool;
 mod pattern_fill_tool;
+mod fit_live;
 mod fit_path;
 mod focus;
 mod formula;
@@ -104,6 +112,7 @@ mod formula;
 mod font_folder;
 #[cfg(not(target_arch = "wasm32"))]
 mod frame_stats;
+mod frame_gen;
 mod frame_type;
 mod fx;
 mod gather_pages;
@@ -167,6 +176,7 @@ mod page_names;
 mod painterly_tool;
 mod palette;
 mod palm;
+mod parallel_lines;
 mod pen;
 mod pen_look;
 mod perspective_draw;
@@ -176,6 +186,7 @@ mod picture_mosaic;
 mod picture_plates;
 mod pixel_edit;
 mod pixel_edit_app;
+mod pixel_light;
 mod placeholder;
 mod plugins;
 mod pmd_open;
@@ -238,6 +249,7 @@ mod templates;
 mod text_editing;
 #[cfg(test)]
 mod text_effect_tests;
+mod text_follow;
 mod text_frames;
 mod text_nodes;
 mod text_path;
@@ -249,6 +261,7 @@ mod theme;
 mod thesaurus;
 mod thumbnails;
 mod time_tracker;
+mod flow;
 #[cfg(any(target_os = "linux", test))]
 mod title_bar;
 mod tools;
@@ -258,6 +271,8 @@ mod touch_modifiers;
 mod touch_taps;
 mod trace;
 mod trace_blend;
+#[cfg(test)]
+mod trace_bench;
 mod trace_fine;
 mod trace_fit;
 mod trace_fonts;
@@ -1188,6 +1203,10 @@ impl eframe::App for Shell {
         app.refresh_callouts();
         // Blends follow their end objects.
         app.refresh_blends();
+        // Live fits follow their paths and objects.
+        app.refresh_live_fits();
+        // Texts set to follow their paths are fitted again (#3571).
+        app.refresh_text_follow();
         // The window's state is kept once it has settled; until then it
         // is maximized when it should start so, and checked (#787).
         #[cfg(not(target_arch = "wasm32"))]

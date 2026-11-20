@@ -2155,7 +2155,11 @@ mod tests {
     #[test]
     fn the_default_palette_has_greys_process_colours_and_tints() {
         let app = App::headless();
-        assert_eq!(app.palette.len(), 94);
+        assert_eq!(app.palette.len(), 95);
+        assert_eq!(
+            app.palette.last().map(|(n, _)| n.as_str()),
+            Some(crate::palette::REGISTRATION_BLACK)
+        );
         let names: Vec<&str> = app.palette.iter().map(|(n, _)| n.as_str()).collect();
         assert_eq!(&names[..3], &["Black", "90% Black", "80% Black"]);
         assert_eq!(names[10], "White");
@@ -2751,8 +2755,11 @@ mod tests {
                 .map(|(_, c)| *c)
                 .expect(name)
         };
-        assert_eq!(rgb.len(), 94);
+        assert_eq!(rgb.len(), 95);
         assert_eq!(of("Black"), Color::rgb8(0, 0, 0));
+        // Registration Black, an ink mix, is plain black on screen
+        // (#3666).
+        assert_eq!(of(crate::palette::REGISTRATION_BLACK), Color::rgb8(0, 0, 0));
         assert_eq!(of("White"), Color::rgb8(255, 255, 255));
         assert_eq!(of("50% Black"), Color::rgb8(128, 128, 128));
         assert_eq!(of("Red"), Color::rgb8(255, 0, 0));

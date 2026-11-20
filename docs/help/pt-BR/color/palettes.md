@@ -71,7 +71,9 @@ desenho. O conta-gotas dela acrescenta a cor sob o ponteiro, e o menu tem
 pode arrastar cores ou objetos até ela. A cor usada por último tem uma
 moldura branca: uma cor pega com o conta-gotas que a paleta já tem recebe a
 moldura, para você ver onde está, e aplicar uma cor da paleta move a moldura
-para ela. Para mostrá-la ou ocultá-la, veja
+para ela. O conta-gotas também é **Janela > Paletas de cores > Adicionar cores do
+desenho à paleta do documento**, que pode receber um atalho de teclado; Esc o
+interrompe. Para mostrá-la ou ocultá-la, veja
 [Opções de personalização](../customize/customization.md#color-palette).
 
 ## O painel Paletas {#palettes-docker}

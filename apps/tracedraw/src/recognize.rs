@@ -2,7 +2,9 @@
 //! as drawn (tilted shapes stay tilted): a straight line, a rectangle, an
 //! ellipse, a triangle, a four-sided shape with its own corners, else a
 //! smoothed curve. How readily strokes are taken for shapes and how much
-//! free curves are smoothed are the property bar's two levels.
+//! free curves are smoothed are the property bar's two levels. With
+//! Scribble Erases on (off at first), a stroke scribbled back and forth
+//! over objects deletes them instead.
 
 use crate::app::App;
 use serde::{Deserialize, Serialize};
@@ -20,6 +22,8 @@ pub struct RecognizeSettings {
     pub recognition: u8,
     /// How much a free curve is smoothed.
     pub smoothing: u8,
+    /// A scribble over objects deletes them.
+    pub scribble_erases: bool,
 }
 
 impl Default for RecognizeSettings {
@@ -27,6 +31,7 @@ impl Default for RecognizeSettings {
         RecognizeSettings {
             recognition: 3,
             smoothing: 3,
+            scribble_erases: false,
         }
     }
 }
@@ -102,6 +107,7 @@ impl SketchSettings {
         RecognizeSettings {
             recognition: 0,
             smoothing: self.smoothing,
+            scribble_erases: false,
         }
         .smoothing_tolerance()
     }
@@ -214,6 +220,54 @@ fn angles(c: &[Point]) -> Vec<f64> {
             }
         })
         .collect()
+}
+
+/// Whether `points` (page space) were scribbled back and forth: across
+/// or up and down, the stroke turns back at least four times, each time
+/// after going a quarter of the way over its box or more, and it is at
+/// least three times as long as its box is wide across.
+pub fn is_scribble(points: &[Point]) -> bool {
+    if points.len() < 8 {
+        return false;
+    }
+    let b = Rect::from_points(points[0], points[0]);
+    let b = points.iter().fold(b, |r, p| r.union_pt(*p));
+    let diag = (b.width().powi(2) + b.height().powi(2)).sqrt();
+    if diag.is_nan() || diag <= 1.0 {
+        return false;
+    }
+    let length: f64 = points.windows(2).map(|w| (w[1] - w[0]).hypot()).sum();
+    if length < 3.0 * diag {
+        return false;
+    }
+    // Turns back along one axis, with a quarter of its extent as the
+    // least travel that counts.
+    let turns = |at: &dyn Fn(Point) -> f64, extent: f64| {
+        if extent < 0.2 * diag {
+            return 0;
+        }
+        let least = 0.25 * extent;
+        let (mut dir, mut far, mut count) = (0.0_f64, at(points[0]), 0);
+        for p in points {
+            let v = at(*p);
+            if dir == 0.0 {
+                if (v - far).abs() >= least {
+                    dir = (v - far).signum();
+                    far = v;
+                }
+            } else if (v - far) * dir > 0.0 {
+                far = v;
+            } else if (far - v) * dir >= least {
+                count += 1;
+                dir = -dir;
+                far = v;
+            }
+        }
+        count
+    };
+    let across = turns(&|p: Point| p.x, b.width());
+    let up = turns(&|p: Point| p.y, b.height());
+    across.max(up) >= 4
 }
 
 /// What `points` (page space) become.
@@ -334,6 +388,21 @@ impl App {
     /// The Shape Recognition tool's stroke ends: its shape on the active
     /// layer, selected, one undo step.
     pub fn finish_shape_recognition(&mut self, points: Vec<Point>) {
+        // Scribble Erases: the objects a scribble passes over go, one undo
+        // step; a scribble over nothing is drawn as a curve.
+        if self.recognize.scribble_erases && is_scribble(&points) {
+            let mut hit = Vec::new();
+            for p in &points {
+                if let Some(id) = self.hit_test(*p).filter(|id| !hit.contains(id)) {
+                    hit.push(id);
+                }
+            }
+            if !hit.is_empty() {
+                self.run(Command::DeleteShapes { shapes: hit });
+                self.select(Vec::new());
+                return;
+            }
+        }
         let Some(r) = recognize(&points, &self.recognize) else {
             return;
         };
@@ -398,6 +467,81 @@ mod tests {
                 t * Point::new(a * th.cos() + wobble(i), b * th.sin() + wobble(i + 3))
             })
             .collect()
+    }
+
+    /// Back and forth across `r` (page space), every 0.2 mm.
+    fn scribble_over(r: Rect) -> Vec<Point> {
+        let mut pts = Vec::new();
+        for k in 0..8 {
+            let y = r.y0 + r.height() * (k as f64 + 0.5) / 8.0;
+            let (from, to) = if k % 2 == 0 {
+                (r.x0 - 5.0, r.x1 + 5.0)
+            } else {
+                (r.x1 + 5.0, r.x0 - 5.0)
+            };
+            let n = ((to - from).abs() / 0.2) as usize;
+            for i in 0..=n {
+                pts.push(Point::new(from + (to - from) * i as f64 / n as f64, y));
+            }
+        }
+        pts
+    }
+
+    /// With Scribble Erases on, a scribble deletes the objects it passes
+    /// over and draws nothing; off (as at first), it is drawn as a curve.
+    #[test]
+    fn a_scribble_erases_what_it_passes_over() {
+        assert!(is_scribble(&scribble_over(Rect::new(0.0, 0.0, 40.0, 20.0))));
+        assert!(!is_scribble(&rect_stroke(
+            Point::new(50.0, 50.0),
+            40.0,
+            20.0,
+            0.0
+        )));
+        assert!(!is_scribble(&ellipse_stroke(
+            Point::new(50.0, 50.0),
+            20.0,
+            10.0,
+            0.0
+        )));
+        let mut app = App::headless();
+        let target = Rect::new(20.0, 20.0, 60.0, 40.0);
+        let square = app
+            .new_shape(ShapeKind::Rect {
+                rect: target,
+                radius: 0.0,
+                corners: None,
+            })
+            .expect("square");
+        let other = app
+            .new_shape(ShapeKind::Ellipse {
+                rect: Rect::new(120.0, 120.0, 140.0, 140.0),
+                arc: None,
+            })
+            .expect("ellipse");
+        let count = |app: &App| {
+            app.page_layers()
+                .iter()
+                .map(|l| l.shapes.len())
+                .sum::<usize>()
+        };
+        // Off: the scribble becomes a curve.
+        app.finish_shape_recognition(scribble_over(target));
+        assert_eq!(count(&app), 3);
+        app.undo();
+        app.recognize.scribble_erases = true;
+        app.finish_shape_recognition(scribble_over(target));
+        assert!(app.doc().find_shape(square).is_none(), "scribbled out");
+        assert!(
+            app.doc().find_shape(other).is_some(),
+            "not under the scribble"
+        );
+        assert_eq!(count(&app), 1);
+        app.undo();
+        assert!(app.doc().find_shape(square).is_some());
+        // Over nothing: drawn as before.
+        app.finish_shape_recognition(scribble_over(Rect::new(200.0, 200.0, 240.0, 220.0)));
+        assert_eq!(count(&app), 3);
     }
 
     #[test]

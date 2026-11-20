@@ -325,6 +325,12 @@ fn write_unlinked(
                     main.fill = Fill::Solid(*color);
                     main.opacity *= rate / 100.0;
                 }
+                // A Cut lens changes the objects beneath on the screen only:
+                // the lens itself shows nothing (Frozen bakes what it does).
+                tracedraw_core::live::Effect::Lens(tracedraw_core::live::Lens::Cut { .. }) => {
+                    main.fill = Fill::None;
+                    main.opacity = 0.0;
+                }
                 tracedraw_core::live::Effect::Lens(_) => {
                     main.opacity *= 0.5;
                 }
@@ -384,6 +390,32 @@ fn write_unlinked(
         return;
     }
     let transform = parent * shape.transform;
+    if let (ShapeKind::Group { children }, Some(look)) = (&shape.kind, shape.group_look) {
+        if look.knockout {
+            // No knockout in SVG: the group goes in as a picture with its
+            // transparency, as the canvas draws it.
+            // Page space: the flip undone (it is its own inverse).
+            if let Some(raster) = crate::pdf::raster_of(shape, ctx.flip * parent, symbols, 300.0)
+            {
+                write_shape(&raster, symbols, ctx.flip, out, defs, ctx, indent);
+            }
+            return;
+        }
+        if look.as_one {
+            // A group's opacity in SVG goes on the group drawn as one.
+            let opacity = if shape.opacity < 1.0 {
+                format!(" opacity=\"{}\"", fmt(shape.opacity))
+            } else {
+                String::new()
+            };
+            let _ = writeln!(out, "{pad}<g id=\"{}\"{opacity}>", shape.id.raw());
+            for c in children {
+                write_shape(c, symbols, transform, out, defs, ctx, indent + 1);
+            }
+            let _ = writeln!(out, "{pad}</g>");
+            return;
+        }
+    }
     if let ShapeKind::Group { children } = &shape.kind {
         let _ = writeln!(out, "{pad}<g id=\"{}\">", shape.id.raw());
         for c in children {
@@ -1378,6 +1410,48 @@ pub(crate) mod tests {
         assert!(svg.contains(&format!("mask=\"url(#mask{id})\"")));
         assert!(svg.contains("feColorMatrix"), "inverted");
         assert!(!svg.contains("clip-path"));
+    }
+
+    /// A group drawn as one carries its opacity on the group; a knockout
+    /// group goes in as a picture where the group lies.
+    #[test]
+    fn group_looks_are_written() {
+        use tracedraw_core::document::GroupLook;
+        let svg_of = |look: GroupLook| {
+            let mut doc = Document::default();
+            let layer = doc.pages[0].layers[0].id;
+            let mut kids = Vec::new();
+            for x in [10.0, 20.0] {
+                let mut r = Shape::new(
+                    doc.ids_mut().shape(),
+                    ShapeKind::Rect {
+                        rect: Rect::new(x, 10.0, x + 20.0, 30.0),
+                        radius: 0.0,
+                        corners: None,
+                    },
+                );
+                r.fill = Fill::Solid(Color::rgb8(200, 0, 0));
+                r.opacity = 0.5;
+                kids.push(r);
+            }
+            let mut g = Shape::new(doc.ids_mut().shape(), ShapeKind::Group { children: kids });
+            g.opacity = 0.5;
+            g.group_look = Some(look);
+            doc.layer_mut(layer).unwrap().shapes.push(g);
+            page_to_svg(&doc, 0)
+        };
+        let one = svg_of(GroupLook {
+            as_one: true,
+            knockout: false,
+        });
+        assert!(one.contains("opacity=\"0.5\">"), "{one}");
+        assert!(!one.contains("<image"));
+        let ko = svg_of(GroupLook {
+            as_one: false,
+            knockout: true,
+        });
+        assert!(ko.contains("<image"), "{ko}");
+        assert!(!ko.contains("<rect") && !ko.contains("<path"), "{ko}");
     }
 
     /// An object's uniform transparency is written: SVG export left it

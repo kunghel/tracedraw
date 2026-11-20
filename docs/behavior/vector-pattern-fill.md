@@ -64,6 +64,7 @@ untouched fills write as before.
 | `skew` (degrees, -89..89) | Skew | The tiles' vertical sides tilted; positive leans the tops to the right. |
 | `mirror_horizontal`, `mirror_vertical` | Mirror tiles (two buttons) | Every second column (row) of tiles flipped against its neighbour, so the pattern's edges meet seamlessly. |
 | `shift_percent` (0..100), `shift: Row / Column` | Row or column offset (two pictures and a % field) | Each row (or column) moved along by that part of a tile against the one before it, as bricks are laid. |
+| `overlap_percent` (0..90) | Row or column overlap (a % field under the offset) | Each row (or column, the way the offset goes) lies that part of a tile over the one before it, the later one drawn on top. A 50% offset with a 25% overlap interlocks hexagonal tiles. |
 | `transform_with_object` | Transform with object | The tiles follow the object's transformation (move, scale, turn with it) instead of staying anchored to the page. |
 
 The placement is a transform from the tile to the page:
@@ -72,10 +73,12 @@ The placement is a transform from the tile to the page:
   (`cell_tiles`), as a lattice (`cell`): the unit square to `cols x w`
   by `rows x h` mm, leaning along X by `rows x shift x w` for a row
   offset, along Y by `cols x shift x h` for a column offset, so each row
-  (column) sits that much further along.
+  (column) sits that much further along. With an overlap the block is
+  `1 - overlap` of a tile high (wide for a column offset).
 - `tile_copies` lists where the tile is drawn inside that block (with
   the flips of mirrored copies, and copies at the sides filling the
-  leaning edges); `tile_uv` gives the tile coordinates under a point of
+  leaning edges, and the rows or columns before and after that reach
+  into it when they overlap, bottom or left first); `tile_uv` gives the tile coordinates under a point of
   the block for patterns sampled per pixel (two-colour).
 - `place` = translate(offset) x rotate(rotation) x skew(tan(skew)), the
   block's millimetres to the page; `transform(tile)` = `place x cell`.

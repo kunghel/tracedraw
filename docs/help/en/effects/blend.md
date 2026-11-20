@@ -1,7 +1,7 @@
 # Blends
 
 A blend draws a series of intermediate steps between two objects, changing
-shape, size and color from one to the other. Use it for smooth shading,
+shape, size, color and transparency from one to the other. Use it for smooth shading,
 repeated patterns or a shape that turns into another.
 
 ## To blend two objects {#create}

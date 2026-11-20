@@ -102,6 +102,9 @@ struct Job {
     /// The bands come so far, on a see-through texture the picture's
     /// size, shown over the last picture until the whole one is ready.
     incoming: Option<TextureHandle>,
+    /// The rows of the picture the bands so far cover, first and past
+    /// the last: the last picture is not shown under them (#3639).
+    arrived: Vec<(u32, u32)>,
     /// The picture's size, pixels.
     size: (u32, u32),
     /// How the picture is laid on screen: document pixels (the Pixels
@@ -673,7 +676,10 @@ impl Raster {
             width: w,
             height: h,
             view: vt,
-            preview: preview.map(|(shapes, transform)| Preview { shapes, transform }),
+            preview: preview.map(|(shapes, transform)| Preview {
+                shapes: shapes.into_iter().collect(),
+                transform,
+            }),
             wireframe,
             simulate_overprints,
             complex_effects,
@@ -783,6 +789,7 @@ impl Raster {
                 cancel,
                 bands,
                 incoming: None,
+                arrived: Vec::new(),
                 size: (w, h),
                 filter,
             });
@@ -1043,17 +1050,20 @@ impl Raster {
     /// over the last picture (shown scaled or moved into place
     /// meanwhile), so the window sharpens a band at a time instead of
     /// all at once at the end (#2389). `None` while no band has come, or
-    /// for a render that gave up.
+    /// for a render that gave up. With it, the parts of the screen the
+    /// bands cover: the last picture must not show under them, or a
+    /// see-through object there is drawn twice, darker, until the whole
+    /// picture comes (#3639).
     #[cfg(not(target_arch = "wasm32"))]
-    pub fn incoming(&self, view: &View) -> Option<(TextureId, Rect)> {
+    pub fn incoming(&self, view: &View) -> Option<(TextureId, Rect, Vec<Rect>)> {
         let job = self.job.as_ref()?;
         if job.cancel.load(std::sync::atomic::Ordering::Relaxed) {
             return None;
         }
-        Some((
-            job.incoming.as_ref()?.id(),
-            view.rect_to_screen(job.page_rect?),
-        ))
+        let tex = job.incoming.as_ref()?.id();
+        let at = view.rect_to_screen(job.page_rect?);
+        let covered = band_rects(at, job.size.1, &job.arrived);
+        Some((tex, at, covered))
     }
 
     /// The last picture, where its part of the page now is on screen
@@ -1127,9 +1137,35 @@ impl Job {
                     filter,
                 )
             });
+            let y1 = y0 + rows.size[1];
             t.set_partial([0, y0], rows, filter);
+            self.arrived.push((y0 as u32, y1 as u32));
         }
     }
+}
+
+/// Where rows of a picture `h` pixels tall, shown at `at`, fall on
+/// screen: one rectangle the picture's width per run of rows (runs that
+/// touch made one).
+#[cfg(not(target_arch = "wasm32"))]
+fn band_rects(at: Rect, h: u32, rows: &[(u32, u32)]) -> Vec<Rect> {
+    if h == 0 {
+        return Vec::new();
+    }
+    let mut runs: Vec<(u32, u32)> = rows.iter().copied().filter(|r| r.1 > r.0).collect();
+    runs.sort_unstable();
+    let mut merged: Vec<(u32, u32)> = Vec::new();
+    for (a, b) in runs {
+        match merged.last_mut() {
+            Some(last) if a <= last.1 => last.1 = last.1.max(b),
+            _ => merged.push((a, b)),
+        }
+    }
+    let y = |row: u32| at.top() + at.height() * (row.min(h) as f32 / h as f32);
+    merged
+        .into_iter()
+        .map(|(a, b)| Rect::from_min_max(egui::pos2(at.left(), y(a)), egui::pos2(at.right(), y(b))))
+        .collect()
 }
 
 impl Key {
@@ -1155,6 +1191,36 @@ impl Key {
 mod tests {
 
     use super::*;
+
+    /// The bands so far cover the rows they hold on screen, runs that
+    /// touch as one, so the last picture is left out just there (#3639).
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn the_bands_so_far_cover_their_rows_on_screen() {
+        let at = Rect::from_min_max(egui::pos2(10.0, 100.0), egui::pos2(210.0, 300.0));
+        // A 100-row picture shown 200 points tall: rows 0-25 and 25-50
+        // touch; 75-100 stands apart; an empty band covers nothing.
+        let r = band_rects(at, 100, &[(75, 100), (0, 25), (25, 50), (60, 60)]);
+        assert_eq!(r.len(), 2);
+        assert_eq!(
+            r[0],
+            Rect::from_min_max(egui::pos2(10.0, 100.0), egui::pos2(210.0, 200.0))
+        );
+        assert_eq!(
+            r[1],
+            Rect::from_min_max(egui::pos2(10.0, 250.0), egui::pos2(210.0, 300.0))
+        );
+        assert!(band_rects(at, 0, &[(0, 10)]).is_empty());
+        // What is left of the last picture is what no band covers yet.
+        let left = crate::canvas::outside(at, &r);
+        assert_eq!(
+            left,
+            vec![Rect::from_min_max(
+                egui::pos2(10.0, 200.0),
+                egui::pos2(210.0, 250.0)
+            )]
+        );
+    }
 
     /// One page job at a time, and the current page first: another page
     /// that asks first every frame waits while the turn is kept for the

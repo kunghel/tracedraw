@@ -477,8 +477,10 @@ pub(crate) fn edit_spans(app: &mut App, f: impl Fn(&mut TextSpan) + Clone) {
         })
         .collect();
     if !cmds.is_empty() {
-        if let Err(e) = app.engine.run_batch("Text", &cmds) {
-            app.status = e.to_string();
+        match app.engine.run_batch("Text", &cmds) {
+            // A macro being recorded makes the change again (#3518).
+            Ok(_) => app.note_recorded(&cmds),
+            Err(e) => app.status = e.to_string(),
         }
     }
 }

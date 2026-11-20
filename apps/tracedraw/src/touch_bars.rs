@@ -9,7 +9,8 @@
 //! Minus Back, Back Minus Front, Combine) and the alignments. Both show
 //! where the keys on the drawing show (Android, or once a finger has
 //! touched the window) unless Options > Display turns them off, and hide
-//! while the selection is dragged.
+//! while the selection is dragged. Options > Display can show them with
+//! a mouse too (off at first, #3456).
 //!
 //! A second finger touching the drawing while a first one moves, scales,
 //! turns or slants the selection does what a right click does then: the
@@ -145,12 +146,14 @@ impl BarCommand {
     }
 }
 
-/// Whether the touch bars are shown now: on a touch screen, with the
-/// option on, the Pick tool's selection standing still and nothing over
-/// the drawing.
+/// Whether the touch bars are shown now: on a touch screen with the
+/// option on (or with a mouse too, when Options > Display asks for it,
+/// #3456), the Pick tool's selection standing still and nothing over the
+/// drawing.
 pub fn shown(app: &App, ctx: &egui::Context) -> bool {
-    app.settings.touch_selection_bar
-        && crate::touch_modifiers::offered(ctx)
+    let wanted = app.settings.selection_bar_mouse
+        || (app.settings.touch_selection_bar && crate::touch_modifiers::offered(ctx));
+    wanted
         && app.has_document()
         && matches!(
             app.tool,

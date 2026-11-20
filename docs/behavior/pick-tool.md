@@ -13,6 +13,7 @@
 | Drag object | move with the pointer (snapped); Ctrl (Cmd on macOS) or Shift keeps the move horizontal or vertical, whichever is longer (Shift since #2480; not with Alt, as Alt+Shift copies the outline on the drop); Space drops a copy where the selection is and the move goes on (also while scaling, turning or slanting: the copy takes the transform reached), one copy a press, however long Space is held; let go over the document palette to add the objects' colours to it instead of moving them |
 | Corner handle | scale proportionally from the opposite corner, by where the pointer falls along the box's diagonal: `s = (|sx| w² + |sy| h²) / (w² + h²)` with `sx`, `sy` the two sides' own ratios (each keeps its sign, for mirroring), so the corner follows the pointer and a wide, low box such as a line of text does not grow at the short side's pace (#383); the handle follows the pointer from the frame the drag starts, not in a jump of the few pixels before a press becomes a drag; Shift from the centre; Ctrl in whole steps of 100 % (crossing the other side gives the mirror image at the same size); Alt scales freely; Ctrl+Alt changes the width and the height by the same distance, where the pointer falls along the diagonal, so the selection gains or loses an even border (with Shift on every side, about the centre; #3330, `pick_drag_tests::handle_modifiers_shape_the_scale`) |
 | Side handle | stretch one axis from the opposite side (across it: mirrored); Shift from the centre; Ctrl in steps of 100 % |
+| Handles of a thin selection | a straight vertical or horizontal line, or anything as thin on screen: the box the handles stand on is widened about its middle until the three handles of a side are 3 points apart, so they never lie on top of each other; the drag still moves the edge by the pointer's distance (#3523, `pick_drag_tests::the_handles_of_a_straight_line_do_not_overlap`) |
 | Snapping while scaling | with snapping on, the dragged corner or side handle snaps to other objects' points and edges, guidelines, the grid and the page (never to the selection's own points), and the snap mark shows where |
 | Rotate handle (rotate mode, corners) | rotate about the centre of rotation; Ctrl in steps of the constrain angle (15 degrees); without Ctrl the pointer snaps to other objects' points only, never to edges or lines (#933, see `snapping.md`) |
 | A node of the selection (rotate mode; also a segment's midpoint or an ellipse's quadrant, the points the pointer marks) | dragged, turns the selection about the centre of rotation, the node going round its circle towards the pointer (the turning arrows show over it); near another object's point the turn aims at it, near an edge or a guideline (Snap to Guidelines on, #3056) the node lands where its circle crosses it, exactly on it; Ctrl in steps of the constrain angle; elsewhere on the selection a drag moves it as outside rotate mode (#933, `pick_drag_tests::a_node_dragged_in_rotate_mode_turns_the_selection_onto_a_line`) |
@@ -143,6 +144,7 @@ selected group finds the other groups (#2203).
 | Outline | the outline is equal (width, colour, dashes, caps, arrows...), or both have none |
 | Text Formatting (Font and Size) | both are text and share a font family (any case) and size (to 0.01 pt) in some of their characters |
 | Object Type | the same shape kind (rectangle, ellipse, polygon, curve, text, group, bitmap, clip frame, table, symbol), artistic and paragraph text apart |
+| Close Look | within the Tolerance (a field at the bottom of the submenu, in the Edit menu and the right-click menu, 0 to 100 %, 10 at first, `settings.similar_tolerance`): solid fills whose red, green and blue each differ by at most the tolerance of 255 (any other fill equal), outlines both none or with colours that close and widths within the tolerance of the wider, and opacity within the tolerance; also under Repeat on Similar (`select_similar::tests::close_look_picks_what_looks_alike_within_the_tolerance`) |
 
 Nothing selected, or no object alike: the selection stays. The status
 bar tells how many objects are selected.
@@ -208,6 +210,10 @@ moved or turned as much again by each next Duplicate (#559, #1494,
 `app::tests::duplicate_repeats_what_was_done_to_the_copy`,
 `app::tests::smart_duplicate_repeats_a_turn_and_scale_until_deselected`,
 `guides::tests::duplicating_guidelines_repeats_their_move_and_turn`).
+Copies made in place with + start the same: moved, turned or scaled
+while selected, each next Duplicate repeats that step from them; left as
+they are, the next Duplicate uses the offset (#3520,
+`app::tests::a_copy_in_place_turned_repeats_its_turn`).
 A deselect by accident is taken back by Undo: right after the copies
 are deselected, with no change of the drawing and no other selection
 made since, Edit > Undo selects the copies again and the next Duplicate

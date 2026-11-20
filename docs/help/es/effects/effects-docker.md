@@ -27,6 +27,11 @@ propia herramienta o panel.
 
 - [[menu.effects > menu.effects.flatten]] convierte los efectos de los objetos
   seleccionados en objetos normales.
+- [[menu.effects > menu.effects.merge_shapes]] agrupa los objetos
+  seleccionados y da al grupo un [[effect.offset_path]] en vivo que los une
+  en un solo contorno, redondeado donde se juntan y pintado como el objeto de
+  abajo: mueva un objeto del grupo y las formas se funden o se separan.
+  Ajuste **Suavizar** en los efectos de capa arriba del panel.
 - [[menu.effects.picker]] muestra una lista de efectos que aplicar a la
   selección.
 - [[menu.object > menu.object.clear_effect]] quita el efecto de la selección.

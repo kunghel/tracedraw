@@ -46,6 +46,11 @@ Para pular para a próxima coluna em um ponto, insira
 
 ![A caixa de diálogo Marcadores](../../img/text-paragraphs-bullets.png)
 
+[[menu.text > menu.text.toggle_bullets]] (Ctrl+Shift+L) ativa ou desativa os
+marcadores sem a caixa de diálogo: no texto de parágrafo selecionado, ou
+nos parágrafos onde está o cursor enquanto você digita. O marcador mantém
+o símbolo e o recuo definidos para ele.
+
 ## Capitulares {#drop-cap}
 
 Uma capitular é uma primeira letra grande que ocupa várias linhas.

@@ -114,7 +114,9 @@ pub mod sizes;
 pub mod slider;
 pub mod status;
 pub mod straighten_dialog;
+pub mod stretch_zones_dialog;
 pub mod pixel_bar;
+pub mod pixel_lights;
 pub mod symmetry_bar;
 pub mod tab_focus;
 pub mod table_bar;
@@ -124,6 +126,7 @@ pub mod text_bar;
 pub mod text_docker;
 pub mod text_path_bar;
 pub mod time_tracker;
+pub mod workflow;
 pub mod trace_dialog;
 pub mod trace_progress;
 pub mod tracecut;
@@ -142,6 +145,8 @@ pub mod transform_docker;
 pub mod transparency_docker;
 pub mod shape_gen_docker;
 pub mod symbol_scatter_docker;
+pub mod frame_gen_docker;
+pub mod shape3d_docker;
 pub mod vector_mosaic_docker;
 pub mod welcome;
 pub mod window_bars;
@@ -508,6 +513,12 @@ fn root_frame(app: &mut App, ui: &mut Ui) {
     if ctx.global_style().interaction.tooltip_delay != delay {
         ctx.all_styles_mut(|s| s.interaction.tooltip_delay = delay);
     }
+    // Combo box lists as tall as the window allows before they scroll
+    // (#3492).
+    let room = crate::ui::keynav::list_height(ctx.content_rect().height());
+    if ctx.global_style().spacing.combo_height != room {
+        ctx.all_styles_mut(|s| s.spacing.combo_height = room);
+    }
     // Session recovery: this session's marker, and what one that ended
     // without closing left. An idle window still checks in, with a frame
     // a minute, so another window never takes it for gone.
@@ -654,10 +665,9 @@ fn root_frame(app: &mut App, ui: &mut Ui) {
     let palette_edge = palette_spot == bars::PaletteSpot::Edge;
     let show_palette = app.settings.palette.show_palette;
     // A document palette taken out into a bar of its own shows there, not
-    // in the row as well.
-    let show_doc_palette = show_palette
-        && app.settings.palette.show_document
-        && !app.extra_palettes.iter().any(|r| r.document);
+    // in the row as well. Hiding the default palette leaves it shown.
+    let show_doc_palette =
+        app.settings.palette.show_document && !app.extra_palettes.iter().any(|r| r.document);
     // Palette bars lie at the places `BarSlot` names along each side,
     // from the edge inwards; each bar drawn at a side is noted for the
     // drops of a dragged palette bar beside it (`palette_bars::side_target`).
@@ -1320,7 +1330,14 @@ pub(crate) fn drawing_window(app: &mut App, ui: &mut Ui, full: egui::Rect) {
                 .flatten()
         });
         if let Some(s) = press.filter(|s| canvas_rect.contains(*s)) {
-            app.multipage_press(s);
+            // Shift+click on the facing page's object adds it to the
+            // selection (#3488).
+            let adopted = mods.shift
+                && app.tool == crate::tools::Tool::Pick
+                && app.spread_shift_press(s);
+            if !adopted {
+                app.multipage_press(s);
+            }
         }
     }
     if two_fingers.is_none()
@@ -2287,6 +2304,17 @@ mod tests {
         timed(&mut app, Vec::new());
         // No finger yet: no bars.
         app.select(vec![a]);
+        timed(&mut app, Vec::new());
+        assert!(app.touch_bar_shown.is_empty() || crate::files::ANDROID);
+        // With a mouse too, when asked (#3456): the column shows with no
+        // finger, and goes when the option is off again.
+        app.settings.selection_bar_mouse = true;
+        timed(&mut app, Vec::new());
+        assert!(app
+            .touch_bar_shown
+            .iter()
+            .any(|(c, _)| *c == BarCommand::Duplicate));
+        app.settings.selection_bar_mouse = false;
         timed(&mut app, Vec::new());
         assert!(app.touch_bar_shown.is_empty() || crate::files::ANDROID);
         let on_a = app.view.to_screen(Point::new(35.0, 25.0));

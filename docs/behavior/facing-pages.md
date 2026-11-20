@@ -43,6 +43,14 @@ existed only in print imposition.
   anywhere on it; a press on the current page where only an object of
   the facing page lies makes that page current
   (`multipage::tests::the_facing_page_becomes_current_where_it_is`).
+- Objects of both pages selected together (#3488): with something
+  selected, a Shift+click on an object of the facing page brings that
+  object onto the current page, where it shows (on the current page's
+  layer of the same name, else the active layer), and adds it to the
+  selection; a marquee brings the facing page's objects it takes the
+  same way, so it selects across the spine. Then they align,
+  distribute and move together. One undo puts each back on its page
+  (`multipage::tests::objects_of_both_facing_pages_select_together`).
 - The page tabs, the navigator and Go To Page make the facing page
   current in place; a page of another spread is shown with its spread,
   fitted to the window.

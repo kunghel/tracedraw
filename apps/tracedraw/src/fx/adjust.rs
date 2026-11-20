@@ -189,6 +189,7 @@ pub const TRANSFORM: &[EffectSpec] = &[
         apply: posterize,
         reach: no_reach,
     },
+    super::sketch::BROADCAST_SAFE,
 ];
 
 pub const CORRECTION: &[EffectSpec] = &[EffectSpec {

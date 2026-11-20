@@ -1027,6 +1027,48 @@ fn cell_text(t: &Table, r: u32, c: u32) -> String {
 
 #[cfg(test)]
 mod tests {
+    /// A selected table's right-click menu has the table's commands
+    /// (#2976): they add and delete rows, delete the table and merge the
+    /// cells, as from Text > Table; other objects do not offer them.
+    #[test]
+    fn the_context_menu_has_the_table_commands() {
+        use crate::ui::context::{object_menu, run_menu_row};
+        let fresh = || {
+            let mut app = App::headless();
+            app.table_rows = 3;
+            app.table_cols = 2;
+            app.create_table(Rect::new(0.0, 0.0, 100.0, 60.0));
+            app
+        };
+        let rows = |app: &App| app.selected_table().map(|(_, t)| t.rows());
+        let app = run_menu_row(&fresh, object_menu, "menu.table.insert_row_below")
+            .expect("Insert Row Below is in the menu");
+        assert_eq!(rows(&app), Some(4));
+        let app = run_menu_row(&fresh, object_menu, "menu.table.delete_row")
+            .expect("Delete Row is in the menu");
+        assert_eq!(rows(&app), Some(2));
+        let app = run_menu_row(&fresh, object_menu, "menu.table.delete_table")
+            .expect("Delete Table is in the menu");
+        assert!(app.doc().pages[0]
+            .layers
+            .iter()
+            .all(|l| l.shapes.is_empty()));
+        assert!(run_menu_row(&fresh, object_menu, "menu.table.merge_cells").is_some());
+        let rect = || {
+            let mut app = App::headless();
+            let id = app
+                .new_shape(tracedraw_core::document::ShapeKind::Rect {
+                    rect: Rect::new(0.0, 0.0, 10.0, 10.0),
+                    radius: 0.0,
+                    corners: None,
+                })
+                .expect("rect");
+            app.select(vec![id]);
+            app
+        };
+        assert!(run_menu_row(&rect, object_menu, "menu.table.delete_row").is_none());
+    }
+
     #[test]
     fn new_tables_take_the_bar_defaults() {
         use tracedraw_core::{Color, Fill, Stroke};

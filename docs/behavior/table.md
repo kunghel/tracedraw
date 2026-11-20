@@ -98,6 +98,13 @@ cell does nothing and says so on the status bar.
 
 ## Table submenu
 
+The right-click menu of a selected table (an imported spreadsheet too),
+and of its cells while they are typed in, has a Table submenu with the
+same Insert, Select and Delete submenus, Merge Cells, Unmerge Cells and
+Split into Rows or Columns, acting the same way (#2976,
+`table::tests::the_context_menu_has_the_table_commands`); Cut, Copy,
+Paste and Delete stay where the menu has them.
+
 - Insert: Row Above, Row Below, Column Left, Column Right insert as many
   rows (columns) as the selected cells cover, above the first or below
   the last of them (left of the first, right of the last); without a

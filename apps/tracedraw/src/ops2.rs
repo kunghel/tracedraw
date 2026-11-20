@@ -655,6 +655,49 @@ impl App {
 
     // ----- effects on the stack ------------------------------------------------------
 
+    /// Effects > Merge Shapes: the selected objects grouped (or the one
+    /// selected group) and given a live Offset Path that joins them into
+    /// one outline with rounded necks where they come near each other
+    /// (metaballs), in the paint of the bottom object. Moving an object
+    /// of the group later changes the merge; the smoothing is set in the
+    /// Effects panel, which opens.
+    pub fn merge_shapes(&mut self) {
+        let sel = self.selected_shapes();
+        let one_group = sel.len() == 1 && matches!(sel[0].kind, ShapeKind::Group { .. });
+        if sel.len() >= 2 {
+            self.group_selection();
+        } else if !one_group {
+            return;
+        }
+        // Smoothing from the size of the parts: a quarter of the smallest.
+        let smallest = self
+            .selected_shapes()
+            .first()
+            .and_then(|g| match &g.kind {
+                ShapeKind::Group { children } => children
+                    .iter()
+                    .map(|c| {
+                        let b = c.bounds();
+                        b.width().min(b.height())
+                    })
+                    .filter(|v| v.is_finite() && *v > 0.0)
+                    .min_by(f64::total_cmp),
+                _ => None,
+            })
+            .unwrap_or(20.0);
+        let smooth = (smallest * 0.25).clamp(0.5, 100.0);
+        self.push_effect(
+            Effect::OffsetPath {
+                distance: 0.0,
+                smooth,
+                join: tracedraw_core::shaping::Join::Round,
+                merge: true,
+            },
+            true,
+        );
+        self.open_docker(crate::app::DockerTab::Effects);
+    }
+
     /// Add or replace a live effect on the selected objects.
     pub fn push_effect(&mut self, effect: Effect, replace_same_kind: bool) {
         let shapes = self.selected_shapes();
@@ -1109,6 +1152,7 @@ impl App {
                 center,
                 angle: 90.0,
                 lines: 1,
+                rotate: false,
             });
             let cmd = Command::SetEffects {
                 shape: s.id,
@@ -1151,6 +1195,7 @@ impl App {
             center,
             angle: 90.0,
             lines: 1,
+            rotate: false,
         });
         if let Err(e) = self
             .engine
@@ -1371,6 +1416,7 @@ impl App {
                     center,
                     angle,
                     lines,
+                    ..
                 } => Some((s.id, *center, *angle, *lines)),
                 _ => None,
             })
@@ -1467,6 +1513,28 @@ impl App {
         if let Err(e) = self.engine.run_batch("Clear Transparency", &cmds) {
             self.status = e.to_string();
         }
+    }
+
+    /// Object > Apply Uniform Transparency (#3622): the selected objects
+    /// (bitmaps and groups too) get a uniform transparency over fill and
+    /// outline in the Normal merge mode, at the amount last used (50% at
+    /// first); one undo step.
+    pub fn apply_uniform_transparency(&mut self) {
+        use crate::mixed::TransparencyField as F;
+        let last = self.transparency_default.amount;
+        let amount = if last > 0.0 && last <= 100.0 {
+            last
+        } else {
+            50.0
+        };
+        let set = crate::effects_ui::TransparencySettings {
+            kind: 0,
+            amount,
+            merge: tracedraw_core::live::MergeMode::Normal,
+            target: 2,
+            ..Default::default()
+        };
+        self.patch_transparency(&set, &[F::Kind, F::Amount, F::Merge, F::Target]);
     }
 
     /// Object > Clip to Frame > Edit Contents: take the contents out so they can
@@ -1870,6 +1938,37 @@ impl App {
         }
     }
 
+    /// Object > Group > Draw as One and Members Hide Those Beneath: each
+    /// selected group's look with `as_one` and `knockout` set where
+    /// given; one undo step.
+    pub fn set_group_looks(&mut self, as_one: Option<bool>, knockout: Option<bool>) {
+        let cmds: Vec<Command> = self
+            .selected_shapes()
+            .iter()
+            .filter(|s| matches!(s.kind, ShapeKind::Group { .. }))
+            .map(|s| {
+                let mut look = s.group_look.unwrap_or_default();
+                if let Some(v) = as_one {
+                    look.as_one = v;
+                }
+                if let Some(v) = knockout {
+                    look.knockout = v;
+                }
+                Command::SetGroupLook {
+                    shape: s.id,
+                    look: Some(look),
+                }
+            })
+            .collect();
+        if cmds.is_empty() {
+            return;
+        }
+        if let Err(e) = self.engine.run_batch("Group Look", &cmds) {
+            self.status = e.to_string();
+        }
+        self.raster.borrow_mut().invalidate();
+    }
+
     /// After moving unlocked clip frames by `t`, keep their contents in place.
     pub fn compensate_unlocked_clip_frames(&mut self, ids: &[ShapeId], t: Affine) {
         let inv = t.inverse();
@@ -2203,6 +2302,10 @@ impl App {
             self.status = e.to_string();
             return;
         }
+        // Live: the path keeps the fit, which follows it from now on.
+        if self.fit_path.live {
+            self.link_live_fit(&shapes, &plan, &placed);
+        }
         if group {
             if let Some(g) = self.doc().ancestors(grouped[0]).first().copied() {
                 self.select(vec![g]);
@@ -2512,11 +2615,12 @@ impl App {
     /// colours of its palette and is stored as an indexed PNG, so it is an
     /// indexed bitmap, no longer RGB or CMYK; one undo step. A bitmap
     /// left with more than 256 colours (its see-through levels counted)
-    /// stays RGB with the palette's colours (#2607).
+    /// stayed RGB (#2607): its soft edges are now made clear or opaque so
+    /// it is an indexed bitmap all the same (#3539).
     pub fn paletted_bitmaps(&mut self, settings: &crate::bitmap_modes::PalettedSettings) {
         self.recode_bitmaps("Paletted", |img, _| {
             let out = crate::bitmap_modes::paletted(img, settings);
-            crate::bitmap_fx::encode_indexed(&out).or_else(|| crate::bitmap_fx::encode(&out))
+            crate::bitmap_fx::encode_indexed_fitted(&out)
         });
     }
 
@@ -2526,7 +2630,13 @@ impl App {
     /// CMYK; one undo step. It stayed an RGB picture before (#2922).
     pub fn black_and_white_bitmaps(&mut self, settings: &crate::bitmap_modes::BwSettings) {
         self.recode_bitmaps("Black and White", |img, dpi| {
-            crate::bitmap_fx::encode_bw(&crate::bitmap_modes::black_and_white(img, settings, dpi))
+            // A 1-bit bitmap holds no transparency: a see-through one was
+            // stored as grayscale (#3539). It goes onto white paper first,
+            // as Convert to Bitmap's black and white does (#3204).
+            let on_white = crate::bitmap_fx::flatten_on_white(img);
+            crate::bitmap_fx::encode_bw(&crate::bitmap_modes::black_and_white(
+                &on_white, settings, dpi,
+            ))
         });
     }
 
@@ -2803,12 +2913,12 @@ impl App {
                 ConvertMode::Grayscale => {
                     crate::bitmap_fx::encode_gray(&crate::bitmap_modes::convert_pixels(&img, o))
                 }
-                // Indexed: a PNG with a palette while the colours fit one
-                // (#2607).
+                // Indexed: a PNG with a palette (#2607), also with a
+                // see-through background, whose soft edges made it RGB
+                // (#3504).
                 ConvertMode::Paletted => {
                     let out = crate::bitmap_modes::convert_pixels(&img, o);
-                    crate::bitmap_fx::encode_indexed(&out)
-                        .or_else(|| crate::bitmap_fx::encode(&out))
+                    crate::bitmap_fx::encode_indexed_fitted(&out)
                 }
                 // Black and white: a 1-bit bitmap (#2922).
                 ConvertMode::BlackWhite => {
@@ -3581,6 +3691,38 @@ impl App {
         self.set_paragraph_style(id, p);
     }
 
+    /// Text > Bullets On/Off (Ctrl+Shift+L, #3593): bullets on or off for
+    /// the paragraphs at the caret of the paragraph text being edited,
+    /// else for every paragraph of the selected paragraph text. On when
+    /// the first of them has none, off when it has them. The bullet
+    /// itself stays as it was set (its character, font, size, indent), so
+    /// a text with a bullet of its own gets it back, and one that never
+    /// had one gets the default bullet. Nothing happens without paragraph
+    /// text.
+    pub fn toggle_bullets(&mut self) {
+        let targets: Vec<Shape> = match &self.text_edit {
+            Some(te) => self
+                .doc()
+                .find_shape(te.shape)
+                .cloned()
+                .into_iter()
+                .collect(),
+            None => self.selected_shapes(),
+        }
+        .into_iter()
+        .filter(|s| matches!(s.kind, ShapeKind::Text { frame: Some(_), .. }))
+        .collect();
+        let Some(first) = targets.first() else {
+            return;
+        };
+        let on = !self
+            .paragraph_style_of(first)
+            .is_some_and(|(_, p)| p.bullets);
+        for s in targets {
+            self.edit_paragraph_style(s.id, |p| p.bullets = on);
+        }
+    }
+
     /// The texts Text > Use Hyphenation acts on: the one being edited,
     /// else the selected ones.
     fn hyphenation_targets(&self) -> Vec<ShapeId> {
@@ -3816,6 +3958,7 @@ impl App {
                 ..Default::default()
             }),
         }) {
+            self.note_text_path_source(id, path_id);
             self.text_edit = Some(crate::app::TextEdit::at_end(id, 0));
             self.select(vec![id]);
         }
@@ -3844,19 +3987,36 @@ impl App {
         else {
             return;
         };
-        let Some(kind) = crate::text_path::fit_kind(text, curve, at) else {
+        let Some((kind, transform)) = crate::text_path::fit(text, curve, at) else {
             return;
         };
         // Fitted again just as it was: no step that undoes nothing.
-        if kind == text.kind {
+        if kind == text.kind && transform == text.transform {
             self.selection = vec![text.id];
             return;
         }
-        self.run(Command::SetShapeKind {
-            shape: text.id,
+        let (text_id, curve_id) = (text.id, curve.id);
+        let before = self.engine.revision();
+        let mut cmds = vec![Command::SetShapeKind {
+            shape: text_id,
             kind,
-        });
-        self.selection = vec![text.id];
+        }];
+        // A squeezed text's squeeze went into its letters (#3485): the
+        // transform keeps the rest.
+        if transform != text.transform {
+            cmds.push(Command::TransformShapes {
+                shapes: vec![text_id],
+                transform: transform * text.transform.inverse(),
+            });
+        }
+        if let Err(e) = self.engine.run_batch("Fit Text to Path", &cmds) {
+            self.status = e.to_string();
+        }
+        // Where the text came from, for Follow Path (#3571).
+        if self.engine.revision() != before {
+            self.note_text_path_source(text_id, curve_id);
+        }
+        self.selection = vec![text_id];
     }
 
     /// The path whose outline is at `p` (within 4 screen pixels) that
@@ -5981,6 +6141,49 @@ fn scale_base(s: &tracedraw_core::document::Shape) -> Option<(f64, f64)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #3622, #3621: uniform transparency on and off, and the document
+    /// palette's eyedropper, run as menu commands (so a shortcut can run
+    /// them), each one undo step.
+    #[test]
+    fn transparency_and_palette_sampling_run_as_commands() {
+        let ctx = crate::theme::ui_context();
+        // A command run inside a frame, as a shortcut runs it.
+        let run = |app: &mut App, key: &str| {
+            let mut ran = false;
+            let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+                ran = crate::ui::menus::run_command(app, ui.ctx(), key);
+            });
+            out.textures_delta.clear();
+            ran
+        };
+        let mut app = App::headless();
+        let id = app
+            .new_shape(ShapeKind::Rect {
+                rect: kurbo::Rect::new(0.0, 0.0, 10.0, 10.0),
+                radius: 0.0,
+                corners: None,
+            })
+            .expect("rect");
+        app.select(vec![id]);
+        let opacity = |app: &App| app.doc().find_shape(id).map(|s| s.opacity);
+        assert!(run(&mut app, "menu.object.transparency_apply"));
+        assert_eq!(opacity(&app), Some(0.5), "50% at first");
+        assert!(run(&mut app, "menu.object.transparency_remove"));
+        assert_eq!(opacity(&app), Some(1.0));
+        app.undo();
+        assert_eq!(opacity(&app), Some(0.5));
+        // The amount last used in the docker.
+        app.transparency_default.amount = 30.0;
+        app.apply_uniform_transparency();
+        assert!((opacity(&app).unwrap() - 0.7).abs() < 1e-9);
+        // The palette's eyedropper starts and stops as its button does.
+        assert!(!app.pending_palette_sample);
+        assert!(run(&mut app, "menu.window.palette_sample"));
+        assert!(app.pending_palette_sample);
+        run(&mut app, "menu.window.palette_sample");
+        assert!(!app.pending_palette_sample);
+    }
 
     fn symbol_of(app: &mut App, rect: kurbo::Rect) -> ShapeId {
         let a = app

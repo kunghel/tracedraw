@@ -2119,6 +2119,19 @@ impl<'a> Importer<'a> {
                                 other => {
                                     if let Some(adj) = Self::num(other) {
                                         let tx = -adj / 1000.0 * gs.font_size * gs.hscale;
+                                        // A jump of more than an em back, or
+                                        // of more than three ems on, places
+                                        // the next string somewhere else (a
+                                        // drawing program sets labels apart
+                                        // in one array): it starts a text of
+                                        // its own where it is, instead of
+                                        // running on in this one, where it
+                                        // landed elsewhere (#3508).
+                                        if !(-3000.0..=1000.0).contains(&adj) {
+                                            if let Some(r) = run.take() {
+                                                self.flush_run(r);
+                                            }
+                                        }
                                         text_matrix *= Affine::translate((tx, 0.0));
                                         if let Some(r) = run.as_mut() {
                                             r.end_x += tx;
@@ -3905,6 +3918,9 @@ impl<'a> Importer<'a> {
             .and_then(|o| o.as_name().ok())
             .map(|n| String::from_utf8_lossy(n).into_owned());
         if let Some(base) = base {
+            // The whole family ("Lohit Devanagari", #3651), then its first
+            // word as before.
+            families.push(split_font_name(&base).0);
             let name = base.split_once('+').map_or(base.as_str(), |(_, n)| n);
             let name = name.split([',', '-']).next().unwrap_or(name);
             families.push(name.to_string());
@@ -4200,7 +4216,15 @@ impl<'a> Importer<'a> {
             }
             *text_matrix *= Affine::translate((advance, 0.0));
             if !path.elements().is_empty() {
+                // Glyph outlines fill by the nonzero rule: where letters
+                // touch or overlap (script fonts, tight spacing) or a
+                // letter's own contours cross, the overlap stays filled
+                // rather than becoming a hole (#3525).
+                let nonzero = crate::nonzero_matters(&path);
                 let mut shape = self.new_shape(ShapeKind::Path { path, closed: true });
+                if nonzero {
+                    shape.fill_rule = tracedraw_core::shaping::FillRule::NonZero;
+                }
                 shape.fill = if text_filled(gs) {
                     Fill::Solid(gs.fill.unwrap_or(Color::BLACK))
                 } else {
@@ -4863,7 +4887,31 @@ fn split_font_name(base: &str) -> (String, bool, bool) {
         || lower.contains("heavy")
         || lower.contains("semibold");
     let italic = lower.contains("italic") || lower.contains("oblique");
-    let mut family = name.split([',', '-']).next().unwrap_or(name).to_string();
+    // The parts after the last dashes or commas that only name a style
+    // go ("-BoldItalicMT", ",Bold"). The rest is the family's own name: a
+    // number tells one font of a series from the next ("Raj-01" is not
+    // "Raj-02", #3554), and a word is part of the name ("Lohit-Devanagari"
+    // is the family Lohit Devanagari, not Lohit, #3651).
+    let mut family = name.to_string();
+    while let Some(at) = family.rfind([',', '-']) {
+        if !style_words_only(&family[at + 1..]) {
+            break;
+        }
+        family.truncate(at);
+    }
+    // A dash before a word is a space in the family's name; one before a
+    // number stays ("Raj-01").
+    let family_parts: Vec<&str> = family.split('-').collect();
+    let mut family = family_parts.first().copied().unwrap_or("").to_string();
+    for part in &family_parts[1..] {
+        let sep = if part.chars().any(|c| c.is_ascii_digit()) {
+            '-'
+        } else {
+            ' '
+        };
+        family.push(sep);
+        family.push_str(part);
+    }
     for suffix in ["MT", "PSMT", "PS"] {
         if family.len() > suffix.len() + 2 && family.ends_with(suffix) {
             family.truncate(family.len() - suffix.len());
@@ -4880,6 +4928,27 @@ fn split_font_name(base: &str) -> (String, bool, bool) {
         other => other.to_string(),
     };
     (family, bold, italic)
+}
+
+/// Whether what follows a font name's dash or comma only names a style, so
+/// that it can go: "BoldItalicMT" and "Regular" go; "01", "55Roman" and
+/// a word of the name such as "Devanagari" stay (#3651).
+fn style_words_only(tail: &str) -> bool {
+    // Longer words first, so "semibold" is not read as "semi" and "bold".
+    const WORDS: &str = "semibold demibold extrabold ultrabold extralight ultralight \
+        semicondensed extracondensed ultracondensed semiexpanded \
+        bolditalic bold italic oblique regular roman light medium black heavy thin book \
+        condensed cond narrow extended expanded normal demi psmt mt ps it bd semi -";
+    let mut rest = tail.to_ascii_lowercase();
+    rest.retain(|c| c != ',' && c != ' ');
+    while !rest.is_empty() {
+        match WORDS.split_whitespace().find(|w| rest.starts_with(w)) {
+            Some(w) => rest.drain(..w.len()),
+            // Anything else is part of the family's name.
+            None => return false,
+        };
+    }
+    true
 }
 
 /// Parse a ToUnicode CMap (bfchar and bfrange sections) into code -> text.
@@ -7397,6 +7466,28 @@ mod tests {
     }
 
     #[test]
+    fn a_numbered_font_keeps_its_number() {
+        for (base, family, bold, italic) in [
+            ("ABCDEF+Raj-01", "Raj-01", false, false),
+            ("Raj-100,Bold", "Raj-100", true, false),
+            ("Arial,BoldItalic", "Arial", true, true),
+            ("MitraUni-Bold", "MitraUni", true, false),
+            ("Wingdings-Regular", "Wingdings", false, false),
+            ("Raj01", "Raj01", false, false),
+            // A word after the dash is part of the name (#3651).
+            ("ABCDEF+Lohit-Devanagari", "Lohit Devanagari", false, false),
+            ("Khand-Bold", "Khand", true, false),
+            ("NotoSans-Devanagari", "NotoSans Devanagari", false, false),
+            ("KrutiDev010", "KrutiDev010", false, false),
+            ("Roboto-SemiBoldItalic", "Roboto", true, true),
+            ("OpenSans-SemiCondensedBold", "OpenSans", true, false),
+        ] {
+            let want = (family.to_string(), bold, italic);
+            assert_eq!(split_font_name(base), want, "{base}");
+        }
+    }
+
+    #[test]
     fn garbage_is_an_error_not_a_panic() {
         let mut ids = IdSource::default();
         assert!(parse(b"hello", &mut ids).is_err());
@@ -7486,6 +7577,54 @@ mod tests {
             (texts[2].0, texts[2].1, texts[2].2),
             ("Plain", false, false)
         );
+    }
+
+    /// #3508: a drawing program wrote the labels of a column as one
+    /// `TJ` array, each label several ems on or back from the last
+    /// (`[(GND)-16217.9(GND)20865.4(VDD)]TJ`). They ran on as one text,
+    /// so the labels landed in the wrong places; each is a text of its
+    /// own at its place. Kerning and small gaps stay in one text.
+    #[test]
+    fn labels_set_apart_in_one_array_keep_their_places() {
+        let font =
+            "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica /Encoding /WinAnsiEncoding >>";
+        let bytes = one_page(
+            "BT /F1 10 Tf 1 0 0 1 20 50 Tm [(GND)-10000(VDD)15000(CLK)] TJ ET \
+             BT /F1 10 Tf 1 0 0 1 20 80 Tm [(W)120(ide)-250(gap)] TJ ET",
+            "<< /Font << /F1 5 0 R >> >>",
+            &[font.to_string()],
+        );
+        let mut ids = IdSource::default();
+        let imp = parse(&bytes, &mut ids).expect("parse");
+        let texts: Vec<(String, f64)> = imp.pages[0]
+            .shapes
+            .iter()
+            .filter_map(|s| match &s.kind {
+                ShapeKind::Text { spans, .. } => Some((
+                    spans.iter().map(|x| x.text.as_str()).collect(),
+                    s.bounds().x0,
+                )),
+                _ => None,
+            })
+            .collect();
+        let at = |t: &str| {
+            texts
+                .iter()
+                .find(|(s, _)| s == t)
+                .map(|(_, x)| *x)
+                .unwrap_or_else(|| panic!("{t} in {texts:?}"))
+        };
+        assert_eq!(texts.len(), 4, "{texts:?}");
+        // GND at 20 pt; VDD after GND's width and 10 ems (100 pt) on;
+        // CLK 15 ems back from VDD's end.
+        let gnd = at("GND");
+        let vdd = at("VDD");
+        let clk = at("CLK");
+        assert!((gnd - 20.0 * PT_MM).abs() < 0.3, "{gnd}");
+        assert!(vdd - gnd > 100.0 * PT_MM, "{vdd} {gnd}");
+        assert!(clk < vdd - 100.0 * PT_MM, "{clk} {vdd}");
+        let wide = at("Wide gap");
+        assert!((wide - 20.0 * PT_MM).abs() < 0.3, "{wide}");
     }
 
     /// Text with an outline of its own colour (render mode 2, as the PDF

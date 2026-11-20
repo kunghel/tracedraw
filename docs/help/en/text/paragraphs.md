@@ -60,6 +60,11 @@ To break to the next column at a given place, insert
 
 ![The Bullets dialog box](../../img/text-paragraphs-bullets.png)
 
+[[menu.text > menu.text.toggle_bullets]] (Ctrl+Shift+L) turns the bullets
+on or off without the dialog box: for the selected paragraph text, or
+for the paragraphs at the cursor while you type. The bullet keeps the
+symbol and indent set for it.
+
 ## Drop caps {#drop-cap}
 
 A drop cap is a large first letter that spans several lines.

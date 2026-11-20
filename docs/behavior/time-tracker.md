@@ -59,6 +59,12 @@ Window > Toolbars > Time Tracker shows a band under the other toolbars
 
 Everything but the stopwatch is greyed on the Welcome Screen.
 
+A click on the stopwatch switches the bar to its mini form and back
+(#3261, kept in the preferences, `time_tracker.mini`; the tooltip says
+which comes next): the stopwatch, the time, the record button and the
+light only, about 190 px wide floating, so it docks beside other bars
+(`ui::time_tracker::tests::the_toolbar_has_a_mini_form`).
+
 ## Dialog
 
 Tools > Time Tracker... or the toolbar's Tasks... button:

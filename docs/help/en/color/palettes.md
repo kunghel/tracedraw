@@ -100,6 +100,9 @@ choose **Delete Color**. You can also drag
 colors or objects onto it. The color used last has a white frame: a color
 taken with the eyedropper that the palette already has gets the frame, so you
 see where it is, and applying a color of the palette moves the frame to it.
+The eyedropper is also **Window > Color Palettes > Add Colors from the Drawing
+to the Document Palette**, which can be given a keyboard shortcut; Esc stops
+it.
 To show or hide it, see
 [Customization options](../customize/customization.md#color-palette).
 

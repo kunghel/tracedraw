@@ -60,7 +60,7 @@ Některé efekty, například rozostření, přesahují okraje bitmapy.
 - [[menu.bitmaps.crop_bitmap]] ořízne bitmapu nástrojem [[tool.crop]];
   oříznout ji lze také tažením rohu bitmapy nástrojem [[tool.shape]].
 - [[menu.bitmaps.edit_bitmap]] otevře bitmapu v jiném programu.
-- [[menu.bitmaps.edit_inside]] (or a double click on the picture with the Pick tool) edits its pixels in place, inside TraceDraw: selections, brush, soft eraser, clone, heal, blur, content fill, red eye and any bitmap effect inside the selection only. Enter finishes, as one undo step.
+- [[menu.bitmaps.edit_inside]] (or a double click on the picture with the Pick tool) edits its pixels in place, inside TraceDraw: selections, brush, soft eraser, clone, heal, blur, content fill, red eye, layers with opacity and merge modes, and any bitmap effect inside the selection only. Enter finishes, as one undo step.
 - [[menu.bitmaps.remove_background]] zprůhlední pozadí fotografie.
 - [[menu.bitmaps.remove_background_local]]: [Odstranit pozadí](remove-background.md).
 - [[menu.bitmaps.break_link]] a [[menu.bitmaps.update_from_link]] pracují s

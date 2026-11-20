@@ -29,6 +29,7 @@ covers. Move the lens and the view through it changes. Lenses are set in the
 | Transparency | makes the lens see-through, tinted | rate and color |
 | Wireframe | shows the objects as outlines | outline and fill colors |
 | Bitmap effects | runs bitmap effects over what lies beneath | **Add effect**, in order |
+| Cut | cuts the objects beneath along the lens's middle line: each side of every cut piece grows a curved spur, and a shadow fades from the cut to the lens's edge, over the objects only. Draw a long band across a text, which stays editable | spur length, thickness and shape, cut width, shadow (rate and color), shadow above |
 
 ## Options {#options}
 
@@ -37,6 +38,9 @@ covers. Move the lens and the view through it changes. Lenses are set in the
 - **Viewpoint**: shows another place through the lens.
 - **Remove face**: shows the lens only over other objects, not over the empty
   page.
+
+The Cut lens changes the picture on the screen and in bitmap exports; for a
+PDF or SVG, apply it with **Frozen** first.
 
 To add a bitmap effect as a lens from the effect picker, choose
 [[menu.effects > menu.effects.picker]] and apply it as a lens.

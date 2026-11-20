@@ -13,6 +13,14 @@ pub struct LensSettings {
     pub remove_face: bool,
     /// Bitmap Effects lens: the effects, in order.
     pub effects: Vec<tracedraw_core::BitmapEffect>,
+    /// The Cut lens's spurs: length, thickness and how hollow (mm, mm,
+    /// 1 to 6), and the width of the cut (mm).
+    pub spur_length: f64,
+    pub spur_width: f64,
+    pub curve: f64,
+    pub gap: f64,
+    /// The Cut lens's shadow falls on its upper side.
+    pub shadow_up: bool,
 }
 
 impl Default for LensSettings {
@@ -26,11 +34,16 @@ impl Default for LensSettings {
             frozen: false,
             remove_face: false,
             effects: Vec::new(),
+            spur_length: 3.0,
+            spur_width: 3.0,
+            curve: 2.0,
+            gap: 0.3,
+            shadow_up: false,
         }
     }
 }
 
-pub const LENS_KEYS: [&str; 13] = [
+pub const LENS_KEYS: [&str; 14] = [
     "lens.none",
     "lens.brighten",
     "lens.color_add",
@@ -44,6 +57,7 @@ pub const LENS_KEYS: [&str; 13] = [
     "lens.transparency",
     "lens.wireframe",
     "lens.bitmap_effects",
+    "lens.cut",
 ];
 
 impl crate::app::App {
@@ -206,6 +220,16 @@ impl LensSettings {
             12 => Lens::Effects {
                 effects: self.effects.clone(),
             },
+            // Cut: Rate is how dark the shadow starts, Color its colour.
+            13 => Lens::Cut {
+                spur_length: self.spur_length,
+                spur_width: self.spur_width,
+                curve: self.curve,
+                gap: self.gap,
+                shadow: self.rate.clamp(0.0, 100.0),
+                shadow_color: self.color,
+                shadow_up: self.shadow_up,
+            },
             _ => return None,
         })
     }
@@ -262,6 +286,24 @@ impl LensSettings {
             Lens::Effects { effects } => {
                 s.kind = 12;
                 s.effects = effects.clone();
+            }
+            Lens::Cut {
+                spur_length,
+                spur_width,
+                curve,
+                gap,
+                shadow,
+                shadow_color,
+                shadow_up,
+            } => {
+                s.kind = 13;
+                s.spur_length = *spur_length;
+                s.spur_width = *spur_width;
+                s.curve = *curve;
+                s.gap = *gap;
+                s.rate = *shadow;
+                s.color = *shadow_color;
+                s.shadow_up = *shadow_up;
             }
         }
         s

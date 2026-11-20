@@ -96,8 +96,11 @@ selecionadas e para as próximas que você fizer.
   linha** (2 mm), **texto horizontal** para cotas lineares (desligado),
   **unir linhas nos cantos** (desligado), que faz das linhas de extensão e da
   linha de cota (ou do arco de um ângulo) uma linha só que dobra o canto em
-  vez de passar dele, e um **raio do canto** (0 a 100 mm) que arredonda esses
-  cantos. O menu fica aberto enquanto você digita nele.
+  vez de passar dele, um **raio do canto** (0 a 100 mm) que arredonda esses
+  cantos, um **fundo do texto** (desligado) que põe uma cor atrás do rótulo,
+  e a **distância de Adicionar cotas** (5 mm), a que distância
+  [[menu.object > menu.object.insert > menu.object.add_dimensions]] põe as
+  linhas dos objetos. O menu fica aberto enquanto você digita nele.
 
 O rótulo sempre se lê da esquerda para a direita e fica em pé. Clique duas
 vezes nele com a ferramenta [[tool.pick]] para editá-lo no lugar: um texto que

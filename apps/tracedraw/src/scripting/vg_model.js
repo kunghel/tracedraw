@@ -791,6 +791,11 @@ class __Story {
   set Italic(v) { this._spans(s => { s.italic = !!v; }); }
   get Underline() { const s = this.k.spans[0]; return s && s.underline ? cdrSingleThinFontLine : cdrNoFontLine; }
   set Underline(v) { this._spans(s => { s.underline = !!v; }); }
+  // The characters' background (#3518): a uniform colour, Nothing for
+  // none.
+  get BackgroundColor() { const s = this.k.spans[0]; const b = s && s.background; return b && b.fill === 'solid' ? new Color(__plain(b)) : null; }
+  set BackgroundColor(c) { const b = c ? Object.assign({ fill: 'solid' }, c.v) : null; this._spans(s => { s.background = b; }); }
+  ApplyNoBackground() { this.BackgroundColor = null; }
   get Alignment() { const a = __align2cdr[this.k.align]; return a === undefined ? cdrLeftAlignment : a; }
   set Alignment(v) { const k = this.k; k.align = __cdr2align[v] || 'left'; this.put(k); }
   get Length() { return this.Text.length; }
@@ -1121,6 +1126,11 @@ class Layer {
     }
     return new Shape(__call('create_dimension', { layer: this.id, kind: kind, x1: a[0], y1: a[1], x2: b[0], y2: b[1], tx: t[0], ty: t[1] }).id);
   }
+  // The same with the points as numbers, as the Scripts panel names
+  // them (#3517): the dimension line passes through (TextX, TextY).
+  CreateHorizontalDimension(x1, y1, x2, y2, TextX, TextY) { return this.CreateLinearDimension(0, [x1, y1], [x2, y2], true, TextX, TextY); }
+  CreateVerticalDimension(x1, y1, x2, y2, TextX, TextY) { return this.CreateLinearDimension(1, [x1, y1], [x2, y2], true, TextX, TextY); }
+  CreateParallelDimension(x1, y1, x2, y2, TextX, TextY) { return this.CreateLinearDimension(2, [x1, y1], [x2, y2], true, TextX, TextY); }
   // The angle at Center from Point1 to Point2, its arc through (TextX,
   // TextY) (else at three quarters of the shorter arm).
   CreateAngularDimension(Center, Point1, Point2, TextX, TextY) {

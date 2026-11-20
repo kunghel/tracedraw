@@ -32,7 +32,7 @@ impl Palette {
     }
 }
 
-/// The default CMYK palette (94 swatches), in this order:
+/// The default CMYK palette (95 swatches), in this order:
 ///
 /// 1. The basics (22): Black, 90% to 10% Black, White, the six process
 ///    colours (Blue, Cyan, Green, Yellow, Red, Magenta), then Purple,
@@ -45,11 +45,17 @@ impl Palette {
 ///
 /// Among the first 50 swatches, after the basics, every fourth or fifth
 /// swatch (4 kept, 1 left out, 5 kept, 1 left out and so on) is left out
-/// of that order, five in all, so the list is 94 long. Every value is a
-/// whole percentage. Documents keep the colours they store, so changing
-/// the palette changes nothing in a saved drawing.
+/// of that order, five in all, so the mixes end at the 94th.
+///
+/// 3. Last, Registration Black: all four inks at 100%, the black that
+///    prints on every CMYK plate, for registration and other marks
+///    (#3666). Built-in palettes cannot be edited, so it had to be mixed
+///    by hand every time.
+///
+/// Every value is a whole percentage. Documents keep the colours they
+/// store, so changing the palette changes nothing in a saved drawing.
 pub fn default_cmyk() -> Vec<(String, Color)> {
-    let mut v: Vec<(String, Color)> = Vec::with_capacity(94);
+    let mut v: Vec<(String, Color)> = Vec::with_capacity(95);
     let mut add = |n: &str, c: u32, m: u32, y: u32, k: u32| {
         v.push((
             n.to_string(),
@@ -150,17 +156,24 @@ pub fn default_cmyk() -> Vec<(String, Color)> {
     add("Dark Blue", 60, 60, 0, 40);
     add("Steel Blue", 40, 40, 0, 40);
     add("Deep Blue", 60, 60, 0, 60);
+    add(REGISTRATION_BLACK, 100, 100, 100, 100);
     v
 }
 
+/// The last swatch of [`default_cmyk`]: C100 M100 Y100 K100 (#3666).
+pub const REGISTRATION_BLACK: &str = "Registration Black";
+
 /// The default palette of an RGB drawing: the same colours as
-/// [`default_cmyk`], in the same order and with the same names, as clean
+/// [`default_cmyk`] up to Deep Blue, in the same order and with the same
+/// names, as clean
 /// RGB values defined directly (multiples of 17 and 10% greys), not
 /// converted from the inks: each channel of a colour is the plain ink
 /// formula (255 times one minus the ink plus black, to 1) rounded to the
 /// nearest multiple of 17 (#620). No two swatches have the same value:
 /// Deep Blue is set to 0 0 68, a step darker than the formula gives,
-/// which is also the value of Dark Navy Blue.
+/// which is also the value of Dark Navy Blue. Registration Black, an ink
+/// mix, has no twin here: an RGB drawing's strip shows it as the plain
+/// black of its inks.
 pub fn default_rgb() -> Vec<(String, Color)> {
     DEFAULT_RGB
         .iter()
@@ -847,16 +860,16 @@ mod tests {
     use super::*;
 
     /// The default palette follows its rule: the basics first (what the
-    /// strip always began with), 94 swatches, unique names, whole
-    /// percentages, and an RGB twin with the same names and no repeated
-    /// value.
+    /// strip always began with), 95 swatches ending with Registration
+    /// Black, unique names, whole percentages, and an RGB twin with the
+    /// same names up to Deep Blue and no repeated value.
     #[test]
     fn the_default_palette_follows_its_rule() {
         let cmyk = default_cmyk();
-        assert_eq!(cmyk.len(), 94);
+        assert_eq!(cmyk.len(), 95);
         let names: Vec<&str> = cmyk.iter().map(|(n, _)| n.as_str()).collect();
         let distinct: std::collections::HashSet<&&str> = names.iter().collect();
-        assert_eq!(distinct.len(), 94, "names are unique");
+        assert_eq!(distinct.len(), 95, "names are unique");
         // The first part is the basics, in order.
         let basics: [(&str, [f32; 4]); 22] = [
             ("Black", [0.0, 0.0, 0.0, 100.0]),
@@ -900,6 +913,10 @@ mod tests {
         assert_eq!(names[22], "Pastel Blue");
         assert_eq!(names[26], "Dark Navy Blue");
         assert_eq!(names[93], "Deep Blue");
+        // Last, the black of all four inks, for marks on every plate
+        // (#3666).
+        assert_eq!(names[94], REGISTRATION_BLACK);
+        assert_eq!(cmyk[94].1, Color::cmyk_pct(100.0, 100.0, 100.0, 100.0));
         let find = |n: &str| cmyk.iter().find(|(m, _)| m == n).map(|(_, c)| *c);
         assert_eq!(
             find("Dusty Blue"),
@@ -916,7 +933,7 @@ mod tests {
         }
         let rgb = default_rgb();
         let rgb_names: Vec<&str> = rgb.iter().map(|(n, _)| n.as_str()).collect();
-        assert_eq!(rgb_names, names);
+        assert_eq!(rgb_names, names[..94]);
         let values: std::collections::HashSet<[u8; 3]> =
             rgb.iter().map(|(_, c)| c.to_rgb8()).collect();
         assert_eq!(values.len(), 94, "RGB values are unique");

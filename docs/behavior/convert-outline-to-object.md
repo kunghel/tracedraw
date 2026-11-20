@@ -13,6 +13,11 @@ One undo step, and the new objects are selected.
 - A dashed outline keeps its dashes: each dash becomes a closed shape of
   its own and the gaps stay empty, the pattern in widths as drawn
   (#490).
+- An open line's arrowheads come with it, welded to the line, and the
+  line is cut back under each head as it is drawn, so a thick line's
+  square end does not stand out past the narrow tip of the head (#2983,
+  #3604, `tools2::tests::convert_outline_to_object_keeps_the_arrowheads`,
+  `tools2::tests::convert_outline_to_object_keeps_the_arrow_tip`).
 - A variable or calligraphic outline, or one inside or outside the path,
   becomes its band, fitted to lines and cubic curves within 0.01 mm. A
   Variable Length band is built from the path flattened to 0.005 mm for

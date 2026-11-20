@@ -6112,7 +6112,9 @@ impl<'a> Writer<'a> {
                 }
                 self.place(s, OBJ_RECT, c.done(), &s.fill, t, page_box, None, centre)
             }
-            ShapeKind::Ellipse { rect, arc } => {
+            // A ring (a pie with a thickness) goes out as the curve it
+            // draws; the file's ellipses have no inner edge.
+            ShapeKind::Ellipse { rect, arc } if arc.is_none_or(|a| !(a.pie && a.inner > 0.0)) => {
                 let t = s.transform * Affine::translate((rect.x0, rect.y0));
                 let (a1, a2, pie) = match arc {
                     Some(a) => (

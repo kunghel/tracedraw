@@ -6,6 +6,10 @@ under the panel tabs. Open panels are tabs down the right side of the window
 (the left side in right-to-left languages). This page lists every panel and
 the page that explains it.
 
+Drop a panel's tab on the bottom part of an open panel to show the two one
+above the other. The lower panel's tab moves to the bottom of the tabs, and a
+click on either tab closes and opens the column without undoing the split.
+
 | Panel | Key | Page |
 |---|---|---|
 | [[docker.properties]] | <kbd>Alt+Enter</kbd> | [→](../objects/properties-docker.md) |

@@ -302,6 +302,9 @@ pub struct OptionsSnapshot {
     spiral_logarithmic: bool,
     graph_rows: u32,
     graph_cols: u32,
+    graph_radial: bool,
+    graph_rings: u32,
+    graph_spokes: u32,
     table_rows: u32,
     table_cols: u32,
     eraser_width: f64,
@@ -357,6 +360,9 @@ impl OptionsSnapshot {
             spiral_logarithmic: app.spiral_logarithmic,
             graph_rows: app.graph_rows,
             graph_cols: app.graph_cols,
+            graph_radial: app.graph_radial,
+            graph_rings: app.graph_rings,
+            graph_spokes: app.graph_spokes,
             table_rows: app.table_rows,
             table_cols: app.table_cols,
             eraser_width: app.eraser_width,
@@ -423,6 +429,9 @@ impl OptionsSnapshot {
         app.spiral_logarithmic = self.spiral_logarithmic;
         app.graph_rows = self.graph_rows;
         app.graph_cols = self.graph_cols;
+        app.graph_radial = self.graph_radial;
+        app.graph_rings = self.graph_rings;
+        app.graph_spokes = self.graph_spokes;
         app.table_rows = self.table_rows;
         app.table_cols = self.table_cols;
         app.eraser_width = self.eraser_width;
@@ -532,9 +541,7 @@ pub fn options_dialog(app: &mut App, ctx: &Context, close: &mut bool) {
                             .rich_tip(crate::ui::tips::keyed("options.save_as_default"))
                             .clicked()
                     {
-                        app.settings.document_defaults =
-                            crate::settings::DocumentDefaults::of(app.doc());
-                        app.status = tr("status.settings_saved");
+                        save_as_default(app);
                     }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         // The buttons bring their own tips (#2367).
@@ -561,6 +568,21 @@ pub fn options_dialog(app: &mut App, ctx: &Context, close: &mut bool) {
         }
         *close = true;
     }
+}
+
+/// The Document set's Save as Default: new drawings start with this
+/// drawing's grid, rulers, guideline settings, object defaults and its
+/// guidelines (those of the master page and of the current page). It is
+/// saved at once and kept when the dialog is then cancelled or closed
+/// (#3522).
+pub(crate) fn save_as_default(app: &mut App) {
+    let defaults = crate::settings::DocumentDefaults::of_page(app.doc(), Some(app.page));
+    if let Some(s) = app.options_snapshot.as_mut() {
+        s.settings.document_defaults = defaults.clone();
+    }
+    app.settings.document_defaults = defaults;
+    app.save_settings();
+    app.status = tr("status.settings_saved");
 }
 
 /// How far the page drawn last reached past the right edge of its
@@ -1241,6 +1263,17 @@ fn display_page(app: &mut App, ui: &mut Ui) {
             "options.touch_selection_bar",
             "options.touch_selection_bar_tip",
         ));
+        // Android has no mouse of its own: the bars show there already.
+        if !crate::files::ANDROID {
+            ui.checkbox(
+                &mut app.settings.selection_bar_mouse,
+                tr("options.selection_bar_mouse"),
+            )
+            .rich_tip(crate::ui::tips::pair(
+                "options.selection_bar_mouse",
+                "options.selection_bar_mouse_tip",
+            ));
+        }
     });
     chrome::section(ui, &tr("options.full_screen_preview"));
     ui.indent("fsp", |ui| {
@@ -5080,6 +5113,19 @@ fn graph_paper_page(app: &mut App, ui: &mut Ui) {
         );
 
         ui.end_row();
+        // The radial grid (rings and spokes).
+        row_label(ui, "");
+        ui.checkbox(&mut app.graph_radial, tr("toolbar.graph_radial"))
+            .rich_tip(crate::ui::tips::keyed("toolbar.graph_radial"));
+        ui.end_row();
+        row_label(ui, &format!("{}:", tr("toolbar.rings")));
+        ui.add(crate::ui::field::NumField::new(&mut app.graph_rings).range(1..=99))
+            .rich_tip(crate::ui::tips::keyed("toolbar.rings"));
+        ui.end_row();
+        row_label(ui, &format!("{}:", tr("toolbar.spokes")));
+        ui.add(crate::ui::field::NumField::new(&mut app.graph_spokes).range(0..=360))
+            .rich_tip(crate::ui::tips::keyed("toolbar.spokes"));
+        ui.end_row();
     });
 }
 
@@ -6889,6 +6935,42 @@ mod tests {
         snap.restore(&mut app);
         assert_eq!(app.settings.undo_levels, 150);
         assert!(!app.doc().metadata.fill_open_curves);
+    }
+
+    /// Save as Default keeps the drawing's guidelines for new drawings,
+    /// and what it saved stays when the dialog is then cancelled (#3522).
+    #[test]
+    fn save_as_default_keeps_guidelines_and_survives_cancel() {
+        use tracedraw_core::document::Guide;
+        let mut app = App::headless();
+        app.options_snapshot = Some(OptionsSnapshot::take(&app));
+        app.choose_master_guides(false);
+        app.add_guide(Guide::vertical(3.0));
+        app.add_guide(Guide::horizontal(3.0));
+        app.choose_master_guides(true);
+        app.add_guide(Guide::vertical(87.0));
+        save_as_default(&mut app);
+        // Cancel: the snapshot goes back, the saved defaults stay.
+        if let Some(s) = app.options_snapshot.take() {
+            s.restore(&mut app);
+        }
+        let d = &app.settings.document_defaults;
+        assert_eq!(d.page_guidelines.len(), 2, "{d:?}");
+        assert_eq!(d.master_guidelines.len(), 1);
+        // A new drawing starts with them.
+        app.new_document();
+        assert_eq!(app.doc().pages[0].guides.len(), 2);
+        assert_eq!(app.doc().master_guides.len(), 1);
+        // Saved settings read back with them; older settings without them
+        // read as none.
+        let json = serde_json::to_string(&app.settings.document_defaults).unwrap();
+        let back: crate::settings::DocumentDefaults = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            back.page_guidelines,
+            app.settings.document_defaults.page_guidelines
+        );
+        let old: crate::settings::DocumentDefaults = serde_json::from_str("{}").unwrap();
+        assert!(old.page_guidelines.is_empty() && old.master_guidelines.is_empty());
     }
 
     /// The Smart Drawing, Dimension, Connector and Mesh Fill pages edit

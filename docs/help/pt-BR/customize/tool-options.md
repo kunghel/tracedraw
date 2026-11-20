@@ -105,7 +105,8 @@ canto e [[toolbar.corners_together]]. [[options.scale_corners]]:
 
 ![As opções da ferramenta Papel quadriculado](../../img/customize-tool-options-graph-paper.png)
 
-[[options.rows]] e [[options.columns]] da grade.
+[[options.rows]] e [[options.columns]] da grade; **Radial** desenha em vez disso
+uma grade radial de **Anéis** e **Raios**.
 
 ## Espiral {#spiral}
 

@@ -2,6 +2,7 @@
 //! path, from the Fit Objects to Path panel's settings (#1027, #1091,
 //! #1196). The formulas are in `docs/behavior/fit-to-path.md`.
 
+use serde::{Deserialize, Serialize};
 use tracedraw_core::{
     document::Shape,
     geometry::{Affine, BezPath, Point, Vec2},
@@ -12,7 +13,8 @@ use tracedraw_core::{
 pub const MAX_PLACED: usize = 1000;
 
 /// How Fit Objects to Path spaces the objects along the path.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum FitSpacing {
     /// Spread evenly over the path between the start and end offsets.
     Even,
@@ -21,7 +23,8 @@ pub enum FitSpacing {
 }
 
 /// What the spacing is measured between.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum FitMeasure {
     /// The centres of neighbouring objects.
     Centres,
@@ -31,7 +34,8 @@ pub enum FitMeasure {
 }
 
 /// Where the objects sit across the path.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum FitPlace {
     /// Centred on the path.
     On,
@@ -43,7 +47,8 @@ pub enum FitPlace {
 }
 
 /// How the objects are turned.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum FitRotation {
     /// With the direction of the path, plus the angle.
     Follow,
@@ -52,7 +57,8 @@ pub enum FitRotation {
 }
 
 /// The order the objects go along the path in.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum FitOrder {
     /// The order they were selected in.
     AsSelected,
@@ -85,7 +91,8 @@ pub enum FitOrder {
 }
 
 /// Copies made along the path.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum FitCopies {
     /// Each selected object is placed once.
     None,
@@ -97,7 +104,8 @@ pub enum FitCopies {
 }
 
 /// Where a run of objects at a fixed distance sits on the path.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum FitAlign {
     /// The first object at the start offset.
     Start,
@@ -109,7 +117,8 @@ pub enum FitAlign {
 }
 
 /// Which point of each object goes on the path.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum FitReference {
     /// The object's centre of rotation: the centre of its box, or where
     /// it was moved to with the Pick tool.
@@ -122,7 +131,8 @@ pub enum FitReference {
 }
 
 /// Turns added to the objects one after another (Modify rotation).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum FitSpin {
     /// No turn added.
     None,
@@ -139,8 +149,10 @@ pub enum FitSpin {
 }
 
 /// The Fit Objects to Path panel's settings (millimetres and degrees,
-/// #1027, #1091, #1196).
-#[derive(Debug, Clone, Copy, PartialEq)]
+/// #1027, #1091, #1196). A live fit keeps them in the path's object data
+/// (see `fit_live.rs`), so fields added later need a default.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct FitPathSettings {
     pub spacing: FitSpacing,
     pub measure: FitMeasure,
@@ -189,6 +201,9 @@ pub struct FitPathSettings {
     pub range: f64,
     /// The turns added go clockwise.
     pub clockwise: bool,
+    /// Keep the objects on the path: moving or reshaping the path or the
+    /// objects fits them again (see `fit_live.rs`).
+    pub live: bool,
 }
 
 impl FitPathSettings {
@@ -234,6 +249,7 @@ impl Default for FitPathSettings {
             revolutions: 1.0,
             range: 15.0,
             clockwise: false,
+            live: false,
         }
     }
 }
@@ -505,15 +521,70 @@ pub fn fit_to_path_plan_with(
     set: &FitPathSettings,
     pivot: &dyn Fn(&Shape) -> Option<Point>,
 ) -> Vec<Placement> {
-    let Some((path_shape, objects)) = shapes.split_last() else {
-        return Vec::new();
-    };
-    if objects.is_empty() {
-        return Vec::new();
+    fit_to_path_layout_with(shapes, set, pivot)
+        .map(|l| l.placements)
+        .unwrap_or_default()
+}
+
+/// A fit worked out: where each object goes and how far along the path
+/// its reference point lands (`dist`, one per placement, before it is
+/// brought round a closed path or held at the ends of an open one).
+#[derive(Debug, Clone, PartialEq)]
+pub struct FitLayout {
+    pub placements: Vec<Placement>,
+    pub dist: Vec<f64>,
+}
+
+/// The point `d` along `path` walked as `set` walks it, with the unit
+/// direction there.
+pub fn path_point(path: &BezPath, set: &FitPathSettings, d: f64) -> Option<(Point, Vec2)> {
+    let walk = Walk::new(path, set.reverse, set.contiguous)?;
+    Some(walk.at(d))
+}
+
+/// How far along `path` (walked as `set` walks it) the point nearest to
+/// `p` is, with the path's length and whether it is closed.
+pub fn path_distance_of(
+    path: &BezPath,
+    set: &FitPathSettings,
+    p: Point,
+) -> Option<(f64, f64, bool)> {
+    let walk = Walk::new(path, set.reverse, set.contiguous)?;
+    let mut best = (f64::INFINITY, 0.0);
+    for (k, w) in walk.pts.windows(2).enumerate() {
+        if walk.jump.get(k).copied().unwrap_or(false) {
+            continue;
+        }
+        let seg = w[1] - w[0];
+        let len2 = seg.hypot2();
+        let u = if len2 < 1e-18 {
+            0.0
+        } else {
+            ((p - w[0]).dot(seg) / len2).clamp(0.0, 1.0)
+        };
+        let q = w[0] + seg * u;
+        let gap = (p - q).hypot();
+        if gap < best.0 {
+            best = (gap, walk.cum[k] + seg.hypot() * u);
+        }
     }
-    let Some(walk) = Walk::new(&path_shape.page_path(), set.reverse, set.contiguous) else {
-        return Vec::new();
-    };
+    best.0
+        .is_finite()
+        .then_some((best.1, walk.total, walk.closed))
+}
+
+/// [`fit_to_path_plan_with`] with the distances along the path; `None`
+/// when there is nothing to fit.
+pub fn fit_to_path_layout_with(
+    shapes: &[Shape],
+    set: &FitPathSettings,
+    pivot: &dyn Fn(&Shape) -> Option<Point>,
+) -> Option<FitLayout> {
+    let (path_shape, objects) = shapes.split_last()?;
+    if objects.is_empty() {
+        return None;
+    }
+    let walk = Walk::new(&path_shape.page_path(), set.reverse, set.contiguous)?;
     let objs: Vec<Prepared> = ordered(objects, set.order)
         .into_iter()
         .map(|s| prepare(s, set, pivot))
@@ -706,7 +777,8 @@ pub fn fit_to_path_plan_with(
             .collect();
     }
     let m = dist.len();
-    dist.iter()
+    let placements = dist
+        .iter()
         .zip(&phis)
         .enumerate()
         .map(|(i, (d, phi))| {
@@ -736,7 +808,8 @@ pub fn fit_to_path_plan_with(
                 copy: set.keep_originals || i >= n,
             }
         })
-        .collect()
+        .collect();
+    Some(FitLayout { placements, dist })
 }
 
 #[cfg(test)]

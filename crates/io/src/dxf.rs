@@ -1199,7 +1199,9 @@ fn fmt(v: f64) -> String {
     if !v.is_finite() {
         return "0".into();
     }
-    let s = format!("{v:.4}");
+    // Six places: a drawing in metres or feet keeps a thousandth of a
+    // millimetre's detail as one in millimetres does (#3583).
+    let s = format!("{v:.6}");
     let s = s.trim_end_matches('0').trim_end_matches('.');
     if s.is_empty() || s == "-0" {
         "0".into()
@@ -1213,6 +1215,8 @@ struct Writer<'a> {
     symbols: &'a [tracedraw_core::Symbol],
     handle: u32,
     layer: String,
+    /// The drawing unit's size in mm (1 for millimetres, #3583).
+    unit: f64,
 }
 
 impl Writer<'_> {
@@ -1344,7 +1348,7 @@ impl Writer<'_> {
     }
 
     /// Flatten a path into polylines (one per subpath).
-    fn polylines(path: &BezPath) -> Vec<(Vec<Point>, bool)> {
+    fn polylines(path: &BezPath, tolerance: f64) -> Vec<(Vec<Point>, bool)> {
         let mut out: Vec<(Vec<Point>, bool)> = Vec::new();
         let mut cur: Vec<Point> = Vec::new();
         let mut closed = false;
@@ -1355,7 +1359,7 @@ impl Writer<'_> {
                 cur.clear();
             }
         };
-        tracedraw_core::geometry::flatten(path, 0.05, &mut |el| match el {
+        tracedraw_core::geometry::flatten(path, tolerance, &mut |el| match el {
             PathEl::MoveTo(p) => {
                 flush(&mut cur, closed, &mut out);
                 closed = false;
@@ -1378,7 +1382,7 @@ impl Writer<'_> {
         self.pair(90, &pts.len().to_string());
         self.pair(70, if closed { "1" } else { "0" });
         if width_mm > 0.0 {
-            self.pair(43, &fmt(width_mm));
+            self.pair(43, &fmt(width_mm / self.unit));
         }
         for p in pts {
             self.pair(10, &fmt(p.x));
@@ -1511,7 +1515,8 @@ impl Writer<'_> {
         if path.elements().is_empty() {
             return;
         }
-        let polys = Self::polylines(&path);
+        // Curves followed to 0.05 mm, in drawing units.
+        let polys = Self::polylines(&path, 0.05 / self.unit);
         if let Fill::Solid(c) = &shape.fill {
             let closed: Vec<(Vec<Point>, bool)> = polys
                 .iter()
@@ -1538,9 +1543,10 @@ impl Writer<'_> {
             self.hatch(&closed, c);
         }
         if let Some(s) = &shape.stroke {
+            // The object's own scale, the drawing unit's taken out.
             let scale = {
                 let c = transform.as_coeffs();
-                (c[0] * c[3] - c[1] * c[2]).abs().sqrt()
+                (c[0] * c[3] - c[1] * c[2]).abs().sqrt() * self.unit
             };
             let w = if s.scale_with_object {
                 s.width * scale
@@ -1660,6 +1666,62 @@ fn decode_unicode_escapes(s: &str) -> String {
     out
 }
 
+/// The drawing unit a DXF export writes its coordinates in (#3583):
+/// `$INSUNITS` names it, and every length is divided by its size in mm.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DxfUnits {
+    #[default]
+    Millimeters,
+    Centimeters,
+    Meters,
+    Inches,
+    Feet,
+}
+
+impl DxfUnits {
+    /// Every unit, in the order the Export dialog lists them.
+    pub const ALL: [DxfUnits; 5] = [
+        DxfUnits::Millimeters,
+        DxfUnits::Centimeters,
+        DxfUnits::Meters,
+        DxfUnits::Inches,
+        DxfUnits::Feet,
+    ];
+
+    /// The unit's size in millimetres.
+    pub fn mm(self) -> f64 {
+        match self {
+            DxfUnits::Millimeters => 1.0,
+            DxfUnits::Centimeters => 10.0,
+            DxfUnits::Meters => 1000.0,
+            DxfUnits::Inches => 25.4,
+            DxfUnits::Feet => 304.8,
+        }
+    }
+
+    /// Its `$INSUNITS` code.
+    pub fn insunits(self) -> u8 {
+        match self {
+            DxfUnits::Millimeters => 4,
+            DxfUnits::Centimeters => 5,
+            DxfUnits::Meters => 6,
+            DxfUnits::Inches => 1,
+            DxfUnits::Feet => 2,
+        }
+    }
+
+    /// Whether `$MEASUREMENT` is metric.
+    pub fn metric(self) -> bool {
+        !matches!(self, DxfUnits::Inches | DxfUnits::Feet)
+    }
+}
+
+/// The choices of a DXF export.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct DxfOptions {
+    pub units: DxfUnits,
+}
+
 /// Write one page as an ASCII DXF of the AutoCAD 2000 dialect (AC1015),
 /// with what that dialect requires of a file for AutoCAD to open it: every
 /// table (viewport, line types, layers, text style, views, UCS, registered
@@ -1669,6 +1731,13 @@ fn decode_unicode_escapes(s: &str) -> String {
 /// dictionary. Without them AutoCAD stopped at the end of the tables
 /// ("DXF read error") and Affinity refused the file (#2394).
 pub fn page_to_dxf(doc: &Document, page_index: usize) -> String {
+    page_to_dxf_with(doc, page_index, &DxfOptions::default())
+}
+
+/// [`page_to_dxf`] with the export's choices: the drawing unit the
+/// coordinates are written in (#3583).
+pub fn page_to_dxf_with(doc: &Document, page_index: usize, opts: &DxfOptions) -> String {
+    let unit = opts.units.mm();
     // As the other vector exports see it: an open curve's fill as the
     // screen shows it (none, unless the document fills open curves), the
     // layers set not to print left out.
@@ -1681,7 +1750,10 @@ pub fn page_to_dxf(doc: &Document, page_index: usize) -> String {
         symbols: &doc.symbols,
         handle: 0xFF,
         layer: "0".into(),
+        unit,
     };
+    // The page in drawing units.
+    let size = tracedraw_core::geometry::Size::new(page.size.width / unit, page.size.height / unit);
     let layers = doc.layers_drawn_for_page(page.id).unwrap_or_default();
     // Layer names as DXF allows them, each once; "0" is the standard layer.
     let mut layer_names: Vec<String> = Vec::new();
@@ -1702,7 +1774,7 @@ pub fn page_to_dxf(doc: &Document, page_index: usize) -> String {
         }
         w.layer = layer_names[i].clone();
         for s in &l.shapes {
-            w.shape(s, Affine::IDENTITY);
+            w.shape(s, Affine::scale(1.0 / unit));
         }
     }
     let entities = std::mem::take(&mut w.out);
@@ -1722,23 +1794,23 @@ pub fn page_to_dxf(doc: &Document, page_index: usize) -> String {
     w.pair(9, "$HANDSEED");
     w.pair(5, &seed);
     w.pair(9, "$INSUNITS");
-    w.pair(70, "4");
+    w.pair(70, &opts.units.insunits().to_string());
     w.pair(9, "$MEASUREMENT");
-    w.pair(70, "1");
+    w.pair(70, if opts.units.metric() { "1" } else { "0" });
     w.pair(9, "$EXTMIN");
     w.pair(10, "0");
     w.pair(20, "0");
     w.pair(30, "0");
     w.pair(9, "$EXTMAX");
-    w.pair(10, &fmt(page.size.width));
-    w.pair(20, &fmt(page.size.height));
+    w.pair(10, &fmt(size.width));
+    w.pair(20, &fmt(size.height));
     w.pair(30, "0");
     w.pair(9, "$LIMMIN");
     w.pair(10, "0");
     w.pair(20, "0");
     w.pair(9, "$LIMMAX");
-    w.pair(10, &fmt(page.size.width));
-    w.pair(20, &fmt(page.size.height));
+    w.pair(10, &fmt(size.width));
+    w.pair(20, &fmt(size.height));
     w.pair(0, "ENDSEC");
 
     // TABLES
@@ -1758,8 +1830,8 @@ pub fn page_to_dxf(doc: &Document, page_index: usize) -> String {
     w.pair(20, "0");
     w.pair(11, "1");
     w.pair(21, "1");
-    w.pair(12, &fmt(page.size.width / 2.0));
-    w.pair(22, &fmt(page.size.height / 2.0));
+    w.pair(12, &fmt(size.width / 2.0));
+    w.pair(22, &fmt(size.height / 2.0));
     w.pair(13, "0");
     w.pair(23, "0");
     w.pair(14, "10");
@@ -1772,10 +1844,10 @@ pub fn page_to_dxf(doc: &Document, page_index: usize) -> String {
     w.pair(17, "0");
     w.pair(27, "0");
     w.pair(37, "0");
-    w.pair(40, &fmt(page.size.height.max(1.0) * 1.1));
+    w.pair(40, &fmt(size.height.max(1.0) * 1.1));
     w.pair(
         41,
-        &fmt((page.size.width / page.size.height.max(1e-6)).clamp(0.1, 10.0)),
+        &fmt((size.width / size.height.max(1e-6)).clamp(0.1, 10.0)),
     );
     w.pair(42, "50");
     w.pair(43, "0");
@@ -1983,7 +2055,7 @@ pub fn page_to_dxf(doc: &Document, page_index: usize) -> String {
         (fixed::MODEL_LAYOUT, "Model", "0", fixed::MODEL_SPACE),
         (fixed::PAPER_LAYOUT, "Layout1", "1", fixed::PAPER_SPACE),
     ] {
-        w.layout(h, name, tab, block, page.size.width, page.size.height);
+        w.layout(h, name, tab, block, size.width, size.height);
     }
     w.pair(0, "ENDSEC");
     w.pair(0, "EOF");
@@ -2192,6 +2264,50 @@ mod tests {
         match &back.shapes[2].kind {
             ShapeKind::Text { spans, .. } => assert_eq!(spans[0].text, "Hi there"),
             other => panic!("{other:?}"),
+        }
+    }
+
+    /// The export's drawing unit (#3583): every unit names itself in
+    /// `$INSUNITS` and writes the lengths in it, so the drawing reads back
+    /// at its own size in mm; outlines keep their width.
+    #[test]
+    fn export_writes_the_chosen_unit() {
+        let mut doc = Document::new("t", Size::new(100.0, 50.0));
+        let mut ids = doc.ids().clone();
+        let mut r = Shape::new(
+            ids.shape(),
+            ShapeKind::Rect {
+                rect: Rect::new(10.0, 10.0, 40.0, 30.0),
+                radius: 0.0,
+                corners: None,
+            },
+        );
+        r.fill = Fill::Solid(Color::rgb8(0, 0, 255));
+        r.stroke = Some(Stroke::new(Color::rgb8(255, 0, 0), 0.5));
+        doc.pages[0].layers[0].shapes = vec![r];
+        doc.set_ids(ids);
+        assert_eq!(
+            page_to_dxf(&doc, 0),
+            page_to_dxf_with(&doc, 0, &DxfOptions::default()),
+            "millimetres, as before"
+        );
+        for units in DxfUnits::ALL {
+            let out = page_to_dxf_with(&doc, 0, &DxfOptions { units });
+            let pairs: Vec<&str> = out.lines().map(str::trim).collect();
+            let at = pairs.iter().position(|l| *l == "$INSUNITS").unwrap();
+            assert_eq!(pairs[at + 2], units.insunits().to_string(), "{units:?}");
+            // The page's width in the unit, as the extents.
+            let at = pairs.iter().position(|l| *l == "$EXTMAX").unwrap();
+            let w: f64 = pairs[at + 2].parse().unwrap();
+            assert!((w - 100.0 / units.mm()).abs() < 1e-5, "{units:?} {w}");
+            let back = parse(&out, &mut IdSource::default()).expect("reparse");
+            let hb = back.shapes[0].bounds();
+            assert!(
+                (hb.width() - 30.0).abs() < 1e-3 && (hb.height() - 20.0).abs() < 1e-3,
+                "{units:?} {hb:?}"
+            );
+            let s = back.shapes[1].stroke.as_ref().expect("stroke");
+            assert!((s.width - 0.5).abs() < 1e-3, "{units:?} {}", s.width);
         }
     }
 

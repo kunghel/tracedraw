@@ -2,8 +2,8 @@
 //! (Bitmaps > Edit Inside, a double click on a picture), a bar at the
 //! top left of the drawing window with Finish, Cancel, Undo, Redo, the
 //! tools and the settings of the tool in use, and a panel at the top
-//! right with the selection commands, retouching, the bitmap effects
-//! (Light among them) run inside the selection, and flipping. See
+//! right with the layers, the selection commands, retouching, the bitmap
+//! effects (Light among them) run inside the selection, and flipping. See
 //! docs/behavior/edit-inside-picture.md.
 
 use crate::app::App;
@@ -27,6 +27,12 @@ pub fn show(app: &mut App, ctx: &Context) {
     if gone {
         app.cancel_pixel_edit();
         return;
+    }
+    // The lights stay live only while the Light tool is in use.
+    if let Some(pe) = app.pixel_edit.as_mut() {
+        if pe.tool != PixelTool::Light {
+            pe.lights.bake();
+        }
     }
     bar(app, ctx);
     panel(app, ctx);
@@ -142,6 +148,10 @@ fn percent(ui: &mut egui::Ui, key: &str, v: &mut f32) {
 
 fn tool_options(ui: &mut egui::Ui, pe: &mut crate::pixel_edit_app::PixelEdit) {
     let t = pe.tool;
+    if t == PixelTool::Light {
+        super::pixel_lights::options(ui, pe);
+        return;
+    }
     let o = &mut pe.opts;
     if t.is_brush() {
         ui.add(
@@ -216,11 +226,228 @@ fn panel(app: &mut App, ctx: &Context) {
                         let Some(pe) = app.pixel_edit.as_mut() else {
                             return;
                         };
+                        layers_section(ui, pe);
                         selection_section(ui, pe);
                         retouch_section(ui, pe);
                         effects_section(ui, pe);
                         picture_section(ui, pe);
                     });
+            });
+        });
+}
+
+/// The name a new layer gets: "Layer" and the first number not in use.
+fn new_layer_name(pe: &crate::pixel_edit_app::PixelEdit) -> String {
+    let base = tr("pixel.layer.name");
+    let mut n = pe.pi.layers.len();
+    loop {
+        let name = format!("{base} {n}");
+        if !pe.pi.layers.iter().any(|l| l.name == name) {
+            return name;
+        }
+        n += 1;
+    }
+}
+
+/// How a layer is named in the list: its name, or Background for the
+/// first one when it has none.
+fn layer_label(i: usize, name: &str) -> String {
+    if name.is_empty() {
+        if i == 0 {
+            tr("pixel.layer.background")
+        } else {
+            format!("{} {i}", tr("pixel.layer.name"))
+        }
+    } else {
+        name.to_string()
+    }
+}
+
+fn layers_section(ui: &mut egui::Ui, pe: &mut crate::pixel_edit_app::PixelEdit) {
+    egui::CollapsingHeader::new(tr("pixel.section.layers"))
+        .default_open(true)
+        .show(ui, |ui| {
+            // Top layer first, as they stack.
+            let n = pe.pi.layers.len();
+            let mut pick: Option<usize> = None;
+            let mut toggled = false;
+            for i in (0..n).rev() {
+                let Some(l) = pe.pi.layers.get(i) else {
+                    continue;
+                };
+                let (mut vis, mut lock) = (l.visible, l.locked);
+                let label = layer_label(i, &l.name);
+                ui.horizontal(|ui| {
+                    if ui
+                        .checkbox(&mut vis, "")
+                        .rich_tip(tr("pixel.layer.visible_tip"))
+                        .changed()
+                    {
+                        toggled = true;
+                    }
+                    if ui
+                        .checkbox(&mut lock, "")
+                        .rich_tip(tr("pixel.layer.locked_tip"))
+                        .changed()
+                    {
+                        toggled = true;
+                    }
+                    if ui.selectable_label(pe.pi.active == i, label).clicked() {
+                        pick = Some(i);
+                    }
+                });
+                if (vis, lock) != (l.visible, l.locked) {
+                    pe.apply_all(true, |pi| {
+                        let l = pi.layers.get_mut(i)?;
+                        l.visible = vis;
+                        l.locked = lock;
+                        Some([0, 0, pi.img.width(), pi.img.height()])
+                    });
+                }
+            }
+            if let Some(i) = pick {
+                if !toggled {
+                    pe.apply_all(true, |pi| {
+                        pi.set_active(i);
+                        Some([0, 0, 0, 0])
+                    });
+                }
+            }
+            // The settings of the layer in use. A drag of the opacity
+            // slider is one undo step.
+            let i = pe.pi.active;
+            if let Some(l) = pe.pi.layers.get(i).cloned() {
+                let mut name = l.name.clone();
+                let mut op = (l.opacity * 100.0).round();
+                let mut merge = l.merge;
+                ui.horizontal(|ui| {
+                    ui.label(tr("pixel.layer.rename"));
+                    ui.text_edit_singleline(&mut name);
+                });
+                let slider = ui.add(
+                    egui::Slider::new(&mut op, 0.0..=100.0)
+                        .suffix(" %")
+                        .text(tr("pixel.opt.opacity")),
+                );
+                egui::ComboBox::from_id_salt("pixel_layer_merge")
+                    .width(160.0)
+                    .selected_text(merge.name())
+                    .show_ui(ui, |ui| {
+                        for m in pixel_edit::MergeMode::ALL {
+                            ui.selectable_value(&mut merge, m, m.name());
+                        }
+                    });
+                let changed =
+                    name != l.name || (op / 100.0 - l.opacity).abs() > 1e-4 || merge != l.merge;
+                if changed {
+                    if !pe.layer_drag {
+                        pe.remember();
+                    }
+                    if let Some(m) = pe.pi.layers.get_mut(i) {
+                        m.name = name;
+                        m.opacity = op / 100.0;
+                        m.merge = merge;
+                    }
+                    pe.view.borrow_mut().full = true;
+                }
+                pe.layer_drag = slider.dragged();
+            }
+            ui.horizontal_wrapped(|ui| {
+                let name = new_layer_name(pe);
+                if ui.button(tr("pixel.layer.new")).clicked() {
+                    pe.apply_all(true, |pi| {
+                        pi.add_layer(name.clone());
+                        Some([0, 0, pi.img.width(), pi.img.height()])
+                    });
+                }
+                if ui.button(tr("pixel.layer.duplicate")).clicked() {
+                    pe.apply_all(true, |pi| {
+                        pi.duplicate_layer(name.clone());
+                        Some([0, 0, pi.img.width(), pi.img.height()])
+                    });
+                }
+                if ui
+                    .add_enabled(n > 1, egui::Button::new(tr("pixel.layer.delete")))
+                    .clicked()
+                {
+                    pe.apply_all(true, |pi| {
+                        pi.delete_layer()
+                            .then(|| [0, 0, pi.img.width(), pi.img.height()])
+                    });
+                }
+                if ui
+                    .add_enabled(i + 1 < n, egui::Button::new(tr("pixel.layer.up")))
+                    .clicked()
+                {
+                    pe.apply_all(true, |pi| {
+                        pi.move_layer(true)
+                            .then(|| [0, 0, pi.img.width(), pi.img.height()])
+                    });
+                }
+                if ui
+                    .add_enabled(i > 0, egui::Button::new(tr("pixel.layer.down")))
+                    .clicked()
+                {
+                    pe.apply_all(true, |pi| {
+                        pi.move_layer(false)
+                            .then(|| [0, 0, pi.img.width(), pi.img.height()])
+                    });
+                }
+                if ui
+                    .add_enabled(i > 0, egui::Button::new(tr("pixel.layer.merge_down")))
+                    .clicked()
+                {
+                    pe.apply_all(true, |pi| {
+                        pi.merge_down()
+                            .then(|| [0, 0, pi.img.width(), pi.img.height()])
+                    });
+                }
+                if ui
+                    .add_enabled(
+                        pe.pi.is_layered(),
+                        egui::Button::new(tr("pixel.layer.flatten")),
+                    )
+                    .clicked()
+                {
+                    pe.apply_all(true, |pi| {
+                        pi.flatten()
+                            .then(|| [0, 0, pi.img.width(), pi.img.height()])
+                    });
+                }
+            });
+            ui.horizontal_wrapped(|ui| {
+                let name = new_layer_name(pe);
+                if ui
+                    .button(tr("pixel.layer.copy_to"))
+                    .rich_tip(tr("pixel.layer.copy_to_tip"))
+                    .clicked()
+                {
+                    pe.apply_all(true, |pi| {
+                        pi.selection_to_layer(name.clone(), false)
+                            .then(|| [0, 0, pi.img.width(), pi.img.height()])
+                    });
+                }
+                if ui
+                    .button(tr("pixel.layer.cut_to"))
+                    .rich_tip(tr("pixel.layer.cut_to_tip"))
+                    .clicked()
+                {
+                    pe.apply_all(true, |pi| {
+                        pi.selection_to_layer(name.clone(), true)
+                            .then(|| [0, 0, pi.img.width(), pi.img.height()])
+                    });
+                }
+                if ui
+                    .button(tr("pixel.layer.paste"))
+                    .rich_tip(tr("pixel.layer.paste_tip"))
+                    .clicked()
+                {
+                    if let Some(img) = crate::clipboard::read_system().image {
+                        pe.apply_all(true, |pi| {
+                            pixel_edit::paste_as_layer(pi, name.clone(), &img)
+                        });
+                    }
+                }
             });
         });
 }
@@ -297,7 +524,7 @@ fn selection_section(ui: &mut egui::Ui, pe: &mut crate::pixel_edit_app::PixelEdi
                     .add_enabled(has, egui::Button::new(tr("pixel.sel.crop")))
                     .clicked()
                 {
-                    pe.apply(true, pixel_edit::crop_to_selection);
+                    pe.apply_all(true, pixel_edit::crop_to_selection);
                 }
             });
         });
@@ -410,13 +637,13 @@ fn picture_section(ui: &mut egui::Ui, pe: &mut crate::pixel_edit_app::PixelEdit)
         .show(ui, |ui| {
             ui.horizontal_wrapped(|ui| {
                 if ui.button(tr("pixel.flip_h")).clicked() {
-                    pe.apply(true, |pi| {
+                    pe.apply_all(true, |pi| {
                         pixel_edit::flip(pi, true);
                         Some([0, 0, pi.img.width(), pi.img.height()])
                     });
                 }
                 if ui.button(tr("pixel.flip_v")).clicked() {
-                    pe.apply(true, |pi| {
+                    pe.apply_all(true, |pi| {
                         pixel_edit::flip(pi, false);
                         Some([0, 0, pi.img.width(), pi.img.height()])
                     });

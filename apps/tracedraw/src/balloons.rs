@@ -350,6 +350,42 @@ impl App {
             .collect()
     }
 
+    /// The bar's Add Text (discussion #3522): a paragraph text inside the
+    /// first selected balloon, its frame the part of the body that holds
+    /// text whole (the box inside the oval, the burst or the cloud),
+    /// centred, the caret in it to type. False with no balloon selected.
+    pub fn add_text_in_balloon(&mut self) -> bool {
+        let Some((_, b, t)) = self.selected_balloons().into_iter().next() else {
+            return false;
+        };
+        let r = b.body_rect();
+        let k = match b.style {
+            BalloonStyle::Speech | BalloonStyle::Whisper => 0.68,
+            BalloonStyle::Caption => 0.84,
+            BalloonStyle::Thought => 0.58,
+            BalloonStyle::Shout => 0.5,
+        };
+        let inner = Rect::from_center_size(r.center(), (r.width() * k, r.height() * k));
+        let frame = t.transform_rect_bbox(inner);
+        if !(frame.width() > 1.0 && frame.height() > 1.0) {
+            return false;
+        }
+        // Centred, without changing what new texts get.
+        let align = std::mem::replace(
+            &mut self.text_default_align,
+            tracedraw_core::document::TextAlign::Center,
+        );
+        self.start_text(
+            Point::new(frame.x0, frame.y0),
+            Some(tracedraw_core::geometry::Size::new(
+                frame.width(),
+                frame.height(),
+            )),
+        );
+        self.text_default_align = align;
+        self.text_edit.is_some()
+    }
+
     /// The commands that make shape `id` balloon `b`.
     fn balloon_commands(&self, id: ShapeId, b: &Balloon) -> Vec<Command> {
         let Some(s) = self.doc().find_shape(id) else {
@@ -565,6 +601,39 @@ mod tests {
         odd.data = vec![(DATA_KEY.into(), "not json".into())];
         assert!(Balloon::of(&odd).is_none());
     }
+    /// Discussion #3522: Add Text puts a paragraph text inside the
+    /// selected balloon, its frame within the body, centred, with the
+    /// caret in it; what new texts get stays as it was.
+    #[test]
+    fn add_text_types_inside_the_balloon() {
+        let mut app = App::headless();
+        app.tool = Tool::Balloon;
+        assert!(!app.add_text_in_balloon(), "nothing selected");
+        app.create_box_shape(Point::new(10.0, 50.0), Point::new(50.0, 70.0));
+        let (id, b, t) = app.selected_balloons()[0];
+        let body = t.transform_rect_bbox(b.body_rect());
+        let align = app.text_default_align;
+        assert!(app.add_text_in_balloon());
+        let edit = app.text_edit.as_ref().expect("typing").shape;
+        assert_ne!(edit, id);
+        let s = app.doc().find_shape(edit).unwrap();
+        let ShapeKind::Text {
+            frame: Some(frame),
+            origin,
+            align: text_align,
+            ..
+        } = &s.kind
+        else {
+            panic!("a paragraph text: {:?}", s.kind);
+        };
+        assert_eq!(*text_align, tracedraw_core::document::TextAlign::Center);
+        let r = Rect::from_origin_size(*origin, *frame);
+        assert!(r.x0 > body.x0 && r.x1 < body.x1, "{r:?} in {body:?}");
+        assert!(r.y0 > body.y0 && r.y1 < body.y1, "{r:?} in {body:?}");
+        assert!((r.center() - body.center()).hypot() < 1e-6);
+        assert_eq!(app.text_default_align, align, "new texts as before");
+    }
+
     /// #3352: a balloon grouped with its words is picked as the group;
     /// a style chosen on the bar still turns the balloon in it, and the
     /// words are left as they are.

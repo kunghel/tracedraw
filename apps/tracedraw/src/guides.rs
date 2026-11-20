@@ -381,6 +381,59 @@ impl App {
         true
     }
 
+    /// Move guidelines from one set to another (#3599): from the master
+    /// page's (`from` `None`) or a page's own to the master page's (`to`
+    /// `None`) or a page's own, at the same places, in one undo step.
+    /// Locked ones stay. The guidelines moved become the ones edited, on
+    /// `to`'s page, selected. Returns how many moved.
+    pub fn move_guides_between(
+        &mut self,
+        from: Option<tracedraw_core::PageId>,
+        indices: &[usize],
+        to: Option<tracedraw_core::PageId>,
+    ) -> usize {
+        use tracedraw_core::Command;
+        if from == to {
+            return 0;
+        }
+        let set = |app: &App, page: Option<tracedraw_core::PageId>| match page {
+            None => Some(app.doc().master_guides.clone()),
+            Some(p) => app.doc().page(p).ok().map(|pg| pg.guides.clone()),
+        };
+        let (Some(source), Some(mut target)) = (set(self, from), set(self, to)) else {
+            return 0;
+        };
+        let (moved, keep): (Vec<(usize, Guide)>, Vec<(usize, Guide)>) = source
+            .into_iter()
+            .enumerate()
+            .partition(|(i, g)| indices.contains(i) && !g.locked);
+        if moved.is_empty() {
+            return 0;
+        }
+        let n = target.len();
+        target.extend(moved.iter().map(|(_, g)| *g));
+        let keep: Vec<Guide> = keep.into_iter().map(|(_, g)| g).collect();
+        let command = |page: Option<tracedraw_core::PageId>, guides: Vec<Guide>| match page {
+            None => Command::SetMasterGuides { guides },
+            Some(page) => Command::SetGuides { page, guides },
+        };
+        let cmds = [command(from, keep), command(to, target)];
+        if let Err(e) = self.engine.run_batch("Move Guidelines", &cmds) {
+            self.status = e.to_string();
+            return 0;
+        }
+        if let Some(i) = to.and_then(|p| self.doc().pages.iter().position(|pg| pg.id == p)) {
+            if self.doc().pages[i].id != self.page {
+                self.goto_page(i);
+            }
+        }
+        self.select(Vec::new());
+        self.edit_master_guides = to.is_none();
+        self.selected_guides = (n..n + moved.len()).collect();
+        self.guide_rotate = None;
+        moved.len()
+    }
+
     /// Edit > Copy (and Cut) with guidelines selected and no objects: the
     /// guidelines go on the clipboard, to be pasted where they are (#376).
     /// False when no guideline is selected.

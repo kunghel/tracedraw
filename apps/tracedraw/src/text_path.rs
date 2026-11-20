@@ -20,17 +20,23 @@ pub struct FittedText {
     pub to_page: Affine,
 }
 
-/// `text` fitted to `curve` (see `App::fit_text_to_path`): on a closed
-/// curve centred on the point nearest `at`, else on its highest point;
-/// with `at`, as far from the curve as `at` is, on its side.
-pub fn fit_kind(
+/// `text` fitted to `curve` (see `App::fit_text_to_path`), and the
+/// text's transform with it: on a closed curve centred on the point
+/// nearest `at`, else on its highest point; with `at`, as far from the
+/// curve as `at` is, on its side. A text squeezed or
+/// stretched on one axis (a side handle of the Pick tool) keeps the
+/// letters' shape on the path: the squeeze goes into the characters'
+/// width and the transform keeps only the even scale, the turn and the
+/// place, so the letters standing on the sides of a circle are not
+/// squeezed across (#3485).
+pub fn fit(
     text: &tracedraw_core::Shape,
     curve: &tracedraw_core::Shape,
     at: Option<Point>,
-) -> Option<ShapeKind> {
+) -> Option<(ShapeKind, Affine)> {
     let ShapeKind::Text {
-        spans,
-        origin,
+        mut spans,
+        mut origin,
         align,
         para,
         ..
@@ -38,10 +44,19 @@ pub fn fit_kind(
     else {
         return None;
     };
+    let mut transform = text.transform;
+    if let Some(k) = squeeze(transform) {
+        transform *= Affine::scale_non_uniform(1.0 / k, 1.0);
+        origin = Point::new(origin.x * k, origin.y);
+        for sp in &mut spans {
+            let w = if sp.width_pct.is_finite() { sp.width_pct } else { 100.0 };
+            sp.width_pct = (w * k).clamp(1.0, 10000.0);
+        }
+    }
     // The path turned and started as text sits on it (in page space,
     // where outside and top are seen), then in the text's local space.
     let (page_path, closed) = crate::ops2::path_for_text_at(&curve.page_path(), at);
-    let to_local = Affine::translate(-origin.to_vec2()) * text.transform.inverse();
+    let to_local = Affine::translate(-origin.to_vec2()) * transform.inverse();
     let path = to_local * page_path;
     let (align, offset) = crate::ops2::placement_on(&path, closed, align);
     let mut on_path = TextOnPath {
@@ -56,14 +71,31 @@ pub fn fit_kind(
             on_path.set_distance(d);
         }
     }
-    Some(ShapeKind::Text {
-        spans,
-        origin,
-        frame: None,
-        align,
-        para,
-        on_path: Some(on_path),
-    })
+    Some((
+        ShapeKind::Text {
+            spans,
+            origin,
+            frame: None,
+            align,
+            para,
+            on_path: Some(on_path),
+        },
+        transform,
+    ))
+}
+
+/// How much wider than tall a text's transform draws it (its x axis's
+/// length over its y axis's), when the two differ and stand square to
+/// each other; `None` for an even scale or a slant.
+fn squeeze(t: Affine) -> Option<f64> {
+    let [a, b, c, d, _, _] = t.as_coeffs();
+    let (sx, sy) = (a.hypot(b), c.hypot(d));
+    if !(sx.is_finite() && sy.is_finite()) || sx < 1e-9 || sy < 1e-9 {
+        return None;
+    }
+    let square = ((a * c + b * d) / (sx * sy)).abs() < 1e-6;
+    let k = sx / sy;
+    (square && (k - 1.0).abs() > 1e-6).then_some(k)
 }
 
 /// What Fit Text to Path shows while the pointer is near a path: the
@@ -140,7 +172,7 @@ impl App {
         })?;
         let target = self.text_path_target(p)?;
         let (_, curve) = doc.shape(target).ok()?;
-        let kind = fit_kind(text, curve, Some(p))?;
+        let (kind, transform) = fit(text, curve, Some(p))?;
         let ShapeKind::Text {
             spans,
             origin,
@@ -152,7 +184,7 @@ impl App {
         else {
             return None;
         };
-        let to_page = text.transform * Affine::translate(origin.to_vec2());
+        let to_page = transform * Affine::translate(origin.to_vec2());
         let req = tracedraw_core::document::text_outline::TextRequest {
             spans,
             frame: None,
@@ -803,6 +835,72 @@ mod tests {
     /// Text centred on the bottom of a circle stays centred there when it
     /// is moved off the path, in or out, from the bar or after the mirror
     /// buttons; it slid round the circle before (#193).
+    /// A text squeezed with a side handle and fitted to a circle (#3485)
+    /// lies on it as a text of that character width does: the squeeze
+    /// goes into the letters, the transform keeps an even scale, so the
+    /// letters on the sides of the circle are not squeezed across.
+    #[test]
+    fn a_squeezed_text_keeps_its_letters_on_a_circle() {
+        tracedraw_text::install();
+        if tracedraw_text::fonts().families().is_empty() {
+            return;
+        }
+        let mut app = App::headless();
+        let circle = |app: &mut App| {
+            app.new_shape(ShapeKind::Ellipse {
+                rect: Rect::new(60.0, 110.0, 160.0, 210.0),
+                arc: None,
+            })
+            .expect("circle")
+        };
+        let text = |app: &mut App| {
+            app.start_text(Point::new(10.0, 20.0), None);
+            app.text_insert("ABCDEFGHIJK SAMPLE TEXT");
+            app.finish_text();
+            app.selection[0]
+        };
+        // Squeezed to half its width with the Pick tool.
+        let t = text(&mut app);
+        app.selection = vec![t];
+        app.transform_selection(
+            Affine::translate((10.0, 0.0))
+                * Affine::scale_non_uniform(0.5, 1.0)
+                * Affine::translate((-10.0, 0.0)),
+        );
+        let e = circle(&mut app);
+        app.selection = vec![t, e];
+        app.fit_text_to_path();
+        let sh = app.doc().shape(t).expect("text").1.clone();
+        let [a, b, c, d, _, _] = sh.transform.as_coeffs();
+        assert!((a.hypot(b) - c.hypot(d)).abs() < 1e-9, "{:?}", sh.transform);
+        let ShapeKind::Text { spans, on_path, .. } = &sh.kind else {
+            panic!("a text");
+        };
+        assert!(on_path.is_some());
+        assert!(spans.iter().all(|sp| (sp.width_pct - 50.0).abs() < 1e-9));
+        // One undo: the squeezed straight text again.
+        app.undo();
+        let back = app.doc().shape(t).expect("text").1.clone();
+        assert!(matches!(&back.kind, ShapeKind::Text { on_path: None, .. }));
+        assert!((back.transform.as_coeffs()[0] - 0.5).abs() < 1e-9);
+        app.redo();
+        // As a text set at 50 % width and fitted to the same circle.
+        let u = text(&mut app);
+        app.selection = vec![u];
+        app.set_char_attrs("Character Width", |sp| sp.width_pct = 50.0);
+        let e2 = circle(&mut app);
+        app.selection = vec![u, e2];
+        app.fit_text_to_path();
+        let box_of = |app: &App, id| {
+            let sh = app.doc().shape(id).expect("text").1.clone();
+            app.visual_bounds(&sh)
+        };
+        let (bt, bu) = (box_of(&app, t), box_of(&app, u));
+        for (x, y) in [(bt.x0, bu.x0), (bt.y0, bu.y0), (bt.x1, bu.x1), (bt.y1, bu.y1)] {
+            assert!((x - y).abs() < 0.05, "{bt:?} {bu:?}");
+        }
+    }
+
     #[test]
     fn distance_from_the_path_keeps_the_text_in_its_place() {
         tracedraw_text::install();

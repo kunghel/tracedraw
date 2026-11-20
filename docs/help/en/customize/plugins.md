@@ -15,6 +15,10 @@ menu. Plugins can be shared as `.js` files.
 
 Installing a plugin with the name of one already installed replaces it.
 
+A plugin's commands can have keyboard shortcuts: find them by name in
+[[menu.tools > menu.tools.options > menu.tools.options_customization]] and give
+them keys like any other command.
+
 ## To write a plugin {#write}
 
 1. Choose [[menu.tools > menu.tools.plugins > menu.tools.plugin_new]]. The

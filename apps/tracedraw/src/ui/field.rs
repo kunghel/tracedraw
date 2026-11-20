@@ -1249,7 +1249,10 @@ mod tests {
     /// smoothed scroll of a notch takes to run out: the bar slid on the
     /// frames after a notch, carrying the field away from under the
     /// pointer, so the wheel stopped working on it after a step or two
-    /// (#783). Away from the fields the wheel still slides the bar.
+    /// (#783). That is for the box clicked into: over a box not clicked
+    /// into the wheel slides the bar, so a turn meant to slide the bar
+    /// changes no value (#3589). Away from the fields the wheel still
+    /// slides the bar.
     #[test]
     fn the_wheel_steps_a_field_in_a_long_bar_without_sliding_the_bar() {
         let ctx = crate::theme::ui_context();
@@ -1288,6 +1291,32 @@ mod tests {
         let start = run(&mut v, Vec::new());
         assert!(start.is_positive(), "{start:?}");
         run(&mut v, vec![egui::Event::PointerMoved(start.center())]);
+        // Not clicked into: the wheel slides the bar and leaves the
+        // value alone (#3589).
+        run(&mut v, vec![notch(-1.0)]);
+        let mut slid = start;
+        for _ in 0..20 {
+            slid = run(&mut v, Vec::new());
+        }
+        assert!(slid.left() < start.left() - 10.0, "{slid:?}");
+        assert_eq!(v, 100.0, "the wheel changed an unfocused box");
+        // Back to the start, then clicked into: the box takes the wheel.
+        run(&mut v, vec![notch(1.0), notch(1.0), notch(1.0)]);
+        for _ in 0..40 {
+            run(&mut v, Vec::new());
+        }
+        let back = run(&mut v, Vec::new());
+        assert!((back.left() - start.left()).abs() < 0.5, "{back:?}");
+        let click = |pressed| egui::Event::PointerButton {
+            pos: start.center(),
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        run(&mut v, vec![click(true)]);
+        run(&mut v, vec![click(false)]);
+        run(&mut v, Vec::new());
+        assert!(ctx.memory(|m| m.focused().is_some()), "clicked into");
         for k in 1..=8 {
             // Down: up would push the bar back past its start, where it
             // cannot go.
@@ -1318,6 +1347,7 @@ mod tests {
             run(&mut v, Vec::new());
         }
         // Over the bar away from the field the wheel slides the bar.
+        ctx.memory_mut(|m| m.stop_text_input());
         let away = egui::pos2(start.left() - 60.0, start.center().y);
         run(&mut v, vec![egui::Event::PointerMoved(away)]);
         run(&mut v, vec![notch(-1.0)]);

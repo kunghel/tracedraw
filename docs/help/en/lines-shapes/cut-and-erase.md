@@ -83,7 +83,13 @@ Erased objects become curves; an object erased completely is deleted.
 Double-click an object with the tool to delete it whole. A clip frame is
 erased through its frame: the frame loses the band and the contents inside
 are hidden along it, so the eraser cuts through the frame and its contents
-together. Bitmaps and groups are not erased. The defaults of the eraser are on the
+together. Groups are not erased.
+
+On a picture the eraser makes the pixels transparent along the nib, with a
+soft edge: **Hardness** on the property bar is how much of the nib erases
+fully before its edge fades out (0 % is all soft edge), and **Strength** how
+much of each pixel it takes at most (100 % makes it fully transparent). Use a
+wide, soft nib to fade a picture into the background. The defaults of the eraser are on the
 [[tool.eraser]] page of the tool options; see
 [Tool options](../customize/tool-options.md#eraser).
 

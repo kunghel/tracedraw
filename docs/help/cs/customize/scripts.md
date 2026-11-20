@@ -63,3 +63,7 @@ formáty bez otevření programu, pro dávkovou práci.
 ## Makra {#macros}
 
 TraceDraw spouští projekty maker VBA napsané pro kreslicí programy (verze pro počítač). [[menu.tools > menu.tools.macros > menu.tools.macros_load]] přidá projekt (`.gms`) nebo soubory modulů (`.bas`, `.cls`, `.frm`); projekty se uchovají a načtou při spuštění. Panel [[docker.macros]] zobrazuje jejich makra: poklepejte na makro nebo použijte [[menu.tools > menu.tools.macros > menu.tools.macros_run]] (<kbd>Alt+Shift+F8</kbd>). Formuláře, okna se zprávou a vstupní okna makra se zobrazí na obrazovce, <kbd>Esc</kbd> nebo [[menu.tools > menu.tools.macros > menu.tools.macros_stop]] makro zastaví a vše, co jedno spuštění změní, je jeden krok zpět. [[menu.tools > menu.tools.macros > menu.tools.macro_editor]] (<kbd>Alt+F11</kbd>) zobrazí a upraví kód. Makra volající funkce Windows nebo objektový model samotného editoru nefungují.
+
+## Pracovní postup {#workflow}
+
+[[menu.tools > menu.tools.workflow]] řetězí kroky s obrázky nakreslené jako rámečky spojené dráty: Vstup (výběr nebo soubor obrázku), Vektorizovat, Přebarvit, Efekt, Porovnat a Exportovat (na stránku jako jeden krok zpět, nebo do souboru PNG či SVG). Tažením z pravé tečky kroku na levou tečku jiného je propojíte; jeden výstup může napájet více větví a krok Porovnat ukáže až čtyři výsledky vedle sebe. Náhled ukáže výsledek každého kroku bez změny kresby, Spustit navíc provede kroky Exportovat a Spustit na souboru obrázku proběhne jednou na souboru. Uložit zachová postup jako soubor `.tdflow` pro další obrázky.

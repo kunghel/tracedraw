@@ -41,3 +41,7 @@ TraceDraw 支持模型上下文协议（Model Context Protocol），因此你计
 ## 宏 {#macros}
 
 TraceDraw 可以运行为绘图程序编写的 VBA 宏项目（桌面版）。[[menu.tools > menu.tools.macros > menu.tools.macros_load]] 添加一个项目（`.gms`）或模块文件（`.bas`、`.cls`、`.frm`）；项目会被保留并在启动时加载。[[docker.macros]] 列出其中的宏：双击某个宏或使用 [[menu.tools > menu.tools.macros > menu.tools.macros_run]]（<kbd>Alt+Shift+F8</kbd>）运行它。宏的窗体、消息框和输入框会显示在屏幕上，<kbd>Esc</kbd> 或 [[menu.tools > menu.tools.macros > menu.tools.macros_stop]] 可停止它，一次运行所做的全部更改为一个撤销步骤。[[menu.tools > menu.tools.macros > menu.tools.macro_editor]]（<kbd>Alt+F11</kbd>）显示并编辑代码。调用 Windows 函数或编辑器自身对象模型的宏无法运行。
+
+## 工作流 {#workflow}
+
+[[menu.tools > menu.tools.workflow]] 将图片处理步骤串联起来，每个步骤是一个方框，用连线相接：输入（所选对象或图片文件）、矢量化、重新着色、效果、比较和导出（作为一次撤消放到页面上，或保存为 PNG 或 SVG 文件）。从一个步骤右侧的圆点拖到另一步骤左侧的圆点即可相连；一个输出可以连到多个分支，比较步骤可并排显示最多四个结果。预览在不改变绘图的情况下显示每个步骤的结果，运行还会执行导出步骤，对图片文件运行则用一个图片文件运行一次。保存会把工作流存为 `.tdflow` 文件，以便用于其他图片。

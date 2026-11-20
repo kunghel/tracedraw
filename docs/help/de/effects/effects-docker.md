@@ -28,6 +28,12 @@ seinem eigenen Werkzeug oder Andockfenster bearbeitet.
 
 - [[menu.effects > menu.effects.flatten]] wandelt die Effekte der ausgewählten
   Objekte in einfache Objekte um.
+- [[menu.effects > menu.effects.merge_shapes]] gruppiert die gewählten
+  Objekte und gibt der Gruppe ein Live-[[effect.offset_path]], das sie zu
+  einem Umriss verbindet, gerundet, wo sie sich treffen, und gefärbt wie das
+  unterste Objekt: Verschieben Sie ein Objekt, fließen die Formen ineinander
+  oder trennen sich. **Glätten** stellen Sie in den Ebeneneffekten oben im
+  Bedienfeld ein.
 - [[menu.effects.picker]] zeigt eine Liste von Effekten, die auf die Auswahl
   angewendet werden können.
 - [[menu.object > menu.object.clear_effect]] entfernt den Effekt der Auswahl.

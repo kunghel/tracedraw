@@ -161,6 +161,50 @@ pub fn vector_mosaic(app: &mut App, ui: &mut Ui) {
                 s.mono_color = rgb;
             }
         });
+        // Remove background: on, the tolerance, and Auto (the edges'
+        // colour) or a picked colour.
+        ui.horizontal(|ui| {
+            ui.checkbox(
+                &mut s.skip_background,
+                tr("docker.vector_mosaic_skip_background"),
+            )
+            .rich_tip(crate::ui::tips::keyed("docker.vector_mosaic_skip_background"));
+            let tip = crate::ui::tips::keyed("docker.vector_mosaic_background_tolerance");
+            ui.add_enabled(
+                s.skip_background,
+                crate::ui::field::NumField::new(&mut s.background_tolerance)
+                    .range(0.0..=100.0)
+                    .speed(0.5)
+                    .max_decimals(0)
+                    .suffix(" %"),
+            )
+            .rich_tip(tip.clone())
+            .rich_disabled_tip(tip);
+        });
+        indented(ui, |ui| {
+            ui.add_enabled_ui(s.skip_background, |ui| {
+                ui.horizontal(|ui| {
+                    let mut auto = s.background.is_none();
+                    if ui
+                        .checkbox(&mut auto, tr("docker.vector_mosaic_background_auto"))
+                        .rich_tip(crate::ui::tips::keyed(
+                            "docker.vector_mosaic_background_auto",
+                        ))
+                        .changed()
+                    {
+                        s.background = if auto { None } else { Some([255, 255, 255]) };
+                    }
+                    let mut rgb = s.background.unwrap_or([255, 255, 255]);
+                    if ui
+                        .add_enabled_ui(!auto, |ui| ui.color_edit_button_srgb(&mut rgb))
+                        .inner
+                        .changed()
+                    {
+                        s.background = Some(rgb);
+                    }
+                });
+            });
+        });
         ui.horizontal(|ui| {
             ui.checkbox(&mut s.limit_colors, tr("docker.vector_mosaic_limit_colors"))
                 .rich_tip(crate::ui::tips::keyed("docker.vector_mosaic_limit_colors"));

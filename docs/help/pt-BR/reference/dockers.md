@@ -6,6 +6,10 @@ Abra-os em [[menu.window > menu.window.dockers]], com o atalho deles, ou com o
 direito da janela (o lado esquerdo em idiomas da direita para a esquerda). Esta
 página lista cada painel e a página que o explica.
 
+Solte a aba de um painel na parte de baixo de um painel aberto para mostrar os
+dois um acima do outro. A aba do painel de baixo vai para o fim das abas, e um
+clique em qualquer das duas abas fecha e abre a coluna sem desfazer a divisão.
+
 | Painel | Tecla | Página |
 |---|---|---|
 | [[docker.properties]] | <kbd>Alt+Enter</kbd> | [→](../objects/properties-docker.md) |

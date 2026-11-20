@@ -11,6 +11,14 @@ At first, imported objects go where the file has them. To center them in the
 view instead, change the setting on the [[options.file_formats]] page of the
 global options; see [Global options](../customize/global-options.md#file-formats).
 
+When the import waits for its place with the pointer, several files picked
+at once come in one after another. To lay them out in a grid instead, drag
+a box for the first one and, while you drag, press the arrow keys: Right and
+Left add and take away a column, Up and Down a row, and the tag beside the
+pointer shows how many. When you let go, each file comes in fitted in its
+own cell, its proportions kept, in the middle of it; files beyond the last
+cell wait for their own place as before.
+
 ## Notes on some formats {#formats}
 
 - **PDF and AI**: the [[pdf_import.title]] dialog box asks how to read the

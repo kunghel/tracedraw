@@ -85,6 +85,55 @@ pub fn ellipse_arc_path(rect: Rect, start_deg: f64, end_deg: f64, pie: bool) -> 
     path
 }
 
+/// A ring sector of the ellipse that fills `rect`: the band between the
+/// ellipse and a smaller one at `inner` times its radii (0 to 0.99), from
+/// `start_deg` to `end_deg` counter-clockwise, closed across both ends; a
+/// whole turn is a ring (the outline and the inner ellipse turning the
+/// other way, so the middle stays empty under either fill rule). `inner`
+/// 0 or less is the pie itself.
+pub fn ellipse_ring_path(rect: Rect, start_deg: f64, end_deg: f64, inner: f64) -> BezPath {
+    if !inner.is_finite() || inner <= 0.0 {
+        return ellipse_arc_path(rect, start_deg, end_deg, true);
+    }
+    let k = inner.min(0.99);
+    let c = rect.center();
+    let radii = kurbo::Vec2::new(rect.width() / 2.0, rect.height() / 2.0);
+    let inner_radii = radii * k;
+    let mut sweep = (end_deg - start_deg).rem_euclid(360.0);
+    let whole = sweep == 0.0;
+    if whole {
+        sweep = 360.0;
+    }
+    let tolerance = (radii.x.abs().max(radii.y.abs()) * 1e-6).max(0.1);
+    let at = |r: kurbo::Vec2, deg: f64| {
+        Point::new(
+            c.x + r.x * deg.to_radians().cos(),
+            c.y + r.y * deg.to_radians().sin(),
+        )
+    };
+    let mut path = BezPath::new();
+    path.move_to(at(radii, start_deg));
+    kurbo::Arc::new(c, radii, start_deg.to_radians(), sweep.to_radians(), 0.0)
+        .append_iter(tolerance)
+        .for_each(|el| path.push(el));
+    let back = kurbo::Arc::new(
+        c,
+        inner_radii,
+        (start_deg + sweep).to_radians(),
+        -sweep.to_radians(),
+        0.0,
+    );
+    if whole {
+        path.close_path();
+        path.move_to(at(inner_radii, start_deg + sweep));
+    } else {
+        path.line_to(at(inner_radii, start_deg + sweep));
+    }
+    back.append_iter(tolerance).for_each(|el| path.push(el));
+    path.close_path();
+    path
+}
+
 /// Build a regular polygon or star inscribed in the ellipse that fills
 /// `rect`, with its first vertex at the top.
 ///
@@ -1011,6 +1060,35 @@ mod tests {
                 "{n} {sharp}: {b:?}"
             );
         }
+    }
+
+    /// A ring sector is the band between the outline and the inner
+    /// ellipse: its area is the pie's less the inner pie's, a whole turn
+    /// leaves the middle empty under both fill rules, and no inner radius
+    /// is the pie.
+    #[test]
+    fn a_ring_sector_is_the_band_between_two_ellipses() {
+        let r = Rect::new(-10.0, -10.0, 10.0, 10.0);
+        let quarter = ellipse_ring_path(r, 0.0, 90.0, 0.5);
+        let want = std::f64::consts::PI * (100.0 - 25.0) / 4.0;
+        assert!((quarter.area().abs() - want).abs() < 0.2, "{}", quarter.area());
+        for (x, y, inside) in [(7.0, 3.0, true), (2.0, 2.0, false), (-7.0, 3.0, false)] {
+            let w = quarter.winding(Point::new(x, y));
+            assert_eq!(w != 0, inside, "({x}, {y}) winding {w}");
+        }
+        let ring = ellipse_ring_path(r, 30.0, 30.0, 0.5);
+        assert_eq!(ring.winding(Point::new(0.0, 0.0)), 0, "middle is empty");
+        assert_ne!(ring.winding(Point::new(0.0, 7.5)), 0, "band is filled");
+        let want = std::f64::consts::PI * (100.0 - 25.0);
+        assert!((ring.area().abs() - want).abs() < 0.5, "{}", ring.area());
+        assert_eq!(
+            ellipse_ring_path(r, 0.0, 90.0, 0.0),
+            ellipse_arc_path(r, 0.0, 90.0, true)
+        );
+        assert_eq!(
+            ellipse_ring_path(r, 0.0, 90.0, f64::NAN),
+            ellipse_arc_path(r, 0.0, 90.0, true)
+        );
     }
 
     /// An arc with a huge radius, as a damaged file gives, is a handful of

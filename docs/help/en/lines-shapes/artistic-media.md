@@ -6,7 +6,7 @@ object with marks of chalk, ink, watercolor and other media.
 
 ## Brush Strokes {#brush-strokes}
 
-The [[tool.brush_strokes]] tool (<kbd>I</kbd>) draws strokes in one of five
+The [[tool.brush_strokes]] tool (<kbd>I</kbd>) draws strokes in one of seven
 modes. A Preset, Brush, Calligraphic or Expression stroke stays the path you
 drew, an open curve of a few nodes, with the brush as its live outline: edit
 its nodes with the Shape tool afterwards and the brush follows. The Sprayer
@@ -45,6 +45,13 @@ and Expression strokes; see
 - **Sprayer**: shapes (circles, squares, stars, hearts or leaves) placed
   along the line every spacing (8 mm at first), each between 70% and 100%
   of the width.
+- **Tiles**: a small picture (chain, rope, zigzag, dash and dot, waves or
+  beads) repeated end to end along the line and bent to follow it, as wide
+  as the width. The tiles stretch a little so they meet both ends. Like the
+  Sprayer, the line stays and the tiles follow its nodes.
+- **Merge**: a round stroke of the width that becomes one object with every
+  object it touches that has the same fill color and no outline, on the
+  active layer. Paint over a shape to grow it in one piece.
 
 ### Settings {#brush-settings}
 
@@ -54,6 +61,7 @@ and Expression strokes; see
 - **Pressure**: how much the width follows the pen pressure (0.5 at first),
   for Preset, Brush and Expression.
 - **Spacing**: for Sprayer.
+- **Shape**: the tile picture, for Tiles.
 
 ## Painterly Brush {#painterly-brush}
 

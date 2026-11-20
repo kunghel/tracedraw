@@ -3,7 +3,8 @@
 An envelope is a frame of nodes around an object; the object is bent to fill
 the frame, and follows when you move its nodes. Use it to arch text, bulge a
 shape or fit artwork into a flag or a circle. The object keeps its own shape,
-so the envelope can be changed or removed at any time.
+so the envelope can be changed or removed at any time. Pictures bend too,
+alone or inside a group or clip frame.
 
 ## To add an envelope {#create}
 

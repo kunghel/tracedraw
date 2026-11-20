@@ -31,6 +31,14 @@ Ctrl+F7).
   the steps between the two objects follow the envelope; they used to be
   mixed toward the unbent end and stayed where they were (#2120,
   `tracedraw_core::live::tests::a_grouped_blend_bends_with_the_group`).
+- A picture bends with the frame, alone or inside a group or clip frame:
+  it is cut into a fine mesh (48 cells a side) whose corners go through
+  the same map as the outlines, and each cell takes the picture's pixels
+  between its corners, transparent where the bent picture does not reach.
+  Pictures used to stay as they were while the outlines around them bent
+  (#3608, `tracedraw_core::live::tests::envelope_bends_pictures_alone_and_in_groups`,
+  `tracedraw_core::bitmap_warp::tests::a_bent_picture_follows_the_warp`).
+  Keep lines does not apply to a picture, which always bends smoothly.
 - On an extruded object the envelope bends the body too, whichever of
   the two was put on first: an outline warp (envelope, perspective,
   distortion) after an extrusion in the object's effects is put on the

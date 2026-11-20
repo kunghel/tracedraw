@@ -172,6 +172,7 @@ pub fn draw_canvas(app: &App, painter: &Painter, rect: ERect) {
     draw_drop_frame(app, painter);
     draw_drop_colour(app, painter);
     draw_symmetry_lines(app, painter, rect);
+    draw_grid_handles(app, painter);
     draw_anchors(app, painter);
     draw_fountain_handles(app, painter);
     draw_pattern_handles(app, painter);
@@ -180,7 +181,25 @@ pub fn draw_canvas(app: &App, painter: &Painter, rect: ERect) {
     draw_contour_handles(app, painter);
     draw_offset_shadow_handle(app, painter);
     draw_blend_controls(app, painter);
+    draw_live_fit_handles(app, painter);
 
+    // Rotate by Two Lines: the lines clicked so far, the last to the
+    // pointer (#2870).
+    if let Some(pts) = &app.pending_rotate_lines {
+        let mut pts = pts.clone();
+        if let Some(p) = app.pointer_page {
+            pts.push(app.snap_point(p));
+        }
+        for line in pts.chunks(2) {
+            let screen: Vec<Pos2> = line.iter().map(|q| view.to_screen(*q)).collect();
+            if screen.len() == 2 {
+                haloed_polyline(painter, &screen, false, Tokens::SELECTION);
+            }
+            for q in &screen {
+                painter.circle_filled(*q, 3.0, Tokens::SELECTION);
+            }
+        }
+    }
     // Fit Text to Path waiting for its path: the text on the one near.
     if app.pending_text_path {
         if let Some(p) = app.pointer_page {
@@ -216,6 +235,18 @@ pub fn draw_canvas(app: &App, painter: &Painter, rect: ERect) {
     // The box a drag sizes File > Import's file to (#1936).
     if let Some(r) = app.import_placement_box() {
         haloed_rect(painter, view.rect_to_screen(r), Tokens::SELECTION);
+        // Several files: the cells they go to.
+        let cells = app.import_placement_cells();
+        if cells.len() > 1 {
+            for c in cells {
+                painter.rect_stroke(
+                    view.rect_to_screen(c),
+                    0.0,
+                    EStroke::new(1.0, Tokens::SELECTION),
+                    egui::StrokeKind::Inside,
+                );
+            }
+        }
     }
     draw_import_tag(app, painter);
     // Rubber bands and in-progress tools.
@@ -859,36 +890,43 @@ fn draw_page(app: &App, painter: &Painter, rect: ERect, preview: Option<Affine>)
     }
 
     if let Some((tex, at)) = main {
+        // The bands of the new picture done so far, sharp over the last
+        // one while it is shown scaled after a zoom (#2389). Under them
+        // the last picture is left out: both are see-through, and a
+        // see-through object showed twice as dark there until the whole
+        // picture came (#3639).
+        #[cfg(not(target_arch = "wasm32"))]
+        let incoming = app.raster.borrow().incoming(view);
+        #[cfg(not(target_arch = "wasm32"))]
+        let covered: &[ERect] = incoming.as_ref().map_or(&[], |i| &i.2);
+        #[cfg(target_arch = "wasm32")]
+        let covered: &[ERect] = &[];
+        let full = ERect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0));
         // Where the picture does not reach (it is shown scaled or shifted
         // into place while the view moves): the whole page drawn small,
         // instead of blank paper until the new picture comes (#2048).
         #[cfg(not(target_arch = "wasm32"))]
         if let Some((back, back_at)) = backdrop {
             for part in backdrop_parts(rect, at, back_at) {
-                painter.with_clip_rect(part).image(
-                    back,
-                    back_at,
-                    ERect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
-                    Color32::WHITE,
-                );
+                for part in outside(part, covered) {
+                    painter
+                        .with_clip_rect(part)
+                        .image(back, back_at, full, Color32::WHITE);
+                }
             }
         }
-        painter.image(
-            tex,
-            at,
-            ERect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
-            Color32::WHITE,
-        );
-        // The bands of the new picture done so far, sharp over the last
-        // one while it is shown scaled after a zoom (#2389).
+        if covered.is_empty() {
+            painter.image(tex, at, full, Color32::WHITE);
+        } else {
+            for part in outside(at.intersect(rect), covered) {
+                painter
+                    .with_clip_rect(part)
+                    .image(tex, at, full, Color32::WHITE);
+            }
+        }
         #[cfg(not(target_arch = "wasm32"))]
-        if let Some((bands, bands_at)) = app.raster.borrow().incoming(view) {
-            painter.image(
-                bands,
-                bands_at,
-                ERect::from_min_max(Pos2::ZERO, Pos2::new(1.0, 1.0)),
-                Color32::WHITE,
-            );
+        if let Some((bands, bands_at, _)) = incoming {
+            painter.image(bands, bands_at, full, Color32::WHITE);
         }
     }
 
@@ -1789,9 +1827,83 @@ fn draw_contour_handles(app: &App, painter: &Painter) {
     );
 }
 
+/// Pick tool, a live Fit Objects to Path selected: a diamond on the
+/// second object's point on the path (the spacing) and, under the path's
+/// middle, a ring joined to a dot there (the turn of all the objects);
+/// while one is dragged, its value in a tag beside the pointer.
+fn draw_live_fit_handles(app: &App, painter: &Painter) {
+    let Some(h) = app.live_fit_handles() else {
+        return;
+    };
+    let view = &app.view;
+    let dragged = match &app.drag {
+        Drag::FitPathHandle(d) => Some(d),
+        _ => None,
+    };
+    let stroke = EStroke::new(1.0, Tokens::SELECTION);
+    let fill = |on: bool| {
+        if on {
+            Tokens::SELECTION
+        } else {
+            Color32::WHITE
+        }
+    };
+    if let Some(p) = h.spacing {
+        let c = view.to_screen(p);
+        let r = 5.0;
+        let on =
+            dragged.is_some_and(|d| matches!(d.kind, crate::fit_live::HandleKind::Spacing { .. }));
+        painter.add(egui::Shape::convex_polygon(
+            vec![
+                c + egui::vec2(0.0, -r),
+                c + egui::vec2(r, 0.0),
+                c + egui::vec2(0.0, r),
+                c + egui::vec2(-r, 0.0),
+            ],
+            fill(on),
+            stroke,
+        ));
+    }
+    let mid = view.to_screen(h.centre);
+    let turn = view.to_screen(app.live_turn_handle(&h));
+    painter.line_segment([mid, turn], stroke);
+    painter.circle_filled(mid, 2.0, Tokens::SELECTION);
+    let on = dragged.is_some_and(|d| matches!(d.kind, crate::fit_live::HandleKind::Turn { .. }));
+    painter.circle(turn, 4.5, fill(on), stroke);
+    if let Some(d) = dragged.filter(|d| !d.shown.is_empty()) {
+        if let Some(at) = painter.ctx().pointer_latest_pos() {
+            crate::corner_widgets::tag(painter, at + egui::vec2(14.0, 14.0), &d.shown);
+        }
+    }
+}
+
 /// Block Shadow and Inner Shadow tools: the selected shadow's line from
 /// the object's middle and the square at its end (#1280), filled while it
 /// is dragged.
+/// The handles of the selected object's Grid effect: round ones for the
+/// gaps, a square one for how many cells.
+fn draw_grid_handles(app: &App, painter: &Painter) {
+    use crate::grid_handles::GridHandle;
+    let view = &app.view;
+    let line = EStroke::new(1.5, Tokens::SELECTION);
+    for (h, at) in app.grid_handles() {
+        let q = view.to_screen(at);
+        let held = matches!(&app.drag, Drag::GridHandle { handle, .. } if *handle == h);
+        let fill = if held { Tokens::SELECTION } else { Color32::WHITE };
+        match h {
+            GridHandle::GapX | GridHandle::GapY => {
+                painter.circle_filled(q, 4.5, fill);
+                painter.circle_stroke(q, 4.5, line);
+            }
+            GridHandle::Count => {
+                let r = ERect::from_center_size(q, egui::vec2(8.0, 8.0));
+                painter.rect_filled(r, 0.0, fill);
+                painter.rect_stroke(r, 0.0, line, egui::StrokeKind::Outside);
+            }
+        }
+    }
+}
+
 fn draw_offset_shadow_handle(app: &App, painter: &Painter) {
     let Some(h) = app.offset_shadow_handle() else {
         return;

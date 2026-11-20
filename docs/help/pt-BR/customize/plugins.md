@@ -15,6 +15,10 @@ roda pelo menu. Plugins podem ser compartilhados como arquivos `.js`.
 
 Instalar um plugin com o nome de outro já instalado o substitui.
 
+Os comandos de um plugin podem ter atalhos de teclado: procure-os pelo nome
+em [[menu.tools > menu.tools.options > menu.tools.options_customization]] e dê teclas
+a eles como a qualquer outro comando.
+
 ## Para escrever um plugin {#write}
 
 1. Escolha [[menu.tools > menu.tools.plugins > menu.tools.plugin_new]]. O

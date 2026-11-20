@@ -170,6 +170,11 @@ pub const TEXTURE: &[EffectSpec] = &[
         apply: stone,
         reach: no_reach,
     },
+    super::sketch::EMBOSSED_PAPER,
+    super::sketch::GYPSUM_CAST,
+    super::sketch::FILM_CLUMPING,
+    super::sketch::CRACKED_SURFACE,
+    super::sketch::QUILT_SQUARES,
 ];
 
 pub fn rotate_3d(img: &RgbaImage, p: &P) -> RgbaImage {

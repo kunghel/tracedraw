@@ -50,6 +50,13 @@ pub struct PixelEdit {
     pub drag_from: Option<(f32, f32)>,
     pub drag_to: Option<(f32, f32)>,
     pub lasso: Vec<(f32, f32)>,
+    /// Move: the layer's pixels when the drag started, and how far the
+    /// drag has moved them.
+    pub move_base: Option<image::RgbaImage>,
+    pub move_by: (i64, i64),
+    /// The opacity slider of the layer in use is being dragged (its
+    /// undo step is already remembered).
+    pub layer_drag: bool,
     /// Clone and heal: the source set with Alt+click, and the offset
     /// fixed by the first stroke after it (the source follows the brush).
     pub clone_src: Option<(f32, f32)>,
@@ -65,6 +72,8 @@ pub struct PixelEdit {
     pub view: RefCell<PixelView>,
     /// The drawing without the picture, for the page under the edit.
     pub hidden: RefCell<Option<(u64, std::rc::Rc<Document>)>>,
+    /// The Light tool's lights (see `pixel_light.rs`).
+    pub lights: crate::pixel_light::Lights,
 }
 
 impl PixelEdit {
@@ -99,8 +108,15 @@ impl PixelEdit {
         v.sel_changed = true;
     }
 
+    /// Remember the picture before a change made outside `apply` (the
+    /// layer settings).
+    pub fn remember(&mut self) {
+        self.step();
+    }
+
     /// Remember the picture before a change.
     fn step(&mut self) {
+        self.lights.bake();
         self.history.push(&self.pi);
         self.changed = true;
         self.preview = None;
@@ -113,6 +129,10 @@ impl PixelEdit {
     }
 
     pub fn undo(&mut self) {
+        // Live lights undo their strokes one by one first.
+        if self.lights.is_live() && self.undo_light() {
+            return;
+        }
         if self.history.undo(&mut self.pi) {
             self.mark_all();
             self.preview = None;
@@ -120,15 +140,31 @@ impl PixelEdit {
     }
 
     pub fn redo(&mut self) {
+        self.lights.bake();
         if self.history.redo(&mut self.pi) {
             self.mark_all();
             self.preview = None;
         }
     }
 
-    /// Run an operation on the picture as one undo step; `full` when it
-    /// may change the size or every pixel.
+    /// Run an operation on the pixels of the layer in use as one undo
+    /// step; `full` when it may change the size or every pixel. Nothing
+    /// happens on a locked layer.
     pub fn apply(&mut self, full: bool, f: impl FnOnce(&mut PixelImage) -> Option<Dirty>) -> bool {
+        if self.pi.active_locked() {
+            return false;
+        }
+        self.apply_all(full, f)
+    }
+
+    /// Run an operation on the whole picture (every layer: crop, flip,
+    /// the layer commands) as one undo step.
+    pub fn apply_all(
+        &mut self,
+        full: bool,
+        f: impl FnOnce(&mut PixelImage) -> Option<Dirty>,
+    ) -> bool {
+        self.lights.bake();
         let before = self.pi.clone();
         let dims = self.pi.img.dimensions();
         match f(&mut self.pi) {
@@ -225,6 +261,9 @@ impl App {
             drag_from: None,
             drag_to: None,
             lasso: Vec::new(),
+            move_base: None,
+            move_by: (0, 0),
+            layer_drag: false,
             clone_src: None,
             clone_offset: None,
             changed: false,
@@ -239,6 +278,7 @@ impl App {
                 ..Default::default()
             }),
             hidden: RefCell::new(None),
+            lights: Default::default(),
         }));
         // No selection handles over the pixels being edited.
         self.selection.clear();
@@ -263,11 +303,17 @@ impl App {
         let Some(s) = self.doc().find_shape(pe.shape).cloned() else {
             return;
         };
-        let Some(png) = crate::bitmap_fx::encode(&pe.pi.img) else {
+        // The layers put together: what was seen goes back in the picture.
+        let pixels = if pe.pi.is_layered() {
+            pe.pi.composite()
+        } else {
+            pe.pi.img.clone()
+        };
+        let Some(png) = crate::bitmap_fx::encode(&pixels) else {
             self.status = tr("pixel.status.unreadable");
             return;
         };
-        let (w, h) = pe.pi.img.dimensions();
+        let (w, h) = pixels.dimensions();
         // The box of the pixels as they are now, in the object's own
         // space: a crop keeps the pixels where they were.
         let sx = pe.rect.width() / pe.size_px.0.max(1) as f64;
@@ -351,6 +397,7 @@ impl App {
         };
         let Some(p) = pointer else {
             if response.drag_stopped() {
+                pe.lights.end_stroke();
                 pixel_release(pe, mods);
             }
             return;
@@ -376,6 +423,63 @@ impl App {
                 pe.clone_src = Some((x, y));
                 pe.clone_offset = None;
                 self.status = tr("pixel.status.source_set");
+            }
+            return;
+        }
+        // A locked layer keeps its pixels: only the selections and the
+        // eyedropper work on it.
+        let paints = tool.is_brush()
+            || tool == PixelTool::Light
+            || matches!(
+                tool,
+                PixelTool::Fill | PixelTool::Gradient | PixelTool::Move
+            );
+        if paints && pe.pi.active_locked() {
+            if started || clicked {
+                self.status = tr("pixel.status.layer_locked");
+            }
+            return;
+        }
+        if tool == PixelTool::Move {
+            if started {
+                pe.step();
+                pe.move_base = Some(pe.pi.img.clone());
+                pe.move_by = (0, 0);
+                pe.drag_from = Some((x, y));
+            } else if dragged {
+                if let (Some(base), Some(from)) = (pe.move_base.as_ref(), pe.drag_from) {
+                    let by = ((x - from.0).round() as i64, (y - from.1).round() as i64);
+                    if by != pe.move_by {
+                        pe.move_by = by;
+                        pe.pi.img = pixel_edit::offset_image(base, by.0, by.1);
+                        pe.view.borrow_mut().full = true;
+                    }
+                }
+            }
+            if stopped {
+                pe.move_base = None;
+                pe.drag_from = None;
+            }
+            return;
+        }
+        if tool == PixelTool::Light {
+            use crate::pixel_light::LightEvent;
+            let ev = if started || (clicked && !dragged) {
+                Some(if started {
+                    LightEvent::Press
+                } else {
+                    LightEvent::Click
+                })
+            } else if dragged {
+                Some(LightEvent::Drag)
+            } else {
+                None
+            };
+            if let Some(ev) = ev {
+                pe.light_input(x, y, ev, mods.alt);
+            }
+            if stopped {
+                pe.light_input(x, y, LightEvent::Release, mods.alt);
             }
             return;
         }
@@ -470,7 +574,7 @@ impl App {
                 });
             }
             PixelTool::Eyedropper if clicked && inside => {
-                if let Some(q) = pe.pi.img.get_pixel_checked(x as u32, y as u32) {
+                if let Some(q) = pe.pi.seen_at(x as u32, y as u32) {
                     pe.opts.color = [q[0], q[1], q[2], 255];
                 }
             }
@@ -533,6 +637,7 @@ impl App {
                 (Key::O, PixelTool::Dodge),
                 (Key::I, PixelTool::Eyedropper),
                 (Key::R, PixelTool::Blur),
+                (Key::V, PixelTool::Move),
             ] {
                 if pressed(k, Modifiers::NONE) {
                     pe.tool = t;
@@ -612,9 +717,15 @@ pub fn draw(app: &App, painter: &egui::Painter) {
         .as_ref()
         .is_some_and(|t| t.size() != [w as usize, h as usize]);
     let opts = egui::TextureOptions::NEAREST;
+    // Layers: what is seen is put together from them (only the changed
+    // box while painting).
+    let layered = pe.pi.is_layered();
     if v.tex.is_none() || v.full || size_changed || preview || v.showed_preview {
-        let img =
-            egui::ColorImage::from_rgba_unmultiplied([w as usize, h as usize], shown.as_raw());
+        let composed = layered
+            .then(|| pe.pi.composite_region([0, 0, w, h], pe.preview.as_ref()))
+            .flatten();
+        let px = composed.as_ref().unwrap_or(shown);
+        let img = egui::ColorImage::from_rgba_unmultiplied([w as usize, h as usize], px.as_raw());
         match v.tex.as_mut() {
             Some(t) if !size_changed => t.set(img, opts),
             _ => v.tex = Some(ctx.load_texture("pixel_edit", img, opts)),
@@ -626,19 +737,27 @@ pub fn draw(app: &App, painter: &egui::Painter) {
         let (x1, y1) = (b[2].min(w), b[3].min(h));
         if x1 > x0 && y1 > y0 {
             let mut part = Vec::with_capacity(((x1 - x0) * (y1 - y0) * 4) as usize);
-            for y in y0..y1 {
-                let row = (y * w + x0) as usize * 4;
-                let end = (y * w + x1) as usize * 4;
-                if let Some(px) = shown.as_raw().get(row..end) {
-                    part.extend_from_slice(px);
+            if layered {
+                if let Some(m) = pe.pi.composite_region([x0, y0, x1, y1], None) {
+                    part = m.into_raw();
+                }
+            } else {
+                for y in y0..y1 {
+                    let row = (y * w + x0) as usize * 4;
+                    let end = (y * w + x1) as usize * 4;
+                    if let Some(px) = shown.as_raw().get(row..end) {
+                        part.extend_from_slice(px);
+                    }
                 }
             }
-            let img = egui::ColorImage::from_rgba_unmultiplied(
-                [(x1 - x0) as usize, (y1 - y0) as usize],
-                &part,
-            );
-            if let Some(t) = v.tex.as_mut() {
-                t.set_partial([x0 as usize, y0 as usize], img, opts);
+            if part.len() == ((x1 - x0) * (y1 - y0) * 4) as usize {
+                let img = egui::ColorImage::from_rgba_unmultiplied(
+                    [(x1 - x0) as usize, (y1 - y0) as usize],
+                    &part,
+                );
+                if let Some(t) = v.tex.as_mut() {
+                    t.set_partial([x0 as usize, y0 as usize], img, opts);
+                }
             }
         }
     }
@@ -721,7 +840,7 @@ pub fn draw(app: &App, painter: &egui::Painter) {
         painter.add(egui::Shape::line(pts, ink));
     }
     // The brush's size under the pointer, and the clone source.
-    if pe.tool.is_brush() {
+    if pe.tool.is_brush() || pe.tool == PixelTool::Light {
         if let Some(pp) = app.pointer_page {
             let (x, y) = pe.to_px(pp);
             let r = pe.opts.size / 2.0;
@@ -913,6 +1032,33 @@ mod tests {
         assert_eq!(pe.pi.img.get_pixel(0, 0)[0], 255);
         pe.redo();
         assert_eq!(pe.pi.img.get_pixel(0, 0)[0], 0);
+    }
+
+    #[test]
+    fn finish_puts_the_layers_together_and_a_locked_layer_keeps_its_pixels() {
+        let (mut app, id) = app_with_picture();
+        app.edit_bitmap_inside(id);
+        let pe = app.pixel_edit.as_mut().unwrap();
+        pe.apply_all(true, |pi| {
+            pi.add_layer("top");
+            Some([0, 0, 20, 10])
+        });
+        pe.apply(false, |pi| {
+            pixel_edit::fill_selection(pi, [0, 0, 255, 255], 1.0)
+        });
+        pe.pi.layers[1].locked = true;
+        assert!(!pe.apply(false, |pi| {
+            pixel_edit::fill_selection(pi, [0, 255, 0, 255], 1.0)
+        }));
+        pe.pi.layers[1].opacity = 0.5;
+        app.finish_pixel_edit();
+        let q = *pixels(&app, id).get_pixel(3, 3);
+        assert!(q[2] == 255 && (120..=135).contains(&q[0]), "{q:?}");
+        app.undo();
+        assert_eq!(
+            *pixels(&app, id).get_pixel(3, 3),
+            Rgba([255, 255, 255, 255])
+        );
     }
 
     #[test]

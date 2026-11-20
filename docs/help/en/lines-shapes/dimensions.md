@@ -95,8 +95,11 @@ the next ones you make.
   **past the line** (2 mm), **horizontal text** for linear dimensions (off),
   **join lines at corners** (off), which makes the extension lines and the
   dimension line (or an angle's arc) one line that turns a corner instead of
-  running past it, and a **corner radius** (0 to 100 mm) that rounds those
-  corners. The menu stays open while you type in it.
+  running past it, a **corner radius** (0 to 100 mm) that rounds those
+  corners, a **text background** (off) that puts a colour behind the label,
+  and the **Add Dimensions distance** (5 mm), how far
+  [[menu.object > menu.object.insert > menu.object.add_dimensions]] puts its
+  lines from the objects. The menu stays open while you type in it.
 
 The label always reads left to right and stays upright. Double-click it with
 the [[tool.pick]] tool to edit it in place: text that still holds the

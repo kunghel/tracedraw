@@ -948,10 +948,33 @@ pub fn apply_in(
     keep_lines: bool,
     mapping: Mapping,
 ) -> BezPath {
-    if b.width() < 1e-9 || b.height() < 1e-9 {
+    let Some(map) = point_map(b, frame, mapping) else {
         return path.clone();
+    };
+    if keep_lines {
+        let mut out = BezPath::new();
+        for el in path.elements() {
+            out.push(match *el {
+                PathEl::MoveTo(p) => PathEl::MoveTo(map(p)),
+                PathEl::LineTo(p) => PathEl::LineTo(map(p)),
+                PathEl::QuadTo(a, p) => PathEl::QuadTo(map(a), map(p)),
+                PathEl::CurveTo(a, c, p) => PathEl::CurveTo(map(a), map(c), map(p)),
+                PathEl::ClosePath => PathEl::ClosePath,
+            });
+        }
+        return out;
     }
-    let unit = |p: Point| {
+    crate::live::warp(path, b, map)
+}
+
+/// Where the envelope takes each point of box `b` (`None` when the box
+/// or the frame has no size): what [`apply_in`] moves the nodes with,
+/// and what a picture is resampled through (#3608).
+pub fn point_map(b: Rect, frame: &Frame, mapping: Mapping) -> Option<Box<dyn Fn(Point) -> Point>> {
+    if b.width() < 1e-9 || b.height() < 1e-9 {
+        return None;
+    }
+    let unit = move |p: Point| {
         (
             ((p.x - b.x0) / b.width()).clamp(0.0, 1.0),
             ((p.y - b.y0) / b.height()).clamp(0.0, 1.0),
@@ -990,9 +1013,7 @@ pub fn apply_in(
             })
         }
         Mapping::Horizontal => {
-            let Some(rows) = Spans::new(frame, true) else {
-                return path.clone();
-            };
+            let rows = Spans::new(frame, true)?;
             Box::new(move |p: Point| {
                 let (u, v) = unit(p);
                 let (y, x0, x1) = rows.at(v);
@@ -1000,9 +1021,7 @@ pub fn apply_in(
             })
         }
         Mapping::Vertical => {
-            let Some(cols) = Spans::new(frame, false) else {
-                return path.clone();
-            };
+            let cols = Spans::new(frame, false)?;
             Box::new(move |p: Point| {
                 let (u, v) = unit(p);
                 let (x, y0, y1) = cols.at(u);
@@ -1010,20 +1029,7 @@ pub fn apply_in(
             })
         }
     };
-    if keep_lines {
-        let mut out = BezPath::new();
-        for el in path.elements() {
-            out.push(match *el {
-                PathEl::MoveTo(p) => PathEl::MoveTo(map(p)),
-                PathEl::LineTo(p) => PathEl::LineTo(map(p)),
-                PathEl::QuadTo(a, p) => PathEl::QuadTo(map(a), map(p)),
-                PathEl::CurveTo(a, c, p) => PathEl::CurveTo(map(a), map(c), map(p)),
-                PathEl::ClosePath => PathEl::ClosePath,
-            });
-        }
-        return out;
-    }
-    crate::live::warp(path, b, map)
+    Some(map)
 }
 
 #[cfg(test)]

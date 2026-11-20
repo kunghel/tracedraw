@@ -470,11 +470,13 @@ fn ellipses_arcs_and_pies() {
         start_deg: 30.0,
         end_deg: 200.0,
         pie: true,
+        inner: 0.0,
     };
     let arc = EllipseArc {
         start_deg: 0.0,
         end_deg: 90.0,
         pie: false,
+        inner: 0.0,
     };
     let doc = drawing(200.0, 100.0, |ids| {
         vec![
@@ -519,6 +521,41 @@ fn ellipses_arcs_and_pies() {
         }
         solid(r.v, r.shape(0), Color::rgb8(40, 180, 60), "ellipse");
         assert_eq!(r.shape(2).fill, Fill::None, "version {}", r.v);
+    });
+}
+
+/// A ring sector (a pie with an inner radius) has no ellipse record of its
+/// own: it goes out as the curve it draws, the same band in every version.
+#[test]
+fn a_ring_sector_goes_out_as_its_curve() {
+    let ring = EllipseArc {
+        start_deg: 0.0,
+        end_deg: 180.0,
+        pie: true,
+        inner: 0.5,
+    };
+    let doc = drawing(200.0, 100.0, |ids| {
+        vec![ellipse(ids, Rect::new(20.0, 20.0, 80.0, 80.0), Some(ring))]
+    });
+    let want = doc.pages[0].layers[0].shapes[0].page_path();
+    every_version(&doc, |r| {
+        r.count(1);
+        let s = r.shape(0);
+        assert!(
+            matches!(s.kind, ShapeKind::Path { .. }),
+            "version {}: {}",
+            r.v,
+            kind_name(&s.kind)
+        );
+        let got = s.page_path();
+        same_box(r.v, got.bounding_box(), want.bounding_box(), 0.05);
+        assert!(
+            (got.area().abs() - want.area().abs()).abs() < want.area().abs() * 0.01,
+            "version {}: area {} against {}",
+            r.v,
+            got.area(),
+            want.area()
+        );
     });
 }
 

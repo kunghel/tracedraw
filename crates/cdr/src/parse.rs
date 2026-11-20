@@ -5738,6 +5738,7 @@ impl<'a> Ctx<'a> {
                         start_deg: a1,
                         end_deg: a2,
                         pie,
+                        inner: 0.0,
                     })
                 } else {
                     None

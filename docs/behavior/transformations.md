@@ -57,6 +57,20 @@ positive), scales in percent.
 - With nothing selected the fields, the boxes, Copies and Apply are pale;
   the page buttons stay usable.
 
+## Rotate by Two Lines (#2870)
+
+Object > Transformations > Rotate by Two Lines (with something
+selected, `rotate_lines.rs`) waits for four clicks, each snapped as a
+drawing click: the two ends of a base line on the selection, then the
+two ends of a target line anywhere. The clicked lines show on the
+canvas, the last to the pointer, and the status line says which line
+comes next. After the fourth click the selection turns about the base
+line's first end by the angle from the base line to the target line
+(first end to second, the shorter way round), one "Rotate" undo step.
+A line whose ends are the same point turns nothing; a right click
+cancels
+(`rotate_lines::tests::the_base_line_takes_the_target_lines_angle`).
+
 ## Checks
 
 - `ui::transform_docker::tests::position_moves_by_an_offset_or_to_a_point`
@@ -69,3 +83,30 @@ positive), scales in percent.
 - `ui::transform_docker::tests::the_shortcuts_open_a_page_and_close_it_again`
 - `ui::transform_docker::tests::the_docker_draws_every_page`
 - `textflow::tests::transformation_copies_of_a_chain_are_linked`
+
+## Isometric faces
+
+The Skew page also shows six buttons under Apply, Left, Right, Top,
+Left ↑, Right ↑ and Top ↻, and Reset. Each sets every selected object
+onto a face of an isometric cube about the middle of its own box,
+keeping its width and height (and a mirror) and dropping whatever turn
+or slant it had, so a second face replaces the first instead of adding
+to it; Reset sets it flat again. It is the object's transform alone: a
+text stays text and edits as before. One undo step ("Isometric Face",
+"Reset Face"). With `c = cos 30°` and `s = 1/2`, a face takes the
+object's x and y directions (page y up) to:
+
+| Face | x | y |
+|---|---|---|
+| Left | (c, -s) | (0, 1) |
+| Right | (c, s) | (0, 1) |
+| Top | (c, s) | (-c, s) |
+| Left ↑ | (0, 1) | (-c, s) |
+| Right ↑ | (0, 1) | (-c, -s) |
+| Top ↻ | (c, -s) | (c, s) |
+
+The new transform is `translate(m') * F * scale(sx, sy) * translate(-m)`,
+`m` the middle of the object's box, `m'` where it was on the page, `sx`
+and `sy` the lengths of the old transform's columns. Three texts set on
+Top, Left and Right and moved edge to edge make a cube.
+Test: `ui::transform_docker::tests::isometric_faces_set_the_slant_and_reset_takes_it_away`.

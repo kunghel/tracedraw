@@ -213,8 +213,17 @@
   objects erased
   (`shape_tool::eraser_tests::a_clip_frame_is_erased_through_its_frame`,
   `shape_tool::eraser_tests::a_clip_frame_under_the_pointer_is_erased_and_one_erased_away_goes`).
-- Bitmaps and groups are not erased (erasing bitmaps by masking is not
-  implemented).
+- A picture (#3043) loses its pixels along the nib's line, its colours
+  kept: each pixel's alpha goes down by the nib's amount at the
+  distance of its middle from the line (`shape_tool::SoftNib`): fully
+  within Hardness of the radius (property bar, 0 to 100 %, 50 % at
+  first), then fading to nothing at the edge (a smoothstep), times
+  Strength (0 to 100 %, 100 % at first, the most taken of a pixel). The
+  nib is round on pictures. The picture keeps its size, place, pixel
+  count and bitmap effects; erased again, the alpha goes down again.
+  Both values are kept with the tool's other choices
+  (`shape_tool::soft_eraser_tests::the_eraser_fades_a_picture_out_along_the_nib`).
+- Groups are not erased.
 
 ## Checks
 

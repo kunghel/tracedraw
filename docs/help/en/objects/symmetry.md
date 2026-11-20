@@ -30,6 +30,9 @@ selected object. A bar at the top left of the drawing window sets:
   more lines you get a kaleidoscope: with *n* lines there are 2*n* - 1 copies;
 - the center (X and Y);
 - the angle of the first line (0 to 360 degrees);
+- **Rotational** (off): the copies are turned round the center instead of
+  mirrored, as many objects in all as there are lines (two at least), so a
+  shape repeats round a circle the same way up;
 - Show full preview (copies drawn in full, or as red outlines when off) and
   Show symmetry lines.
 

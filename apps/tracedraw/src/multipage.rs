@@ -7,9 +7,9 @@ use crate::app::App;
 use crate::view::View;
 use egui::{Color32, Painter, Pos2, Rect as ERect};
 use tracedraw_core::document::{Guide, GuideLine};
-use tracedraw_core::geometry::{Rect, Size};
+use tracedraw_core::geometry::{Rect, Size, Vec2};
 use tracedraw_core::spreads::{self, PageSide};
-use tracedraw_core::PageId;
+use tracedraw_core::{PageId, ShapeId};
 
 /// The spacings Page > Page Spacing offers, in millimetres; Custom...
 /// takes any other.
@@ -592,6 +592,144 @@ impl App {
             .map(|s| s.visual_bounds())
             .filter(|b| b.is_finite() && b.width() >= 0.0 && b.height() >= 0.0)
             .reduce(|a, b| a.union(b))
+    }
+
+    /// The other pages of the current spread of facing pages and where
+    /// they show (the current page's coordinates); none without facing
+    /// pages.
+    fn spread_others(&self) -> Vec<(PageId, Rect)> {
+        let doc = self.doc();
+        if doc.facing().is_none() {
+            return Vec::new();
+        }
+        let ids: Vec<PageId> = doc
+            .spread_at(self.page_index())
+            .pages()
+            .filter_map(|i| doc.pages.get(i).map(|p| p.id))
+            .filter(|id| *id != self.page)
+            .collect();
+        self.shown_pages()
+            .into_iter()
+            .filter(|(id, _)| ids.contains(id))
+            .collect()
+    }
+
+    /// The top objects of the other pages of the current spread that
+    /// `keep` takes, given each with its box where it shows (the current
+    /// page's coordinates) and its page's place there: visible and
+    /// unlocked, on visible unlocked layers.
+    fn spread_objects(
+        &self,
+        mut keep: impl FnMut(&tracedraw_core::Shape, Rect, Vec2) -> bool,
+    ) -> Vec<ShapeId> {
+        let doc = self.doc();
+        let mut out = Vec::new();
+        for (id, r) in self.spread_others() {
+            let Ok(page) = doc.page(id) else { continue };
+            for l in page.layers.iter().filter(|l| l.visible && !l.locked) {
+                for sh in l.shapes.iter().filter(|sh| sh.visible && !sh.locked) {
+                    let b = sh.visual_bounds();
+                    let off = Vec2::new(r.x0, r.y0);
+                    if b.is_finite() && keep(sh, b + off, off) {
+                        out.push(sh.id);
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /// With facing pages, a Shift+click on an object of the other page of
+    /// the spread while something is selected: the object comes onto the
+    /// current page, where it shows, so the click adds it to the
+    /// selection and objects of both pages can be aligned together
+    /// (#3488). True when one came.
+    pub fn spread_shift_press(&mut self, s: Pos2) -> bool {
+        if self.selection.is_empty() || self.doc().facing().is_none() {
+            return false;
+        }
+        let p = self.view.to_page(s);
+        if self.hit_test(p).is_some() {
+            return false;
+        }
+        let tol = self.object_pick_tol();
+        let hit = self.spread_objects(|sh, b, off| {
+            let b = b.inflate(tol, tol);
+            p.x >= b.x0
+                && p.x <= b.x1
+                && p.y >= b.y0
+                && p.y <= b.y1
+                && self.shape_hit(sh, p - off, tol)
+        });
+        // The frontmost: the last one drawn.
+        match hit.last() {
+            Some(id) => !self.adopt_spread_objects(&[*id]).is_empty(),
+            None => false,
+        }
+    }
+
+    /// With facing pages, the objects of the other page of the spread a
+    /// marquee `r` (the current page's coordinates) takes, wholly inside
+    /// it or, `touching`, crossing it, come onto the current page, so the
+    /// marquee selects them with the current page's (#3488).
+    pub fn adopt_spread_objects_in(&mut self, r: Rect, touching: bool) -> Vec<ShapeId> {
+        let ids = self.spread_objects(|_, b, _| {
+            if touching {
+                b.x0 <= r.x1 && b.x1 >= r.x0 && b.y0 <= r.y1 && b.y1 >= r.y0
+            } else {
+                b.x0 >= r.x0 && b.x1 <= r.x1 && b.y0 >= r.y0 && b.y1 <= r.y1
+            }
+        });
+        self.adopt_spread_objects(&ids)
+    }
+
+    /// Bring the objects `ids` of the other pages of the current spread
+    /// onto the current page, where they show (a spread is edited as
+    /// one): each on the current page's layer of the same name, else the
+    /// active layer, in one undo step. The ones that came.
+    pub fn adopt_spread_objects(&mut self, ids: &[ShapeId]) -> Vec<ShapeId> {
+        let others = self.spread_others();
+        let doc = self.doc();
+        let Ok(own) = doc.page(self.page) else {
+            return Vec::new();
+        };
+        let active = self.active_layer();
+        let mut cmds = Vec::new();
+        let mut came = Vec::new();
+        for (pid, r) in &others {
+            let Ok(page) = doc.page(*pid) else { continue };
+            for l in &page.layers {
+                let to = own
+                    .layers
+                    .iter()
+                    .find(|o| o.name == l.name && !o.locked)
+                    .map(|o| o.id)
+                    .or(active);
+                let Some(to) = to else { continue };
+                for sh in l.shapes.iter().filter(|sh| ids.contains(&sh.id)) {
+                    let mut moved = sh.clone();
+                    moved.transform =
+                        tracedraw_core::geometry::Affine::translate((r.x0, r.y0)) * moved.transform;
+                    came.push(sh.id);
+                    cmds.push((to, moved));
+                }
+            }
+        }
+        if came.is_empty() {
+            return came;
+        }
+        let mut batch = vec![tracedraw_core::Command::DeleteShapes {
+            shapes: came.clone(),
+        }];
+        batch.extend(
+            cmds.into_iter()
+                .map(|(layer, shape)| tracedraw_core::Command::AddShape { layer, shape }),
+        );
+        if let Err(e) = self.engine.run_batch("Select Across the Spread", &batch) {
+            self.status = e.to_string();
+            return Vec::new();
+        }
+        came
     }
 
     /// Another page of the current spread whose visible object lies at
@@ -1402,6 +1540,69 @@ mod tests {
         app.set_facing_pages(false, PageSide::Right);
         assert!(!app.multipage_press(on_p3));
         assert_eq!(app.fit_rect(), app.page_rect());
+    }
+
+    /// Objects of both pages of a spread selected together (#3488): a
+    /// Shift+click on the facing page's object, with something selected,
+    /// and a marquee over both pages bring the facing page's objects onto
+    /// the current page, where they show, so they align with its own;
+    /// one undo puts them back.
+    #[test]
+    fn objects_of_both_facing_pages_select_together() {
+        let mut app = facing_app();
+        app.set_facing_pages(true, PageSide::Right);
+        app.fit_pending = false;
+        let (p2, p3) = (app.doc().pages[1].id, app.doc().pages[2].id);
+        let w = app.doc().pages[1].size.width;
+        let a = app.doc().page(p2).expect("p2").layers[0].shapes[0].id;
+        app.page = p3;
+        let add = |app: &mut App, x: f64, y: f64| {
+            app.new_shape(tracedraw_core::ShapeKind::Rect {
+                rect: Rect::new(x, y, x + 30.0, y + 30.0),
+                radius: 0.0,
+                corners: None,
+            })
+            .expect("rect")
+        };
+        let b = add(&mut app, 50.0, 100.0);
+        let c = add(&mut app, 50.0, 200.0);
+        app.page = p2;
+        app.select(vec![a]);
+        let page_of = |app: &App, id: ShapeId| {
+            app.doc()
+                .pages
+                .iter()
+                .find(|p| p.layers.iter().any(|l| l.shapes.iter().any(|s| s.id == id)))
+                .map(|p| p.id)
+        };
+        // Nothing selected: Shift+click does not bring it.
+        app.select(Vec::new());
+        let on_b = app.view.to_screen(Point::new(w + 60.0, 110.0));
+        assert!(!app.spread_shift_press(on_b));
+        app.select(vec![a]);
+        assert!(app.spread_shift_press(on_b));
+        assert_eq!(page_of(&app, b), Some(p2));
+        assert_eq!(app.page, p2);
+        // Where it showed, now in page 2's coordinates.
+        let bb = app.doc().find_shape(b).expect("b").bounds();
+        assert!((bb.x0 - (w + 50.0)).abs() < 1e-6 && (bb.y0 - 100.0).abs() < 1e-6, "{bb:?}");
+        assert_eq!(app.hit_test(app.view.to_page(on_b)), Some(b));
+        app.select(vec![a, b]);
+        assert_eq!(app.selection.len(), 2);
+        // A marquee over page 3 takes c too.
+        let came = app.adopt_spread_objects_in(Rect::new(w + 40.0, 190.0, w + 90.0, 240.0), false);
+        assert_eq!(came, vec![c]);
+        assert_eq!(page_of(&app, c), Some(p2));
+        // Not wholly inside, not touching: nothing.
+        app.undo();
+        assert!(app.adopt_spread_objects_in(Rect::new(w + 60.0, 190.0, w + 90.0, 240.0), false).is_empty());
+        assert_eq!(page_of(&app, c), Some(p3));
+        app.undo();
+        assert_eq!(page_of(&app, b), Some(p3));
+        // Without facing pages: nothing comes.
+        app.set_facing_pages(false, PageSide::Right);
+        app.select(vec![a]);
+        assert!(!app.spread_shift_press(on_b));
     }
 
     /// The facing page's guidelines show within it, snapping finds its

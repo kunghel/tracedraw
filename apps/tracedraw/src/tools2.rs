@@ -191,6 +191,46 @@ pub fn grid_path(rect: Rect, rows: u32, cols: u32) -> BezPath {
     p
 }
 
+/// The rings of a radial grid in `rect`, outermost first: `rings`
+/// ellipses evenly spaced from the middle out to the box's edge.
+pub fn radial_rings(rect: Rect, rings: u32) -> Vec<Rect> {
+    let n = rings.max(1);
+    let c = rect.center();
+    (0..n)
+        .map(|i| {
+            let k = (n - i) as f64 / n as f64;
+            let (rx, ry) = (rect.width() / 2.0 * k, rect.height() / 2.0 * k);
+            Rect::new(c.x - rx, c.y - ry, c.x + rx, c.y + ry)
+        })
+        .collect()
+}
+
+/// The spokes of a radial grid in `rect`: `spokes` lines from the middle
+/// to the outer ring, evenly round, the first pointing up.
+pub fn radial_spokes(rect: Rect, spokes: u32) -> Vec<(Point, Point)> {
+    let c = rect.center();
+    let (rx, ry) = (rect.width() / 2.0, rect.height() / 2.0);
+    (0..spokes)
+        .map(|i| {
+            let a = std::f64::consts::FRAC_PI_2 + std::f64::consts::TAU * i as f64 / spokes as f64;
+            (c, Point::new(c.x + rx * a.cos(), c.y + ry * a.sin()))
+        })
+        .collect()
+}
+
+/// A radial grid's outline, for the preview: its rings and spokes.
+pub fn radial_grid_path(rect: Rect, rings: u32, spokes: u32) -> BezPath {
+    let mut p = BezPath::new();
+    for r in radial_rings(rect, rings) {
+        p.extend(kurbo::Ellipse::from_rect(r).path_elements(0.01));
+    }
+    for (a, b) in radial_spokes(rect, spokes) {
+        p.move_to(a);
+        p.line_to(b);
+    }
+    p
+}
+
 impl App {
     pub fn tools2_input(&mut self, response: &Response, p: Point, mods: Modifiers) {
         match self.tool {
@@ -325,11 +365,17 @@ impl App {
         from_center: bool,
     ) -> Option<BezPath> {
         use tracedraw_core::geometry::{ellipse_arc_path, ellipse_path, polygon_path};
+        if self.draws_arcs() {
+            return Some(self.arc_of_drag(start, current));
+        }
         let r = App::box_rect(start, current, from_center);
         let path = match self.tool {
             Tool::Rectangle => self.rect_corners.path(r, (1.0, 1.0)),
             Tool::Ellipse => match &self.ellipse_arc {
                 None => ellipse_path(r),
+                Some(a) if a.pie && a.inner > 0.0 => {
+                    tracedraw_core::geometry::ellipse_ring_path(r, a.start_deg, a.end_deg, a.inner)
+                }
                 Some(a) => ellipse_arc_path(r, a.start_deg, a.end_deg, a.pie),
             },
             Tool::Polygon => polygon_path(
@@ -357,6 +403,9 @@ impl App {
                 Some(mine) => mine.path(r),
                 None => self.common_shape.path(r),
             },
+            Tool::GraphPaper if self.graph_radial => {
+                radial_grid_path(r, self.graph_rings, self.graph_spokes)
+            }
             Tool::GraphPaper => grid_path(r, self.graph_rows, self.graph_cols),
             Tool::ActionLines => self.action_lines.path(r),
             Tool::Balloon => crate::balloons::Balloon::new(
@@ -999,6 +1048,67 @@ mod tests {
         p.bounding_box()
     }
 
+    /// Graph Paper set to radial draws one group of rings, outermost at
+    /// the back and filling the box, and spokes from the middle to the
+    /// outer ring, the first pointing up; one undo takes it away.
+    #[test]
+    fn graph_paper_draws_a_radial_grid() {
+        use kurbo::ParamCurve as _;
+        let mut app = App::headless();
+        app.tool = Tool::GraphPaper;
+        app.graph_radial = true;
+        app.graph_rings = 3;
+        app.graph_spokes = 6;
+        app.create_box_shape(Point::new(20.0, 20.0), Point::new(80.0, 60.0));
+        let g = app.doc().shape(app.selection[0]).expect("grid").1.clone();
+        let ShapeKind::Group { children } = &g.kind else {
+            panic!("a group: {:?}", g.kind);
+        };
+        let rings: Vec<Rect> = children
+            .iter()
+            .filter_map(|c| match &c.kind {
+                ShapeKind::Ellipse { rect, .. } => Some(c.transform.transform_rect_bbox(*rect)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(rings.len(), 3);
+        assert!((rings[0].width() - 60.0).abs() < 1e-9 && (rings[0].height() - 40.0).abs() < 1e-9);
+        assert!((rings[2].width() - 20.0).abs() < 1e-9, "{rings:?}");
+        let spokes: Vec<BezPath> = children
+            .iter()
+            .filter_map(|c| match &c.kind {
+                ShapeKind::Path {
+                    path,
+                    closed: false,
+                } => Some(c.transform * path.clone()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(spokes.len(), 6);
+        let ends: Vec<Point> = spokes
+            .iter()
+            .filter_map(|p| p.segments().next().map(|s| s.end()))
+            .collect();
+        let top = ends[0];
+        assert!(
+            (top.x - 50.0).abs() < 1e-9 && (top.y - 20.0).abs().min((top.y - 60.0).abs()) < 1e-9,
+            "{top:?}"
+        );
+        assert!(spokes
+            .iter()
+            .all(|p| p.segments().next().map(|s| s.start()) == Some(Point::new(50.0, 40.0))));
+        // Cells again with the toggle off; one undo per grid.
+        app.undo();
+        assert!(app.doc().find_shape(g.id).is_none());
+        // The preview shows the rings and spokes.
+        let r = Rect::new(0.0, 0.0, 10.0, 10.0);
+        let b = radial_grid_path(r, 2, 4).bounding_box();
+        assert!(
+            (b.x0 - r.x0).abs() + (b.y0 - r.y0).abs() + (b.x1 - r.x1).abs() + (b.y1 - r.y1).abs()
+                < 1e-9
+        );
+    }
+
     /// Convert Outline to Object on a dashed line keeps the dashes: each
     /// becomes a closed shape and the gaps stay empty (#490).
     #[test]
@@ -1043,6 +1153,48 @@ mod tests {
         assert!(kurbo::Shape::contains(&pp, Point::new(12.0, 10.0)));
     }
 
+    /// A thick line's end goes under its arrowhead when it becomes an
+    /// object, as it is drawn: the head's tip stays a point. The whole
+    /// line was welded to the head, so its square end stood out past the
+    /// narrow tip (#3604).
+    #[test]
+    fn convert_outline_to_object_keeps_the_arrow_tip() {
+        let mut app = App::headless();
+        let mut line = BezPath::new();
+        line.move_to((10.0, 10.0));
+        line.line_to((110.0, 10.0));
+        let id = app
+            .new_shape(ShapeKind::Path {
+                path: line,
+                closed: false,
+            })
+            .expect("line");
+        let mut st = Stroke::new(tracedraw_core::Color::BLACK, 4.0);
+        st.end_arrow = tracedraw_core::style::Arrowhead::Arrow;
+        app.select(vec![id]);
+        app.run(Command::SetStroke {
+            shapes: vec![id],
+            stroke: Some(st.clone()),
+        });
+        let shape = app.doc().find_shape(id).cloned().expect("line");
+        let heads = tracedraw_core::style::arrowhead_paths(&shape.page_path(), &st);
+        let head = heads.first().expect("a head").clone();
+        let tip = kurbo::Shape::bounding_box(&head).x1;
+        // Just short of the tip, at the line's edge: outside the head.
+        let edge = Point::new(tip - 0.3, 10.0 + 1.8);
+        assert!(!kurbo::Shape::contains(&head, edge));
+        app.convert_outline_to_object();
+        let out = app
+            .doc()
+            .find_shape(app.selection[0])
+            .cloned()
+            .expect("object");
+        let pp = out.page_path();
+        assert!(!kurbo::Shape::contains(&pp, edge), "the line's end shows");
+        assert!(kurbo::Shape::contains(&pp, Point::new(tip - 0.3, 10.0)));
+        assert!(kurbo::Shape::contains(&pp, Point::new(40.0, 11.8)));
+    }
+
     /// An open line's arrowheads come with its outline when it becomes an
     /// object: the head beside the line is filled, as it was drawn
     /// (#2983).
@@ -1082,7 +1234,21 @@ mod tests {
                             b.y0 + b.height() * j as f64 / 40.0,
                         )
                     })
-                    .find(|p| (p.y - 10.0).abs() > 0.8 && kurbo::Shape::contains(h, *p))
+                    // Well inside the head, not on its edge.
+                    .find(|p| {
+                        (p.y - 10.0).abs() > 0.8
+                            && [
+                                (0.0, 0.0),
+                                (0.05, 0.05),
+                                (-0.05, -0.05),
+                                (0.05, -0.05),
+                                (-0.05, 0.05),
+                            ]
+                            .iter()
+                            .all(|(dx, dy)| {
+                                kurbo::Shape::contains(h, Point::new(p.x + dx, p.y + dy))
+                            })
+                    })
                     .expect("a point of the head beside the line")
             })
             .collect();
@@ -1996,6 +2162,10 @@ fn outline_band_path(s: &Shape, st: &Stroke) -> Option<BezPath> {
         // curves with as few nodes as keep its shape (#622).
         return Some(tracedraw_core::fit::fit_path(&band, OUTLINE_FIT_TOLERANCE));
     }
+    // The line is cut back under its arrowheads, as it is drawn (#2981):
+    // uncut, its square end stood out past the narrow tip of the head
+    // once the two were welded (#3604).
+    let pp = tracedraw_core::style::arrowhead_stroke_path(&pp, st).unwrap_or(pp);
     // A dashed outline: each dash becomes a closed shape of its
     // own, the gaps kept (#490). The pattern is in widths, as the
     // renderer draws it.

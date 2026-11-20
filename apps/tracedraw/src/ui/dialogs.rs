@@ -115,6 +115,9 @@ pub struct ExportState {
     pub plt_hpgl2: bool,
     pub plt_one_pen: bool,
     pub plt_resolution: f64,
+    /// DXF: the drawing unit, an index into
+    /// [`tracedraw_io::dxf::DxfUnits::ALL`] (#3583).
+    pub dxf_units: usize,
 }
 
 impl Default for ExportState {
@@ -155,6 +158,7 @@ impl Default for ExportState {
             plt_hpgl2: true,
             plt_one_pen: false,
             plt_resolution: 0.02,
+            dxf_units: 0,
         }
     }
 }
@@ -330,6 +334,17 @@ impl ExportState {
                 2 => SvgText::TextWithFonts,
                 _ => SvgText::Curves,
             },
+        }
+    }
+
+    /// The DXF export's choices (#3583).
+    pub fn dxf_options(&self) -> tracedraw_io::dxf::DxfOptions {
+        use tracedraw_io::dxf::DxfUnits;
+        tracedraw_io::dxf::DxfOptions {
+            units: DxfUnits::ALL
+                .get(self.dxf_units)
+                .copied()
+                .unwrap_or_default(),
         }
     }
 
@@ -1468,9 +1483,17 @@ pub enum Dialog {
         width: f64,
         height: f64,
     },
+    /// Object > Symbol > Stretch Zones.
+    StretchZones(crate::ui::stretch_zones_dialog::StretchZonesState),
     PasteSpecial(PasteSpecialState),
     /// Bitmaps > Picture Captions (#2180).
     PictureCaptions(crate::captions::Captions),
+    /// Image > Turn Object in 3D with AI (`ai_photo.rs`).
+    AiTurn(crate::ai_photo::TurnState),
+    /// Image > Sketch to Curves with AI.
+    AiSketch(crate::ai_photo::SketchState),
+    /// Image > Remove Object with AI.
+    AiRemove(crate::ai_photo::RemoveState),
     Barcode(BarcodeState),
     /// Object > Insert > Formula (#2183).
     Formula(crate::ui::formula_dialog::FormulaState),
@@ -1527,6 +1550,8 @@ pub enum Dialog {
     /// settings or an auto-backup (#1414).
     StorageRefused(crate::storage_full::Refusal),
     TimeTracker(crate::ui::time_tracker::TrackerDialog),
+    /// Tools > Workflow; its state is `App::workflow`.
+    Workflow,
     Preflight(crate::ui::preflight_dialog::PreflightState),
     PublishPdf(Box<crate::ui::publish_pdf::PublishState>),
     PdfPassword(crate::ui::pdf_password::PdfPasswordState),
@@ -2115,6 +2140,7 @@ pub fn show(app: &mut App, ctx: &Context) {
             crate::ui::bitmap_dialogs::remove_background_dialog(app, ctx, st, &mut close)
         }
         Dialog::TimeTracker(st) => crate::ui::time_tracker::dialog(app, ctx, st, &mut close),
+        Dialog::Workflow => crate::ui::workflow::dialog(app, ctx, &mut close),
         Dialog::TableCount(st) => crate::ui::table_bar::count_dialog(app, ctx, st, &mut close),
         Dialog::Preflight(st) => crate::ui::preflight_dialog::dialog(app, ctx, st, &mut close),
         Dialog::PublishPdf(st) => crate::ui::publish_pdf::dialog(app, ctx, st, &mut close),
@@ -3156,6 +3182,9 @@ pub fn show(app: &mut App, ctx: &Context) {
                 app.open_dialog_help();
             }
         }
+        Dialog::StretchZones(st) => {
+            crate::ui::stretch_zones_dialog::dialog(app, ctx, st, &mut close)
+        }
         Dialog::PasteSpecial(st) => {
             if !st.loaded {
                 let c = crate::clipboard::read_system();
@@ -3556,6 +3585,9 @@ pub fn show(app: &mut App, ctx: &Context) {
         }
         Dialog::Encode(st) => encode_dialog(app, ctx, st, &mut close),
         Dialog::PictureCaptions(st) => crate::captions::dialog(app, ctx, st, &mut close),
+        Dialog::AiTurn(st) => crate::ai_photo::turn_dialog(app, ctx, st, &mut close),
+        Dialog::AiSketch(st) => crate::ai_photo::sketch_dialog(app, ctx, st, &mut close),
+        Dialog::AiRemove(st) => crate::ai_photo::remove_dialog(app, ctx, st, &mut close),
         Dialog::BorderGrommet(st) => border_grommet_dialog(app, ctx, st, &mut close),
         Dialog::ConvertColors(st) => crate::ui::convert_colors::dialog(app, ctx, st, &mut close),
         Dialog::Recolor(st) => crate::ui::recolor::dialog(app, ctx, st, &mut close),
@@ -5371,6 +5403,9 @@ fn export_dialog(app: &mut App, ctx: &Context, st: &mut ExportState, close: &mut
                 if !scripted && EXPORT_FORMATS[st.format.min(EXPORT_FORMATS.len() - 1)].1 == "plt" {
                     plt_export_fields(ui, st);
                 }
+                if !scripted && EXPORT_FORMATS[st.format.min(EXPORT_FORMATS.len() - 1)].1 == "dxf" {
+                    dxf_export_fields(ui, st);
+                }
                 ui.horizontal(|ui| {
                     ui.checkbox(&mut st.selection_only, tr("dialog.selected_only"))
                         .rich_tip(crate::ui::tips::pair(
@@ -5440,6 +5475,32 @@ fn export_dialog(app: &mut App, ctx: &Context, st: &mut ExportState, close: &mut
         if ok_cancel(ui, close) {
             export_dialog_ok(app, st);
         }
+    });
+}
+
+/// The names of the DXF export's units, in the order of
+/// [`tracedraw_io::dxf::DxfUnits::ALL`].
+pub const DXF_UNIT_KEYS: [&str; 5] = [
+    "units.millimeters",
+    "units.centimeters",
+    "units.meters",
+    "units.inches",
+    "units.feet",
+];
+
+/// The DXF export's choice in the Export dialog (#3583): the drawing
+/// unit the file's lengths are written in (millimetres unless chosen).
+fn dxf_export_fields(ui: &mut Ui, st: &mut ExportState) {
+    ui.horizontal(|ui| {
+        ui.label(tr("options.units"));
+        let k = st.dxf_units.min(DXF_UNIT_KEYS.len() - 1);
+        crate::ui::keynav::ComboBox::from_id_salt("exp_dxf_units")
+            .selected_text(tr(DXF_UNIT_KEYS[k]))
+            .show_ui(ui, |ui| {
+                for (i, key) in DXF_UNIT_KEYS.iter().enumerate() {
+                    ui.selectable_value(&mut st.dxf_units, i, tr(key));
+                }
+            });
     });
 }
 
@@ -8021,9 +8082,35 @@ pub(crate) fn next_tab_position(tabs: &[tracedraw_core::TabStop]) -> f64 {
 /// the text from the right-hand column.
 fn columns_settings(ui: &mut Ui, p: &mut tracedraw_core::ParagraphStyle, u: Units) -> bool {
     let mut changed = false;
+    // Columns and Gutter: the labels as wide as the wider, so the two
+    // boxes line up (#3590).
+    let label_w = [tr("dialog.columns"), tr("dialog.gutter")]
+        .iter()
+        .map(|t| {
+            ui.fonts_mut(|f| {
+                f.layout_no_wrap(
+                    t.clone(),
+                    egui::TextStyle::Body.resolve(ui.style()),
+                    egui::Color32::WHITE,
+                )
+                .size()
+                .x
+            })
+        })
+        .fold(0.0, f32::max);
+    let label = |ui: &mut Ui, text: String| {
+        ui.allocate_ui_with_layout(
+            egui::vec2(label_w, ui.spacing().interact_size.y),
+            egui::Layout::left_to_right(egui::Align::Center),
+            |ui| {
+                ui.set_min_width(label_w);
+                ui.label(text);
+            },
+        );
+    };
     crate::ui::tips::tip_over(ui, crate::ui::tips::keyed("dialog.columns"), |ui| {
         ui.horizontal(|ui| {
-            ui.label(tr("dialog.columns"));
+            label(ui, tr("dialog.columns"));
             changed |= ui
                 .add(crate::ui::field::NumField::new(&mut p.columns).range(1..=8))
                 .changed();
@@ -8091,7 +8178,23 @@ fn columns_settings(ui: &mut Ui, p: &mut tracedraw_core::ParagraphStyle, u: Unit
         }
     } else {
         let tip = crate::ui::tips::keyed("dialog.gutter");
-        changed |= unit_value(ui, &tr("dialog.gutter"), &tip, &mut p.gutter, u);
+        let mut v = u.from_mm(p.gutter);
+        let r = crate::ui::tips::tip_over(ui, &tip, |ui| {
+            ui.horizontal(|ui| {
+                label(ui, tr("dialog.gutter"));
+                ui.add(
+                    crate::ui::field::NumField::new(&mut v)
+                        .speed(0.5)
+                        .suffix(format!(" {}", u.short())),
+                )
+                .changed()
+            })
+            .inner
+        });
+        if r {
+            p.gutter = u.to_mm(v);
+            changed = true;
+        }
     }
     if n > 1 && !p.vertical {
         changed |= ui
@@ -9031,6 +9134,7 @@ pub(crate) mod tests {
                 horizontal: true,
                 vertical: false,
             },
+            Dialog::Workflow,
             Dialog::BitmapBw(Default::default()),
             Dialog::BitmapDuotone(Default::default()),
             Dialog::BitmapPaletted(Default::default()),
@@ -9120,6 +9224,7 @@ pub(crate) mod tests {
             }),
             Dialog::CreatePattern { vector: true },
             Dialog::CreatePattern { vector: false },
+            Dialog::StretchZones(Default::default()),
             Dialog::PasteSpecial(PasteSpecialState::default()),
             Dialog::Barcode(BarcodeState::default()),
             Dialog::Formula(Default::default()),
@@ -9167,6 +9272,9 @@ pub(crate) mod tests {
             Dialog::CustomHyphens(Default::default()),
             Dialog::Encode(EncodeState::default()),
             Dialog::PictureCaptions(Default::default()),
+            Dialog::AiTurn(Default::default()),
+            Dialog::AiSketch(Default::default()),
+            Dialog::AiRemove(Default::default()),
             Dialog::BorderGrommet(crate::border_grommet::BorderGrommetState::default()),
             Dialog::ColorManagement(Default::default()),
             Dialog::FontManager(FontManagerState::default()),

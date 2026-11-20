@@ -54,6 +54,9 @@ The [[menu.text > menu.table]] submenu acts on the active cell and the selected 
 - [[menu.table.split_into_rows]] and [[menu.table.split_into_columns]] split
   the active row or column into two halves.
 
+The same commands are in the right-click menu of a selected table, an
+imported spreadsheet too, under Table.
+
 ## Converting text and tables {#convert}
 
 - [[menu.table.convert_text_to_table]]: each paragraph of the selected

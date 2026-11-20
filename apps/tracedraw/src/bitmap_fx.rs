@@ -117,6 +117,20 @@ pub fn encode(img: &RgbaImage) -> Option<Vec<u8>> {
     Some(buf.into_inner())
 }
 
+/// `img` laid on white paper: every pixel opaque, a see-through one
+/// mixed with white by its opacity.
+pub fn flatten_on_white(img: &RgbaImage) -> RgbaImage {
+    let mut out = img.clone();
+    for p in out.pixels_mut() {
+        let a = u16::from(p[3]);
+        for c in 0..3 {
+            p[c] = ((u16::from(p[c]) * a + 255 * (255 - a) + 127) / 255) as u8;
+        }
+        p[3] = 255;
+    }
+    out
+}
+
 /// Encode `img` as a grayscale PNG (8-bit gray, with an alpha channel
 /// only when a pixel is not opaque): a grayscale picture, whose colour
 /// mode the status line reads from the PNG (#1777). Each pixel's level
@@ -327,6 +341,37 @@ pub fn encode_indexed(img: &RgbaImage) -> Option<Vec<u8>> {
     put_chunk(&mut out, b"IDAT", &idat);
     put_chunk(&mut out, b"IEND", &[]);
     Some(out)
+}
+
+/// Encode `img`, a picture in the Indexed (8-bit) mode, as an indexed
+/// PNG in any case (#3504, #3539). Its palette colours with the many
+/// see-through levels of soft edges made more than 256 entries, and the
+/// picture was stored as RGB: the see-through levels are then made clear
+/// or opaque (at half), as a palette picture keeps one clear entry, and
+/// when more than 255 colours are still left beside it they are taken
+/// to a palette of 255. `None` only when the picture cannot be encoded.
+pub fn encode_indexed_fitted(img: &RgbaImage) -> Option<Vec<u8>> {
+    if let Some(png) = encode_indexed(img) {
+        return Some(png);
+    }
+    let mut snapped = img.clone();
+    for p in snapped.pixels_mut() {
+        *p = if p[3] < 128 {
+            Rgba([0, 0, 0, 0])
+        } else {
+            Rgba([p[0], p[1], p[2], 255])
+        };
+    }
+    if let Some(png) = encode_indexed(&snapped) {
+        return Some(png);
+    }
+    let settings = crate::bitmap_modes::PalettedSettings {
+        colors: 255,
+        dither: crate::bitmap_modes::Dither::None,
+        ..Default::default()
+    };
+    let fewer = crate::bitmap_modes::paletted(&snapped, &settings);
+    encode_indexed(&fewer).or_else(|| encode(&fewer))
 }
 
 /// Encode `img` as a PNG marked Lab Color (see [`png_is_lab`]).

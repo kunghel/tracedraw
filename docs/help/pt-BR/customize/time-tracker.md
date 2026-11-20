@@ -20,6 +20,10 @@ uma barra com:
 
 Ligar o relógio em um desenho sem tarefas acrescenta "Task 1".
 
+Clique no cronômetro à esquerda da barra para deixá-la mini, só com o tempo, o
+botão de gravar e a luz, pequena o bastante para encaixar ao lado de outras
+barras. Clique de novo para a barra inteira.
+
 ## A caixa de diálogo Controle de tempo {#dialog}
 
 [[menu.tools > menu.tools.time_tracker]] lista as tarefas com tempo, início e

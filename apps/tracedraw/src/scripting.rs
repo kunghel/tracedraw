@@ -171,6 +171,8 @@ class Shape {
   get Italic() { return __call('shape_info', {id:this.id}).italic; }
   set Italic(i) { __call('set_text_style', {id:this.id, italic:!!i}); }
   SetTextStyle(style) { __call('set_text_style', {id:this.id, ...style}); }
+  get TextBackground() { const c = __call('shape_info', {id:this.id}).background; return c ? new Color(c) : null; }
+  set TextBackground(c) { __call('set_text_style', {id:this.id, background: c ? {fill:'solid', ...c.v} : null}); }
   SetPosition(x, y) { __call('set_position', {id:this.id, x:x, y:y}); }
   SetSize(w, h) { __call('set_size', {id:this.id, w:w, h:h}); }
   Move(dx, dy) { __call('move', {id:this.id, dx:dx, dy:dy}); }
@@ -1643,6 +1645,10 @@ impl HostInner {
                     "size_pt": style.as_ref().map(|sp| sp.size_pt),
                     "bold": style.as_ref().map(|sp| sp.bold),
                     "italic": style.as_ref().map(|sp| sp.italic),
+                    "background": style
+                        .as_ref()
+                        .and_then(|sp| sp.background.as_ref())
+                        .and_then(|f| f.preview_color()),
                 })
             }
             "set_text_style" => {
@@ -1663,7 +1669,23 @@ impl HostInner {
                 let size = a.get("size").and_then(|v| v.as_f64());
                 let bold = a.get("bold").and_then(|v| v.as_bool());
                 let italic = a.get("italic").and_then(|v| v.as_bool());
-                if font.is_none() && size.is_none() && bold.is_none() && italic.is_none() {
+                // The characters' background (#3518): a fill, or null for
+                // none.
+                let background: Option<Option<Fill>> = match a.get("background") {
+                    None => None,
+                    Some(Value::Null) => Some(None),
+                    Some(v) => match serde_json::from_value::<Fill>(v.clone()) {
+                        Ok(Fill::None) => Some(None),
+                        Ok(f) => Some(Some(f)),
+                        Err(e) => return Err(e.to_string()),
+                    },
+                };
+                if font.is_none()
+                    && size.is_none()
+                    && bold.is_none()
+                    && italic.is_none()
+                    && background.is_none()
+                {
                     return Err("nothing to change".into());
                 }
                 let spans: Vec<TextSpan> = spans
@@ -1681,6 +1703,9 @@ impl HostInner {
                         }
                         if let Some(i) = italic {
                             sp.italic = i;
+                        }
+                        if let Some(b) = &background {
+                            sp.background = b.clone();
                         }
                         sp
                     })
@@ -2668,6 +2693,31 @@ fn dimension_script(d: &crate::dimensions::Dimension) -> String {
     }
 }
 
+/// The `set_text_style` call giving text `id` the style of `spans`, when
+/// they all share it.
+fn text_style_script(id: u64, spans: &[TextSpan]) -> Option<String> {
+    let first = spans.first()?;
+    let same = spans.iter().all(|sp| {
+        sp.font_family == first.font_family
+            && sp.size_pt == first.size_pt
+            && sp.bold == first.bold
+            && sp.italic == first.italic
+            && sp.background == first.background
+    });
+    if !same {
+        return None;
+    }
+    let style = json!({
+        "id": id,
+        "font": first.font_family,
+        "size": first.size_pt,
+        "bold": first.bold,
+        "italic": first.italic,
+        "background": first.background,
+    });
+    Some(format!("__call('set_text_style', {style});\n"))
+}
+
 /// Turn recorded commands into a script the user can edit and replay.
 pub fn commands_to_script(cmds: &[Command]) -> String {
     let mut out = String::from("// Recorded macro\nconst doc = Application.ActiveDocument;\nconst layer = doc.ActiveLayer;\n");
@@ -2770,6 +2820,16 @@ pub fn commands_to_script(cmds: &[Command]) -> String {
                     out.push_str(&format!("new Shape({}).Delete();\n", s.raw()));
                 }
             }
+            // A text's character style, set in the Text panel (#3518):
+            // its font, size, weight, slant and background, when every
+            // character shares them.
+            Command::SetShapeKind {
+                shape,
+                kind: ShapeKind::Text { spans, .. },
+            } => match text_style_script(shape.raw(), spans) {
+                Some(line) => out.push_str(&line),
+                None => out.push_str(&format!("// {}\n", c.label())),
+            },
             other => out.push_str(&format!("// {}\n", other.label())),
         }
     }

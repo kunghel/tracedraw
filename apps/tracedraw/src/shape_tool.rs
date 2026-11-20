@@ -220,6 +220,53 @@ impl App {
         })
     }
 
+    /// A selected picture's edge under the pointer, away from its
+    /// corners: the picture and the edge (0 to 3, from corner `i` to
+    /// corner `i + 1` in [`bitmap_corners`] order), #3532.
+    fn bitmap_edge_at(&self, p: Point) -> Option<(ShapeId, usize)> {
+        let tol = self.settings.nodes.pick_px() / self.view.zoom as f64;
+        self.selected_shapes().iter().find_map(|s| {
+            if frame_only(s) {
+                return None;
+            }
+            let c = bitmap_corners(s)?;
+            (0..4).find_map(|i| {
+                let (a, b) = (c[i], c[(i + 1) % 4]);
+                let ab = b - a;
+                let len2 = ab.hypot2();
+                if len2 <= 1e-12 {
+                    return None;
+                }
+                let t = (p - a).dot(ab) / len2;
+                let near = (a + ab * t.clamp(0.0, 1.0) - p).hypot() <= tol;
+                let away = (p - a).hypot() > tol && (p - b).hypot() > tol;
+                (near && away && (0.0..=1.0).contains(&t)).then_some((s.id, i))
+            })
+        })
+    }
+
+    /// A press on a selected picture's edge (#3532): the picture goes
+    /// into a clip frame of its rectangle and the edge's two corners are
+    /// chosen and dragged together. False when no edge is at `p`.
+    pub(crate) fn begin_bitmap_edge_crop(&mut self, p: Point) -> bool {
+        let Some((id, edge)) = self.bitmap_edge_at(p) else {
+            return false;
+        };
+        let Some(frame) = self.crop_bitmap_to_frame(id) else {
+            return false;
+        };
+        self.node_selection = vec![(frame, edge), (frame, (edge + 1) % 4)];
+        self.segment_spot = None;
+        self.drag = Drag::NodeMove {
+            start: self.start_curves(),
+            from: p,
+            grab: p,
+            begun: false,
+            still: None,
+        };
+        true
+    }
+
     /// Put the picture `id` in a clip frame whose frame is the picture's
     /// rectangle (an undo step of its own); the frame's id, whose nodes 0
     /// to 3 are the picture's corners.
@@ -557,6 +604,12 @@ impl App {
                     };
                     return;
                 }
+            }
+            // A picture's edge: cropped the same way, the edge's two
+            // corners moving together (Ctrl keeps the move to one axis),
+            // #3532.
+            if self.begin_bitmap_edge_crop(p) {
+                return;
             }
             if let Some((s, node)) = self.kind_node_at(p) {
                 // A B-spline's control point is chosen as a node is: a
@@ -2271,7 +2324,36 @@ impl App {
                 }
                 continue;
             }
-            if matches!(s.kind, ShapeKind::Bitmap { .. } | ShapeKind::Group { .. }) {
+            if let ShapeKind::Bitmap {
+                rect,
+                width_px,
+                height_px,
+                fx,
+                png,
+            } = &s.kind
+            {
+                // A picture loses its pixels along the nib, the edge
+                // fading out by the bar's hardness and strength (#3043).
+                let nib = SoftNib {
+                    radius: self.eraser_width / 2.0,
+                    hardness: self.eraser_hardness,
+                    strength: self.eraser_strength,
+                };
+                if let Some(png) = erase_picture(&s, png.as_slice(), points, nib) {
+                    cmds.push(Command::SetShapeKind {
+                        shape: s.id,
+                        kind: ShapeKind::Bitmap {
+                            rect: *rect,
+                            width_px: *width_px,
+                            height_px: *height_px,
+                            png,
+                            fx: fx.clone(),
+                        },
+                    });
+                }
+                continue;
+            }
+            if matches!(s.kind, ShapeKind::Group { .. }) {
                 continue;
             }
             let page_path = s.page_path();
@@ -2323,6 +2405,156 @@ impl App {
             let _ = self.engine.run_batch("Eraser", &cmds);
         }
     }
+}
+
+/// The Eraser's nib on a picture (#3043): `radius` mm, erased fully
+/// within `hardness` of it and fading out to its edge, `strength` the
+/// most it takes of a pixel.
+#[derive(Debug, Clone, Copy)]
+pub struct SoftNib {
+    pub radius: f64,
+    pub hardness: f64,
+    pub strength: f64,
+}
+
+impl SoftNib {
+    /// How much is erased at `d` mm from the nib's middle line (0 to 1).
+    pub fn amount(&self, d: f64) -> f64 {
+        let r = self.radius.max(1e-6);
+        if d >= r {
+            return 0.0;
+        }
+        let core = r * self.hardness.clamp(0.0, 1.0);
+        let k = if d <= core {
+            1.0
+        } else {
+            let t = ((r - d) / (r - core).max(1e-9)).clamp(0.0, 1.0);
+            t * t * (3.0 - 2.0 * t)
+        };
+        k * self.strength.clamp(0.0, 1.0)
+    }
+}
+
+/// The picture `s` (its pixels `png`, PNG or JPEG) with the pixels along
+/// `points` (page space) erased by `nib`: their alpha goes down by the
+/// nib's amount at their middles' distance from the line. `None` when
+/// the line misses the picture or it cannot be read.
+pub fn erase_picture(
+    s: &tracedraw_core::document::Shape,
+    png: &[u8],
+    points: &[Point],
+    nib: SoftNib,
+) -> Option<tracedraw_core::SharedBytes> {
+    let ShapeKind::Bitmap {
+        rect,
+        width_px,
+        height_px,
+        ..
+    } = &s.kind
+    else {
+        return None;
+    };
+    let (w, h) = (*width_px as usize, *height_px as usize);
+    if w == 0 || h == 0 || rect.width() <= 0.0 || rect.height() <= 0.0 || points.is_empty() {
+        return None;
+    }
+    // Pixel (x, y) (its middle at x + 0.5, y + 0.5; row 0 at the top) to
+    // the page, and back.
+    let to_page = s.transform
+        * tracedraw_core::geometry::Affine::new([
+            rect.width() / w as f64,
+            0.0,
+            0.0,
+            -rect.height() / h as f64,
+            rect.x0,
+            rect.y1,
+        ]);
+    if to_page.determinant().abs() < 1e-18 {
+        return None;
+    }
+    let to_px = to_page.inverse();
+    let r = nib.radius.max(1e-6);
+    let mut segs: Vec<(Point, Point)> = points.windows(2).map(|w| (w[0], w[1])).collect();
+    if segs.is_empty() {
+        segs.push((points[0], points[0]));
+    }
+    let mut amount: Option<Vec<f32>> = None;
+    for (a, b) in segs {
+        let lo = Point::new(a.x.min(b.x) - r, a.y.min(b.y) - r);
+        let hi = Point::new(a.x.max(b.x) + r, a.y.max(b.y) + r);
+        let corners = [
+            to_px * lo,
+            to_px * hi,
+            to_px * Point::new(lo.x, hi.y),
+            to_px * Point::new(hi.x, lo.y),
+        ];
+        let x0 = corners
+            .iter()
+            .map(|c| c.x)
+            .fold(f64::INFINITY, f64::min)
+            .floor()
+            .max(0.0);
+        let x1 = corners
+            .iter()
+            .map(|c| c.x)
+            .fold(f64::NEG_INFINITY, f64::max)
+            .ceil()
+            .min(w as f64);
+        let y0 = corners
+            .iter()
+            .map(|c| c.y)
+            .fold(f64::INFINITY, f64::min)
+            .floor()
+            .max(0.0);
+        let y1 = corners
+            .iter()
+            .map(|c| c.y)
+            .fold(f64::NEG_INFINITY, f64::max)
+            .ceil()
+            .min(h as f64);
+        if x0 >= x1 || y0 >= y1 {
+            continue;
+        }
+        let buf = amount.get_or_insert_with(|| vec![0.0; w * h]);
+        let ab = b - a;
+        let len2 = ab.hypot2();
+        for y in y0 as usize..y1 as usize {
+            for x in x0 as usize..x1 as usize {
+                let p = to_page * Point::new(x as f64 + 0.5, y as f64 + 0.5);
+                let t = if len2 > 1e-18 {
+                    ((p - a).dot(ab) / len2).clamp(0.0, 1.0)
+                } else {
+                    0.0
+                };
+                let d = (p - (a + ab * t)).hypot();
+                let k = nib.amount(d) as f32;
+                let cell = &mut buf[y * w + x];
+                if k > *cell {
+                    *cell = k;
+                }
+            }
+        }
+    }
+    let amount = amount?;
+    if amount.iter().all(|k| *k <= 0.0) {
+        return None;
+    }
+    let mut img = image::load_from_memory(png).ok()?.to_rgba8();
+    if img.width() as usize != w || img.height() as usize != h {
+        img = image::imageops::resize(
+            &img,
+            w as u32,
+            h as u32,
+            image::imageops::FilterType::Triangle,
+        );
+    }
+    for (i, px) in img.pixels_mut().enumerate() {
+        let k = amount[i];
+        if k > 0.0 {
+            px[3] = (px[3] as f32 * (1.0 - k)).round().clamp(0.0, 255.0) as u8;
+        }
+    }
+    crate::bitmap_fx::encode(&img).map(tracedraw_core::SharedBytes::from)
 }
 
 /// What the Eraser leaves of a clip frame's frame.
@@ -2921,6 +3153,40 @@ mod bitmap_node_tests {
         assert_eq!(chosen, indices);
     }
 
+    /// A press on a picture's edge (away from its corners) crops it from
+    /// that side: the top edge dragged down leaves the picture below it,
+    /// unstretched (#3532).
+    #[test]
+    fn an_edge_of_a_picture_drags_to_crop_it() {
+        let mut app = App::headless();
+        let id = picture(&mut app);
+        app.select(vec![id]);
+        app.view.zoom = 1.0;
+        // Near a corner it is the corner, in the middle of a side an edge.
+        assert_eq!(app.bitmap_edge_at(Point::new(10.5, 10.5)), None);
+        assert_eq!(app.bitmap_edge_at(Point::new(30.0, 40.2)), Some((id, 2)));
+        assert_eq!(app.bitmap_edge_at(Point::new(30.0, 25.0)), None);
+        assert!(app.begin_bitmap_edge_crop(Point::new(30.0, 40.0)));
+        let start = app.start_curves();
+        app.move_start_nodes(&start, Vec2::new(0.0, -15.0), Point::new(30.0, 25.0), false);
+        let s = app.doc().find_shape(id).expect("clip frame");
+        let ShapeKind::ClipFrame { frame, contents } = &s.kind else {
+            panic!("not a clip frame: {:?}", s.kind);
+        };
+        let b = tracedraw_core::geometry::Shape::bounding_box(&frame.page_path());
+        assert!(
+            (b.y1 - 25.0).abs() < 1e-9 && (b.y0 - 10.0).abs() < 1e-9,
+            "{b:?}"
+        );
+        assert!((b.x0 - 10.0).abs() < 1e-9 && (b.x1 - 50.0).abs() < 1e-9);
+        // The picture itself keeps its size.
+        let ShapeKind::Bitmap { rect, .. } = &contents[0].kind else {
+            panic!("picture");
+        };
+        assert_eq!(*rect, Rect::new(10.0, 10.0, 50.0, 40.0));
+        assert!(!app.begin_bitmap_edge_crop(Point::new(500.0, 500.0)));
+    }
+
     /// #1491: a picture with a gradient transparency, cut down by moving
     /// two of its corner nodes with the Shape tool, keeps its
     /// transparency where it lay on the page: the ramp is cut, not
@@ -3018,4 +3284,84 @@ fn every_subpath_closed(p: &BezPath) -> bool {
         }
     }
     any && !open
+}
+
+#[cfg(test)]
+mod soft_eraser_tests {
+    use super::*;
+    use tracedraw_core::geometry::Rect;
+
+    /// The Eraser over a picture takes its pixels away along the nib,
+    /// fully in the middle and fading out to the edge, in one undo step;
+    /// the picture stays a picture of the same size (#3043: pictures could
+    /// not be erased at all).
+    #[test]
+    fn the_eraser_fades_a_picture_out_along_the_nib() {
+        let mut app = App::headless();
+        // 100 x 100 mm at 1 pixel a millimetre, opaque red.
+        let img = image::RgbaImage::from_pixel(100, 100, image::Rgba([255, 0, 0, 255]));
+        let png = crate::bitmap_fx::encode(&img).expect("png");
+        let id = app
+            .new_shape(ShapeKind::Bitmap {
+                rect: Rect::new(0.0, 0.0, 100.0, 100.0),
+                width_px: 100,
+                height_px: 100,
+                png: png.into(),
+                fx: None,
+            })
+            .expect("picture");
+        app.select(vec![id]);
+        app.eraser_width = 20.0;
+        app.eraser_hardness = 0.5;
+        app.eraser_strength = 1.0;
+        let depth = app.engine.history_labels().0.len();
+        // Across the picture at y = 50.
+        app.erase_along(&[Point::new(-10.0, 50.0), Point::new(110.0, 50.0)]);
+        assert_eq!(app.engine.history_labels().0.len(), depth + 1, "one step");
+        let s = app.doc().find_shape(id).expect("still there");
+        let ShapeKind::Bitmap {
+            width_px,
+            height_px,
+            png,
+            ..
+        } = &s.kind
+        else {
+            panic!("still a picture: {:?}", s.kind);
+        };
+        assert_eq!((*width_px, *height_px), (100, 100));
+        let out = image::load_from_memory(png.as_slice())
+            .expect("decode")
+            .to_rgba8();
+        // Row y holds page y = 99.5 - y: the line at page y 50 is between
+        // rows 49 and 50.
+        let alpha = |page_y: f64| out.get_pixel(50, (99.5 - page_y) as u32)[3];
+        assert_eq!(alpha(50.5), 0, "the middle goes");
+        assert_eq!(alpha(54.5), 0, "within the hard core (5 mm)");
+        let soft = alpha(57.5);
+        assert!(soft > 0 && soft < 255, "the edge fades: {soft}");
+        assert!(alpha(58.5) > soft, "fading out");
+        assert_eq!(alpha(70.5), 255, "beyond the nib");
+        assert_eq!(out.get_pixel(50, 10)[0], 255, "the colour stays");
+        // Half strength: never below half.
+        app.eraser_strength = 0.5;
+        app.erase_along(&[Point::new(50.0, -10.0), Point::new(50.0, 110.0)]);
+        let s = app.doc().find_shape(id).expect("picture");
+        let ShapeKind::Bitmap { png, .. } = &s.kind else {
+            panic!();
+        };
+        let out = image::load_from_memory(png.as_slice())
+            .expect("decode")
+            .to_rgba8();
+        let a = out.get_pixel(50, 10)[3];
+        assert!((126..=129).contains(&a), "half taken: {a}");
+        // The nib's amount: full inside, smooth to the edge.
+        let nib = SoftNib {
+            radius: 10.0,
+            hardness: 0.0,
+            strength: 1.0,
+        };
+        assert!((nib.amount(0.0) - 1.0).abs() < 1e-9);
+        assert!((nib.amount(5.0) - 0.5).abs() < 1e-9);
+        assert_eq!(nib.amount(10.0), 0.0);
+    }
 }

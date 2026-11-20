@@ -73,6 +73,11 @@ An arc is an open curve: its fill shows only while
 [[options.fill_open_curves]] is on in the document options. A pie is closed
 and keeps its fill.
 
+A pie's **Ring** field (inner radius, 0 to 99 %) cuts a hole in its middle:
+the pie becomes a band between the outline and a smaller ellipse, a thick
+arc that keeps its fill and outline. With the start and end angles equal it
+is a whole ring. The Shape tool's angle nodes keep the ring as they move.
+
 ## 3-Point Ellipse {#three-point-ellipse}
 
 The [[tool.three_point_ellipse]] tool draws an ellipse at an angle:

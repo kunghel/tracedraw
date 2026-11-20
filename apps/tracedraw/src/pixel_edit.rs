@@ -4,10 +4,12 @@
 //! selection tools (rectangle, ellipse, freehand, magic wand), the
 //! brushes (paint, eraser, clone, heal, dodge, burn, sponge, blur,
 //! sharpen, smudge, red eye), the fill, the gradient, effects run inside
-//! the selection, content-aware fill and the undo steps. See
+//! the selection, content-aware fill, pixel layers (each with its
+//! opacity and merge mode) and the undo steps. See
 //! `docs/behavior/edit-inside-picture.md`.
 
 use image::{GrayImage, Luma, Rgba, RgbaImage};
+pub use tracedraw_core::live::MergeMode;
 
 /// The tools of the picture editing bar.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -30,10 +32,14 @@ pub enum PixelTool {
     Smudge,
     RedEye,
     Eyedropper,
+    /// Drags the pixels of the layer in use.
+    Move,
+    /// Paints light (see `pixel_light.rs`).
+    Light,
 }
 
 impl PixelTool {
-    pub const ALL: [PixelTool; 18] = [
+    pub const ALL: [PixelTool; 20] = [
         PixelTool::RectSelect,
         PixelTool::EllipseSelect,
         PixelTool::Lasso,
@@ -52,6 +58,8 @@ impl PixelTool {
         PixelTool::Smudge,
         PixelTool::RedEye,
         PixelTool::Eyedropper,
+        PixelTool::Move,
+        PixelTool::Light,
     ];
 
     /// The tool's i18n key (`pixel.tool.<name>`).
@@ -75,6 +83,8 @@ impl PixelTool {
             PixelTool::Smudge => "pixel.tool.smudge",
             PixelTool::RedEye => "pixel.tool.red_eye",
             PixelTool::Eyedropper => "pixel.tool.eyedropper",
+            PixelTool::Move => "pixel.tool.move",
+            PixelTool::Light => "pixel.tool.light",
         }
     }
 
@@ -154,15 +164,49 @@ impl Default for BrushOpts {
     }
 }
 
+/// One layer of pixels of the picture being edited. All layers have the
+/// picture's size.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PixelLayer {
+    pub name: String,
+    /// The layer's pixels; empty (0 by 0) for the layer in use, whose
+    /// pixels are `PixelImage::img`.
+    pub img: RgbaImage,
+    /// 0 to 1.
+    pub opacity: f32,
+    pub merge: MergeMode,
+    pub visible: bool,
+    /// No tool changes a locked layer's pixels.
+    pub locked: bool,
+}
+
+impl PixelLayer {
+    pub fn new(name: impl Into<String>) -> Self {
+        PixelLayer {
+            name: name.into(),
+            img: RgbaImage::new(0, 0),
+            opacity: 1.0,
+            merge: MergeMode::Normal,
+            visible: true,
+            locked: false,
+        }
+    }
+}
+
 /// The picture being edited and its selection (255 inside, 0 outside,
 /// soft in between). No selection means the whole picture.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PixelImage {
+    /// The pixels of the layer in use: every tool works on these.
     pub img: RgbaImage,
     pub sel: Option<GrayImage>,
     /// Where the picture's top left pixel lies in the picture as it was
     /// first opened (it moves when the picture is cropped).
     pub origin: (i64, i64),
+    /// The layers, bottom first; at least one.
+    pub layers: Vec<PixelLayer>,
+    /// The layer in use.
+    pub active: usize,
 }
 
 /// A rectangle of changed pixels: x0, y0 inclusive, x1, y1 exclusive.
@@ -186,6 +230,8 @@ impl PixelImage {
             img,
             sel: None,
             origin: (0, 0),
+            layers: vec![PixelLayer::new("")],
+            active: 0,
         }
     }
 
@@ -614,41 +660,351 @@ fn red_eye_px(q: &Rgba<u8>, t: f32) -> Rgba<u8> {
     }
 }
 
-/// The picture flipped left to right (or top to bottom), selection too.
+/// The picture flipped left to right (or top to bottom): every layer and
+/// the selection.
 pub fn flip(pi: &mut PixelImage, horizontal: bool) {
-    if horizontal {
-        image::imageops::flip_horizontal_in_place(&mut pi.img);
-        if let Some(m) = &mut pi.sel {
+    let f = |m: &mut RgbaImage| {
+        if horizontal {
             image::imageops::flip_horizontal_in_place(m);
+        } else {
+            image::imageops::flip_vertical_in_place(m);
         }
-    } else {
-        image::imageops::flip_vertical_in_place(&mut pi.img);
-        if let Some(m) = &mut pi.sel {
+    };
+    f(&mut pi.img);
+    for l in &mut pi.layers {
+        f(&mut l.img);
+    }
+    if let Some(m) = &mut pi.sel {
+        if horizontal {
+            image::imageops::flip_horizontal_in_place(m);
+        } else {
             image::imageops::flip_vertical_in_place(m);
         }
     }
 }
 
-/// The picture cut to the selection's box; the pixels outside the
-/// selection inside the box become clear. Returns the box (in the
-/// picture before the cut).
+/// The picture cut to the selection's box, every layer; the pixels
+/// outside the selection inside the box become clear. Returns the box (in
+/// the picture before the cut).
 pub fn crop_to_selection(pi: &mut PixelImage) -> Option<Dirty> {
     let b = pi.sel_bounds()?;
     let (w, h) = (b[2] - b[0], b[3] - b[1]);
     if w == 0 || h == 0 {
         return None;
     }
-    let mut out = image::imageops::crop_imm(&pi.img, b[0], b[1], w, h).to_image();
-    if pi.sel.is_some() {
-        for (x, y, q) in out.enumerate_pixels_mut() {
-            let s = pi.sel_at(x + b[0], y + b[1]);
-            q[3] = (q[3] as f32 * s).round() as u8;
+    let sel = pi.sel.take();
+    let cut = |img: &RgbaImage| {
+        let mut out = image::imageops::crop_imm(img, b[0], b[1], w, h).to_image();
+        if let Some(m) = &sel {
+            for (x, y, q) in out.enumerate_pixels_mut() {
+                let s = m
+                    .get_pixel_checked(x + b[0], y + b[1])
+                    .map(|v| v[0] as f32 / 255.0)
+                    .unwrap_or(0.0);
+                q[3] = (q[3] as f32 * s).round() as u8;
+            }
+        }
+        out
+    };
+    pi.img = cut(&pi.img);
+    for l in &mut pi.layers {
+        if l.img.width() > 0 {
+            l.img = cut(&l.img);
         }
     }
-    pi.img = out;
-    pi.sel = None;
     pi.origin = (pi.origin.0 + b[0] as i64, pi.origin.1 + b[1] as i64);
     Some(b)
+}
+
+// ---------------------------------------------------------------------
+// Layers
+// ---------------------------------------------------------------------
+
+impl PixelImage {
+    /// More than one layer, or one that does not show its pixels as they
+    /// are: what is seen must be put together from the layers.
+    pub fn is_layered(&self) -> bool {
+        self.layers.len() > 1
+            || self
+                .layers
+                .first()
+                .is_some_and(|l| !l.visible || l.opacity < 1.0 || l.merge != MergeMode::Normal)
+    }
+
+    /// The layer in use is locked.
+    pub fn active_locked(&self) -> bool {
+        self.layers.get(self.active).is_some_and(|l| l.locked)
+    }
+
+    /// Make layer `i` the one in use.
+    pub fn set_active(&mut self, i: usize) {
+        if i >= self.layers.len() || i == self.active {
+            return;
+        }
+        if let Some(cur) = self.layers.get_mut(self.active) {
+            std::mem::swap(&mut cur.img, &mut self.img);
+        }
+        if let Some(next) = self.layers.get_mut(i) {
+            std::mem::swap(&mut next.img, &mut self.img);
+        }
+        self.active = i;
+    }
+
+    /// The pixels of layer `i`.
+    pub fn layer_pixels(&self, i: usize) -> Option<&RgbaImage> {
+        if i == self.active {
+            Some(&self.img)
+        } else {
+            self.layers.get(i).map(|l| &l.img)
+        }
+    }
+
+    /// A layer of `pixels` (the picture's size) put above the one in use,
+    /// and used.
+    pub fn insert_layer(&mut self, name: impl Into<String>, pixels: RgbaImage) {
+        let mut l = PixelLayer::new(name);
+        l.img = pixels;
+        let at = (self.active + 1).min(self.layers.len());
+        self.layers.insert(at, l);
+        self.set_active(at);
+    }
+
+    /// A new clear layer above the one in use.
+    pub fn add_layer(&mut self, name: impl Into<String>) {
+        let (w, h) = self.img.dimensions();
+        self.insert_layer(name, RgbaImage::new(w, h));
+    }
+
+    /// A copy of the layer in use above it, with its settings.
+    pub fn duplicate_layer(&mut self, name: impl Into<String>) {
+        let from = self.layers.get(self.active).cloned();
+        self.insert_layer(name, self.img.clone());
+        if let (Some(f), Some(n)) = (from, self.layers.get_mut(self.active)) {
+            n.opacity = f.opacity;
+            n.merge = f.merge;
+            n.visible = f.visible;
+        }
+    }
+
+    /// The layer in use taken away (never the last one); the one below
+    /// it is used next.
+    pub fn delete_layer(&mut self) -> bool {
+        if self.layers.len() < 2 {
+            return false;
+        }
+        let gone = self.active;
+        let next = if gone > 0 { gone - 1 } else { 1 };
+        self.set_active(next);
+        self.layers.remove(gone);
+        if next > gone {
+            self.active = next - 1;
+        }
+        true
+    }
+
+    /// The layer in use moved one place up (towards the top) or down.
+    pub fn move_layer(&mut self, up: bool) -> bool {
+        let i = self.active;
+        let j = if up {
+            i + 1
+        } else {
+            match i.checked_sub(1) {
+                Some(j) => j,
+                None => return false,
+            }
+        };
+        if j >= self.layers.len() {
+            return false;
+        }
+        self.layers.swap(i, j);
+        self.active = j;
+        true
+    }
+
+    /// The layer in use merged into the one below it, with its opacity
+    /// and merge mode; the one below keeps its own settings.
+    pub fn merge_down(&mut self) -> bool {
+        let i = self.active;
+        if i == 0 || i >= self.layers.len() {
+            return false;
+        }
+        let top = self.layers.get(i).cloned();
+        let Some(top) = top else {
+            return false;
+        };
+        let top_pixels = self.img.clone();
+        self.set_active(i - 1);
+        if top.visible {
+            let (w, h) = self.img.dimensions();
+            let mut base = rgba_to_pixmap(&self.img, 1.0);
+            let layer = rgba_to_pixmap(&top_pixels, top.opacity);
+            if let (Some(b), Some(layer)) = (base.as_mut(), layer) {
+                tracedraw_render::composite_layer(b, &layer, (0, 0), top.merge);
+            }
+            if let Some(b) = base {
+                if let Some(out) = pixmap_to_rgba(&b, w, h) {
+                    self.img = out;
+                }
+            }
+        }
+        self.layers.remove(i);
+        true
+    }
+
+    /// All layers put together into one, as they are seen.
+    pub fn flatten(&mut self) -> bool {
+        if !self.is_layered() {
+            return false;
+        }
+        let all = self.composite();
+        self.layers = vec![PixelLayer::new(
+            self.layers
+                .first()
+                .map(|l| l.name.clone())
+                .unwrap_or_default(),
+        )];
+        self.active = 0;
+        self.img = all;
+        true
+    }
+
+    /// The selected pixels of the layer in use (soft edges kept) on a new
+    /// layer above it; `cut` clears them from the layer in use.
+    pub fn selection_to_layer(&mut self, name: impl Into<String>, cut: bool) -> bool {
+        let (w, h) = self.img.dimensions();
+        if w == 0 || h == 0 {
+            return false;
+        }
+        let mut out = RgbaImage::new(w, h);
+        for (x, y, q) in out.enumerate_pixels_mut() {
+            let s = self.sel_at(x, y);
+            if s > 0.0 {
+                let p = *self.img.get_pixel(x, y);
+                *q = Rgba([p[0], p[1], p[2], (p[3] as f32 * s).round() as u8]);
+            }
+        }
+        if cut {
+            if self.active_locked() {
+                return false;
+            }
+            clear_selection(self);
+        }
+        self.insert_layer(name, out);
+        true
+    }
+
+    /// The pixels of the layer in use moved by (dx, dy); what leaves the
+    /// picture is lost, what comes in is clear.
+    pub fn offset_layer(&mut self, dx: i64, dy: i64) {
+        self.img = offset_image(&self.img, dx, dy);
+    }
+
+    /// Everything seen: the layers put together, bottom first.
+    pub fn composite(&self) -> RgbaImage {
+        let (w, h) = self.img.dimensions();
+        self.composite_region([0, 0, w, h], None)
+            .unwrap_or_else(|| RgbaImage::new(w, h))
+    }
+
+    /// The pixels seen in box `b`, the layer in use shown as `active` when
+    /// given (an effect's preview). The result has the box's size.
+    pub fn composite_region(&self, b: Dirty, active: Option<&RgbaImage>) -> Option<RgbaImage> {
+        let (w, h) = self.img.dimensions();
+        let (x0, y0) = (b[0].min(w), b[1].min(h));
+        let (x1, y1) = (b[2].min(w), b[3].min(h));
+        if x1 <= x0 || y1 <= y0 {
+            return None;
+        }
+        let (bw, bh) = (x1 - x0, y1 - y0);
+        let mut target = tiny_skia::Pixmap::new(bw, bh)?;
+        for (i, l) in self.layers.iter().enumerate() {
+            if !l.visible || l.opacity <= 0.0 {
+                continue;
+            }
+            let px = if i == self.active {
+                active.unwrap_or(&self.img)
+            } else {
+                &l.img
+            };
+            if px.dimensions() != (w, h) {
+                continue;
+            }
+            let part = image::imageops::crop_imm(px, x0, y0, bw, bh).to_image();
+            if let Some(layer) = rgba_to_pixmap(&part, l.opacity) {
+                tracedraw_render::composite_layer(&mut target, &layer, (0, 0), l.merge);
+            }
+        }
+        pixmap_to_rgba(&target, bw, bh)
+    }
+
+    /// The colour seen at (x, y).
+    pub fn seen_at(&self, x: u32, y: u32) -> Option<Rgba<u8>> {
+        if !self.is_layered() {
+            return self.img.get_pixel_checked(x, y).copied();
+        }
+        self.composite_region([x, y, x + 1, y + 1], None)
+            .map(|m| *m.get_pixel(0, 0))
+    }
+
+    /// Memory the picture takes, bytes (every layer and the selection).
+    pub fn bytes(&self) -> usize {
+        self.img.as_raw().len()
+            + self
+                .layers
+                .iter()
+                .map(|l| l.img.as_raw().len())
+                .sum::<usize>()
+            + self.sel.as_ref().map(|m| m.as_raw().len()).unwrap_or(0)
+    }
+}
+
+/// A picture pasted as a new layer above the one in use, its top left at
+/// the selection's (or the picture's) top left; what passes the picture's
+/// edge is cut off.
+pub fn paste_as_layer(pi: &mut PixelImage, name: String, img: &RgbaImage) -> Option<Dirty> {
+    let (w, h) = pi.img.dimensions();
+    if w == 0 || h == 0 || img.width() == 0 || img.height() == 0 {
+        return None;
+    }
+    let at = pi.sel_bounds().map(|b| (b[0], b[1])).unwrap_or((0, 0));
+    let mut layer = RgbaImage::new(w, h);
+    image::imageops::replace(&mut layer, img, at.0 as i64, at.1 as i64);
+    pi.insert_layer(name, layer);
+    Some([0, 0, w, h])
+}
+
+/// `img` moved by (dx, dy), the same size.
+pub fn offset_image(img: &RgbaImage, dx: i64, dy: i64) -> RgbaImage {
+    let (w, h) = img.dimensions();
+    let mut out = RgbaImage::new(w, h);
+    image::imageops::replace(&mut out, img, dx, dy);
+    out
+}
+
+/// A straight-alpha picture as a premultiplied pixmap, its alpha scaled
+/// by `opacity`.
+fn rgba_to_pixmap(img: &RgbaImage, opacity: f32) -> Option<tiny_skia::Pixmap> {
+    let (w, h) = img.dimensions();
+    let mut pm = tiny_skia::Pixmap::new(w, h)?;
+    let k = opacity.clamp(0.0, 1.0);
+    for (d, s) in pm.pixels_mut().iter_mut().zip(img.pixels()) {
+        let a = (s[3] as f32 * k).round() as u8;
+        *d = tiny_skia::ColorU8::from_rgba(s[0], s[1], s[2], a).premultiply();
+    }
+    Some(pm)
+}
+
+/// A premultiplied pixmap back to straight alpha.
+fn pixmap_to_rgba(pm: &tiny_skia::Pixmap, w: u32, h: u32) -> Option<RgbaImage> {
+    let data: Vec<u8> = pm
+        .pixels()
+        .iter()
+        .flat_map(|p| {
+            let c = p.demultiply();
+            [c.red(), c.green(), c.blue(), c.alpha()]
+        })
+        .collect();
+    RgbaImage::from_raw(w, h, data)
 }
 
 // ---------------------------------------------------------------------
@@ -1185,9 +1541,7 @@ impl History {
     pub fn push(&mut self, state: &PixelImage) {
         self.undo.push(state.clone());
         self.redo.clear();
-        let per = (state.img.as_raw().len()
-            + state.sel.as_ref().map(|m| m.as_raw().len()).unwrap_or(0))
-        .max(1);
+        let per = state.bytes().max(1);
         let most = (HISTORY_BYTES / per).clamp(3, 100);
         while self.undo.len() > most {
             self.undo.remove(0);
@@ -1625,6 +1979,108 @@ mod tests {
         assert!(h.redo(&mut pi));
         assert_eq!(pi.img.get_pixel(0, 0)[0], 9);
         assert!(!h.redo(&mut pi));
+    }
+
+    #[test]
+    fn a_new_layer_is_clear_and_painting_changes_only_it() {
+        let mut pi = solid(10, 10, [255, 255, 255, 255]);
+        assert!(!pi.is_layered());
+        pi.add_layer("Layer 1");
+        assert!(pi.is_layered());
+        assert_eq!((pi.layers.len(), pi.active), (2, 1));
+        assert_eq!(pi.img.get_pixel(3, 3)[3], 0);
+        fill_selection(&mut pi, [255, 0, 0, 255], 1.0).unwrap();
+        assert_eq!(pi.layer_pixels(0).unwrap().get_pixel(3, 3)[1], 255);
+        assert_eq!(*pi.composite().get_pixel(3, 3), Rgba([255, 0, 0, 255]));
+        pi.set_active(0);
+        assert_eq!(pi.img.get_pixel(3, 3)[1], 255, "background untouched");
+        assert_eq!(pi.layer_pixels(1).unwrap().get_pixel(3, 3)[0], 255);
+    }
+
+    #[test]
+    fn layer_opacity_visibility_and_merge_mode_change_what_is_seen() {
+        let mut pi = solid(4, 4, [200, 200, 200, 255]);
+        pi.add_layer("top");
+        fill_selection(&mut pi, [0, 0, 0, 255], 1.0).unwrap();
+        pi.layers[1].opacity = 0.5;
+        let v = pi.composite().get_pixel(1, 1)[0];
+        assert!((95..=105).contains(&v), "{v}");
+        pi.layers[1].visible = false;
+        assert_eq!(pi.composite().get_pixel(1, 1)[0], 200);
+        pi.layers[1].visible = true;
+        pi.layers[1].opacity = 1.0;
+        pi.img = RgbaImage::from_pixel(4, 4, Rgba([255, 255, 255, 255]));
+        pi.layers[1].merge = MergeMode::Multiply;
+        assert_eq!(
+            pi.composite().get_pixel(1, 1)[0],
+            200,
+            "white multiplies to the backdrop"
+        );
+        assert_eq!(pi.seen_at(1, 1).unwrap()[0], 200);
+    }
+
+    #[test]
+    fn merge_down_flatten_delete_and_order() {
+        let mut pi = solid(4, 4, [255, 255, 255, 255]);
+        pi.add_layer("a");
+        fill_selection(&mut pi, [0, 0, 255, 255], 1.0).unwrap();
+        pi.layers[1].opacity = 0.5;
+        let seen = pi.composite();
+        assert!(pi.merge_down());
+        assert_eq!((pi.layers.len(), pi.active), (1, 0));
+        assert_eq!(pi.img, seen);
+        pi.add_layer("b");
+        pi.add_layer("c");
+        assert_eq!(pi.active, 2);
+        assert!(pi.move_layer(false));
+        assert_eq!(pi.active, 1);
+        assert_eq!(pi.layers[1].name, "c");
+        assert!(pi.delete_layer());
+        assert_eq!(pi.layers.len(), 2);
+        assert_eq!(pi.layers[pi.active].name, "");
+        let all = pi.composite();
+        assert!(pi.flatten());
+        assert_eq!(pi.layers.len(), 1);
+        assert_eq!(pi.img, all);
+        assert!(!pi.delete_layer(), "the last layer stays");
+    }
+
+    #[test]
+    fn copy_and_cut_to_layer_and_move_a_layer() {
+        let mut pi = solid(10, 10, [9, 9, 9, 255]);
+        pi.sel = rect_mask(10, 10, (0.0, 0.0), (5.0, 10.0));
+        assert!(pi.selection_to_layer("copy", false));
+        assert_eq!(pi.img.get_pixel(1, 1)[3], 255);
+        assert_eq!(pi.img.get_pixel(8, 1)[3], 0);
+        pi.set_active(0);
+        assert!(pi.selection_to_layer("cut", true));
+        assert_eq!(
+            pi.layer_pixels(0).unwrap().get_pixel(1, 1)[3],
+            0,
+            "cut away"
+        );
+        pi.offset_layer(5, 0);
+        assert_eq!(pi.img.get_pixel(1, 1)[3], 0);
+        assert_eq!(pi.img.get_pixel(6, 1)[3], 255);
+        let img = RgbaImage::from_pixel(2, 2, Rgba([1, 2, 3, 255]));
+        pi.sel = rect_mask(10, 10, (4.0, 4.0), (8.0, 8.0));
+        paste_as_layer(&mut pi, "p".into(), &img).unwrap();
+        assert_eq!(*pi.img.get_pixel(4, 4), Rgba([1, 2, 3, 255]));
+        assert_eq!(pi.img.get_pixel(7, 7)[3], 0);
+    }
+
+    #[test]
+    fn crop_and_flip_reach_every_layer() {
+        let mut pi = solid(10, 10, [9, 9, 9, 255]);
+        pi.add_layer("top");
+        pi.img.put_pixel(0, 5, Rgba([255, 0, 0, 255]));
+        flip(&mut pi, true);
+        assert_eq!(pi.img.get_pixel(9, 5)[0], 255);
+        pi.sel = rect_mask(10, 10, (2.0, 2.0), (6.0, 8.0));
+        crop_to_selection(&mut pi).unwrap();
+        assert_eq!(pi.img.dimensions(), (4, 6));
+        assert_eq!(pi.layer_pixels(0).unwrap().dimensions(), (4, 6));
+        assert_eq!(pi.composite().dimensions(), (4, 6));
     }
 
     #[test]

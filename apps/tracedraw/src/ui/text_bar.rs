@@ -26,8 +26,14 @@ pub const HIDDEN: &str = "text_hidden";
 /// A separator between groups of items.
 const SEP: &str = "sep";
 
-/// The bar's optional items in their order, groups apart.
-pub const ITEMS: [&str; 22] = [
+/// The bar's optional items in their order, groups apart. Bullets and
+/// drop cap come first, next to the alignment, so they stay in view
+/// when the object fields of the Pick tool come before the text fields
+/// (#3586, #3592).
+pub const ITEMS: [&str; 23] = [
+    "bullets",
+    "drop_cap",
+    SEP,
     "kerning",
     "char_width",
     "all_caps",
@@ -45,8 +51,6 @@ pub const ITEMS: [&str; 22] = [
     SEP,
     "tabs",
     "columns",
-    "bullets",
-    "drop_cap",
     SEP,
     "text_docker",
     "edit_text",
@@ -320,8 +324,9 @@ pub fn optional_part(app: &mut App, ui: &mut Ui) {
                 }
             }
             "bullets" => {
-                if pic_button(ui, Pic::Bullets, &tr("menu.text.bullets"), is_para, false).clicked()
-                {
+                let resp = pic_button(ui, Pic::Bullets, &tr("menu.text.bullets"), is_para, false);
+                record_bullets(ui, resp.rect);
+                if resp.clicked() {
                     app.dialog = crate::ui::dialogs::Dialog::TextBullets;
                 }
             }
@@ -412,3 +417,18 @@ fn record_plus(ui: &Ui, rect: egui::Rect) {
 
 #[cfg(not(test))]
 fn record_plus(_ui: &Ui, _rect: egui::Rect) {}
+
+/// Where the Bullets button was drawn last, for tests.
+#[cfg(test)]
+pub(crate) fn bullets_rect(ctx: &egui::Context) -> Option<egui::Rect> {
+    ctx.data(|d| d.get_temp(egui::Id::new("text_bar_bullets")))
+}
+
+#[cfg(test)]
+fn record_bullets(ui: &Ui, rect: egui::Rect) {
+    ui.ctx()
+        .data_mut(|d| d.insert_temp(egui::Id::new("text_bar_bullets"), rect));
+}
+
+#[cfg(not(test))]
+fn record_bullets(_ui: &Ui, _rect: egui::Rect) {}

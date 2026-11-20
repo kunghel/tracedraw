@@ -208,9 +208,19 @@ mod tests {
                 .unwrap_or_else(|| panic!("a field showing {want} mm in {texts:?}"))
         }
 
-        /// `n` wheel notches up over the point, a frame each.
+        /// `n` wheel notches up over the point, a frame each, after a
+        /// click into the field there: on a bar the wheel steps only the
+        /// field clicked into (#3589).
         fn notches(&mut self, at: egui::Pos2, n: usize) {
             self.frame(vec![egui::Event::PointerMoved(at)]);
+            let click = |pressed| egui::Event::PointerButton {
+                pos: at,
+                button: egui::PointerButton::Primary,
+                pressed,
+                modifiers: egui::Modifiers::NONE,
+            };
+            self.frame(vec![click(true)]);
+            self.frame(vec![click(false)]);
             for _ in 0..n {
                 self.frame(vec![egui::Event::MouseWheel {
                     unit: egui::MouseWheelUnit::Line,

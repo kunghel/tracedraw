@@ -127,7 +127,8 @@ In an open drop-down list, <kbd>Down</kbd>, <kbd>Up</kbd>, <kbd>Home</kbd>,
 typing the first letters of a name jumps to it, <kbd>Enter</kbd> picks and
 <kbd>Esc</kbd> closes the list without a change. A list's button reached with
 <kbd>Tab</kbd> opens with <kbd>Down</kbd>, <kbd>Alt</kbd>+<kbd>Down</kbd> or
-<kbd>Enter</kbd>. In the font list, typing filters the fonts.
+<kbd>Enter</kbd>. In the font list, typing filters the fonts. A list that fits
+in the window opens whole, with no scroll bar.
 
 While a menu or a list is open, the arrow keys do not move the selected
 objects.

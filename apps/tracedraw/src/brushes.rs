@@ -336,12 +336,13 @@ impl App {
                     radius,
                     BrushSettings::pressure(b.smudge_pressure),
                 ),
-                (Tool::Roughen, Some(from)) => effects::roughen_stroke(
+                (Tool::Roughen, Some(from)) => effects::roughen_stroke_edge(
                     from,
                     &self.brush_stroke.swath,
                     radius,
                     self.roughen_amount,
                     b.roughen_spacing(),
+                    b.roughen_edge,
                 ),
                 (Tool::Smooth, _) => effects::smooth(&page_path, p, radius, b.smooth_tolerance()),
                 _ => continue,
@@ -559,6 +560,43 @@ mod tests {
         }
         let back = bounds(&app, id).y1;
         assert!(back < 44.0, "the edge stayed out at {back}");
+    }
+
+    /// Roughen's Edge on the bar: Thorns stick out of the square only,
+    /// Petals go into it only; Jagged stays the default, as before.
+    #[test]
+    fn roughen_makes_the_edge_set_on_the_bar() {
+        use tracedraw_core::effects::RoughEdge;
+        assert_eq!(BrushSettings::default().roughen_edge, RoughEdge::Jagged);
+        let old: BrushSettings =
+            serde_json::from_str(r#"{"roughen_frequency": 4}"#).expect("prefs");
+        assert_eq!(old.roughen_edge, RoughEdge::Jagged);
+        for (edge, out) in [(RoughEdge::Thorns, true), (RoughEdge::Petals, false)] {
+            let mut app = App::headless();
+            let id = square(&mut app);
+            app.select(vec![id]);
+            app.tool = Tool::Roughen;
+            app.brush_radius = 6.0;
+            app.roughen_amount = 1.5;
+            app.brush.roughen_edge = edge;
+            app.brush_begin(Point::new(10.0, 40.0));
+            for x in 11..=30 {
+                app.brush_step(Point::new(x as f64, 40.0), false, 0.05);
+            }
+            let b = bounds(&app, id);
+            if out {
+                assert!(b.y1 > 40.5, "{edge:?}: {b:?}");
+            } else {
+                assert!((b.y1 - 40.0).abs() < 0.05, "{edge:?}: {b:?}");
+            }
+            // One undo step for the stroke: the square's sides again.
+            app.undo();
+            let b = bounds(&app, id);
+            assert!(
+                (b.y1 - 40.0).abs() < 1e-9 && b.y0.abs() < 1e-9,
+                "{edge:?}: {b:?}"
+            );
+        }
     }
 
     /// Brushes change only the selected objects: a stroke over a

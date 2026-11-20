@@ -66,7 +66,11 @@ no key held and no press of Select Color, for a pen or a touch screen
     (#2549, `eyedropper::tests::a_shape_with_a_transparency_lens_over_others_gives_its_colour`).
     A lens is picked anywhere inside it, as it shows there;
   - a solid fill gives its colour; a gradient fill gives its first
-    stop; otherwise the outline colour;
+    stop; an unfilled object gives its outline colour on its outline
+    only: inside it (picked there with Treat All Objects as Filled)
+    nothing of it shows, so the colour shown there is read, where its
+    outline colour was read as a fill (#3499,
+    `eyedropper::tests::an_unfilled_object_gives_its_outline_colour_on_the_outline_only`);
   - Shift+click reads the outline colour first.
   - With objects selected, the colour sampled also goes straight onto
     them, as a palette swatch would: the fill, or with Shift+click the

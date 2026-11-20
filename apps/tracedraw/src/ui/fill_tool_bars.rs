@@ -330,6 +330,8 @@ pub fn smart_fill_bar(app: &mut App, ui: &mut Ui) {
         tr("toolbar.smart_outline_edges"),
     )
     .rich_tip(crate::ui::tips::keyed("toolbar.smart_outline_edges"));
+    ui.checkbox(&mut app.area_fill_live, tr("toolbar.smart_fill_live"))
+        .rich_tip(crate::ui::tips::keyed("toolbar.smart_fill_live"));
     crate::ui::propbar::sep(ui);
     dim(ui, tr("toolbar.smart_fill_hint"));
 }

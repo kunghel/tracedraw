@@ -135,3 +135,54 @@ the settings) and `ui/shape_gen_docker.rs`. Issues #3412 and #3413.
   contact angle to the edge, stopped where it meets the neighbouring
   edge's ray; segments turned by Rotation about the box's middle and
   clipped to the box.
+
+## Fills inside a shape (`shape_gen_fill.rs`)
+
+- Outline: the picked outline flattened (tolerance the longer side / 4000,
+  at least 0.002 mm) into rings read by the even-odd rule, or the box.
+- Hatch: lines on multiples of the spacing through the box's middle (so
+  they stay put while the angle turns); each line meets the rings'
+  edges (half-open in y, so a corner on the line counts once) and the
+  sorted crossings pair into the segments kept. Crossed adds the angle +
+  crossing angle. By tone: L layers at angle + k 180 / L degrees, layer k
+  kept along each segment (sampled every third of the spacing) where the
+  darkness is over k / L (at least 0.02).
+- Offset rings: the outline (or box) and `offset(outline, -k spacing)` for
+  k = 1 up to Most rings, until the offset is empty.
+- Tone lines: darkness on the source raster (outside the outline 0),
+  marching squares at levels k / (N + 1), saddles split by the cell's
+  mean; segments joined through shared grid edges into chains, closed
+  when they meet, drawn as Catmull-Rom curves.
+- Maze: nx x ny cells of the cell size centred in the box, a cell in use
+  when its middle is inside the outline; a depth-first walk from the
+  first unvisited cell (seeded choice among unvisited neighbours) for
+  each region. Walls are the unit edges without a passage, merged into
+  straight runs; the entrance is the bottom edge of the first cell in
+  row order, the exit the top edge of the last. Passages: the walk's
+  lines, a new line at each branch, straight runs kept as one segment.
+- Space-filling curves from L-systems with 90 degree turns: Hilbert A,
+  A=+BF-AFA-FB+, B=-AF+BFB+FA- (order n: n rewrites, 4^n corners); Moore
+  AFA+F+AFA with A=-BF+AFA+FB-, B=+AF-BFB-FA+ (n - 1 rewrites, closed);
+  Peano X, X=XFYFX+F+YFXFY-F-XFYFX, Y=YFXFY-F-XFYFX+F+YFXFY (9^n corners).
+  Corners map to the box's grid cell middles (x and y scaled apart);
+  with an outline, runs of corners inside it become open curves. Round
+  corners: straight to each segment's middle, a quadratic round each
+  corner.
+
+## Slice grid (`shape_gen_slice.rs`)
+
+- Cells over the selection's box (the preview: the Width x Height box):
+  1 x rows (Rows), columns x 1 (Columns) or columns x rows (Grid), each
+  shrunk by half the gap on every side (at most 45 % of the cell).
+- Move of strip k of n, t = (k + 0.5) / n: Random a seeded value in -1 to
+  1, Wave sin(2 pi waves t), Ramp 2t - 1, Alternate +1 for even k, -1
+  for odd. Rows move by their row (Random draws x and y apart), Columns
+  by their column; in a Grid x follows the row and y the column. Moves
+  are the values times Move across and Move up or down.
+- Slice Selection: per cell a ClipFrame whose frame is the moved cell
+  rectangle (no fill, no outline) and whose contents are copies of the
+  selected top-level objects with new ids, each moved by the cell's
+  move; all in one group named after the generator, added to the active
+  layer in one undo step with the originals deleted (kept with Keep
+  original).
+

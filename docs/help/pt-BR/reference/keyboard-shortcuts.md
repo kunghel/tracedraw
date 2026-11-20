@@ -131,7 +131,8 @@ movem o destaque, digitar as primeiras letras de um nome salta até ele,
 <kbd>Enter</kbd> escolhe e <kbd>Esc</kbd> fecha a lista sem mudar nada. O botão
 de uma lista alcançado com <kbd>Tab</kbd> abre com <kbd>Baixo</kbd>,
 <kbd>Alt</kbd>+<kbd>Baixo</kbd> ou <kbd>Enter</kbd>. Na lista de fontes, digitar
-filtra as fontes.
+filtra as fontes. Uma lista que cabe na janela abre inteira, sem barra de
+rolagem.
 
 Enquanto um menu ou uma lista está aberto, as setas não movem os objetos
 selecionados.

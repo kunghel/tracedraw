@@ -835,7 +835,7 @@ pub fn chroma_key(img: &mut image::RgbaImage) {
 }
 
 /// The picture already has see-through parts.
-fn has_transparency(img: &image::RgbaImage) -> bool {
+pub(crate) fn has_transparency(img: &image::RgbaImage) -> bool {
     img.pixels().any(|p| p.0[3] < 250)
 }
 
@@ -895,12 +895,20 @@ pub enum ImageStatus {
     Failed(String),
 }
 
-enum Job {
+pub(crate) enum Job {
     Generate { vector: bool },
     Svg,
     Remix { source: Option<ShapeId> },
     Cutout { shape: ShapeId, chroma: bool },
     Models,
+    /// Turn Object in 3D (`ai_photo.rs`).
+    Turn { source: ShapeId, transparent: bool },
+    /// Depth Map (`ai_photo.rs`).
+    Depth { shape: ShapeId, place: bool },
+    /// Sketch to Curves (`ai_photo.rs`).
+    Sketch { source: ShapeId },
+    /// Remove Object (`ai_photo.rs`).
+    RemoveObject { shape: ShapeId },
 }
 
 /// A request on its way, with its further tries while the service is
@@ -933,10 +941,17 @@ pub struct ImageSession {
     /// Newest first.
     pub results: Vec<GenImage>,
     pub models: Vec<String>,
+    /// Turn Object in 3D's last settings (`ai_photo.rs`).
+    pub turn: crate::ai_photo::TurnState,
+    /// Sketch to Curves' last request.
+    pub sketch: crate::ai_photo::SketchState,
+    /// The last depth map that came, for its bitmap (255 nearest), until
+    /// the photo editor takes it (`App::ai_take_depth`).
+    pub depth: Option<(ShapeId, image::GrayImage)>,
     pending: Vec<Pending>,
     total: usize,
-    made: usize,
-    errors: Vec<String>,
+    pub(crate) made: usize,
+    pub(crate) errors: Vec<String>,
     /// Tests: answers requests at once instead of the network.
     pub fake: Option<fn(&HttpRequest) -> HttpResult>,
     /// Tests: the requests sent, newest last.
@@ -965,6 +980,9 @@ impl Default for ImageSession {
             status: ImageStatus::default(),
             results: Vec::new(),
             models: Vec::new(),
+            turn: Default::default(),
+            sketch: Default::default(),
+            depth: None,
             pending: Vec::new(),
             total: 0,
             made: 0,
@@ -1068,7 +1086,7 @@ impl App {
         }
     }
 
-    fn ai_image_problem(&self) -> Option<String> {
+    pub(crate) fn ai_image_problem(&self) -> Option<String> {
         if !self.ai_features_on() {
             Some(tr("aiimg.off"))
         } else if !self.settings.ai.can_make_pictures() {
@@ -1084,13 +1102,13 @@ impl App {
 
     /// Send `http` for `job`. A service that is busy for the moment is
     /// asked again by itself, a few times (`ai_retry.rs`, #2037).
-    fn ai_image_send(&mut self, http: HttpRequest, job: Job) {
+    pub(crate) fn ai_image_send(&mut self, http: HttpRequest, job: Job) {
         self.ai_image.remember_sent(http.clone());
         let call = crate::ai_retry::Call::start(http, MAX_REPLY, self.ai_image.fake);
         self.ai_image.pending.push(Pending { call, job });
     }
 
-    fn ai_image_begin(&mut self, total: usize) {
+    pub(crate) fn ai_image_begin(&mut self, total: usize) {
         self.ai_image.total = total;
         self.ai_image.made = 0;
         self.ai_image.errors.clear();
@@ -1498,6 +1516,29 @@ impl App {
                 Job::Cutout { shape, chroma } => {
                     if let Some(img) = images.into_iter().next() {
                         self.ai_apply_cutout(shape, img, chroma);
+                    }
+                }
+                Job::Turn {
+                    source,
+                    transparent,
+                } => {
+                    if let Some(img) = images.into_iter().next() {
+                        self.ai_receive_turn(source, img, transparent);
+                    }
+                }
+                Job::Depth { shape, place } => {
+                    if let Some(img) = images.into_iter().next() {
+                        self.ai_receive_depth(shape, img, place);
+                    }
+                }
+                Job::Sketch { source } => {
+                    if let Some(img) = images.into_iter().next() {
+                        self.ai_place_image(&img, Some(source), true);
+                    }
+                }
+                Job::RemoveObject { shape } => {
+                    if let Some(img) = images.into_iter().next() {
+                        self.ai_receive_removed(shape, img);
                     }
                 }
                 Job::Models | Job::Svg => {}

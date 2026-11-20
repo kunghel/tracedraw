@@ -29,6 +29,7 @@ painel [[docker.lens]] ([[menu.effects > menu.effects.lens]], <kbd>Alt+F3</kbd>)
 | Transparência | deixa a lente translúcida, tingida | taxa e cor |
 | Aramado | mostra os objetos como contornos | cores de contorno e preenchimento |
 | Efeitos de bitmap | aplica efeitos de bitmap ao que está embaixo | **Adicionar efeito**, em ordem |
+| Corte | corta os objetos embaixo ao longo da linha do meio da lente: cada lado de cada parte cortada ganha uma ponta curva, e uma sombra some do corte até a borda da lente, só sobre os objetos. Desenhe uma faixa comprida sobre um texto, que continua editável | comprimento, espessura e forma da ponta, largura do corte, sombra (taxa e cor), sombra acima |
 
 ## Opções {#options}
 
@@ -37,6 +38,9 @@ painel [[docker.lens]] ([[menu.effects > menu.effects.lens]], <kbd>Alt+F3</kbd>)
 - **Ponto de vista**: mostra outro lugar através da lente.
 - **Remover face**: mostra a lente só sobre outros objetos, não sobre a página
   vazia.
+
+A lente Corte muda a imagem na tela e nas exportações em bitmap; para PDF ou
+SVG, aplique-a antes com **Congelada**.
 
 Para acrescentar um efeito de bitmap como lente pelo seletor de efeitos,
 escolha [[menu.effects > menu.effects.picker]] e aplique-o como lente.

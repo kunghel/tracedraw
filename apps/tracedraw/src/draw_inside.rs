@@ -2,13 +2,15 @@
 //! draw. With one closed shape selected it starts editing the shape's
 //! contents, so what the tool draws next goes inside the shape, clipped
 //! by it, as Place Inside Frame would put it there; pressed again (or
-//! Finish Editing on the clip frame bar) it ends.
+//! Finish Editing on the clip frame bar) it ends. Draw Behind, beside
+//! it, puts what the tool draws behind the selected objects instead of
+//! on top.
 
 use crate::app::App;
 use crate::i18n::tr;
 use crate::tools::Tool;
 use egui::Ui;
-use tracedraw_core::{document::ShapeKind, Shape};
+use tracedraw_core::{document::ShapeKind, Command, Shape};
 
 /// The tools whose property bar has Draw Inside: the ones that draw
 /// shapes and lines.
@@ -94,6 +96,31 @@ impl App {
         }
         self.status = tr("status.drawing_inside");
     }
+
+    /// With Draw Behind on, the move that puts a shape a drawing tool has
+    /// just added behind the selected objects of its layer (the lowest of
+    /// them), or at the back of the layer when none of them is there;
+    /// `None` when it stays on top. Not while a shape's contents are
+    /// edited, where what is drawn goes inside.
+    pub(crate) fn drawn_behind(&self, cmd: &Command) -> Option<Command> {
+        let Command::AddShape { layer, shape } = cmd else {
+            return None;
+        };
+        if !self.draw_behind || !draws_shapes(self.tool) || self.clip_frame_edit.is_some() {
+            return None;
+        }
+        let shapes = &self.doc().layer(*layer).ok()?.shapes;
+        let here = shapes.iter().position(|s| s.id == shape.id)?;
+        let index = shapes
+            .iter()
+            .position(|s| s.id != shape.id && self.selection.contains(&s.id))
+            .unwrap_or(0);
+        (index < here).then_some(Command::Reorder {
+            shape: shape.id,
+            layer: *layer,
+            index,
+        })
+    }
 }
 
 /// The Draw Inside button at the end of a drawing tool's property bar:
@@ -124,6 +151,17 @@ pub fn draw_inside_toggle(app: &mut App, ui: &mut Ui) {
         .on_disabled_hover_text(tip);
     if r.clicked() {
         app.toggle_draw_inside();
+    }
+    let tip = crate::ui::tips::keyed("toolbar.draw_behind");
+    if ui
+        .add(egui::Button::selectable(
+            app.draw_behind,
+            tr("toolbar.draw_behind"),
+        ))
+        .on_hover_text(tip)
+        .clicked()
+    {
+        app.draw_behind = !app.draw_behind;
     }
 }
 
@@ -205,5 +243,44 @@ mod tests {
             assert_eq!(app.status, tr("status.draw_inside_needs_closed"));
         }
         assert!(draws_shapes(Tool::Freehand) && !draws_shapes(Tool::Pick));
+    }
+
+    fn order(app: &App) -> Vec<tracedraw_core::ShapeId> {
+        let layer = app.active_layer().expect("layer");
+        app.doc()
+            .layer(layer)
+            .expect("layer")
+            .shapes
+            .iter()
+            .map(|s| s.id)
+            .collect()
+    }
+
+    /// Draw Behind: what is drawn goes behind the selected object, or to
+    /// the back of the layer with nothing selected; off, on top. One
+    /// undo step takes the new shape away and leaves the order as it was.
+    #[test]
+    fn what_is_drawn_behind_goes_under_the_selection() {
+        let mut app = App::headless();
+        let a = square(&mut app);
+        let b = square(&mut app);
+        app.tool = Tool::Rectangle;
+        app.draw_behind = true;
+        app.select(vec![b]);
+        let c = square(&mut app);
+        assert_eq!(order(&app), vec![a, c, b]);
+        app.select(Vec::new());
+        let d = square(&mut app);
+        assert_eq!(order(&app), vec![d, a, c, b]);
+        app.undo();
+        assert_eq!(order(&app), vec![a, c, b]);
+        // Not a drawing tool, or Draw Behind off: on top, as before.
+        app.tool = Tool::Pick;
+        let e = square(&mut app);
+        assert_eq!(order(&app), vec![a, c, b, e]);
+        app.tool = Tool::Ellipse;
+        app.draw_behind = false;
+        let f = square(&mut app);
+        assert_eq!(order(&app), vec![a, c, b, e, f]);
     }
 }

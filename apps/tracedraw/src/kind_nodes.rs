@@ -419,12 +419,14 @@ pub fn drag_constrained(
                             start_deg: 90.0,
                             end_deg: 90.0 + t,
                             pie,
+                            inner: 0.0,
                         }
                     } else {
                         EllipseArc {
                             start_deg: 90.0 + t,
                             end_deg: 90.0,
                             pie,
+                            inner: 0.0,
                         }
                     }
                 }
@@ -453,6 +455,7 @@ pub fn drag_constrained(
                     start_deg: norm(next.start_deg),
                     end_deg: norm(next.end_deg),
                     pie: next.pie,
+                    inner: next.inner,
                 }),
             })
         }
@@ -1197,7 +1200,8 @@ mod tests {
                         arc: Some(EllipseArc {
                             start_deg: 90.0,
                             end_deg: 0.0,
-                            pie: true
+                            pie: true,
+                            inner: 0.0,
                         })
                     }
                 );
@@ -1227,6 +1231,7 @@ mod tests {
                 start_deg: 0.0,
                 end_deg: 270.0,
                 pie: true,
+                inner: 0.4,
             }),
         };
         assert_eq!(nodes(&arc).len(), 2);
@@ -1241,6 +1246,11 @@ mod tests {
         .unwrap();
         assert!(
             matches!(k, ShapeKind::Ellipse { arc: Some(a), .. } if (a.end_deg - 90.0).abs() < 1e-9 && a.pie)
+        );
+        // A ring keeps its thickness.
+        assert!(
+            matches!(k, ShapeKind::Ellipse { arc: Some(a), .. } if a.inner == 0.4),
+            "{k:?}"
         );
     }
 

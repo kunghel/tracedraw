@@ -56,6 +56,9 @@ use tracedraw_core::{
 /// How far out of the selection box the rotate and skew arrows' centres
 /// stand (rotate mode), interface points.
 pub(crate) const ROTATE_HANDLE_OFFSET: f32 = 9.0;
+/// The least room between two handles of one side of the selection box,
+/// interface points (#3523).
+pub(crate) const HANDLE_GAP: f32 = 3.0;
 /// How many groups, clip frames and symbols deep a click looks for the
 /// object under it; deeper containers count anywhere in their box.
 const MAX_HIT_DEPTH: usize = 64;
@@ -1295,13 +1298,26 @@ impl App {
     }
 
     /// Screen-space handle positions for the selection box.
+    ///
+    /// The handles of one side stand at least [`HANDLE_GAP`] points
+    /// apart, however thin the box is on screen.
     pub fn handle_positions(&self, b: Rect) -> [(Handle, egui::Pos2); 8] {
         let off = if self.rotate_mode {
             ROTATE_HANDLE_OFFSET
         } else {
             self.handle_offset()
         };
-        let r = self.view.rect_to_screen(b).expand(off);
+        let mut r = self.view.rect_to_screen(b).expand(off);
+        // A straight line, or anything as thin on screen: the three
+        // handles of a side stay apart, a gap between each, instead of
+        // lying on top of each other (#3523).
+        let min = 2.0 * (self.handle_size() + HANDLE_GAP);
+        if r.width() < min {
+            r = r.expand2(egui::vec2((min - r.width()) / 2.0, 0.0));
+        }
+        if r.height() < min {
+            r = r.expand2(egui::vec2(0.0, (min - r.height()) / 2.0));
+        }
         [
             (Handle::NW, r.left_top()),
             (Handle::N, r.center_top()),
@@ -2137,6 +2153,10 @@ impl App {
                 }
             }
             t if t.is_box_tool() => self.box_input(response, p, mods),
+            // The 2-Point Line tool drawing arcs drags them out as a box.
+            Tool::TwoPointLine if self.line_arc && self.curve.is_none() => {
+                self.box_input(response, p, mods)
+            }
             Tool::ThreePointRectangle | Tool::ThreePointEllipse | Tool::ThreePointCurve => {
                 self.three_point_input(response, p, mods)
             }
@@ -2429,6 +2449,14 @@ impl App {
             self.drag_copy = false;
             // Editing a symmetry: its mirror lines move or turn.
             if self.symmetry_edit.is_some() && self.symmetry_press(p) {
+                return;
+            }
+            // A live fit's spacing or turn handle.
+            if self.begin_live_fit_handle(p) {
+                return;
+            }
+            // A Grid effect's handles: its gaps and how many cells.
+            if self.grid_press(p) {
                 return;
             }
             // Rotate mode: the centre of rotation moves.
@@ -2800,6 +2828,14 @@ impl App {
         }
         if matches!(self.drag, Drag::SymmetryLines { .. }) {
             self.symmetry_drag_to(p, mods.ctrl || mods.command);
+            return;
+        }
+        if matches!(self.drag, Drag::FitPathHandle(_)) {
+            self.live_fit_handle_drag_to(p, mods.ctrl || mods.command);
+            return;
+        }
+        if matches!(self.drag, Drag::GridHandle { .. }) {
+            self.grid_drag_to(p);
             return;
         }
         if matches!(
@@ -3231,6 +3267,7 @@ impl App {
             boxing = true;
         }
         if !boxing {
+            self.end_drag_copies();
             return;
         }
         // The shape follows the pointer while the left button is down and
@@ -3246,6 +3283,8 @@ impl App {
                 .map(|s| self.snap_point(self.view.to_page(s)))
                 .unwrap_or(p);
             self.box_follow(now, mods);
+            // C held: a copy of the shape at each move.
+            self.leave_drag_copy(&response.ctx);
         } else if !response.drag_stopped_by(PointerButton::Primary) {
             // (A drag egui still counts ends below, as every tool's does.)
             self.end_drag();
@@ -3782,6 +3821,9 @@ impl App {
                 self.keep_spline(id, &path, points, c.spline_fixed_flags());
             }
             self.select(vec![id]);
+            if !c.bspline {
+                self.add_parallel_lines(id);
+            }
         }
     }
 
@@ -3933,13 +3975,14 @@ impl App {
             }
         }
         if response.drag_started_by(PointerButton::Primary) {
-            // A node, a slider, or the line (the whole fill moves).
+            // A node, a slider, or the line (the whole fill moves); Alt
+            // copies the node pressed and drags the copy.
             let press = response
                 .ctx
                 .input(|i| i.pointer.press_origin())
                 .map(|o| self.view.to_page(o))
                 .unwrap_or(p);
-            if self.begin_fountain_drag(p, press) {
+            if self.begin_fountain_drag_with(p, press, mods.alt) {
                 return;
             }
             if let Some(id) = self.hit_test_inside(p) {
@@ -4032,6 +4075,9 @@ impl App {
         let drag = std::mem::replace(&mut self.drag, Drag::None);
         // The page shows the drawing as it is now (#1259).
         self.node_drag_shown = None;
+        if !matches!(drag, Drag::Box { .. }) {
+            self.end_drag_copies();
+        }
         if !matches!(drag, Drag::Move { .. }) {
             self.drop_frame = None;
         }
@@ -4051,9 +4097,12 @@ impl App {
                 } else {
                     (Point::new(r.x0, r.y0), Point::new(r.x1, r.y1))
                 };
-                if !self.finish_tools2_box(a, b) {
+                if self.draws_arcs() {
+                    self.create_arc(start, current);
+                } else if !self.finish_tools2_box(a, b) {
                     self.create_box_shape(a, b);
                 }
+                self.end_drag_copies();
             }
             Drag::Connector { from, current, .. } if self.tool == Tool::Blend => {
                 if let Some(to) = self.hit_test_inside(current).filter(|id| *id != from) {
@@ -4196,6 +4245,12 @@ impl App {
                 let before_move = self.engine.last_step_id();
                 if total.hypot() > 1e-6 {
                     self.finish_transform(Affine::translate(total));
+                    // Drawing in perspective: onto the active plane, or
+                    // along it (in the move's step).
+                    if to_page.is_none() && self.drop_frame.is_none() {
+                        self.perspective_after_move(total);
+                        self.displace_after_move();
+                    }
                 }
                 if let Some((idx, r)) = to_page {
                     self.give_selection_to_shown_page(idx, r);
@@ -4253,6 +4308,8 @@ impl App {
             } => {
                 let r = Rect::from_points(start, current);
                 if r.width() > 0.1 || r.height() > 0.1 {
+                    // The facing page's objects in it too (#3488).
+                    self.adopt_spread_objects_in(r, touching);
                     self.select_in_region(crate::select_region::Region::Rect(r), touching, toggle);
                 }
             }
@@ -4271,6 +4328,12 @@ impl App {
             }
             Drag::Freehand { points } if self.tool == Tool::PainterlyBrush => {
                 self.add_painterly_stroke(&points);
+            }
+            Drag::Freehand { points }
+                if self.tool == Tool::BrushStrokes
+                    && self.media_mode == crate::media::MediaMode::Merge =>
+            {
+                self.merge_brush_stroke(&points);
             }
             Drag::Freehand { points } if self.tool == Tool::BrushStrokes => {
                 // A pen's pressure along the drag sets the width (#850).
@@ -4313,7 +4376,12 @@ impl App {
                         .zip(self.default_stroke())
                         .map(|(pen, st)| pen.freehand_widths(st.width))
                         .unwrap_or_default();
-                    self.add_drawn_line_with_widths(path, widths);
+                    let joined = self.join_candidate().map(|c| c.id);
+                    if let Some(id) = self.add_drawn_line_with_widths(path, widths) {
+                        if joined != Some(id) {
+                            self.add_parallel_lines(id);
+                        }
+                    }
                 }
             }
             Drag::FillGradient {
@@ -4369,6 +4437,7 @@ impl App {
             Drag::FountainHandle { .. }
             | Drag::PatternHandle { .. }
             | Drag::SymmetryLines { .. }
+            | Drag::GridHandle { .. }
             | Drag::ContourDrag { .. }
             | Drag::OffsetShadow { .. }
             | Drag::Shadow { .. }
@@ -4379,6 +4448,7 @@ impl App {
             | Drag::Node { .. }
             | Drag::KindNode { .. }
             | Drag::CornerWidget(_)
+            | Drag::FitPathHandle(_)
             | Drag::Handle { .. }
             | Drag::None => {}
         }
@@ -4628,6 +4698,9 @@ impl App {
                 self.text_undo_redo(true);
             } else if is(Key::T, cmd | Modifiers::SHIFT) {
                 self.open_edit_text_dialog();
+            } else if is(Key::L, cmd | Modifiers::SHIFT) {
+                // Text > Bullets On/Off at the caret (#3593).
+                self.toggle_bullets();
             } else if is(Key::S, cmd) {
                 self.save(false);
             } else if is(Key::S, cmd | Modifiers::SHIFT) {
@@ -5430,6 +5503,10 @@ impl App {
         if pressed(Key::I, cmd | Modifiers::SHIFT) {
             self.invert_selection();
         }
+        // Text > Bullets On/Off (#3593).
+        if pressed(Key::L, cmd | Modifiers::SHIFT) {
+            self.toggle_bullets();
+        }
         // Ctrl+8 and Ctrl+2: selected text one keyboard text increment
         // larger or smaller (Options > Text).
         if self
@@ -5758,6 +5835,11 @@ impl App {
                             || (self.curve.as_ref().is_some_and(|c| c.bspline)
                                 && mods.is_none()
                                 && matches!(k, Key::C | Key::V));
+                        // C while a shape is dragged leaves copies of it.
+                        let drop_key = drop_key
+                            || (self.trail_key_busy()
+                                && mods.is_none()
+                                && k == crate::drag_copies::TRAIL_KEY);
                         // A key held picks its tool once: the presses it
                         // repeats would send Space back and forth between
                         // the Pick tool and the tool before it (#1502).
@@ -5866,6 +5948,10 @@ fn text_command_key(key: Key, mods: Modifiers) -> bool {
         return true;
     }
     let ctrl = mods.command && !crate::text_editing::altgr(&mods);
+    // Ctrl+Shift+L turns bullets on or off (#3593); Ctrl+L aligns left.
+    if ctrl && key == Key::L && mods.matches_exact(Modifiers::COMMAND | Modifiers::SHIFT) {
+        return true;
+    }
     ctrl && !matches!(
         key,
         Key::Space

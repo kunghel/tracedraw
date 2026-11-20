@@ -29,6 +29,9 @@ selecionado. Uma barra no canto superior esquerdo da janela de desenho define:
   2*n* - 1 cópias;
 - o centro (X e Y);
 - o ângulo da primeira linha (0 a 360 graus);
+- **Rotacional** (desligado): as cópias giram em volta do centro em vez de
+  serem espelhadas, tantos objetos ao todo quanto linhas (duas no mínimo),
+  então uma forma se repete em volta de um círculo sem ficar invertida;
 - Mostrar visualização completa (cópias desenhadas por inteiro, ou como
   contornos vermelhos quando desligado) e Mostrar linhas de simetria.
 

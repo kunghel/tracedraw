@@ -30,7 +30,7 @@ use crate::{Color, Document, ShapeId};
 use serde::{Deserialize, Serialize};
 
 /// What Recolor does to each colour.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Default)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct Recolor {
     /// Degrees round the hue circle, -180 to 180.
     #[serde(default)]
@@ -48,6 +48,11 @@ pub struct Recolor {
     /// Spot colours change too (as process colours).
     #[serde(default)]
     pub spots: bool,
+    /// Colours swapped one for one (#3609): a colour equal to the first
+    /// of a pair becomes the second exactly, before (and instead of) the
+    /// changes above; spot and registration colours too.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub swaps: Vec<(Color, Color)>,
 }
 
 /// Chroma under which a colour counts as grey (no hue to turn).
@@ -56,6 +61,11 @@ const GREY_CHROMA: f32 = 0.5;
 impl Recolor {
     /// Nothing would change.
     pub fn is_identity(&self) -> bool {
+        self.swaps.iter().all(|(a, b)| a == b) && self.adjusts_nothing()
+    }
+
+    /// The tint, hue, saturation and lightness change nothing.
+    fn adjusts_nothing(&self) -> bool {
         self.tint.is_none()
             && self.hue.abs() < 1e-3
             && self.saturation.abs() < 1e-3
@@ -64,7 +74,10 @@ impl Recolor {
 
     /// `c` recoloured.
     pub fn apply(&self, c: Color) -> Color {
-        if self.is_identity() {
+        if let Some((_, to)) = self.swaps.iter().find(|(from, _)| *from == c) {
+            return *to;
+        }
+        if self.adjusts_nothing() {
             return c;
         }
         let source = match c {
@@ -274,7 +287,10 @@ mod tests {
             k: 0.0,
         };
         assert_eq!(r.apply(spot), spot);
-        let spots = Recolor { spots: true, ..r };
+        let spots = Recolor {
+            spots: true,
+            ..r.clone()
+        };
         assert!(!matches!(spots.apply(spot), Color::Spot { .. }));
         let g = Color::Gray { v: 0.4 };
         assert_eq!(r.apply(g), g);
@@ -293,6 +309,41 @@ mod tests {
         assert!((lab(c).0 - lab(out).0).abs() < 1.5);
         let d = (hue(out) - hue(c)).rem_euclid(360.0);
         assert!(!(4.0..=356.0).contains(&d), "{d}");
+    }
+
+    #[test]
+    fn swapped_colours_take_their_new_colour_exactly() {
+        let red = Color::rgb8(200, 30, 30);
+        let blue = Color::rgb8(30, 30, 200);
+        let spot = Color::Spot {
+            ink: 1,
+            tint: 1.0,
+            c: 0.0,
+            m: 0.2,
+            y: 0.8,
+            k: 0.0,
+        };
+        let r = Recolor {
+            swaps: vec![(red, blue), (spot, red)],
+            ..Recolor::default()
+        };
+        assert!(!r.is_identity());
+        assert_eq!(r.apply(red), blue);
+        assert_eq!(r.apply(spot), red);
+        let green = Color::rgb8(30, 200, 30);
+        assert_eq!(r.apply(green), green, "a colour not swapped stays");
+        // With a hue turn too, the swapped colour is not turned again.
+        let turned = Recolor {
+            hue: 90.0,
+            ..r.clone()
+        };
+        assert_eq!(turned.apply(red), blue);
+        assert_ne!(turned.apply(green), green);
+        let same = Recolor {
+            swaps: vec![(red, red)],
+            ..Recolor::default()
+        };
+        assert!(same.is_identity());
     }
 
     #[test]

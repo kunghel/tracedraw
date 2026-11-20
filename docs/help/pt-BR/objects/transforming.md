@@ -85,6 +85,15 @@ passo: <kbd>Ctrl+Z</kbd> devolve a seleção ao que era antes do arraste (e
 remove a cópia). A barra de propriedades
 também tem os campos de posição, tamanho, escala, ângulo e espelho.
 
+## Girar para acompanhar uma linha {#rotate-by-lines}
+
+Para girar um objeto de modo que uma das bordas fique ao longo de outra linha,
+selecione-o e escolha [[menu.object > menu.object.transformations > menu.object.rotate_by_lines]].
+Clique nas duas pontas da linha base no objeto e depois nas duas pontas da
+linha alvo; os cliques se encaixam em nós e outros pontos de encaixe. O objeto
+gira em torno do primeiro ponto clicado, e a linha base fica com o ângulo da
+linha alvo. Um clique direito cancela.
+
 ## Desfazer transformações {#clear}
 
 [[menu.object > menu.object.clear_transformations]] devolve os objetos

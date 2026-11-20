@@ -28,6 +28,10 @@ const TraceDrawPlugin = {
 - **The menu**: Tools > Plugins lists each plugin that is on, a submenu of
   its commands (a lone command as an item), then Plugin Manager, New
   Plugin and Install Plugin.
+- **Keyboard shortcuts**: each command is a menu command with a key of
+  its own (`plugins::command_key`, `menu.plugin_command.<plugin>|<command>`),
+  so Options > Customization lists it under Tools by its name and gives it
+  a shortcut like any other; the menu row shows it (#3519).
 - **Running a command**: the plugin's script runs as the user's own
   script, then its command's `run()`; the changes are one undo step named
   "Plugin". What it prints goes to the Scripts panel's output. An error

@@ -72,6 +72,12 @@ Um arco é uma curva aberta: o preenchimento só aparece enquanto
 [[options.fill_open_curves]] estiver ativado nas opções do documento. Uma
 fatia é fechada e mantém o preenchimento.
 
+O campo **Anel** de uma fatia (raio interno, de 0 a 99 %) abre um furo no
+meio: a fatia vira uma faixa entre o contorno e uma elipse menor, um arco
+grosso que mantém o preenchimento e o contorno. Com os ângulos inicial e
+final iguais, é um anel inteiro. Os nós de ângulo da ferramenta Forma mantêm
+o anel ao se moverem.
+
 ## Elipse de 3 pontos {#three-point-ellipse}
 
 A ferramenta [[tool.three_point_ellipse]] desenha uma elipse inclinada:

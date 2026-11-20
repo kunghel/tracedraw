@@ -11,6 +11,14 @@ De início, os objetos importados vão para onde o arquivo os tem. Para centrá-
 na vista, mude a configuração na página [[options.file_formats]] das opções
 globais; veja [Opções globais](../customize/global-options.md#file-formats).
 
+Quando a importação espera pelo lugar com o ponteiro, vários arquivos
+escolhidos de uma vez entram um depois do outro. Para dispô-los numa grade,
+arraste uma caixa para o primeiro e, enquanto arrasta, use as setas: Direita
+e Esquerda acrescentam e tiram uma coluna, Cima e Baixo uma linha, e a
+etiqueta ao lado do ponteiro mostra quantas. Ao soltar, cada arquivo entra
+ajustado na sua célula, mantendo as proporções, no meio dela; os arquivos
+além da última célula esperam pelo próprio lugar como antes.
+
 ## Observações sobre alguns formatos {#formats}
 
 - **PDF e AI**: a caixa de diálogo [[pdf_import.title]] pergunta como ler o

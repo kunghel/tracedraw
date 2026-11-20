@@ -179,21 +179,27 @@ fn apply_on_enter(app: &mut App) {
     }
 }
 
-/// Selected objects that can take a contour and have none.
+/// Selected objects that can take a contour and have none: a group too,
+/// drawn round its objects (#3245); Apply was not offered for one, so a
+/// selected group seemed unable to take a contour (#3667).
 fn has_bare(app: &App) -> bool {
     app.selected_shapes().iter().any(|s| {
         !s.effects
             .iter()
             .any(|e| matches!(e, tracedraw_core::live::Effect::Contour { .. }))
-            && !matches!(
-                s.kind,
-                tracedraw_core::ShapeKind::Bitmap { .. } | tracedraw_core::ShapeKind::Group { .. }
-            )
+            && !matches!(s.kind, tracedraw_core::ShapeKind::Bitmap { .. })
     })
 }
 
-/// Apply (for selected objects with no contour), Clear Contour and Break
-/// Apart.
+/// Copy Contour From: the next object clicked gives the selected objects
+/// its contour, as Object > Copy Effect > Contour From does (#3667).
+fn start_copy_contour(app: &mut App) {
+    app.pending_copy_effect = Some(crate::copy_effect::CopyKind::Contour);
+    app.status = tr("status.click_source_object");
+}
+
+/// Apply (for selected objects with no contour), Clear Contour, Break
+/// Apart and Copy Contour From.
 pub fn contour_actions(app: &mut App, ui: &mut Ui) {
     let has = app.selected_contour().is_some();
     let bare = has_bare(app);
@@ -222,6 +228,19 @@ pub fn contour_actions(app: &mut App, ui: &mut Ui) {
             .clicked()
         {
             app.break_effect_groups();
+        }
+        if ui
+            .add_enabled(
+                !app.selection.is_empty(),
+                egui::Button::new(tr("contour.copy_from")),
+            )
+            .rich_tip(crate::ui::tips::pair(
+                "contour.copy_from",
+                "contour.copy_from_desc",
+            ))
+            .clicked()
+        {
+            start_copy_contour(app);
         }
     });
 }
@@ -284,6 +303,50 @@ mod tests {
         app.contour.direction = ContourDirection::Outside;
         frame(&mut app, true);
         assert_eq!(app.contour.direction, ContourDirection::Inside);
+    }
+
+    /// A selected group is offered Apply, and Copy Contour From gives
+    /// the selection the contour of the object clicked next (#3667).
+    #[test]
+    fn a_group_is_offered_apply_and_a_contour_can_be_copied() {
+        let mut app = App::headless();
+        app.tool = crate::tools::Tool::Contour;
+        let square = |app: &mut App, x: f64| {
+            app.new_shape(ShapeKind::Rect {
+                rect: Rect::new(x, 0.0, x + 20.0, 20.0),
+                radius: 0.0,
+                corners: None,
+            })
+            .expect("square")
+        };
+        let (a, b) = (square(&mut app, 0.0), square(&mut app, 30.0));
+        app.select(vec![a, b]);
+        app.group_selection();
+        let g = app.selection[0];
+        assert!(has_bare(&app), "a group without a contour is offered Apply");
+        // The source: a third object with a contour of 4 steps.
+        let src = square(&mut app, 100.0);
+        app.select(vec![src]);
+        app.contour.steps = 4;
+        app.add_contour();
+        let contour = |app: &App, id| {
+            app.doc().find_shape(id).and_then(|s| {
+                s.effects
+                    .iter()
+                    .find(|e| matches!(e, tracedraw_core::live::Effect::Contour { .. }))
+                    .cloned()
+            })
+        };
+        let want = contour(&app, src).expect("the source has a contour");
+        app.select(vec![g]);
+        start_copy_contour(&mut app);
+        assert_eq!(
+            app.pending_copy_effect,
+            Some(crate::copy_effect::CopyKind::Contour)
+        );
+        let kind = app.pending_copy_effect.take().expect("waiting");
+        app.copy_effect_from(src, kind);
+        assert_eq!(contour(&app, g), Some(want));
     }
 
     #[test]

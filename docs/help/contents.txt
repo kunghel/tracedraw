@@ -38,11 +38,13 @@ objects/index
   objects/objects-and-layers
   objects/properties-docker
   objects/clip-frames
+  objects/group-looks
   objects/symmetry
   objects/focus-mode
   objects/symbols
   objects/object-data
   objects/links
+  objects/stretch-zones
   objects/paste-special
   objects/shelf
   objects/find-replace
@@ -81,6 +83,8 @@ effects/index
   effects/copy-and-clone
   effects/mosaics
   effects/symbol-scatter
+  effects/frame-generator
+  effects/revolve-inflate
   effects/bitmap-effects
 text/index
   text/adding-text
@@ -107,6 +111,7 @@ bitmaps/index
   bitmaps/bitmap-mask
   bitmaps/remove-background
   bitmaps/picture-captions
+  bitmaps/ai-photo
 printing/index
   printing/print
   printing/booklet

@@ -89,7 +89,7 @@ Browse picks it, Clear empties it). Empty, the default, opens it with the
 system's program for PNG files (#593, `export::tests::the_bitmap_editor_gets_the_file`).
 The browser build has no outside editor.
 
-The file is a PNG, or a CMYK TIFF for a CMYK picture (a `.cdr` CMYK
+The file is a PNG, a CIE Lab TIFF for a Lab Color picture (#3539), or a CMYK TIFF for a CMYK picture (a `.cdr` CMYK
 image, or one in the CMYK colour mode), holding the inks it prints from
 as Save Bitmap As writes them, so the editor works on the inks and not
 on RGB pixels (#1834); a picture with see-through pixels goes with its

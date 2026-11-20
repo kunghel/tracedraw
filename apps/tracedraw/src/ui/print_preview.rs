@@ -670,6 +670,10 @@ pub fn show(app: &mut App, ui: &mut Ui) {
                         ui.checkbox(&mut pv.options, tr("print.show_options"))
                             .rich_tip(tr("print.show_options_tip"));
                     });
+                    // Kept for the next Print Preview (#3603).
+                    app.settings.print_preview_rulers = pv.rulers;
+                    app.settings.print_preview_strip = pv.strip;
+                    app.settings.print_preview_options = pv.options;
                     // The printer with its Properties and status, and the
                     // copies: in the bar, so the left panel keeps its room
                     // for the options (#792, #953).
@@ -3565,6 +3569,48 @@ mod tests {
             |ui| show(app, ui),
         );
         out.textures_delta.clear();
+    }
+
+    /// What the View button shows is kept for the next Print Preview
+    /// (#3603): the strip and the rulers turned off stay off when it is
+    /// opened again, and come back once turned on.
+    #[test]
+    fn the_view_choices_are_kept_for_the_next_preview() {
+        let ctx = crate::theme::ui_context();
+        let mut app = App::headless();
+        let frame = |app: &mut App| {
+            let mut out = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(1400.0, 900.0),
+                    )),
+                    ..Default::default()
+                },
+                |ui| show(app, ui),
+            );
+            out.textures_delta.clear();
+        };
+        app.print_preview(Some(PrintState::default()));
+        let pv = app.print_preview.as_ref().expect("open");
+        assert!(pv.rulers && pv.strip && pv.options, "all shown at first");
+        if let Some(pv) = app.print_preview.as_mut() {
+            pv.strip = false;
+            pv.rulers = false;
+        }
+        frame(&mut app);
+        app.print_preview = None;
+        app.print_preview(Some(PrintState::default()));
+        let pv = app.print_preview.as_ref().expect("open again");
+        assert!(!pv.strip && !pv.rulers && pv.options);
+        if let Some(pv) = app.print_preview.as_mut() {
+            pv.strip = true;
+        }
+        frame(&mut app);
+        app.print_preview = None;
+        app.print_preview(Some(PrintState::default()));
+        let pv = app.print_preview.as_ref().expect("and again");
+        assert!(pv.strip && !pv.rulers);
     }
 
     /// A zoom keeps the sheet point under the pointer where it is, and a

@@ -91,6 +91,16 @@ impl Line {
         self.spans.iter().map(|s| s.text.as_str()).collect()
     }
 
+    /// The line starts with a piece in another font than its own, a list
+    /// item's bullet (a symbol font's dot before the text): such a line
+    /// starts a list item, not the next line of the paragraph above. Run
+    /// on into it, the bullet came inside the text, and the text broke
+    /// over the next bullets (#3551).
+    fn leads_with_mark(&self) -> bool {
+        let first = self.spans.iter().find(|s| !s.text.trim().is_empty());
+        first.is_some_and(|f| f.font_family != self.main().font_family)
+    }
+
     /// How wide the first word may be, with the space before it: on the
     /// wide side (letters of 0.65 em), so that a line followed by a word
     /// that did not fit after it counts as full; a paragraph's last line
@@ -195,7 +205,7 @@ impl Block {
     /// `line` goes on this block, the next one down.
     fn takes(&mut self, line: &Line) -> bool {
         let last = self.last();
-        if !same_kind(self.first(), line) {
+        if !same_kind(self.first(), line) || line.leads_with_mark() {
             return false;
         }
         let em = self.first().em();
@@ -1146,6 +1156,27 @@ mod tests {
             "A line with a bold word in it and more text on the next line."
         );
         assert!(spans.iter().any(|s| s.bold && s.text.trim() == "bold"));
+    }
+
+    /// A list item's line, a bullet in a symbol font before the text,
+    /// starts an item of its own: it is not the next line of the item
+    /// above (#3551).
+    #[test]
+    fn a_bulleted_line_is_not_run_on() {
+        let (mut p, widths) = page(&[
+            ("First item text that goes on", 20.0, 250.0, 80.0),
+            ("l", 12.0, 245.0, 3.0),
+            ("Second item", 20.0, 245.0, 30.0),
+        ]);
+        if let ShapeKind::Text { spans, .. } = &mut p.shapes[1].kind {
+            spans[0].font_family = "Wingdings".into();
+        }
+        let mut pages = vec![p];
+        make_paragraphs(&mut pages, &widths, &HashMap::new());
+        let texts = texts(&pages[0]);
+        let first = "First item text that goes on".to_string();
+        assert!(texts.contains(&first), "{texts:?}");
+        assert!(!texts.iter().any(|t| t.contains("on l")), "{texts:?}");
     }
 
     /// A line the file draws under two words becomes their underline,

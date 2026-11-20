@@ -209,7 +209,63 @@ fn options_part(app: &mut App, ui: &mut Ui, style: &DimensionStyle) {
                     |s, v| s.corner_radius = v,
                 );
             });
+            ui.separator();
+            text_background_row(app, ui, style);
+            add_dimensions_gap_row(app, ui);
         });
+}
+
+/// The label's background (#3531): off, or a colour behind the label,
+/// as the Text tool sets it on the label.
+fn text_background_row(app: &mut App, ui: &mut Ui, style: &DimensionStyle) {
+    use tracedraw_core::Fill;
+    ui.horizontal(|ui| {
+        let mut on = style.text_background.is_some();
+        if ui
+            .checkbox(&mut on, tr("dimension.text_background"))
+            .rich_tip(crate::ui::tips::keyed("dimension.text_background"))
+            .changed()
+        {
+            let bg = on.then_some(Fill::Solid(tracedraw_core::Color::WHITE));
+            app.set_dimension_style(|s| s.text_background = bg.clone());
+        }
+        let current = style
+            .text_background
+            .as_ref()
+            .and_then(|f| f.preview_color());
+        if let Some(c) = current {
+            let mut c2 = c;
+            if crate::ui::color_picker::color_button(ui, &mut c2) && c2 != c {
+                app.set_dimension_style(|s| s.text_background = Some(Fill::Solid(c2)));
+            }
+        }
+    });
+}
+
+/// How far Object > Insert > Add Dimensions puts its dimension lines
+/// from what it measures (#3530).
+fn add_dimensions_gap_row(app: &mut App, ui: &mut Ui) {
+    let u = app.units;
+    let mm = app.add_dimensions_gap();
+    ui.horizontal(|ui| {
+        ui.label(tr("dimension.add_gap"));
+        let mut v = u.from_mm(mm);
+        let r = ui
+            .add(
+                NumField::new(&mut v)
+                    .speed(u.from_mm(0.1))
+                    .range(0.0..=u.from_mm(1000.0))
+                    .max_decimals(3)
+                    .unit_mm(u.mm())
+                    .suffix(format!(" {}", u.short()))
+                    .width(64.0),
+            )
+            .rich_tip(crate::ui::tips::keyed("dimension.add_gap"));
+        let next = u.to_mm(v);
+        if r.changed() && next.is_finite() && (next - mm).abs() > 1e-9 {
+            app.settings.add_dimensions_gap = next.clamp(0.0, 1000.0);
+        }
+    });
 }
 
 /// The document's drawing scale, at hand where dimensions are made: a

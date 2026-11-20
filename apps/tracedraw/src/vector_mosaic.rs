@@ -118,6 +118,14 @@ pub struct VectorMosaicSettings {
     /// Every tile in one colour instead of the picture's.
     pub mono: bool,
     pub mono_color: [u8; 3],
+    /// Leave out the tiles of the background's colour (the empty cells
+    /// of a logo on a solid ground).
+    pub skip_background: bool,
+    /// The background's colour; `None` finds it along the source's edges.
+    pub background: Option<[u8; 3]>,
+    /// How far from the background a tile's colour may be and still be
+    /// left out, 0 to 100 %.
+    pub background_tolerance: f64,
 }
 
 impl Default for VectorMosaicSettings {
@@ -140,6 +148,9 @@ impl Default for VectorMosaicSettings {
             invert_tone: false,
             mono: false,
             mono_color: [0, 0, 0],
+            skip_background: false,
+            background: None,
+            background_tolerance: 15.0,
         }
     }
 }
@@ -229,6 +240,19 @@ pub fn tiles(
         }
         ([acc[0] / acc[3], acc[1] / acc[3], acc[2] / acc[3]], alpha)
     };
+    // Remove background: the picked colour, or the commonest along the
+    // source's edges, and the furthest a tile may be from it to go.
+    let background = s
+        .skip_background
+        .then(|| s.background.or_else(|| edge_colour(img)))
+        .flatten()
+        .map(|c| c.map(f64::from));
+    let reach = if s.background_tolerance.is_finite() {
+        s.background_tolerance.clamp(0.0, 100.0)
+    } else {
+        15.0
+    } / 100.0
+        * (3.0f64 * 255.0 * 255.0).sqrt();
     let mut out = Vec::new();
     for j in -half..=half {
         for i in -half..=half {
@@ -255,6 +279,12 @@ pub fn tiles(
                 TrackMethod::Opacity => c,
                 _ => flat,
             };
+            if let Some(bg) = background {
+                let d = (0..3).map(|k| (flat[k] - bg[k]).powi(2)).sum::<f64>().sqrt();
+                if d <= reach {
+                    continue;
+                }
+            }
             let l = 0.299 * flat[0] + 0.587 * flat[1] + 0.114 * flat[2];
             out.push(Tile {
                 centre: p,
@@ -280,6 +310,43 @@ pub fn tiles(
         out = merge(out, s.merge);
     }
     Ok(out)
+}
+
+/// The commonest colour along the image's edges (flattened against
+/// white): the ground of a logo, for Remove background. Colours are
+/// counted in steps of 16 per channel and the winning step's pixels
+/// averaged. `None` for an empty image.
+pub fn edge_colour(img: &image::RgbaImage) -> Option<[u8; 3]> {
+    let (w, h) = img.dimensions();
+    if w == 0 || h == 0 {
+        return None;
+    }
+    let mut bins: std::collections::HashMap<[u8; 3], (u32, [u64; 3])> = Default::default();
+    let mut add = |x: u32, y: u32| {
+        let p = img.get_pixel(x, y);
+        let a = p[3] as f64 / 255.0;
+        let flat: [u8; 3] =
+            std::array::from_fn(|k| (p[k] as f64 * a + 255.0 * (1.0 - a)).round() as u8);
+        let e = bins.entry(flat.map(|v| v >> 4)).or_default();
+        e.0 += 1;
+        for k in 0..3 {
+            e.1[k] += flat[k] as u64;
+        }
+    };
+    for x in 0..w {
+        add(x, 0);
+        add(x, h - 1);
+    }
+    for y in 1..h.saturating_sub(1) {
+        add(0, y);
+        add(w - 1, y);
+    }
+    // The commonest step; ties go to the smaller key so the pick is the
+    // same on every run.
+    let (_, (n, sum)) = bins
+        .into_iter()
+        .max_by(|a, b| a.1 .0.cmp(&b.1 .0).then(b.0.cmp(&a.0)))?;
+    Some(sum.map(|v| (v / n as u64) as u8))
 }
 
 /// Reduce the tiles' colours to at most `n` with a median-cut palette.
@@ -741,6 +808,68 @@ mod tests {
         }
     }
 
+    /// A 40 x 20 mm red ground at 4 px/mm with a black square in the
+    /// middle (10 to 30 mm across, 5 to 15 mm up).
+    fn logo_on_red() -> (image::RgbaImage, Rect) {
+        let img = ImageBuffer::from_fn(160, 80, |x, y| {
+            if (40..120).contains(&x) && (20..60).contains(&y) {
+                Rgba([10, 10, 10, 255])
+            } else {
+                Rgba([210, 25, 30, 255])
+            }
+        });
+        (img, Rect::new(0.0, 0.0, 40.0, 20.0))
+    }
+
+    #[test]
+    fn remove_background_finds_the_ground_and_leaves_only_the_logo() {
+        let (img, b) = logo_on_red();
+        let ground = edge_colour(&img).expect("a ground");
+        assert_eq!(ground, [210, 25, 30]);
+        let all = tiles(&img, b, 4.0, &uniform()).expect("tiles");
+        let s = VectorMosaicSettings {
+            skip_background: true,
+            ..uniform()
+        };
+        let kept = tiles(&img, b, 4.0, &s).expect("tiles");
+        assert!(!kept.is_empty() && kept.len() < all.len());
+        // Tiles over the square's edge mix both colours and may stay; plain
+        // ground tiles go.
+        for t in &kept {
+            assert!(
+                t.color[0] < 180,
+                "a red ground tile was kept: {:?} at {:?}",
+                t.color,
+                t.centre
+            );
+        }
+        // Every dark tile is still there.
+        let dark = all.iter().filter(|t| t.color[0] < 30).count();
+        assert!(kept.iter().filter(|t| t.color[0] < 30).count() == dark);
+    }
+
+    #[test]
+    fn remove_background_takes_a_picked_colour_and_a_tolerance() {
+        let (img, b) = logo_on_red();
+        // Picking the logo's black leaves the red ground instead.
+        let s = VectorMosaicSettings {
+            skip_background: true,
+            background: Some([0, 0, 0]),
+            ..uniform()
+        };
+        let kept = tiles(&img, b, 4.0, &s).expect("tiles");
+        assert!(kept.iter().all(|t| t.color[0] > 120));
+        // No tolerance and a colour no tile has: nothing goes.
+        let s = VectorMosaicSettings {
+            skip_background: true,
+            background: Some([0, 200, 0]),
+            background_tolerance: 0.0,
+            ..uniform()
+        };
+        let all = tiles(&img, b, 4.0, &uniform()).expect("tiles");
+        assert_eq!(tiles(&img, b, 4.0, &s).expect("tiles").len(), all.len());
+    }
+
     #[test]
     fn the_defaults_match_the_panel() {
         let s = VectorMosaicSettings::default();
@@ -751,6 +880,8 @@ mod tests {
         assert_eq!(s.merge, 1);
         assert!(s.weld);
         assert_eq!(s.shape, TileShape::Circle);
+        assert!(!s.skip_background && s.background.is_none());
+        assert_eq!(s.background_tolerance, 15.0);
     }
 
     #[test]

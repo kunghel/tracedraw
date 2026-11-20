@@ -157,7 +157,8 @@ them. (<kbd>C</kbd> keeps making a node cusp here.)
   a star.
 - Double-click a rectangle, ellipse or polygon to turn it into a curve.
 - Drag a corner of a picture to crop it: the picture goes into a frame whose
-  nodes you can edit like a curve.
+  nodes you can edit like a curve. Drag an edge of a picture, away from its
+  corners, to crop it from that side: both corners of the edge move together.
 - With text, the [[tool.shape]] tool moves single characters; see
   [Adding and editing text](../text/adding-text.md).
 

@@ -34,6 +34,11 @@ shapes, and **Smoothing** how much the leftover curves are smoothed. Each is
 None, Lowest, Low, Medium (at first), High or Highest. With recognition at
 None, every stroke stays a curve.
 
+**Scribble erases** (off at first) turns the tool into an eraser for whole
+objects: scribble back and forth over objects, with several sharp turns, and
+the objects the scribble passes over are deleted, in one undo step. A
+scribble over empty space is drawn as a curve, as usual.
+
 ## Sketch {#sketch}
 
 The [[tool.sketch]] tool (<kbd>S</kbd>) lets you build a line from several

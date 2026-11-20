@@ -3,6 +3,7 @@
 //! deformations (smear, twirl, smooth). All work on flattened polylines
 //! and return new paths; the results are baked, not kept live.
 
+use crate::geometry::Shape as _;
 use crate::geometry::{BezPath, PathEl, Point, Vec2};
 
 /// Resample the first subpath of a path into `n` evenly spaced points.
@@ -82,36 +83,32 @@ pub fn blend(a: &BezPath, b: &BezPath, steps: usize, samples: usize) -> Vec<BezP
 /// [`blend`] with the steps at the places `ts` (0 is `a`, 1 is `b`).
 pub fn blend_at(a: &BezPath, b: &BezPath, ts: &[f64], samples: usize) -> Vec<BezPath> {
     // Outlines of several parts (letters, shapes with holes) morph part by
-    // part: the n-th part of one into the n-th part of the other, in
-    // order; a part without a partner grows from, or shrinks to, a point
-    // at its own centre. One polygon through every part would join them
-    // into a tangle.
-    let parts = |p: &BezPath| -> Vec<BezPath> {
-        subpaths(p)
-            .into_iter()
-            .map(|(sp, _)| sp)
-            .filter(|sp| sp.elements().len() > 1)
-            .collect()
-    };
-    let (ka, kb) = (parts(a), parts(b));
-    if ka.len() > 1 || kb.len() > 1 {
-        let n = ka.len().max(kb.len());
+    // part: see [`part_pairs`]. One polygon through every part would join
+    // them into a tangle.
+    if let Some(pairs) = part_pairs(a, b) {
         let per = (samples / 2).clamp(24, 96);
         let mut out = vec![BezPath::new(); ts.len()];
-        for i in 0..n {
-            let (x, y) = match (ka.get(i), kb.get(i)) {
-                (Some(x), Some(y)) => (x.clone(), y.clone()),
-                (Some(x), None) => (x.clone(), point_path(x)),
-                (None, Some(y)) => (point_path(y), y.clone()),
-                (None, None) => continue,
-            };
+        for (x, y, hole) in pairs {
             for (k, step) in blend_one(&x, &y, ts, per).into_iter().enumerate() {
                 if let Some(o) = out.get_mut(k) {
+                    // Outer outlines all wind one way and holes the other:
+                    // grown parts that overlap join and holes stay open.
+                    let step = if (step.area() < 0.0) != hole {
+                        step.reverse_subpaths()
+                    } else {
+                        step
+                    };
                     o.extend(step.elements().iter().copied());
                 }
             }
         }
-        return out;
+        // Parts grown over each other joined into one outline, so the
+        // steps fill by the even-odd rule as curves do and their outlines
+        // do not cross inside them.
+        return out
+            .iter()
+            .map(crate::shaping::nonzero_as_even_odd)
+            .collect();
     }
     blend_one(a, b, ts, samples)
 }
@@ -539,6 +536,114 @@ fn point_path(p: &BezPath) -> BezPath {
     out.line_to(c + Vec2::new(0.0, 1e-6));
     out.close_path();
     out
+}
+
+/// The closed parts of an outline (open lines of one node left out),
+/// each with whether it is a hole: inside an odd number of the others.
+fn outline_parts(p: &BezPath) -> Vec<(BezPath, bool)> {
+    let parts: Vec<BezPath> = subpaths(p)
+        .into_iter()
+        .map(|(sp, _)| sp)
+        .filter(|sp| sp.elements().len() > 1)
+        .collect();
+    let first = |sp: &BezPath| match sp.elements().first() {
+        Some(PathEl::MoveTo(q)) => Some(*q),
+        _ => None,
+    };
+    (0..parts.len())
+        .map(|i| {
+            let depth = first(&parts[i]).map_or(0, |q| {
+                parts
+                    .iter()
+                    .enumerate()
+                    .filter(|(j, o)| *j != i && o.winding(q) != 0)
+                    .count()
+            });
+            (parts[i].clone(), depth % 2 == 1)
+        })
+        .collect()
+}
+
+/// The outline in `outers` (by index) that holds `hole`: the smallest
+/// one around its first node.
+fn holder(outers: &[BezPath], hole: &BezPath) -> Option<usize> {
+    let Some(PathEl::MoveTo(q)) = hole.elements().first() else {
+        return None;
+    };
+    outers
+        .iter()
+        .enumerate()
+        .filter(|(_, o)| o.winding(*q) != 0)
+        .min_by(|x, y| {
+            x.1.area()
+                .abs()
+                .partial_cmp(&y.1.area().abs())
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
+        .map(|(i, _)| i)
+}
+
+/// The pairs of parts two outlines of several parts (letters, shapes
+/// with holes) morph between, each with whether it is a hole, or `None`
+/// when both are of one part. The outer outlines pair in order; when
+/// one side has a single outer outline and the other several (a
+/// rectangle into the outlines of a word), the single one morphs into
+/// each of them, so the first steps are the rectangle and the word
+/// grows out of it letter by letter. Otherwise an outer outline
+/// without a partner grows from, or shrinks to, a point at its own
+/// centre. The holes of two paired outlines pair in order, and a hole
+/// without a partner opens from, or closes to, a point at its own
+/// centre, so a rectangle blended into a letter with a counter (A, O)
+/// keeps the counter open in the steps near the letter.
+fn part_pairs(a: &BezPath, b: &BezPath) -> Option<Vec<(BezPath, BezPath, bool)>> {
+    let (pa, pb) = (outline_parts(a), outline_parts(b));
+    if pa.len() <= 1 && pb.len() <= 1 {
+        return None;
+    }
+    let split = |parts: Vec<(BezPath, bool)>| {
+        let (holes, outers): (Vec<_>, Vec<_>) = parts.into_iter().partition(|(_, h)| *h);
+        let outers: Vec<BezPath> = outers.into_iter().map(|(o, _)| o).collect();
+        let mut held = vec![Vec::new(); outers.len()];
+        let mut loose = Vec::new();
+        for (h, _) in holes {
+            match holder(&outers, &h) {
+                Some(i) => held[i].push(h),
+                None => loose.push(h),
+            }
+        }
+        (outers, held, loose)
+    };
+    let (oa, ha, la) = split(pa);
+    let (ob, hb, lb) = split(pb);
+    // Which outer outline of `a` pairs with which of `b`.
+    let index: Vec<(Option<usize>, Option<usize>)> = if oa.len() == 1 && ob.len() > 1 {
+        (0..ob.len()).map(|j| (Some(0), Some(j))).collect()
+    } else if ob.len() == 1 && oa.len() > 1 {
+        (0..oa.len()).map(|i| (Some(i), Some(0))).collect()
+    } else {
+        (0..oa.len().max(ob.len()))
+            .map(|i| ((i < oa.len()).then_some(i), (i < ob.len()).then_some(i)))
+            .collect()
+    };
+    let none = Vec::new();
+    let mut out = Vec::new();
+    let mut pair = |x: Option<&BezPath>, y: Option<&BezPath>, hole: bool| match (x, y) {
+        (Some(x), Some(y)) => out.push((x.clone(), y.clone(), hole)),
+        (Some(x), None) => out.push((x.clone(), point_path(x), hole)),
+        (None, Some(y)) => out.push((point_path(y), y.clone(), hole)),
+        (None, None) => {}
+    };
+    for (i, j) in index {
+        pair(i.map(|i| &oa[i]), j.map(|j| &ob[j]), false);
+        let (xh, yh) = (i.map_or(&none, |i| &ha[i]), j.map_or(&none, |j| &hb[j]));
+        for k in 0..xh.len().max(yh.len()) {
+            pair(xh.get(k), yh.get(k), true);
+        }
+    }
+    for k in 0..la.len().max(lb.len()) {
+        pair(la.get(k), lb.get(k), true);
+    }
+    Some(out)
 }
 
 /// The most nodes a step of a blend paired by shape may have (both
@@ -1517,6 +1622,39 @@ pub fn roughen_stroke(
     amount: f64,
     spacing: f64,
 ) -> BezPath {
+    roughen_stroke_edge(base, centers, radius, amount, spacing, RoughEdge::Jagged)
+}
+
+/// The edge the Roughen tool makes where the nib goes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+pub enum RoughEdge {
+    /// Spikes in and out at random, joined by straight lines.
+    #[default]
+    Jagged,
+    /// Sharp points sticking out of the shape, every other point pushed
+    /// out and the ones between left on the outline.
+    Thorns,
+    /// Points pulled into the shape with round lobes between them that
+    /// come back out to the outline, as the edge of a petal or a doily.
+    Petals,
+    /// Soft waves in and out at random, the outline staying smooth.
+    Crumple,
+}
+
+/// [`roughen_stroke`] with the edge `edge`: Jagged as there; Thorns and
+/// Petals push away from and into the shape (a closed subpath's inside,
+/// else away from the nib's centre), Thorns at every other point with
+/// straight lines, Petals at every point with lobes as tall as the push
+/// between them; Crumple pushes in or out at random like Jagged with
+/// the outline going smoothly through the pushed points.
+pub fn roughen_stroke_edge(
+    base: &BezPath,
+    centers: &[Point],
+    radius: f64,
+    amount: f64,
+    spacing: f64,
+    edge: RoughEdge,
+) -> BezPath {
     use crate::geometry::Shape as _;
     use kurbo::{ParamCurve as _, ParamCurveArclen as _, ParamCurveDeriv as _, PathSeg};
     let spacing = if spacing.is_finite() {
@@ -1560,6 +1698,14 @@ pub fn roughen_stroke(
             }
         }
         best
+    };
+    // The nearest nib's centre to a place.
+    let nearest = |p: Point| -> Point {
+        centers
+            .iter()
+            .copied()
+            .min_by(|a, b| (p - *a).hypot2().total_cmp(&(p - *b).hypot2()))
+            .unwrap_or(p)
     };
     // Whether a place lies within a nib of the box `b`.
     let near = |b: kurbo::Rect| -> bool {
@@ -1619,11 +1765,15 @@ pub fn roughen_stroke(
         // and where the next point falls.
         let mut s0 = 0.0;
         let mut next = spacing;
+        // The last pushed point, its lobe's pull and the outline's way
+        // there, while a run of pushed points goes on.
+        let mut prev: Option<(Point, Vec2, Vec2)> = None;
         for seg in sub.segments() {
             let len = seg.arclen(0.01);
             let near = meets(seg.bounding_box()) && near(seg.bounding_box());
-            // The points on this segment: (t, place, pushed).
-            let mut pts: Vec<(f64, Point, bool)> = Vec::new();
+            // The points on this segment: (t, place, pushed, a Petals
+            // lobe's pull out, the way the outline ran there).
+            let mut pts: Vec<(f64, Point, bool, Vec2, Vec2)> = Vec::new();
             while next < s0 + len - 1e-9 {
                 if near {
                     let t = seg.inv_arclen(next - s0, 0.01).clamp(0.0, 1.0);
@@ -1638,37 +1788,77 @@ pub fn roughen_stroke(
                         // A number from -1 to 1 that depends on the place only.
                         let h = ((p.x * 12.9898 + p.y * 78.233).sin() * 43758.5453).fract();
                         let r = 2.0 * h.abs() - 1.0;
-                        pts.push((t, p + normal * (r * amount * w), true));
+                        // Away from the shape: out of a closed subpath,
+                        // else away from the nib's centre.
+                        let out = if closed {
+                            let probe = p + normal * (amount.abs() * 0.01).max(1e-4);
+                            if sub.winding(probe) != 0 {
+                                -normal
+                            } else {
+                                normal
+                            }
+                        } else if normal.dot(p - nearest(p)) < 0.0 {
+                            -normal
+                        } else {
+                            normal
+                        };
+                        let odd = (next / spacing).round() as i64 % 2 != 0;
+                        let push = match edge {
+                            RoughEdge::Jagged => normal * (r * amount * w),
+                            RoughEdge::Thorns if odd => out * (amount * w),
+                            RoughEdge::Thorns => Vec2::ZERO,
+                            RoughEdge::Petals => -out * (amount * w),
+                            RoughEdge::Crumple => normal * (r * amount * w),
+                        };
+                        let bulge = out * (amount * w / 0.75);
+                        pts.push((t, p + push, true, bulge, tan / l));
                     } else {
-                        pts.push((t, p, false));
+                        pts.push((t, p, false, Vec2::ZERO, Vec2::ZERO));
                     }
                 }
                 next += spacing;
             }
             s0 += len;
-            if !pts.iter().any(|(_, _, pushed)| *pushed) {
+            if !pts.iter().any(|(_, _, pushed, _, _)| *pushed) {
                 els.push(seg.as_path_el());
+                // A Petals or Crumple run ends at an unpushed stretch.
+                prev = None;
                 continue;
             }
             // Unpushed points keep the segment exactly between them;
-            // from and to a pushed point the outline runs straight.
+            // from and to a pushed point the outline runs straight
+            // (Jagged, Thorns), or, from one pushed point to the next, in
+            // a lobe (Petals) or smoothly (Crumple).
             let mut exact_from = Some(0.0);
             let (mut prev_t, mut prev_pushed) = (0.0, false);
-            for (t, p, pushed) in pts
-                .into_iter()
-                .chain(std::iter::once((1.0, seg.end(), false)))
-            {
+            for (t, p, pushed, bulge, way) in pts.into_iter().chain(std::iter::once((
+                1.0,
+                seg.end(),
+                false,
+                Vec2::ZERO,
+                Vec2::ZERO,
+            ))) {
                 if pushed || prev_pushed {
                     if let Some(t0) = exact_from.take() {
                         if prev_t > t0 + 1e-12 {
                             els.push(seg.subsegment(t0..prev_t).as_path_el());
                         }
                     }
-                    els.push(PathEl::LineTo(p));
+                    match (edge, prev.filter(|_| pushed)) {
+                        (RoughEdge::Petals, Some((q, qb, _))) => {
+                            els.push(PathEl::CurveTo(q + qb, p + bulge, p));
+                        }
+                        (RoughEdge::Crumple, Some((q, _, qw))) => {
+                            let d = (p - q).hypot() / 3.0;
+                            els.push(PathEl::CurveTo(q + qw * d, p - way * d, p));
+                        }
+                        _ => els.push(PathEl::LineTo(p)),
+                    }
                     if !pushed {
                         exact_from = Some(t);
                     }
                 }
+                prev = pushed.then_some((p, bulge, way));
                 prev_t = t;
                 prev_pushed = pushed;
             }
@@ -2182,6 +2372,68 @@ mod tests {
         );
     }
 
+    /// The Roughen edges over the top of a square: Thorns stick out of
+    /// it only, Petals go into it only with curved lobes that come back
+    /// to the side, Crumple goes both ways in curves; each the same
+    /// stroke after stroke, and the far sides as they were.
+    #[test]
+    fn the_roughen_edges_go_their_ways() {
+        let sq = Rect::new(0.0, 0.0, 40.0, 40.0).to_path(0.01);
+        let way: Vec<Point> = (0..=20)
+            .map(|k| Point::new(10.0 + k as f64, 40.0))
+            .collect();
+        let edge = |e| roughen_stroke_edge(&sq, &way, 5.0, 1.5, 1.0, e);
+        let curves = |p: &BezPath| {
+            p.elements()
+                .iter()
+                .filter(|e| matches!(e, PathEl::CurveTo(..)))
+                .count()
+        };
+        assert_eq!(
+            edge(RoughEdge::Jagged),
+            roughen_stroke(&sq, &way, 5.0, 1.5, 1.0)
+        );
+        // Thorns: out of the top only, as far as the spike size.
+        let thorns = edge(RoughEdge::Thorns);
+        let b = thorns.bounding_box();
+        assert!(b.y1 > 40.5 && b.y1 <= 41.5 + 1e-9, "{b:?}");
+        assert!(node_points(&thorns)
+            .iter()
+            .all(|p| p.y >= 40.0 - 1e-9 || p.y <= 1e-9 || p.x <= 1e-9 || p.x >= 40.0 - 1e-9));
+        assert_eq!(curves(&thorns), 0);
+        // Petals: into the square only, the lobes curved, coming back up
+        // to the side and no further.
+        let petals = edge(RoughEdge::Petals);
+        let b = petals.bounding_box();
+        assert!((b.y1 - 40.0).abs() < 0.05, "{b:?}");
+        let tips: Vec<Point> = node_points(&petals)
+            .into_iter()
+            .filter(|p| p.y < 39.5 && p.y > 30.0)
+            .collect();
+        assert!(tips.len() >= 10, "{tips:?}");
+        assert!(curves(&petals) >= 10);
+        // Crumple: in and out, in curves.
+        let crumple = edge(RoughEdge::Crumple);
+        let ys: Vec<f64> = node_points(&crumple)
+            .into_iter()
+            .filter(|p| p.x > 12.0 && p.x < 28.0)
+            .map(|p| p.y)
+            .collect();
+        assert!(
+            ys.iter().any(|y| *y > 40.2) && ys.iter().any(|y| *y < 39.8),
+            "{ys:?}"
+        );
+        assert!(curves(&crumple) >= 10);
+        for e in [RoughEdge::Thorns, RoughEdge::Petals, RoughEdge::Crumple] {
+            let mut back = way.clone();
+            back.extend(way.iter().rev().copied());
+            assert_eq!(roughen_stroke_edge(&sq, &back, 5.0, 1.5, 1.0, e), edge(e));
+            assert!(edge(e)
+                .elements()
+                .contains(&PathEl::LineTo(Point::new(40.0, 0.0))));
+        }
+    }
+
     /// Strokes over an outline an earlier stroke made jagged pushed
     /// spikes across the outline, and the even-odd fill showed each
     /// overlap as a white sliver over the object (#2229). Now, however
@@ -2467,6 +2719,89 @@ mod tests {
         assert!(
             (third.center().x - 145.0).abs() < 1.0 && third.width() < 6.0,
             "{third:?}"
+        );
+    }
+
+    fn polygon_of(pts: &[(f64, f64)]) -> BezPath {
+        polygon(
+            &pts.iter()
+                .map(|&(x, y)| Point::new(x, y))
+                .collect::<Vec<_>>(),
+        )
+    }
+
+    /// An "A" from the outline of a letter: an outer outline and a
+    /// counter wound the other way, as fonts draw them.
+    fn letter_a(x: f64) -> BezPath {
+        let mut p = polygon_of(&[
+            (x, 0.0),
+            (x + 20.0, 40.0),
+            (x + 40.0, 0.0),
+            (x + 30.0, 0.0),
+            (x + 25.0, 10.0),
+            (x + 15.0, 10.0),
+            (x + 10.0, 0.0),
+        ]);
+        p.extend(
+            polygon_of(&[(x + 17.0, 15.0), (x + 20.0, 25.0), (x + 23.0, 15.0)])
+                .elements()
+                .iter()
+                .copied(),
+        );
+        p
+    }
+
+    /// A rectangle blended into a letter with a counter: every step has
+    /// the counter, inside the step and open (even-odd), growing from a
+    /// point toward the letter's.
+    #[test]
+    fn blend_of_a_rectangle_into_a_letter_keeps_its_counter() {
+        let rect = Rect::new(-100.0, -100.0, 200.0, 150.0).to_path(0.01);
+        let a = letter_a(0.0);
+        let steps = blend(&rect, &a, 5, 120);
+        assert_eq!(steps.len(), 5);
+        let mut last = 0.0;
+        for (k, step) in steps.iter().enumerate() {
+            let parts = subpaths(step);
+            assert_eq!(parts.len(), 2, "step {k}: {step:?}");
+            let (outer, hole) = (&parts[0].0, &parts[1].0);
+            let size = hole.area().abs();
+            assert!(size > last, "step {k}: the counter grows ({size})");
+            last = size;
+            let c = hole.bounding_box().center();
+            assert!(outer.winding(c) != 0, "step {k}: the counter is inside");
+            assert_eq!(step.winding(c).abs() % 2, 0, "step {k}: open even-odd");
+        }
+        // Near the letter the counter is nearly the letter's.
+        let near = subpaths(&steps[4])[1].0.bounding_box();
+        assert!((near.center().x - 20.0).abs() < 1.0, "{near:?}");
+        assert!(near.width() > 4.0, "{near:?}");
+    }
+
+    /// A rectangle blended into a word: the steps near the rectangle are
+    /// one outline (the copies morphing into each letter joined, not
+    /// crossing), and near the word each letter has its own outline.
+    #[test]
+    fn blend_of_a_rectangle_into_a_word_morphs_into_every_letter() {
+        let rect = Rect::new(-10.0, -10.0, 90.0, 50.0).to_path(0.01);
+        let mut word = polygon_of(&[(0.0, 0.0), (0.0, 40.0), (10.0, 40.0), (10.0, 0.0)]);
+        word.extend(letter_a(30.0).elements().iter().copied());
+        let steps = blend(&rect, &word, 9, 120);
+        let first = subpaths(&steps[0]);
+        assert_eq!(first.len(), 1, "one outline: {:?}", steps[0]);
+        let fb = first[0].0.bounding_box();
+        assert!(fb.width() > 90.0 && fb.height() > 55.0, "{fb:?}");
+        let last = subpaths(&steps[8]);
+        // The bar, the A and its counter.
+        assert_eq!(last.len(), 3, "{:?}", steps[8]);
+        let mid_x: Vec<f64> = last
+            .iter()
+            .map(|(p, _)| p.bounding_box().center().x)
+            .collect();
+        assert!(mid_x.iter().any(|x| *x < 15.0), "{mid_x:?}");
+        assert!(
+            mid_x.iter().filter(|x| **x > 40.0).count() == 2,
+            "{mid_x:?}"
         );
     }
 

@@ -1227,7 +1227,9 @@ impl App {
     ) -> Result<std::path::PathBuf, String> {
         use crate::bitmap_file::BitmapFile;
         let s = self.doc().find_shape(id).ok_or("no picture")?;
-        let kind = if crate::bitmap_file::is_cmyk(s) {
+        // A CMYK or Lab Color picture goes as a TIFF, which keeps its
+        // inks or its Lab (#3539); PNG holds neither.
+        let kind = if crate::bitmap_file::is_cmyk(s) || crate::bitmap_file::is_lab(s) {
             BitmapFile::Tiff
         } else {
             BitmapFile::Png
@@ -1239,8 +1241,8 @@ impl App {
     }
 
     /// Image > Edit Bitmap: write the picture to a file next to the
-    /// system's temporary files (a CMYK TIFF for a CMYK picture, else a
-    /// PNG), link the object to it and open the system editor (on
+    /// system's temporary files (a CMYK TIFF for a CMYK picture, a Lab
+    /// TIFF for a Lab one, else a PNG), link the object to it and open the system editor (on
     /// Android, an editing app through "open with").
     pub fn edit_bitmap_externally(&mut self) {
         if crate::files::WEB {
@@ -1452,7 +1454,7 @@ impl App {
             let since = now.duration_since(last);
             if since < gap {
                 if let Some(ctx) = ctx {
-                    if !self.linked_mtimes.is_empty() {
+                    if !self.linked_mtimes.is_empty() || !self.object_files.is_empty() {
                         ctx.request_repaint_after(gap - since);
                     }
                 }
@@ -1460,6 +1462,9 @@ impl App {
             }
         }
         self.linked_checked = Some(now);
+        // Insert What It Saves (#3391): a picture saved for the first
+        // time comes in, linked, and follows its file from then on.
+        self.watch_object_files();
         let linked: Vec<(ShapeId, String)> = self
             .doc()
             .all_layers()
@@ -1487,7 +1492,7 @@ impl App {
             }
         }
         if let Some(ctx) = ctx {
-            if !self.linked_mtimes.is_empty() {
+            if !self.linked_mtimes.is_empty() || !self.object_files.is_empty() {
                 ctx.request_repaint_after(gap);
             }
         }

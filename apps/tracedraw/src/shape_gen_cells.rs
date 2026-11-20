@@ -170,8 +170,8 @@ impl Tone {
 
 /// What the tone generators read: the box, its picture (or the stand-in
 /// ramp) and the outline that keeps marks inside.
-struct Source<'a> {
-    rect: Rect,
+pub(crate) struct Source<'a> {
+    pub(crate) rect: Rect,
     tone: Option<Tone>,
     boundary: Option<&'a BezPath>,
     invert: bool,
@@ -203,7 +203,7 @@ fn inks(rgba: [f32; 4], invert: bool) -> ([f64; 4], f64, f64) {
 }
 
 impl Source<'_> {
-    fn new<'a>(s: &'a ShapeGenSettings) -> Source<'a> {
+    pub(crate) fn new<'a>(s: &'a ShapeGenSettings) -> Source<'a> {
         Source {
             rect: Rect::new(0.0, 0.0, s.width, s.height),
             tone: s.tone.as_deref().and_then(Tone::from_base64_png),
@@ -228,7 +228,7 @@ impl Source<'_> {
 
     /// Ink amounts at `p` (darkness at index 4), or None outside: off the
     /// box, transparent in the picture or outside the outline.
-    fn at(&self, p: Point) -> Option<[f64; 5]> {
+    pub(crate) fn at(&self, p: Point) -> Option<[f64; 5]> {
         if !inside_rect(self.rect, p) || !inside(self.boundary, p) {
             return None;
         }
@@ -241,7 +241,7 @@ impl Source<'_> {
 
     /// A raster of the box for relaxation: pixel size and the sample
     /// grid's width and height.
-    fn raster(&self, want: usize) -> (usize, usize) {
+    pub(crate) fn raster(&self, want: usize) -> (usize, usize) {
         if let Some(t) = &self.tone {
             let (w, h) = t.size();
             if w * h >= 64 {

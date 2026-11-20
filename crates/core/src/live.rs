@@ -174,11 +174,86 @@ pub enum Effect {
     },
     /// Symmetry: mirrored copies of the object across `lines` mirror lines
     /// through `center` (page space), the first at `angle` degrees and the
-    /// others spread evenly; the object itself stays where it is.
+    /// others spread evenly; the object itself stays where it is. With
+    /// `rotate` the copies are turned round the centre instead, `lines`
+    /// in all counting the object, and none is a mirror image (#2999).
     Symmetry {
         center: Point,
         angle: f64,
         lines: u8,
+        #[serde(default, skip_serializing_if = "is_false")]
+        rotate: bool,
+    },
+    /// Offset Path: the outline moved out (positive `distance`, mm) or in
+    /// (negative), its corners turned as `join` says, then smoothed by
+    /// `smooth` mm (grown and shrunk back by that much with round
+    /// corners, which rounds the hollows where parts meet). On a group
+    /// with `merge` the group's objects first become one outline, drawn
+    /// with the paint of the bottom object, so shapes near each other
+    /// flow into one another as they move (metaballs). The effect can be
+    /// stacked; each one works on what the ones before it made.
+    #[serde(rename = "offsetpath")]
+    OffsetPath {
+        distance: f64,
+        #[serde(default)]
+        smooth: f64,
+        #[serde(default)]
+        join: crate::shaping::Join,
+        #[serde(default, skip_serializing_if = "is_false")]
+        merge: bool,
+    },
+    /// Transform: `copies` copies of the object, each one the one before
+    /// it scaled by `scale_x` / `scale_y` percent, mirrored (`reflect_x`
+    /// turns it over left to right, `reflect_y` top to bottom), turned by
+    /// `angle` degrees about the centre of the object's box (or the point
+    /// `pivot_x` / `pivot_y` mm from it, for copies round a centre of
+    /// one's own, #3607) and moved by `move_x` / `move_y` mm. With `random`, each step takes a share of
+    /// those values picked from `seed`. With no copies the object itself
+    /// is drawn transformed. The outline keeps its width unless
+    /// `scale_strokes`. The object itself stays as it is, so the result
+    /// stays editable; Break Effect Apart makes the copies objects.
+    Transform {
+        scale_x: f64,
+        scale_y: f64,
+        #[serde(default)]
+        move_x: f64,
+        #[serde(default)]
+        move_y: f64,
+        #[serde(default)]
+        angle: f64,
+        copies: u32,
+        #[serde(default, skip_serializing_if = "is_false")]
+        reflect_x: bool,
+        #[serde(default, skip_serializing_if = "is_false")]
+        reflect_y: bool,
+        #[serde(default, skip_serializing_if = "is_false")]
+        random: bool,
+        #[serde(default)]
+        seed: u32,
+        #[serde(default, skip_serializing_if = "is_false")]
+        scale_strokes: bool,
+        #[serde(default, skip_serializing_if = "is_zero")]
+        pivot_x: f64,
+        #[serde(default, skip_serializing_if = "is_zero")]
+        pivot_y: f64,
+    },
+    /// Grid: the object repeated in `columns` × `rows` cells, to the right
+    /// and down from the object, which is the top left cell. Each cell is
+    /// the object's box with `gap_x` / `gap_y` mm between cells (less than
+    /// nothing overlaps them); every other row moves right by `shift_x`
+    /// mm and every other column down by `shift_y` mm, for brick and
+    /// honeycomb layouts. The object stays as it is and editable.
+    Grid {
+        columns: u32,
+        rows: u32,
+        #[serde(default)]
+        gap_x: f64,
+        #[serde(default)]
+        gap_y: f64,
+        #[serde(default, skip_serializing_if = "is_zero")]
+        shift_x: f64,
+        #[serde(default, skip_serializing_if = "is_zero")]
+        shift_y: f64,
     },
     /// Outer shadow (#1141): a soft shadow cast beneath the object by its
     /// shape, moved by `offset`; one of a stack of them, beside the
@@ -226,12 +301,48 @@ pub enum Effect {
         spacing: f64,
         color: Color,
     },
+    /// Tiles (the Brush Strokes tool's Tiles mode): one of the tile
+    /// pictures (`preset`: chain, rope, zigzag, dash and dot, waves,
+    /// beads) repeated end to end along the object's path and bent to
+    /// follow it, `width` mm across, in `color`, drawn above it as one
+    /// group (see [`crate::tiles`]).
+    Tiles { preset: u8, width: f64, color: Color },
+    /// Live paint (the Smart Fill tool with Live ticked), on a group:
+    /// each fill a point in the group's own space with its colour; the
+    /// area the group's lines close around each point is drawn filled
+    /// under its objects, following the lines as they change (see
+    /// [`crate::live_paint`]).
+    LivePaint { fills: Vec<(f64, f64, Color)> },
     /// Gaussian blur (#1141): the object drawn blurred by `radius` mm.
     /// Drawn by the renderer.
     GaussianBlur { radius: f64 },
     /// Fill opacity (#1141): the object itself drawn at `opacity` 0..1
     /// while what its other effects draw keeps its own.
     FillOpacity { opacity: f64 },
+    /// Blend If: the object shows only where its own lightness (`this`)
+    /// and the lightness of what lies beneath it (`below`) fall in a
+    /// range. Each range is four lightnesses 0..1: where the dark end
+    /// starts to show and where it shows fully, where the light end starts
+    /// to fade and where it is gone (see [`blend_if_weight`]). Drawn by
+    /// the renderer, so a light text on a photo takes the photo's grain.
+    BlendIf { this: [f64; 4], below: [f64; 4] },
+    /// Displace by a photo (#3595): the outline pushed by the lightness of
+    /// a photo beneath it (light up and right, dark down and left, by up
+    /// to `horizontal` and `vertical` mm on the page), so a print follows
+    /// the folds of a cloth, the grain of a paper or a wall; `shade` then
+    /// takes the photo's shadows (Multiply) and highlights (Screen) onto
+    /// it, by `strength` 0..1, drawn by the renderer from what lies
+    /// beneath. The map is the photo sampled when the effect was set.
+    Displace {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        map: Option<SurfaceMap>,
+        horizontal: f64,
+        vertical: f64,
+        #[serde(default)]
+        shade: SurfaceShade,
+        #[serde(default)]
+        strength: f64,
+    },
     /// Lens over everything beneath (evaluated by the renderer).
     Lens(Lens),
     /// Non-uniform transparency: the fill's luminance is the opacity.
@@ -349,7 +460,7 @@ impl MergeMode {
     }
 }
 
-/// The eleven lens types.
+/// The lens types.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "lens", rename_all = "lowercase")]
 pub enum Lens {
@@ -396,9 +507,47 @@ pub enum Lens {
     Effects {
         effects: Vec<crate::BitmapEffect>,
     },
+    /// Cut: the objects beneath are cut across along the lens's middle
+    /// line (its long axis), each side of every cut piece grows a curved
+    /// spur along that line, and a shadow fades from the cut over the
+    /// objects on one side, as far as the lens reaches. Sizes in mm:
+    /// `spur_length` how far a spur reaches out of the object,
+    /// `spur_width` its thickness where it leaves the object, `curve`
+    /// how hollow its sides are (1 straight, higher thinner), `gap` the
+    /// width of the cut; `shadow` 0 to 100 how dark the shadow starts,
+    /// on the lens's lower side, or its upper side with `shadow_up`.
+    Cut {
+        spur_length: f64,
+        spur_width: f64,
+        #[serde(default = "two")]
+        curve: f64,
+        #[serde(default)]
+        gap: f64,
+        shadow: f64,
+        shadow_color: Color,
+        #[serde(default, skip_serializing_if = "is_false")]
+        shadow_up: bool,
+    },
+}
+
+fn two() -> f64 {
+    2.0
 }
 
 impl Lens {
+    /// The Cut lens as the Lens panel starts it.
+    pub fn default_cut() -> Lens {
+        Lens::Cut {
+            spur_length: 3.0,
+            spur_width: 3.0,
+            curve: 2.0,
+            gap: 0.3,
+            shadow: 60.0,
+            shadow_color: Color::BLACK,
+            shadow_up: false,
+        }
+    }
+
     pub fn name(&self) -> &'static str {
         match self {
             Lens::Brighten { .. } => "Brighten",
@@ -413,6 +562,7 @@ impl Lens {
             Lens::Transparency { .. } => "Transparency",
             Lens::Wireframe { .. } => "Wireframe",
             Lens::Effects { .. } => "Bitmap Effects",
+            Lens::Cut { .. } => "Cut",
         }
     }
 
@@ -517,7 +667,8 @@ impl Lens {
             Lens::FishEye { .. }
             | Lens::Magnify { .. }
             | Lens::Wireframe { .. }
-            | Lens::Effects { .. } => c,
+            | Lens::Effects { .. }
+            | Lens::Cut { .. } => c,
         }
     }
 }
@@ -528,7 +679,11 @@ impl Effect {
     pub fn warps_outline(&self) -> bool {
         matches!(
             self,
-            Effect::Envelope { .. } | Effect::Perspective { .. } | Effect::Distort(_)
+            Effect::Envelope { .. }
+                | Effect::Perspective { .. }
+                | Effect::Distort(_)
+                | Effect::OffsetPath { .. }
+                | Effect::Displace { .. }
         )
     }
 
@@ -548,6 +703,7 @@ impl Effect {
                     | Effect::Glow { .. }
                     | Effect::GaussianBlur { .. }
                     | Effect::FillOpacity { .. }
+                    | Effect::BlendIf { .. }
             )
     }
 
@@ -562,8 +718,148 @@ impl Effect {
                 | Effect::OuterShadow { .. }
                 | Effect::Glow { .. }
                 | Effect::GaussianBlur { .. }
+                | Effect::BlendIf { .. }
         )
     }
+}
+
+/// How Displace takes the photo's light onto the object (#3595).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SurfaceShade {
+    /// The object keeps its colours.
+    #[default]
+    None,
+    /// Darkened where the photo is darker than its middle grey.
+    Multiply,
+    /// Lightened where the photo is lighter than its middle grey.
+    Screen,
+    /// Both.
+    Both,
+}
+
+impl SurfaceShade {
+    pub const ALL: [SurfaceShade; 4] = [
+        SurfaceShade::None,
+        SurfaceShade::Multiply,
+        SurfaceShade::Screen,
+        SurfaceShade::Both,
+    ];
+}
+
+/// A photo's lightness sampled on a grid over a box of an object's own
+/// space, for Displace (#3595): `light` holds `cols * rows` values 0..255,
+/// row by row from the box's `y0` side, each the photo's lightness at
+/// the middle of its cell; `mean` is the photo's average lightness 0..1
+/// there (the grey that pushes nothing); `to_local` takes a page
+/// direction to the object's own space (the inverse of its transform's
+/// linear part when the photo was sampled).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SurfaceMap {
+    pub rect: Rect,
+    pub cols: u32,
+    pub rows: u32,
+    pub light: Vec<u8>,
+    pub mean: f64,
+    pub to_local: [f64; 4],
+}
+
+impl SurfaceMap {
+    /// The lightness 0..1 at `p` (the object's own space), bilinear
+    /// between the cells' middles and kept at the edge value outside.
+    pub fn lightness(&self, p: Point) -> f64 {
+        let (c, r) = (self.cols as usize, self.rows as usize);
+        if c == 0 || r == 0 || self.light.len() < c * r {
+            return self.mean;
+        }
+        let (w, h) = (self.rect.width(), self.rect.height());
+        if !(w > 0.0 && h > 0.0) {
+            return self.mean;
+        }
+        let fx = ((p.x - self.rect.x0) / w * c as f64 - 0.5).clamp(0.0, (c - 1) as f64);
+        let fy = ((p.y - self.rect.y0) / h * r as f64 - 0.5).clamp(0.0, (r - 1) as f64);
+        if !fx.is_finite() || !fy.is_finite() {
+            return self.mean;
+        }
+        let (i, j) = (fx.floor() as usize, fy.floor() as usize);
+        let (i1, j1) = ((i + 1).min(c - 1), (j + 1).min(r - 1));
+        let (tx, ty) = (fx - i as f64, fy - j as f64);
+        let at = |x: usize, y: usize| f64::from(self.light[y * c + x]) / 255.0;
+        let top = at(i, j) * (1.0 - tx) + at(i1, j) * tx;
+        let bottom = at(i, j1) * (1.0 - tx) + at(i1, j1) * tx;
+        top * (1.0 - ty) + bottom * ty
+    }
+
+    /// Where Displace takes `p` (the object's own space): pushed along
+    /// the page's right and up by `horizontal` and `vertical` mm times
+    /// how far the photo there is from its middle grey (twice the
+    /// difference, so full white over a mid grey photo pushes the whole
+    /// amount).
+    pub fn displace(&self, p: Point, horizontal: f64, vertical: f64) -> Point {
+        let d = ((self.lightness(p) - self.mean) * 2.0).clamp(-1.0, 1.0);
+        let (dx, dy) = (horizontal * d, vertical * d);
+        let [a, b, c, e] = self.to_local;
+        let v = Vec2::new(a * dx + c * dy, b * dx + e * dy);
+        if v.x.is_finite() && v.y.is_finite() {
+            p + v
+        } else {
+            p
+        }
+    }
+}
+
+/// The factor Displace's shading scales a colour channel by (Multiply)
+/// and the amount it screens it with (Screen), for a photo lightness `l`
+/// against its `mean`, at `strength` 0..1 (#3595): the shadows darken by
+/// how far below the middle grey they are, the highlights lighten by how
+/// far above it.
+pub fn surface_shade(shade: SurfaceShade, strength: f64, mean: f64, l: f64) -> (f64, f64) {
+    let s = if strength.is_finite() { strength.clamp(0.0, 1.0) } else { 0.0 };
+    let m = if mean.is_finite() { mean.clamp(0.01, 0.99) } else { 0.5 };
+    let l = if l.is_finite() { l.clamp(0.0, 1.0) } else { m };
+    let dark = matches!(shade, SurfaceShade::Multiply | SurfaceShade::Both);
+    let light = matches!(shade, SurfaceShade::Screen | SurfaceShade::Both);
+    let mul = if dark && l < m { 1.0 - s * (1.0 - l / m) } else { 1.0 };
+    let scr = if light && l > m { s * (l - m) / (1.0 - m) } else { 0.0 };
+    (mul, scr)
+}
+
+/// Blend If's full range: every lightness shows.
+pub const BLEND_IF_ALL: [f64; 4] = [0.0, 0.0, 1.0, 1.0];
+
+/// How much a pixel of lightness `l` (0..1) shows under a Blend If range
+/// `[dark_from, dark_full, light_full, light_to]`: nothing below
+/// `dark_from`, rising to fully at `dark_full`, fully up to `light_full`,
+/// falling to nothing at `light_to`. A split end (`from` short of
+/// `full`) fades in smoothly; a joined one cuts sharply. The values are
+/// put in order first, so a range dragged over itself stays a range.
+pub fn blend_if_weight(range: &[f64; 4], l: f64) -> f64 {
+    let mut r = range.map(|v| if v.is_finite() { v.clamp(0.0, 1.0) } else { 0.0 });
+    r[1] = r[1].max(r[0]);
+    r[2] = r[2].max(r[1]);
+    r[3] = r[3].max(r[2]);
+    let l = if l.is_finite() { l } else { 0.0 };
+    let rise = if l < r[0] {
+        0.0
+    } else if l >= r[1] {
+        1.0
+    } else {
+        (l - r[0]) / (r[1] - r[0])
+    };
+    let fall = if l > r[3] {
+        0.0
+    } else if l <= r[2] {
+        1.0
+    } else {
+        (r[3] - l) / (r[3] - r[2])
+    };
+    rise.min(fall)
+}
+
+/// The lightness Blend If reads from a colour, 0..1 (Rec. 601 weights,
+/// the grey a picture's channels mix to).
+pub fn blend_if_lightness(r: f64, g: f64, b: f64) -> f64 {
+    (0.299 * r + 0.587 * g + 0.114 * b).clamp(0.0, 1.0)
 }
 
 /// Which entries of an effect stack a bake takes: the warps switched on
@@ -730,6 +1026,18 @@ pub fn outline_warp(shape: &Shape) -> Option<OutlineWarp> {
 /// One outline warp of `p` with the box `b` (as [`evaluate`] does).
 fn warp_outline(e: &Effect, p: &BezPath, b: Rect) -> Option<BezPath> {
     match e {
+        Effect::OffsetPath {
+            distance,
+            smooth,
+            join,
+            ..
+        } => Some(crate::shaping::offset_smooth(
+            p,
+            *distance,
+            *smooth,
+            *join,
+            crate::shaping::FillRule::EvenOdd,
+        )),
         Effect::Distort(how) => Some(crate::effects::distort_in(p, b, *how)),
         Effect::Envelope {
             nodes,
@@ -748,6 +1056,12 @@ fn warp_outline(e: &Effect, p: &BezPath, b: Rect) -> Option<BezPath> {
             ))
         }
         Effect::Perspective { corners } => Some(perspective_in(p, b, corners)),
+        Effect::Displace {
+            map: Some(map),
+            horizontal,
+            vertical,
+            ..
+        } => Some(warp(p, b, |q| map.displace(q, *horizontal, *vertical))),
         _ => None,
     }
 }
@@ -1245,6 +1559,39 @@ pub fn warp_box(shape: &Shape, at: usize) -> Rect {
 /// `main` in the box of its outline; other effects change nothing.
 fn warp_shape(main: &mut Shape, effect: &Effect) {
     match effect {
+        Effect::OffsetPath {
+            distance,
+            smooth,
+            join,
+            merge,
+        } => {
+            let (distance, smooth, join) = (*distance, *smooth, *join);
+            if *merge && merge_group(main) {
+                // One outline now, its parts adding up under the nonzero rule.
+                reshape(main, &|p, _| {
+                    crate::shaping::offset_smooth(
+                        p,
+                        distance,
+                        smooth,
+                        join,
+                        crate::shaping::FillRule::NonZero,
+                    )
+                });
+                main.fill_rule = crate::shaping::FillRule::EvenOdd;
+            } else {
+                let fill = if matches!(main.kind, ShapeKind::Text { .. }) {
+                    crate::shaping::FillRule::NonZero
+                } else {
+                    main.fill_rule
+                };
+                reshape(main, &|p, _| {
+                    crate::shaping::offset_smooth(p, distance, smooth, join, fill)
+                });
+                if !matches!(main.kind, ShapeKind::Group { .. } | ShapeKind::ClipFrame { .. }) {
+                    main.fill_rule = crate::shaping::FillRule::EvenOdd;
+                }
+            }
+        }
         Effect::Distort(how) => {
             reshape(main, &|p, b| crate::effects::distort_in(p, b, *how));
         }
@@ -1256,6 +1603,25 @@ fn warp_shape(main: &mut Shape, effect: &Effect) {
             mapping,
         } => {
             if let Some(frame) = crate::envelope::Frame::from_parts(nodes, handles, corners) {
+                // Pictures bend through the same map, their pixels
+                // resampled (#3608); the outlines of the rest bend after.
+                let b = main.local_path().bounding_box();
+                if let Some(map) = crate::envelope::point_map(b, &frame, *mapping) {
+                    let key = {
+                        use std::hash::{Hash, Hasher};
+                        let mut h = std::collections::hash_map::DefaultHasher::new();
+                        for p in nodes.iter().chain(handles.iter().flatten()) {
+                            (p.x.to_bits(), p.y.to_bits()).hash(&mut h);
+                        }
+                        corners.hash(&mut h);
+                        mapping.id().hash(&mut h);
+                        [b.x0, b.y0, b.x1, b.y1].map(f64::to_bits).hash(&mut h);
+                        h.finish()
+                    };
+                    warp_pictures(main, None, &|pic, m| {
+                        crate::bitmap_warp::bend(pic, m, key, &map)
+                    });
+                }
                 reshape(main, &|p, b| {
                     crate::envelope::apply_in(p, b, &frame, *keep_lines, *mapping)
                 });
@@ -1265,8 +1631,21 @@ fn warp_shape(main: &mut Shape, effect: &Effect) {
             // Pictures first, through the same map: their pixels are
             // resampled (#2691); the outlines of the rest bend.
             let b = main.local_path().bounding_box();
-            perspective_pictures(main, None, b, corners);
+            warp_pictures(main, None, &|pic, m| {
+                crate::bitmap_warp::perspective(pic, m, b, corners)
+            });
             reshape(main, &|p, b| perspective_in(p, b, corners));
+        }
+        Effect::Displace {
+            map: Some(map),
+            horizontal,
+            vertical,
+            ..
+        } => {
+            let (h, v) = (*horizontal, *vertical);
+            if h != 0.0 || v != 0.0 {
+                reshape(main, &|p, b| warp(p, b, |q| map.displace(q, h, v)));
+            }
         }
         _ => {}
     }
@@ -1274,22 +1653,26 @@ fn warp_shape(main: &mut Shape, effect: &Effect) {
 
 /// The pictures of `shape` (it, or the ones inside it), in the space
 /// `parent` maps them into (`None`: the shape's own space, the top of the
-/// warp), put in the perspective that takes box `b` of that space onto
-/// `corners` (#2691). A warped picture covers the box the warp takes it
-/// to, transparent outside, in the top shape's space.
-fn perspective_pictures(shape: &mut Shape, parent: Option<Affine>, b: Rect, corners: &[Point; 4]) {
+/// warp), put through the warp `f` of that space: a perspective (#2691)
+/// or an envelope (#3608). A warped picture covers the box the warp
+/// takes it to, transparent outside, in the top shape's space.
+fn warp_pictures(
+    shape: &mut Shape,
+    parent: Option<Affine>,
+    f: &dyn Fn(&crate::bitmap_warp::Picture, Affine) -> Option<crate::bitmap_warp::Picture>,
+) {
     let t = parent.map(|p| p * shape.transform);
     let m = t.unwrap_or(Affine::IDENTITY);
     match &mut shape.kind {
         ShapeKind::Group { children } => {
             for c in children.iter_mut() {
-                perspective_pictures(c, Some(m), b, corners);
+                warp_pictures(c, Some(m), f);
             }
         }
         ShapeKind::ClipFrame { frame, contents } => {
-            perspective_pictures(frame, Some(m), b, corners);
+            warp_pictures(frame, Some(m), f);
             for c in contents.iter_mut() {
-                perspective_pictures(c, Some(m), b, corners);
+                warp_pictures(c, Some(m), f);
             }
         }
         ShapeKind::Bitmap {
@@ -1305,7 +1688,7 @@ fn perspective_pictures(shape: &mut Shape, parent: Option<Affine>, b: Rect, corn
                 height_px: *height_px,
                 png: png.clone(),
             };
-            if let Some(out) = crate::bitmap_warp::perspective(&pic, m, b, corners) {
+            if let Some(out) = f(&pic, m) {
                 shape.kind = ShapeKind::Bitmap {
                     rect: out.rect,
                     width_px: out.width_px,
@@ -1334,7 +1717,11 @@ fn evaluate_now(shape: &Shape) -> Evaluated {
     let mut warped_ahead = false;
     for (at, effect) in shape.effects.iter().enumerate() {
         match effect {
-            Effect::Distort(_) | Effect::Envelope { .. } | Effect::Perspective { .. } => {
+            Effect::Distort(_)
+            | Effect::Envelope { .. }
+            | Effect::Perspective { .. }
+            | Effect::Displace { .. }
+            | Effect::OffsetPath { .. } => {
                 // An extrusion before it already took it into its outline.
                 if !warped_ahead {
                     warp_shape(&mut main, effect);
@@ -1496,6 +1883,9 @@ fn evaluate_now(shape: &Shape) -> Evaluated {
             // Mirrored last, whatever its place in the list: the copies
             // carry every other effect of the object (#2121).
             Effect::Symmetry { .. } => {}
+            // Copied after the others too, so each copy carries them.
+            Effect::Transform { .. } => {}
+            Effect::Grid { .. } => {}
             Effect::ColorOverlay { color, opacity } => {
                 above.extend(overlay(&main, Fill::Solid(*color), *color, *opacity));
             }
@@ -1521,7 +1911,17 @@ fn evaluate_now(shape: &Shape) -> Evaluated {
             } => {
                 above.extend(spray_group(&main, *preset, *size, *spacing, *color));
             }
-            Effect::FillOpacity { .. } => {}
+            Effect::Tiles {
+                preset,
+                width,
+                color,
+            } => {
+                above.extend(crate::tiles::tiles_group(&main, *preset, *width, *color));
+            }
+            Effect::LivePaint { fills } => {
+                below.extend(crate::live_paint::paint_shapes(&main, fills));
+            }
+            Effect::FillOpacity { .. } | Effect::BlendIf { .. } => {}
             Effect::Lens(_)
             | Effect::Transparency { .. }
             | Effect::InnerShadow { .. }
@@ -1543,10 +1943,28 @@ fn evaluate_now(shape: &Shape) -> Evaluated {
         }
     }
     for effect in &shape.effects {
+        if let Effect::Transform { .. } = effect {
+            transform_copies(effect, &mut below, &mut main, &mut above);
+        }
+    }
+    for effect in &shape.effects {
+        if let Effect::Grid { .. } = effect {
+            // The cell is all the object draws: what its other effects
+            // (and a Transform's copies) add too.
+            let cell = below
+                .iter()
+                .chain(&above)
+                .fold(main.bounds(), |r, s| r.union(s.bounds()));
+            let maps = grid_maps(effect, cell);
+            copy_under(&maps, false, &mut below, &main, &mut above);
+        }
+    }
+    for effect in &shape.effects {
         if let Effect::Symmetry {
             center,
             angle,
             lines,
+            rotate,
         } = effect
         {
             let mut original = main.clone();
@@ -1556,7 +1974,7 @@ fn evaluate_now(shape: &Shape) -> Evaluated {
             original
                 .effects
                 .retain(|e| matches!(e, Effect::Lens(_) | Effect::Transparency { .. }));
-            let mirrors = symmetry_mirrors(*center, *angle, *lines);
+            let mirrors = symmetry_mirrors(*center, *angle, *lines, *rotate);
             let (mut under, mut over) = (Vec::new(), Vec::new());
             for m in &mirrors {
                 // A fountain fill or a gradient transparency is placed on
@@ -1627,6 +2045,74 @@ pub fn transparency_parts(shape: &Shape, target: u8) -> Vec<(Shape, bool)> {
     }
 }
 
+/// A group (Offset Path with merge) as one curve: the outlines of all its
+/// objects, in the group's space, joined into one outline that fills
+/// with the nonzero rule, painted as the bottom object that has a fill
+/// (its fill, extra fills and outlines). False, and nothing changes, for
+/// anything but a group with an outline to join.
+fn merge_group(main: &mut Shape) -> bool {
+    fn collect(
+        s: &Shape,
+        t: Affine,
+        out: &mut BezPath,
+        paint: &mut Option<Shape>,
+    ) {
+        let t = t * s.transform;
+        match &s.kind {
+            ShapeKind::Group { children } => {
+                for c in children {
+                    collect(c, t, out, paint);
+                }
+            }
+            ShapeKind::ClipFrame { frame, .. } => collect(frame, t, out, paint),
+            ShapeKind::Bitmap { .. } => {}
+            _ => {
+                if !s.visible {
+                    return;
+                }
+                // Each part as the area it fills, turned outer contours
+                // one way and holes the other, so the parts add up under
+                // the nonzero rule.
+                let rule = if matches!(s.kind, ShapeKind::Text { .. }) {
+                    crate::shaping::FillRule::NonZero
+                } else {
+                    s.fill_rule
+                };
+                let area = crate::shaping::oriented_area(&(t * s.local_path()), rule);
+                if area.elements().is_empty() {
+                    return;
+                }
+                out.extend(area.elements().iter().copied());
+                if paint.is_none() && !matches!(s.fill, crate::style::Fill::None) {
+                    *paint = Some(s.clone());
+                }
+            }
+        }
+    }
+    if !matches!(main.kind, ShapeKind::Group { .. }) {
+        return false;
+    }
+    let mut path = BezPath::new();
+    let mut paint = None;
+    if let ShapeKind::Group { children } = &main.kind {
+        for c in children {
+            collect(c, Affine::IDENTITY, &mut path, &mut paint);
+        }
+    }
+    if path.elements().is_empty() {
+        return false;
+    }
+    if let Some(p) = paint {
+        main.fill = p.fill.clone();
+        main.extra_fills = p.extra_fills.clone();
+        main.stroke = p.stroke.clone();
+        main.extra_strokes = p.extra_strokes.clone();
+    }
+    main.fill_rule = crate::shaping::FillRule::NonZero;
+    set_path(main, path);
+    true
+}
+
 /// Reshape `shape` by `f`, which works in the shape's own space. A group
 /// (or a clip frame) is reshaped object by object, each keeping its own
 /// fill and outline, as the reference program does with an envelope on a
@@ -1672,9 +2158,9 @@ fn reshape(shape: &mut Shape, f: &dyn Fn(&BezPath, Rect) -> BezPath) {
                 reshape_inside(c, Affine::IDENTITY, b, f);
             }
         }
-        // A picture has no outline to bend: a perspective resamples it
-        // ahead (`perspective_pictures`); the other warps leave it as it
-        // is. It became an empty frame, so the picture went (#2691).
+        // A picture has no outline to bend: a perspective or an envelope
+        // resamples it ahead (`warp_pictures`); the other warps leave it
+        // as it is. It became an empty frame, so the picture went (#2691).
         ShapeKind::Bitmap { .. } => {}
         _ => {
             let p = f(&shape.local_path(), b);
@@ -1786,6 +2272,256 @@ fn mix(a: Color, b: Color, t: f64, mode: u8) -> Color {
         s1 + (s2 - s1) * t,
         v1 + (v2 - v1) * t,
     )
+}
+
+/// The most copies a Transform effect draws.
+pub const MAX_TRANSFORM_COPIES: u32 = 500;
+
+/// One step of a Transform effect about `center` (page space), with each
+/// value taken at `share` of the way from none to the effect's own (1:
+/// the values as set).
+fn transform_step(e: &Effect, center: Point, share: [f64; 4]) -> Affine {
+    let Effect::Transform {
+        scale_x,
+        scale_y,
+        move_x,
+        move_y,
+        angle,
+        reflect_x,
+        reflect_y,
+        ..
+    } = *e
+    else {
+        return Affine::IDENTITY;
+    };
+    let fin = |v: f64, or: f64| if v.is_finite() { v } else { or };
+    let part = |full: f64, from: f64, k: f64| from + (full - from) * k;
+    let sign = |m: bool| if m { -1.0 } else { 1.0 };
+    let sx = part(fin(scale_x, 100.0), 100.0, share[0]) / 100.0 * sign(reflect_x);
+    let sy = part(fin(scale_y, 100.0), 100.0, share[1]) / 100.0 * sign(reflect_y);
+    let turn = fin(angle, 0.0) * share[2];
+    let d = Vec2::new(fin(move_x, 0.0), fin(move_y, 0.0)) * share[3];
+    Affine::translate(center.to_vec2() + d)
+        * Affine::rotate(turn.to_radians())
+        * Affine::scale_non_uniform(sx, sy)
+        * Affine::translate(-center.to_vec2())
+}
+
+/// The page maps of a Transform effect's copies (or, with no copies, the
+/// one map of the object itself), for an object whose box is centred on
+/// `center`: each the one before it with one more step.
+pub fn transform_maps(e: &Effect, center: Point) -> Vec<Affine> {
+    let Effect::Transform {
+        copies,
+        random,
+        seed,
+        ..
+    } = *e
+    else {
+        return Vec::new();
+    };
+    let n = copies.clamp(1, MAX_TRANSFORM_COPIES) as usize;
+    let mut state = u64::from(seed) ^ 0x9E37_79B9_7F4A_7C15;
+    let mut next = || {
+        // splitmix64
+        state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        let mut z = state;
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        z ^= z >> 31;
+        (z >> 11) as f64 / (1u64 << 53) as f64
+    };
+    let mut at = Affine::IDENTITY;
+    let mut out = Vec::with_capacity(n);
+    for _ in 0..n {
+        let share = if random {
+            [next(), next(), next(), next()]
+        } else {
+            [1.0; 4]
+        };
+        let step = transform_step(e, center, share);
+        // Every step about the object's own centre, so a move with a
+        // turn walks the copies round a circle.
+        at = step * at;
+        out.push(at);
+    }
+    out
+}
+
+/// The outline widths of `s` (its members' too) kept as they are under a
+/// scale by `f`, or scaled with it (`scale`), whatever each outline's own
+/// "scale with object" says.
+fn keep_stroke_widths(s: &mut Shape, f: f64, scale: bool) {
+    if let Some(st) = s.stroke.as_mut() {
+        if scale && !st.scale_with_object {
+            st.width *= f;
+        } else if !scale && st.scale_with_object && f > 1e-9 {
+            st.width /= f;
+        }
+    }
+    if let ShapeKind::Group { children } = &mut s.kind {
+        for c in children {
+            keep_stroke_widths(c, f, scale);
+        }
+    }
+}
+
+/// The copies of a Transform effect: the object (with what its other
+/// effects drew) copied under itself, the first copy nearest it; with no
+/// copies the object and its effects' shapes are moved instead.
+fn transform_copies(e: &Effect, below: &mut Vec<Shape>, main: &mut Shape, above: &mut [Shape]) {
+    let Effect::Transform {
+        copies,
+        scale_strokes,
+        pivot_x,
+        pivot_y,
+        ..
+    } = *e
+    else {
+        return;
+    };
+    // The steps go about the box's centre, or the point set from it.
+    let fin = |v: f64| if v.is_finite() { v } else { 0.0 };
+    let center = main.bounds().center() + Vec2::new(fin(pivot_x), fin(pivot_y));
+    if !(center.x.is_finite() && center.y.is_finite()) {
+        return;
+    }
+    let maps = transform_maps(e, center);
+    let place = |s: &Shape, m: Affine| place_copy(s, m, scale_strokes);
+    if copies == 0 {
+        let Some(m) = maps.first().copied() else {
+            return;
+        };
+        *main = place(main, m);
+        for s in below.iter_mut().chain(above.iter_mut()) {
+            *s = place(s, m);
+        }
+        return;
+    }
+    copy_under(&maps, scale_strokes, below, main, above);
+}
+
+/// Copies of the object (with what its other effects drew) under itself,
+/// one for each of `maps`, the first nearest it.
+fn copy_under(
+    maps: &[Affine],
+    scale_strokes: bool,
+    below: &mut Vec<Shape>,
+    main: &Shape,
+    above: &mut [Shape],
+) {
+    if maps.is_empty() {
+        return;
+    }
+    let place = |s: &Shape, m: Affine| place_copy(s, m, scale_strokes);
+    let mut original = main.clone();
+    // As the symmetry's copies: the effects the renderer draws on the
+    // object itself stay on each copy.
+    original
+        .effects
+        .retain(|e| matches!(e, Effect::Lens(_) | Effect::Transparency { .. }));
+    let mut under = Vec::new();
+    // The last copy at the bottom.
+    for m in maps.iter().rev() {
+        under.extend(below.iter().map(|s| place(s, *m)));
+        under.push(place(&original, *m));
+        under.extend(above.iter().map(|s| place(s, *m)));
+    }
+    under.append(below);
+    *below = under;
+}
+
+/// `s` moved by `m`, its fills going with it and its outline keeping its
+/// width (or scaling with it).
+fn place_copy(s: &Shape, m: Affine, scale_strokes: bool) -> Shape {
+    let mut s = s.clone();
+    s.carry_fills(m, Affine::IDENTITY);
+    s.transform = m * s.transform;
+    let [a, b, c, d, _, _] = m.as_coeffs();
+    let f = (a * d - b * c).abs().sqrt();
+    if f.is_finite() && (f - 1.0).abs() > 1e-12 {
+        keep_stroke_widths(&mut s, f, scale_strokes);
+    }
+    s
+}
+
+/// The most cells a Grid effect has on a side.
+pub const MAX_GRID_SIDE: u32 = 100;
+/// The most cells a Grid effect has in all.
+pub const MAX_GRID_CELLS: u32 = 2500;
+
+/// The columns and rows a Grid effect draws, within its limits.
+pub fn grid_size(e: &Effect) -> (u32, u32) {
+    let Effect::Grid { columns, rows, .. } = *e else {
+        return (1, 1);
+    };
+    let c = columns.clamp(1, MAX_GRID_SIDE);
+    let r = rows
+        .clamp(1, MAX_GRID_SIDE)
+        .min((MAX_GRID_CELLS / c).max(1));
+    (c, r)
+}
+
+/// Where cell (`col`, `row`) of a Grid effect is moved from the object's
+/// own place, for an object whose box is `cell` (page space, y up: rows
+/// go down).
+pub fn grid_offset(e: &Effect, cell: Rect, col: u32, row: u32) -> Vec2 {
+    let Effect::Grid {
+        gap_x,
+        gap_y,
+        shift_x,
+        shift_y,
+        ..
+    } = *e
+    else {
+        return Vec2::ZERO;
+    };
+    let fin = |v: f64| if v.is_finite() { v } else { 0.0 };
+    let step_x = cell.width() + fin(gap_x);
+    let step_y = cell.height() + fin(gap_y);
+    let dx = f64::from(col) * step_x + if row % 2 == 1 { fin(shift_x) } else { 0.0 };
+    let dy = f64::from(row) * step_y + if col % 2 == 1 { fin(shift_y) } else { 0.0 };
+    Vec2::new(dx, -dy)
+}
+
+/// The box a Grid effect's cells take for `shape`: all it draws without
+/// its grid and symmetry.
+pub fn grid_cell(shape: &Shape) -> Option<Rect> {
+    let mut own = shape.clone();
+    own.effects
+        .retain(|e| !matches!(e, Effect::Grid { .. } | Effect::Symmetry { .. }));
+    let ev = evaluate(&own);
+    let r = ev
+        .below
+        .iter()
+        .chain(&ev.above)
+        .fold(ev.main.bounds(), |r, s| r.union(s.bounds()));
+    [r.x0, r.y0, r.x1, r.y1]
+        .iter()
+        .all(|v| v.is_finite())
+        .then_some(r)
+}
+
+/// The page moves of a Grid effect's copies (every cell but the object's
+/// own), row by row, for an object whose box is `cell`.
+pub fn grid_maps(e: &Effect, cell: Rect) -> Vec<Affine> {
+    let ok = [cell.x0, cell.y0, cell.x1, cell.y1]
+        .iter()
+        .all(|v| v.is_finite());
+    if !ok {
+        return Vec::new();
+    }
+    let (cols, rows) = grid_size(e);
+    let mut out = Vec::with_capacity((cols * rows) as usize);
+    for r in 0..rows {
+        for c in 0..cols {
+            if r == 0 && c == 0 {
+                continue;
+            }
+            out.push(Affine::translate(grid_offset(e, cell, c, r)));
+        }
+    }
+    out
 }
 
 fn is_false(v: &bool) -> bool {
@@ -2157,10 +2893,32 @@ fn blend(
         (nodes.is_none() && local == end.local_path()).then(|| local.bounding_box().center());
     let fa = start.fill.preview_color();
     let fb = end.fill.preview_color();
-    let ca = start.stroke.as_ref().map(|s| s.color);
-    let cb = end.stroke.as_ref().map(|s| s.color);
-    let wa = start.stroke.as_ref().map(|s| s.width).unwrap_or(0.0);
-    let wb = end.stroke.as_ref().map(|s| s.width).unwrap_or(0.0);
+    // An outline on one object only: the steps take it, so a blend from
+    // an object without an outline to an outlined one draws every step
+    // outlined (they drew none when the start had none).
+    let stroke = start.stroke.clone().or_else(|| end.stroke.clone());
+    let ca = start
+        .stroke
+        .as_ref()
+        .or(end.stroke.as_ref())
+        .map(|s| s.color);
+    let cb = end
+        .stroke
+        .as_ref()
+        .or(start.stroke.as_ref())
+        .map(|s| s.color);
+    let wa = start
+        .stroke
+        .as_ref()
+        .or(end.stroke.as_ref())
+        .map(|s| s.width)
+        .unwrap_or(0.0);
+    let wb = end
+        .stroke
+        .as_ref()
+        .or(start.stroke.as_ref())
+        .map(|s| s.width)
+        .unwrap_or(0.0);
     let ba = a.bounding_box();
     let bb = b.bounding_box();
     let ca_center = ba.center();
@@ -2175,6 +2933,7 @@ fn blend(
         s.effects.clear();
         s.shadow = None;
         s.transform = Affine::IDENTITY;
+        s.stroke = stroke.clone();
         let mut geo = match turned {
             Some(pivot) => {
                 let g = lerp_transform(start.transform, end.transform, pivot, m) * local.clone();
@@ -2261,9 +3020,23 @@ fn blend(
             st.color = blend_color(x, y, tc as f32, options.color_blend);
             st.width = wa + (wb - wa) * to;
         }
+        // The uniform transparency goes from the start's to the end's
+        // with the colours: every step took the start's, so a blend to a
+        // faded end never faded.
+        s.opacity = clean_opacity(start.opacity)
+            + (clean_opacity(end.opacity) - clean_opacity(start.opacity)) * tc;
         out.push(s);
     }
     out
+}
+
+/// An object's opacity held to 0..1 (1 for a value that is no number).
+fn clean_opacity(o: f64) -> f64 {
+    if o.is_finite() {
+        o.clamp(0.0, 1.0)
+    } else {
+        1.0
+    }
 }
 
 /// Where the centre of a looped blend's step `t` of the way (0 to 1)
@@ -2659,8 +3432,22 @@ pub fn carry_effects<'a>(effects: impl IntoIterator<Item = &'a mut Effect>, t: A
 /// `p` is on that side already (#2998: an area filled in a copy goes on
 /// the original, so its mirrors fill the other copies).
 pub fn symmetry_back_to(center: Point, angle: f64, lines: u8, origin: Point, p: Point) -> Affine {
+    symmetry_back_to_turned(center, angle, lines, false, origin, p)
+}
+
+/// [`symmetry_back_to`] for a symmetry that turns its copies when
+/// `rotate` is set (#2999): the slices are then whole turns shared out.
+pub fn symmetry_back_to_turned(
+    center: Point,
+    angle: f64,
+    lines: u8,
+    rotate: bool,
+    origin: Point,
+    p: Point,
+) -> Affine {
     let n = lines.clamp(1, 12) as usize;
-    let slice = std::f64::consts::PI / n as f64;
+    let slice = std::f64::consts::PI / n as f64 * if rotate { 2.0 } else { 1.0 };
+    let wedges = if rotate { n } else { 2 * n } as i64;
     let a0 = angle.to_radians();
     let wedge = |q: Point| -> Option<i64> {
         let d = q - center;
@@ -2668,23 +3455,32 @@ pub fn symmetry_back_to(center: Point, angle: f64, lines: u8, origin: Point, p: 
             return None;
         }
         let a = (d.y.atan2(d.x) - a0).rem_euclid(std::f64::consts::TAU);
-        Some(((a / slice).floor() as i64).rem_euclid(2 * n as i64))
+        Some(((a / slice).floor() as i64).rem_euclid(wedges))
     };
     let Some(target) = wedge(origin) else {
         return Affine::IDENTITY;
     };
     std::iter::once(Affine::IDENTITY)
-        .chain(symmetry_mirrors(center, angle, lines))
+        .chain(symmetry_mirrors(center, angle, lines, rotate))
         .map(|m| m.inverse())
         .find(|back| wedge(*back * p) == Some(target))
         .unwrap_or(Affine::IDENTITY)
 }
 
-fn symmetry_mirrors(center: Point, angle: f64, lines: u8) -> Vec<Affine> {
+fn symmetry_mirrors(center: Point, angle: f64, lines: u8, rotate: bool) -> Vec<Affine> {
     let n = lines.clamp(1, 12) as usize;
     let mut out = Vec::with_capacity(2 * n);
     let to_center = Affine::translate(center.to_vec2());
     let from_center = Affine::translate(-center.to_vec2());
+    if rotate {
+        // Turned copies only: `n` in all, the object the first (#2999).
+        return (1..n)
+            .map(|k| {
+                let rot = Affine::rotate(std::f64::consts::TAU * k as f64 / n as f64);
+                to_center * rot * from_center
+            })
+            .collect();
+    }
     let reflect = |theta: f64| -> Affine {
         // Reflection across a line through the origin at angle theta.
         let (s, c) = (2.0 * theta).sin_cos();
@@ -3238,6 +4034,226 @@ pub fn homography(src: &[Point; 4], dst: &[Point; 4]) -> Option<[f64; 8]> {
 mod tests {
     use super::*;
 
+    fn transform_fx(copies: u32, angle: f64, scale: f64, random: bool) -> Effect {
+        Effect::Transform {
+            scale_x: scale,
+            scale_y: scale,
+            move_x: 0.0,
+            move_y: 0.0,
+            angle,
+            copies,
+            reflect_x: false,
+            reflect_y: false,
+            random,
+            seed: 7,
+            scale_strokes: false,
+            pivot_x: 0.0,
+            pivot_y: 0.0,
+        }
+    }
+
+    /// Transform about a point of one's own (#3607): copies turned about
+    /// a centre away from the object lie round it, as the hours of a
+    /// clock, each the same size and at the same distance.
+    #[test]
+    fn transform_copies_turn_round_a_centre_of_their_own() {
+        let mut s = Shape::new(
+            crate::ShapeId(1),
+            ShapeKind::Rect {
+                rect: Rect::new(-1.0, -41.0, 1.0, -39.0),
+                radius: 0.0,
+                corners: None,
+            },
+        );
+        let mut fx = transform_fx(11, 30.0, 100.0, false);
+        if let Effect::Transform {
+            pivot_x, pivot_y, ..
+        } = &mut fx
+        {
+            // The clock's centre, 40 mm under the object's.
+            *pivot_x = 0.0;
+            *pivot_y = 40.0;
+        }
+        s.effects = vec![fx.clone()];
+        let ev = evaluate(&s);
+        assert_eq!(ev.below.len(), 11);
+        for c in &ev.below {
+            let b = c.bounds();
+            assert!((b.center().to_vec2().hypot() - 40.0).abs() < 1e-6, "{b:?}");
+            assert!((b.width() - b.height()).abs() < 1e-6);
+        }
+        // The sixth copy is opposite the object.
+        let six = ev.below[11 - 6].bounds().center();
+        assert!((six.y - 40.0).abs() < 1e-6 && six.x.abs() < 1e-6, "{six:?}");
+        // Saved and read back; without a pivot the field is left out.
+        let json = serde_json::to_string(&fx).expect("save");
+        assert!(json.contains("pivot_y"), "{json}");
+        let back: Effect = serde_json::from_str(&json).expect("read");
+        assert_eq!(back, fx);
+        let plain = serde_json::to_string(&transform_fx(1, 0.0, 50.0, false)).unwrap();
+        assert!(!plain.contains("pivot"), "{plain}");
+    }
+
+    /// Grid: copies right and down from the object in cells of its box
+    /// with the gaps between; every other row shifted; the object stays
+    /// the top left cell; the cell count is kept within its limits.
+    #[test]
+    fn grid_effect_repeats_in_rows_and_columns() {
+        let mut s = Shape::new(
+            crate::ShapeId(1),
+            ShapeKind::Rect {
+                rect: Rect::new(0.0, 0.0, 10.0, 5.0),
+                radius: 0.0,
+                corners: None,
+            },
+        );
+        s.effects = vec![Effect::Grid {
+            columns: 3,
+            rows: 2,
+            gap_x: 2.0,
+            gap_y: -1.0,
+            shift_x: 4.0,
+            shift_y: 0.0,
+        }];
+        let ev = evaluate(&s);
+        assert_eq!(ev.below.len(), 5);
+        assert_eq!(ev.main.bounds(), s.bounds());
+        let mut boxes: Vec<(f64, f64)> = ev
+            .below
+            .iter()
+            .map(|c| (c.bounds().x0, c.bounds().y0))
+            .collect();
+        boxes.sort_by(|a, b| a.partial_cmp(b).expect("finite"));
+        let mut want = vec![
+            (12.0, 0.0),
+            (24.0, 0.0),
+            (4.0, -4.0),
+            (16.0, -4.0),
+            (28.0, -4.0),
+        ];
+        want.sort_by(|a, b| a.partial_cmp(b).expect("finite"));
+        for (g, w) in boxes.iter().zip(&want) {
+            assert!(
+                (g.0 - w.0).abs() < 1e-9 && (g.1 - w.1).abs() < 1e-9,
+                "{g:?} {w:?}"
+            );
+        }
+        assert_eq!(grid_cell(&s), Some(s.bounds()));
+        let big = Effect::Grid {
+            columns: 1000,
+            rows: 1000,
+            gap_x: 0.0,
+            gap_y: 0.0,
+            shift_x: 0.0,
+            shift_y: 0.0,
+        };
+        let (c, r) = grid_size(&big);
+        assert!(c * r <= MAX_GRID_CELLS && c == MAX_GRID_SIDE);
+    }
+
+    /// Transform: copies under the object, each the one before it scaled
+    /// and turned about the object's centre, the outline keeping its
+    /// width; with no copies the object itself is moved; random steps
+    /// are the same from the same seed; the object stays as it is.
+    #[test]
+    fn transform_effect_copies_scale_and_turn() {
+        let mut s = Shape::new(
+            crate::ShapeId(1),
+            ShapeKind::Rect {
+                rect: Rect::new(0.0, 0.0, 10.0, 10.0),
+                radius: 0.0,
+                corners: None,
+            },
+        );
+        let mut st = crate::Stroke::new(Color::BLACK, 1.0);
+        st.scale_with_object = true;
+        s.stroke = Some(st);
+        s.effects = vec![transform_fx(3, 90.0, 50.0, false)];
+        let ev = evaluate(&s);
+        assert_eq!(ev.below.len(), 3);
+        assert!(ev.above.is_empty());
+        assert_eq!(ev.main.transform, Affine::IDENTITY);
+        assert_eq!(ev.main.bounds(), s.bounds());
+        // The first copy (nearest the object, last below) is half size
+        // about the centre; the last a eighth.
+        let first = &ev.below[2];
+        let b = first.bounds();
+        assert!((b.width() - 5.0).abs() < 1e-6, "{b:?}");
+        assert!((b.center().x - 5.0).abs() < 1e-6 && (b.center().y - 5.0).abs() < 1e-6);
+        assert!((ev.below[0].bounds().width() - 1.25).abs() < 1e-6);
+        // The outline keeps its width on the page.
+        let w = |sh: &Shape| {
+            let c = sh.transform.as_coeffs();
+            sh.stroke.as_ref().expect("outline").width * (c[0] * c[3] - c[1] * c[2]).abs().sqrt()
+        };
+        assert!((w(first) - 1.0).abs() < 1e-9);
+        assert!(ev.below.iter().all(|c| c.effects.is_empty()));
+        // With the outlines scaling too.
+        let mut fx = transform_fx(1, 0.0, 50.0, false);
+        if let Effect::Transform { scale_strokes, .. } = &mut fx {
+            *scale_strokes = true;
+        }
+        s.effects = vec![fx];
+        assert!((w(&evaluate(&s).below[0]) - 0.5).abs() < 1e-9);
+        // No copies: the object itself is transformed.
+        s.effects = vec![transform_fx(0, 0.0, 200.0, false)];
+        let ev = evaluate(&s);
+        assert!(ev.below.is_empty());
+        assert!((ev.main.bounds().width() - 20.0).abs() < 1e-6);
+        // Random: same seed, same copies; within the set values.
+        s.effects = vec![transform_fx(5, 30.0, 80.0, true)];
+        let a = evaluate(&s);
+        let b = evaluate(&s);
+        assert_eq!(a.below.len(), 5);
+        for (x, y) in a.below.iter().zip(&b.below) {
+            assert_eq!(x.transform, y.transform);
+        }
+        let maps = transform_maps(&s.effects[0], Point::new(5.0, 5.0));
+        let [a0, b0, ..] = maps[0].as_coeffs();
+        let k = a0.hypot(b0);
+        assert!((0.8 - 1e-9..=1.0 + 1e-9).contains(&k), "{k}");
+        // Saved and read back.
+        let json = serde_json::to_string(&s.effects[0]).expect("save");
+        assert!(json.contains("\"effect\":\"transform\""), "{json}");
+        let back: Effect = serde_json::from_str(&json).expect("read");
+        assert_eq!(back, s.effects[0]);
+    }
+
+    /// Blend If's weight: nothing outside the range, all inside it, a
+    /// smooth rise and fall over split ends, and a range dragged over
+    /// itself kept in order.
+    #[test]
+    fn blend_if_weight_rises_and_falls_over_split_ends() {
+        let all = BLEND_IF_ALL;
+        for l in [0.0, 0.3, 1.0] {
+            assert_eq!(blend_if_weight(&all, l), 1.0);
+        }
+        // Dark pixels hidden below 0.25, fading in up to 0.5.
+        let r = [0.25, 0.5, 1.0, 1.0];
+        assert_eq!(blend_if_weight(&r, 0.1), 0.0);
+        assert!((blend_if_weight(&r, 0.375) - 0.5).abs() < 1e-9);
+        assert_eq!(blend_if_weight(&r, 0.7), 1.0);
+        // Joined ends cut sharply.
+        let r = [0.4, 0.4, 0.6, 0.6];
+        assert_eq!(blend_if_weight(&r, 0.39), 0.0);
+        assert_eq!(blend_if_weight(&r, 0.5), 1.0);
+        assert_eq!(blend_if_weight(&r, 0.61), 0.0);
+        // Out of order and out of range values.
+        let r = [0.8, 0.2, f64::NAN, 3.0];
+        assert_eq!(blend_if_weight(&r, 0.5), 0.0);
+        assert_eq!(blend_if_weight(&r, 0.8), 1.0);
+        assert!((blend_if_lightness(1.0, 1.0, 1.0) - 1.0).abs() < 1e-9);
+        assert_eq!(blend_if_lightness(0.0, 0.0, 0.0), 0.0);
+        let e = Effect::BlendIf {
+            this: all,
+            below: [0.3, 0.6, 1.0, 1.0],
+        };
+        assert!(e.drawn_by_renderer());
+        let json = serde_json::to_string(&e).expect("json");
+        let back: Effect = serde_json::from_str(&json).expect("back");
+        assert_eq!(back, e);
+    }
+
     /// Colour and gradient overlays draw the object's shape over it at
     /// their opacity; fill opacity fades the object alone; the shadows,
     /// glows and blur add no objects (the renderer draws them) (#1141).
@@ -3360,6 +4376,7 @@ mod tests {
             center,
             angle,
             lines: 2,
+            rotate: false,
         };
         let angle_of = |e: &Effect| match e {
             Effect::Symmetry { center, angle, .. } => (*center, *angle),
@@ -3401,6 +4418,7 @@ mod tests {
             center: Point::new(4.0, 1.0),
             angle: 90.0,
             lines: 1,
+            rotate: false,
         }];
         let t = Affine::translate((10.0, 3.0)) * Affine::rotate(0.7);
         let before: Vec<Rect> = evaluate(&s)
@@ -3443,6 +4461,83 @@ mod tests {
         assert!(near(center.y, 6.0), "{center:?}");
     }
     use crate::geometry::Rect;
+
+    /// Offset Path: on one object it grows or shrinks the outline live;
+    /// on a group with merge the objects become one outline in the bottom
+    /// object's paint, and the smoothing joins two circles near each
+    /// other with a rounded neck (metaballs) while circles far apart stay
+    /// two; Convert to Curves bakes it.
+    #[test]
+    fn offset_path_grows_and_merges_a_group_into_metaballs() {
+        use crate::geometry::Shape as _;
+        let mut s = rect_shape();
+        s.effects.push(Effect::OffsetPath {
+            distance: 1.0,
+            smooth: 0.0,
+            join: crate::shaping::Join::Miter,
+            merge: false,
+        });
+        let b = evaluate(&s).main.local_path().bounding_box();
+        assert!((b.width() - 22.0).abs() < 0.05, "{b:?}");
+        let circle = |id: u64, cx: f64, color: Color| {
+            let mut c = Shape::new(
+                crate::ShapeId(id),
+                ShapeKind::Ellipse {
+                    rect: Rect::new(cx - 10.0, -10.0, cx + 10.0, 10.0),
+                    arc: None,
+                },
+            );
+            c.fill = Fill::Solid(color);
+            c
+        };
+        let group = |gap: f64| {
+            let mut g = Shape::new(
+                crate::ShapeId(9),
+                ShapeKind::Group {
+                    children: vec![
+                        circle(2, 0.0, Color::rgb8(0, 160, 0)),
+                        circle(3, 20.0 + gap, Color::rgb8(0, 0, 200)),
+                    ],
+                },
+            );
+            g.effects.push(Effect::OffsetPath {
+                distance: 0.0,
+                smooth: 6.0,
+                join: crate::shaping::Join::Round,
+                merge: true,
+            });
+            g
+        };
+        let contours = |p: &BezPath| {
+            p.elements()
+                .iter()
+                .filter(|e| matches!(e, PathEl::MoveTo(_)))
+                .count()
+        };
+        // 4 mm apart: one shape, the neck filled in.
+        let near = evaluate(&group(4.0)).main;
+        assert!(matches!(near.kind, ShapeKind::Path { .. }));
+        assert_eq!(near.fill, Fill::Solid(Color::rgb8(0, 160, 0)));
+        let path = near.local_path();
+        assert_eq!(contours(&path), 1);
+        let two_circles = 2.0 * std::f64::consts::PI * 100.0;
+        assert!(path.area().abs() > two_circles + 20.0, "{}", path.area());
+        // The middle of the gap is inside, on the line between centres.
+        assert!(path.winding(Point::new(22.0, 0.0)) != 0);
+        // 30 mm apart: still two.
+        assert_eq!(contours(&evaluate(&group(30.0)).main.local_path()), 2);
+        // Saved and read back; baked by Convert to Curves.
+        let g = group(4.0);
+        let json = serde_json::to_string(&g.effects).expect("json");
+        assert!(json.contains("\"offsetpath\""), "{json}");
+        let back: Vec<Effect> = serde_json::from_str(&json).expect("read");
+        assert_eq!(back, g.effects);
+        let min: Effect =
+            serde_json::from_str(r#"{"effect":"offsetpath","distance":2}"#).expect("min");
+        assert!(matches!(min, Effect::OffsetPath { smooth, merge: false, .. } if smooth == 0.0));
+        let baked = bake_outline_warps(&g).expect("bake");
+        assert!(baked.effects.is_empty());
+    }
 
     fn rect_shape() -> Shape {
         let mut s = Shape::new(
@@ -4586,6 +5681,58 @@ mod tests {
         assert_eq!(back.get("mapping").and_then(|m| m.as_str()), Some("putty"));
     }
 
+    /// An envelope bends a picture too, alone or in a group: its top
+    /// rises with the top of the frame, where it used to stay as it was
+    /// while the outlines around it bent (#3608).
+    #[test]
+    fn envelope_bends_pictures_alone_and_in_groups() {
+        let px: Vec<u8> = std::iter::repeat([200u8, 40, 40, 255])
+            .take(20 * 20)
+            .flatten()
+            .collect();
+        let png = crate::bitmap_warp::encode_rgba(20, 20, &px).expect("png");
+        let picture = Shape::new(
+            crate::ShapeId(7),
+            ShapeKind::Bitmap {
+                rect: Rect::new(0.0, 0.0, 20.0, 20.0),
+                width_px: 20,
+                height_px: 20,
+                png: png.into(),
+                fx: None,
+            },
+        );
+        let group = Shape::new(
+            crate::ShapeId(8),
+            ShapeKind::Group {
+                children: vec![picture.clone()],
+            },
+        );
+        for mut s in [picture, group] {
+            let mut nodes = crate::envelope::default_nodes(s.bounds());
+            nodes[5].y += 10.0;
+            s.effects.push(Effect::Envelope {
+                nodes,
+                keep_lines: false,
+                handles: Vec::new(),
+                corners: Vec::new(),
+                mapping: crate::envelope::Mapping::Putty,
+            });
+            let main = evaluate(&s).main;
+            let pic = match &main.kind {
+                ShapeKind::Group { children } => children[0].clone(),
+                _ => main.clone(),
+            };
+            let ShapeKind::Bitmap { rect, .. } = pic.kind else {
+                panic!("still a picture: {:?}", pic.kind);
+            };
+            assert!((rect.y1 - 30.0).abs() < 0.5, "{rect:?}");
+            assert!(
+                rect.x0.abs() < 1e-6 && (rect.x1 - 20.0).abs() < 1e-6,
+                "{rect:?}"
+            );
+        }
+    }
+
     /// An envelope on a group reshapes each object from the box of them
     /// all, each keeping its fill; the group used to become one path with
     /// the group's empty fill and vanish.
@@ -5423,6 +6570,84 @@ mod tests {
         }
     }
 
+    /// Two open curves with a yellow outline, the end one faded, blended
+    /// in 146 steps along an S curve: every step is an open curve on the
+    /// path with the outline, the transparency fades from end to end, and
+    /// it takes well under a second (#2946).
+    #[test]
+    fn a_ribbon_of_many_faded_steps_along_an_s_curve() {
+        let curve = |dx: f64| {
+            let mut p = BezPath::new();
+            p.move_to((0.0 + dx, 0.0));
+            p.curve_to((20.0 + dx, -30.0), (60.0 + dx, 30.0), (80.0 + dx, 0.0));
+            p
+        };
+        let yellow = Color::rgb8(240, 200, 30);
+        let line = |dx: f64, opacity: f64| {
+            let mut s = rect_shape();
+            s.kind = ShapeKind::Path {
+                path: curve(dx),
+                closed: false,
+            };
+            s.fill = Fill::None;
+            s.stroke = Some(crate::style::Stroke {
+                color: yellow,
+                width: 0.5,
+                ..Default::default()
+            });
+            s.opacity = opacity;
+            s
+        };
+        let b = line(0.0, 0.1);
+        let mut a = line(0.0, 1.0);
+        let mut s_curve = BezPath::new();
+        s_curve.move_to((40.0, 0.0));
+        s_curve.curve_to((140.0, 60.0), (-60.0, 140.0), (40.0, 200.0));
+        a.effects.push(Effect::Blend {
+            end: Box::new(b.clone()),
+            steps: 146,
+            accel_objects: 0.0,
+            accel_colors: 0.0,
+            rotation: 0.0,
+            path: Some(s_curve.clone()),
+            rotate_on_path: false,
+            end_id: Some(b.id),
+            options: BlendOptions::default(),
+        });
+        let t0 = std::time::Instant::now();
+        let ev = evaluate(&a);
+        let took = t0.elapsed();
+        assert!(took.as_secs_f64() < 5.0, "{took:?}");
+        assert_eq!(ev.above.len(), 146);
+        let mut last = 1.0 + 1e-9;
+        for st in &ev.above {
+            assert!(matches!(st.kind, ShapeKind::Path { closed: false, .. }));
+            assert_eq!(st.stroke.as_ref().map(|s| s.color), Some(yellow));
+            assert!(st.opacity <= last && st.opacity >= 0.1 - 1e-9, "{}", st.opacity);
+            last = st.opacity;
+        }
+        assert!(ev.above[0].opacity > 0.95 && ev.above[145].opacity < 0.15);
+        // Each step's centre lies on the S curve.
+        let near = |p: Point| {
+            let mut pts = Vec::new();
+            kurbo::flatten(s_curve.elements().iter().copied(), 0.05, |el| {
+                if let PathEl::LineTo(q) | PathEl::MoveTo(q) = el {
+                    pts.push(q);
+                }
+            });
+            pts.windows(2)
+                .map(|w| {
+                    use kurbo::ParamCurveNearest;
+                    kurbo::Line::new(w[0], w[1]).nearest(p, 1e-6).distance_sq.sqrt()
+                })
+                .fold(f64::MAX, f64::min)
+        };
+        for st in &ev.above {
+            let c = st.page_path().bounding_box().center();
+            assert!(near(c) < 0.5, "{c:?} {}", near(c));
+        }
+    }
+
     /// Along a path, the steps run between where the start and the end
     /// sit on it, anywhere along it, either way round (#2946).
     #[test]
@@ -5471,6 +6696,109 @@ mod tests {
         let (p, d) = point_along(&line, 0.25).expect("a point");
         assert!((p.x - 25.0).abs() < 1e-6 && d.x > 0.0, "{p:?}");
         assert!(point_along(&BezPath::new(), 0.5).is_none());
+    }
+
+    /// A rectangle without an outline blended into an outlined letter
+    /// (text converted to curves): every step is outlined, with the
+    /// letter's outline, and the steps follow when the letter moves or
+    /// the rectangle's corners are rounded afterwards.
+    #[test]
+    fn a_blend_into_an_outlined_letter_outlines_every_step_and_follows_edits() {
+        let mut a = rect_shape();
+        a.kind = ShapeKind::Rect {
+            rect: Rect::new(-100.0, -100.0, 200.0, 150.0),
+            radius: 0.0,
+            corners: None,
+        };
+        a.stroke = None;
+        let mut m = BezPath::new();
+        for (i, (x, y)) in [
+            (0.0, 0.0),
+            (0.0, 40.0),
+            (10.0, 40.0),
+            (20.0, 20.0),
+            (30.0, 40.0),
+            (40.0, 40.0),
+            (40.0, 0.0),
+            (30.0, 0.0),
+            (30.0, 25.0),
+            (20.0, 8.0),
+            (10.0, 25.0),
+            (10.0, 0.0),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            if i == 0 {
+                m.move_to((x, y));
+            } else {
+                m.line_to((x, y));
+            }
+        }
+        m.close_path();
+        let mut b = Shape::new(
+            crate::ShapeId(2),
+            ShapeKind::Path {
+                path: m,
+                closed: true,
+            },
+        );
+        b.fill = Fill::Solid(Color::rgb8(255, 255, 255));
+        b.stroke = Some(crate::style::Stroke {
+            width: 0.35,
+            ..Default::default()
+        });
+        let with_end = |a: &Shape, b: &Shape| {
+            let mut s = a.clone();
+            s.effects.push(Effect::Blend {
+                end: Box::new(b.clone()),
+                steps: 6,
+                accel_objects: 0.0,
+                accel_colors: 0.0,
+                rotation: 0.0,
+                path: None,
+                rotate_on_path: false,
+                end_id: Some(b.id),
+                options: BlendOptions::default(),
+            });
+            evaluate(&s).above
+        };
+        let steps = with_end(&a, &b);
+        assert_eq!(steps.len(), 6);
+        for s in &steps {
+            let st = s.stroke.as_ref().expect("every step outlined");
+            assert!((st.width - 0.35).abs() < 1e-9, "{}", st.width);
+        }
+        // The letter moved: the step next to it moves with it.
+        let near = |steps: &[Shape]| steps[5].page_path().bounding_box();
+        let before = near(&steps);
+        let mut moved = b.clone();
+        moved.transform = Affine::translate((30.0, 20.0));
+        let after = near(&with_end(&a, &moved));
+        let shift = after.center() - before.center();
+        assert!(
+            (shift.x - 30.0 * 6.0 / 7.0).abs() < 0.5 && (shift.y - 20.0 * 6.0 / 7.0).abs() < 0.5,
+            "{shift:?}"
+        );
+        // The rectangle's corners rounded: the step next to it rounds
+        // too (its corner no longer reaches the box's corner).
+        let first = |steps: &[Shape]| steps[0].page_path();
+        let sharp = first(&steps);
+        let corner = sharp.bounding_box().origin();
+        assert!(sharp.winding(corner + Vec2::new(3.0, 3.0)) != 0);
+        let mut round = a.clone();
+        round.kind = ShapeKind::Rect {
+            rect: Rect::new(-100.0, -100.0, 200.0, 150.0),
+            radius: 30.0,
+            corners: None,
+        };
+        let rounded = first(&with_end(&round, &b));
+        let corner = rounded.bounding_box().origin();
+        assert_eq!(
+            rounded.winding(corner + Vec2::new(3.0, 3.0)),
+            0,
+            "{rounded:?}"
+        );
     }
 
     #[test]
@@ -5974,6 +7302,7 @@ mod symmetry_tests {
             center: Point::new(0.0, 0.0),
             angle: 90.0,
             lines: 1,
+            rotate: false,
         });
         let ev = evaluate(&s);
         assert_eq!(ev.above.len(), 1);
@@ -5989,9 +7318,58 @@ mod symmetry_tests {
             center: Point::new(0.0, 0.0),
             angle: 0.0,
             lines: 2,
+            rotate: false,
         };
         let ev = evaluate(&s);
         assert_eq!(ev.above.len(), 3);
+    }
+
+    /// Rotational symmetry (#2999): three lines make three turned
+    /// objects in all, a third of a turn apart, none a mirror image; the
+    /// setting is left out of a saved symmetry that mirrors.
+    #[test]
+    fn rotational_symmetry_turns_the_copies() {
+        let mut s = Shape::new(
+            crate::ShapeId(1),
+            ShapeKind::Rect {
+                rect: Rect::new(10.0, -1.0, 20.0, 1.0),
+                radius: 0.0,
+                corners: None,
+            },
+        );
+        s.effects.push(Effect::Symmetry {
+            center: Point::new(0.0, 0.0),
+            angle: 0.0,
+            lines: 3,
+            rotate: true,
+        });
+        let ev = evaluate(&s);
+        assert_eq!(ev.above.len(), 2);
+        for (copy, deg) in ev.above.iter().zip([120.0f64, 240.0]) {
+            let [a, b, c, d, _, _] = copy.transform.as_coeffs();
+            assert!(a * d - b * c > 0.0, "not mirrored");
+            let mid = copy.bounds().center();
+            let want = Point::new(15.0 * deg.to_radians().cos(), 15.0 * deg.to_radians().sin());
+            assert!((mid - want).hypot() < 1e-6, "{mid:?} {want:?}");
+        }
+        // A point in a copy goes back to the object's slice by a turn.
+        let back = symmetry_back_to_turned(
+            Point::ZERO,
+            0.0,
+            3,
+            true,
+            Point::new(15.0, 0.0),
+            Point::new(-7.5, 12.99),
+        );
+        let q = back * Point::new(-7.5, 12.99);
+        assert!((q - Point::new(15.0, 0.0)).hypot() < 0.01, "{q:?}");
+        let mirror = Effect::Symmetry {
+            center: Point::ZERO,
+            angle: 0.0,
+            lines: 1,
+            rotate: false,
+        };
+        assert!(!serde_json::to_string(&mirror).unwrap().contains("rotate"));
     }
 
     /// A mirrored copy's fountain fill and gradient transparency are
@@ -6019,6 +7397,7 @@ mod symmetry_tests {
                 center: Point::new(40.0, 0.0),
                 angle: 90.0,
                 lines: 1,
+                rotate: false,
             },
             Effect::Transparency {
                 mask: Fill::linear(Color::WHITE, Color::BLACK, 0.0),
@@ -6080,6 +7459,7 @@ mod symmetry_tests {
                 center: Point::new(0.0, 0.0),
                 angle: 90.0,
                 lines: 1,
+                rotate: false,
             },
             Effect::Transparency {
                 mask: crate::style::Fill::Solid(crate::color::Color::rgb8(128, 128, 128)),

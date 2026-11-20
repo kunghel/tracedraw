@@ -41,9 +41,11 @@ moved, scaled, turned or skewed (`dimensions.rs`).
 - Object > Insert > Add Dimensions (also in the canvas context menu
   with something selected): a horizontal dimension along the bottom of
   the selection's box and a vertical one along its right side, their
-  lines `ADD_DIMENSIONS_GAP` (5 mm) below and to the right of it, in the
-  Dimension tool's style and units (`App::add_dimensions`,
-  `box_measures`).
+  lines below and to the right of it by the distance set in the
+  Dimension tool's Options > Add Dimensions distance (preference
+  `add_dimensions_gap`, `ADD_DIMENSIONS_GAP` 5 mm at first, 0 to
+  1000 mm, #3530), in the Dimension tool's style and units
+  (`App::add_dimensions`, `box_measures`).
 - Add Dimensions to Each Object (in the context menu with more than one
   object selected): a pair for every selected object's own box.
 - Dimensions in the selection are not measured; a box with no width or
@@ -116,6 +118,8 @@ is kept in the preferences (`tools.dimension_style`).
 | Options > Horizontal text | off | a linear dimension's label stays horizontal |
 | Options > Join lines at corners | off | the extension lines run into the dimension line (or arc) as one curve with corners, nothing past it (#641) |
 | Options > Corner radius | 0 | 0 to 100 mm, rounds those corners (each cut at most half an inner leg, an end leg wholly); off unless the lines are joined |
+| Options > Text background | off | a colour behind the label (white when turned on, then any colour), the same background the Text tool sets on it; turning it off takes it away (#3531) |
+| Options > Add Dimensions distance | 5 mm | how far Add Dimensions puts its lines from the box, 0 to 1000 mm; a preference, not part of a dimension (#3530) |
 
 The Options menu stays open while its fields are typed in or stepped;
 a click outside it closes it

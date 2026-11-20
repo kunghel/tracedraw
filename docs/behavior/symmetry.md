@@ -5,10 +5,16 @@ Live mirrored copies of an object across one or more mirror lines
 
 ## Model
 
-`Effect::Symmetry { center, angle, lines }` on the object. `center` is a
-page point, `angle` the direction of the first mirror line in degrees
-(0 = horizontal, counter-clockwise positive), `lines` the number of
-mirror lines (1 to 12), spaced evenly around `center`.
+`Effect::Symmetry { center, angle, lines, rotate }` on the object.
+`center` is a page point, `angle` the direction of the first mirror line
+in degrees (0 = horizontal, counter-clockwise positive), `lines` the
+number of mirror lines (1 to 12), spaced evenly around `center`.
+`rotate` (off, left out of the saved effect when off) makes the
+symmetry rotational (#2999): the copies are the object turned round
+`center` by whole shares of a turn, `lines` objects in all counting the
+original, none of them mirrored (`symmetry_tests::rotational_symmetry_turns_the_copies`);
+a fill clicked in a copy goes back to the original by the turn
+(`symmetry_back_to_turned`).
 
 ## Result
 
@@ -62,7 +68,10 @@ running toward a mirror line runs toward it from the other side too
   window: Finish; the mirror lines icon and their number (1 to 12); the
   centre (X, Y in the drawing's units); the angle of rotation icon and
   the angle (0 to 360 degrees), every number field with spin arrows and
-  the mouse wheel; Show full preview (off at first: the copies are drawn
+  the mouse wheel; Rotational (a check box, off: turned on it makes the
+  lines two at least; part of the same undo run,
+  `pick_drag_tests::a_symmetry_turned_rotational_turns_its_copies`);
+  Show full preview (off at first: the copies are drawn
   as red outlines and the renderer leaves them out; on: drawn in full)
   and Show symmetry lines (on). Both toggles are kept in the
   preferences. A run of changes is one undo step "Edit Symmetry".

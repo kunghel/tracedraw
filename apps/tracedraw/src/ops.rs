@@ -277,10 +277,12 @@ impl App {
     pub(crate) fn duplicate_in_place(&mut self) {
         let saved = self.duplicate_offset;
         self.duplicate_offset = Vec2::ZERO;
-        // Copies in place are not a Duplicate the next one repeats (#559).
+        // Copies in place start a Duplicate of their own (#559): left as
+        // they are, the next Duplicate uses the offset; moved, turned or
+        // scaled, it repeats that step from them, as after Ctrl+D (#3520).
         self.last_duplicate.clear();
         self.duplicate();
-        self.last_duplicate.clear();
+        self.last_duplicate_in_place = true;
         self.duplicate_offset = saved;
     }
 

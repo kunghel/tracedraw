@@ -63,7 +63,7 @@ Some effects, such as blurs, spread past the edges of a bitmap.
 - [[menu.bitmaps.crop_bitmap]] crops a bitmap with the [[tool.crop]] tool;
   dragging a corner of a bitmap with the [[tool.shape]] tool crops it too.
 - [[menu.bitmaps.edit_bitmap]] opens the bitmap in another program.
-- [[menu.bitmaps.edit_inside]] (or a double click on the picture with the Pick tool) edits its pixels in place, inside TraceDraw: selections, brush, soft eraser, clone, heal, blur, content fill, red eye and any bitmap effect inside the selection only. Enter finishes, as one undo step.
+- [[menu.bitmaps.edit_inside]] (or a double click on the picture with the Pick tool) edits its pixels in place, inside TraceDraw: selections, brush, soft eraser, clone, heal, blur, content fill, red eye, layers with opacity and merge modes, and any bitmap effect inside the selection only. Enter finishes, as one undo step.
 - [[menu.bitmaps.remove_background_local]] makes the background of a photo
   transparent on this computer (see
   [Removing the background](remove-background.md));

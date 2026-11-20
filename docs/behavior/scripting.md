@@ -8,7 +8,10 @@ builds, so a whole run is one undo step, named `Script` in the history.
 Tools > Scripts opens the panel: a code editor with a line margin, the
 output of the last run, **Run**, **Debug** (see `behavior/script-debugger.md`),
 **Record**, **Load...**, **Save...** and **Install as Filter** (see
-`behavior/script-filters.md`). Recorded macros are plain scripts.
+`behavior/script-filters.md`). Recorded macros are plain scripts. A
+text's font, size, weight, slant and character background set in the
+Text panel record as `set_text_style` when all its characters share
+them (#3518).
 
 A **JavaScript / VBA** pair of buttons above the editor picks the language.
 JavaScript is the object model described here. VBA writes the snippet as a
@@ -164,6 +167,8 @@ outline.
 | Name | Meaning |
 |---|---|
 | `Name`, `Text` | read and set |
+| `Font`, `FontSize`, `Bold`, `Italic` | a text's style, read and set; `SetTextStyle({font, size, bold, italic, background})` sets several at once (`background` a fill, or `null` for none) |
+| `TextBackground` | the colour behind a text's characters, apart from their fill, or `null`; set to a colour or `null` (#3518) |
 | `Type` | `Rectangle`, `Ellipse`, `Polygon`, `Star`, `ComplexStar`, `Curve`, `Text`, `Group`, `Bitmap`, `ClipFrame`, `Table`, `Symbol` |
 | `PositionX`, `PositionY` | bottom left of the bounding box |
 | `SizeWidth`, `SizeHeight` | the bounding box's size |
@@ -246,7 +251,10 @@ angle at (cx, cy) from the first point to the second, its arc through
 VBA macros have `Layer.CreateLinearDimension(Type, Point1, Point2,
 TextCentered, TextX, TextY)` with `cdrDimensionHorizontal` (0),
 `cdrDimensionVertical` (1) and `cdrDimensionSlanted` (2), and
-`Layer.CreateAngularDimension(Center, Point1, Point2, TextX, TextY)`. A
+`Layer.CreateAngularDimension(Center, Point1, Point2, TextX, TextY)`,
+and `CreateHorizontalDimension`, `CreateVerticalDimension` and
+`CreateParallelDimension(x1, y1, x2, y2, TextX, TextY)` with the points
+as numbers, as scripts name them (#3517). A
 point is anything with `PositionX`/`PositionY`, `{x, y}` or `[x, y]`, in
 the document unit; without TextX/TextY the line goes 10 mm off the
 points. A recorded macro records a dimension the Dimension tools drew

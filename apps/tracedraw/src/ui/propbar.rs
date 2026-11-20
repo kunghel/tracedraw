@@ -2777,6 +2777,26 @@ pub fn ellipse_part(app: &mut App, ui: &mut Ui) {
         // way round (Options > Tools > Ellipse, #1436).
         app.settings.ellipse_clockwise = !app.settings.ellipse_clockwise;
     }
+    // A pie's inner radius makes it a ring sector, a thick arc.
+    let ring_on = mode == 1;
+    let mut inner = (arc.inner * 100.0).round();
+    let r = ui
+        .add_enabled(
+            ring_on,
+            crate::ui::field::NumField::new(&mut inner)
+                .range(0.0..=99.0)
+                .speed(1.0)
+                .prefix(tr("toolbar.arc_inner_prefix"))
+                .suffix(" %"),
+        )
+        .rich_tip(crate::ui::tips::pair(
+            "toolbar.arc_inner",
+            "toolbar.arc_inner_desc",
+        ));
+    if ring_on && r.changed() {
+        arc.inner = (inner / 100.0).clamp(0.0, 0.99);
+        new = Some(arc);
+    }
     if new != current {
         app.ellipse_arc = new;
         let cmds: Vec<Command> = selected
@@ -4498,6 +4518,16 @@ mod tests {
         let start = run(&mut app, Vec::new());
         assert!(start.is_positive(), "{start:?}");
         run(&mut app, vec![egui::Event::PointerMoved(start.center())]);
+        // Clicked into: on a bar the wheel steps only the box clicked
+        // into (#3589).
+        let click = |pressed| egui::Event::PointerButton {
+            pos: start.center(),
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        run(&mut app, vec![click(true)]);
+        run(&mut app, vec![click(false)]);
         for k in 1..=5 {
             run(
                 &mut app,

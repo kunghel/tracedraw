@@ -10,7 +10,7 @@ outros materiais.
 ## Pinceladas {#brush-strokes}
 
 A ferramenta [[tool.brush_strokes]] (<kbd>I</kbd>) desenha traços em um de
-cinco modos. Um traço Predefinido, Pincel, Caligráfico ou Expressão continua
+sete modos. Um traço Predefinido, Pincel, Caligráfico ou Expressão continua
 sendo o caminho que você desenhou, uma curva aberta de poucos nós, com o
 pincel como contorno vivo: edite os nós com a ferramenta Forma depois e o
 pincel acompanha. O Pulverizador espalha objetos ao longo do caminho que você
@@ -49,6 +49,15 @@ Predefinido, Pincel e Expressão; veja
 - **Pulverizador**: formas (círculos, quadrados, estrelas, corações ou folhas)
   colocadas ao longo da linha a cada espaçamento (8 mm de início), cada uma
   entre 70% e 100% da largura.
+- **Ladrilhos**: um pequeno desenho (corrente, corda, ziguezague, traço e
+  ponto, ondas ou contas) repetido ponta a ponta ao longo da linha e curvado
+  para segui-la, com a largura escolhida. Os ladrilhos esticam um pouco para
+  encontrar as duas pontas. Como no Pulverizador, a linha continua e os
+  ladrilhos acompanham os nós.
+- **Fundir**: uma pincelada redonda da largura escolhida que vira um só
+  objeto com todo objeto que ela toca na camada ativa com a mesma cor de
+  preenchimento e sem contorno. Pinte sobre uma forma para aumentá-la numa
+  peça só.
 
 ### Configurações {#brush-settings}
 
@@ -58,6 +67,7 @@ Predefinido, Pincel e Expressão; veja
 - **Pressão**: quanto a largura segue a pressão da caneta (0,5 de início),
   para Predefinido, Pincel e Expressão.
 - **Espaçamento**: para Pulverizador.
+- **Forma**: o desenho do ladrilho, para Ladrilhos.
 
 ## Pincel pictórico {#painterly-brush}
 

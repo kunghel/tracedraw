@@ -167,6 +167,163 @@ fn warp(pic: &Picture, m: Affine, b: Rect, corners: &[Point; 4]) -> Option<Pictu
     })
 }
 
+/// Cells a side of the mesh a bent picture is drawn through.
+const CELLS: usize = 48;
+
+type BentKey = (usize, usize, [u64; 4], [u64; 6], u64);
+
+static BENT: std::sync::Mutex<Vec<(BentKey, SharedBytes, Option<Picture>)>> =
+    std::sync::Mutex::new(Vec::new());
+
+/// The picture `pic` (in a space `m` maps its local space to) bent by
+/// `map`, a warp of that space such as an envelope (#3608): a new picture
+/// in that space covering where the warp takes it, transparent outside.
+/// The picture is cut into a fine mesh whose corners go through `map`, and
+/// each cell's pixels are taken from the picture between its corners.
+/// `key` names the warp, so a frame asking again gets the kept result.
+pub fn bend(pic: &Picture, m: Affine, key: u64, map: &dyn Fn(Point) -> Point) -> Option<Picture> {
+    let bits = |v: &[f64]| -> Vec<u64> { v.iter().map(|x| x.to_bits()).collect() };
+    let r = pic.rect;
+    let k: BentKey = (
+        pic.png.addr(),
+        pic.png.len(),
+        bits(&[r.x0, r.y0, r.x1, r.y1]).try_into().ok()?,
+        bits(&m.as_coeffs()).try_into().ok()?,
+        key,
+    );
+    if let Ok(kept) = BENT.lock() {
+        if let Some((_, _, out)) = kept.iter().find(|(kk, _, _)| *kk == k) {
+            return out.clone();
+        }
+    }
+    let out = bend_now(pic, m, map);
+    if let Ok(mut kept) = BENT.lock() {
+        if kept.len() >= MEMORY {
+            kept.remove(0);
+        }
+        kept.push((k, pic.png.clone(), out.clone()));
+    }
+    out
+}
+
+fn bend_now(pic: &Picture, m: Affine, map: &dyn Fn(Point) -> Point) -> Option<Picture> {
+    let (sw, sh, src) = decode_rgba(&pic.png)?;
+    let r = pic.rect;
+    if sw == 0 || sh == 0 || r.width() < 1e-12 || r.height() < 1e-12 {
+        return None;
+    }
+    if m.determinant().abs() < 1e-18 {
+        return None;
+    }
+    let n = CELLS;
+    let (fw, fh) = (sw as f64, sh as f64);
+    // The mesh's corners where the warp takes them, with the pixel
+    // position each comes from (rows from the top; y is up in local space).
+    let mut at = Vec::with_capacity((n + 1) * (n + 1));
+    let mut out = Rect::new(f64::MAX, f64::MAX, f64::MIN, f64::MIN);
+    for j in 0..=n {
+        let fy = j as f64 / n as f64;
+        for i in 0..=n {
+            let fx = i as f64 / n as f64;
+            let p = Point::new(r.x0 + fx * r.width(), r.y0 + fy * r.height());
+            let q = map(m * p);
+            if !(q.x.is_finite() && q.y.is_finite()) {
+                return None;
+            }
+            out = Rect::new(
+                out.x0.min(q.x),
+                out.y0.min(q.y),
+                out.x1.max(q.x),
+                out.y1.max(q.y),
+            );
+            at.push((q, fx * fw, (1.0 - fy) * fh));
+        }
+    }
+    if !(out.width() > 1e-9 && out.height() > 1e-9) {
+        return None;
+    }
+    // As many pixels to the unit as the picture has where it is placed.
+    let placed = {
+        let q: Vec<Point> = [
+            Point::new(r.x0, r.y0),
+            Point::new(r.x1, r.y0),
+            Point::new(r.x1, r.y1),
+            Point::new(r.x0, r.y1),
+        ]
+        .iter()
+        .map(|p| m * *p)
+        .collect();
+        let mut a = 0.0;
+        for i in 0..4 {
+            let (p, nx) = (q[i], q[(i + 1) % 4]);
+            a += p.x * nx.y - nx.x * p.y;
+        }
+        (a / 2.0).abs()
+    };
+    let density = ((fw * fh) / placed.max(1e-12)).sqrt();
+    let mut ow = (out.width() * density).ceil().max(1.0);
+    let mut oh = (out.height() * density).ceil().max(1.0);
+    let cap = (4 * u64::from(sw) * u64::from(sh)).clamp(1, MAX_PIXELS) as f64;
+    if ow * oh > cap {
+        let k = (cap / (ow * oh)).sqrt();
+        ow = (ow * k).floor().max(1.0);
+        oh = (oh * k).floor().max(1.0);
+    }
+    let (ow, oh) = (ow as usize, oh as usize);
+    // The mesh in the new picture's pixels (rows from the top).
+    let to_px = |q: Point| {
+        (
+            (q.x - out.x0) / out.width() * ow as f64,
+            (out.y1 - q.y) / out.height() * oh as f64,
+        )
+    };
+    let mut px = vec![0u8; ow * oh * 4];
+    let mut tri = |a: usize, b: usize, c: usize| {
+        let ((ax, ay), (bx, by), (cx, cy)) = (to_px(at[a].0), to_px(at[b].0), to_px(at[c].0));
+        let d = (by - cy) * (ax - cx) + (cx - bx) * (ay - cy);
+        if d.abs() < 1e-12 {
+            return;
+        }
+        let x0 = (ax.min(bx).min(cx) - 0.5).floor().max(0.0) as usize;
+        let y0 = (ay.min(by).min(cy) - 0.5).floor().max(0.0) as usize;
+        let x1 = ((ax.max(bx).max(cx) + 0.5).ceil() as usize).min(ow);
+        let y1 = ((ay.max(by).max(cy) + 0.5).ceil() as usize).min(oh);
+        for y in y0..y1 {
+            let py = y as f64 + 0.5;
+            for x in x0..x1 {
+                let pxl = x as f64 + 0.5;
+                let wa = ((by - cy) * (pxl - cx) + (cx - bx) * (py - cy)) / d;
+                let wb = ((cy - ay) * (pxl - cx) + (ax - cx) * (py - cy)) / d;
+                let wc = 1.0 - wa - wb;
+                let e = -1e-9;
+                if wa < e || wb < e || wc < e {
+                    continue;
+                }
+                let u = wa * at[a].1 + wb * at[b].1 + wc * at[c].1 - 0.5;
+                let v = wa * at[a].2 + wb * at[b].2 + wc * at[c].2 - 0.5;
+                let col = sample(&src, sw as usize, sh as usize, u, v);
+                let o = (y * ow + x) * 4;
+                px[o..o + 4].copy_from_slice(&col);
+            }
+        }
+    };
+    for j in 0..n {
+        for i in 0..n {
+            let v00 = j * (n + 1) + i;
+            let (v10, v01, v11) = (v00 + 1, v00 + n + 1, v00 + n + 2);
+            tri(v00, v10, v11);
+            tri(v00, v11, v01);
+        }
+    }
+    let png = encode_rgba(ow as u32, oh as u32, &px)?;
+    Some(Picture {
+        rect: out,
+        width_px: ow as u32,
+        height_px: oh as u32,
+        png: png.into(),
+    })
+}
+
 /// The colour at pixel position (`u`, `v`) (pixel centres at whole
 /// numbers), mixed from the four pixels around it on premultiplied
 /// colours; outside the picture is transparent, so its edge fades over
@@ -323,6 +480,35 @@ mod tests {
         // Inside: the picture's halves.
         assert_eq!(at(&out, 40.0, 45.0), [255, 0, 0, 255]);
         assert_eq!(at(&out, 60.0, 45.0), [0, 0, 255, 255]);
+        assert_eq!(at(&out, 10.0, 3.0), [255, 0, 0, 255]);
+        assert_eq!(at(&out, 90.0, 3.0), [0, 0, 255, 255]);
+    }
+
+    /// A warp that moves nothing gives the picture back; one that lifts
+    /// the middle of the top bends the picture's top edge up into an arch
+    /// and keeps its halves where they were (#3608).
+    #[test]
+    fn a_bent_picture_follows_the_warp() {
+        let rect = Rect::new(0.0, 0.0, 100.0, 50.0);
+        let pic = picture(100, 50, rect);
+        let same = bend(&pic, Affine::IDENTITY, 1, &|p| p).expect("bent");
+        assert!((same.rect.x1 - 100.0).abs() < 1e-9 && (same.rect.y1 - 50.0).abs() < 1e-9);
+        assert_eq!(at(&same, 5.0, 25.0), [255, 0, 0, 255]);
+        assert_eq!(at(&same, 95.0, 25.0), [0, 0, 255, 255]);
+        // y grows by up to 20 at the middle of the top, none at its ends.
+        let arch = |p: Point| {
+            let lift = 20.0 * (p.y / 50.0) * (1.0 - ((p.x - 50.0) / 50.0).powi(2));
+            Point::new(p.x, p.y + lift)
+        };
+        let out = bend(&pic, Affine::IDENTITY, 2, &arch).expect("bent");
+        assert!((out.rect.y1 - 70.0).abs() < 1e-6, "{:?}", out.rect);
+        // Above the old top in the middle: the picture, lifted.
+        assert_eq!(at(&out, 40.0, 65.0), [255, 0, 0, 255]);
+        assert_eq!(at(&out, 60.0, 65.0), [0, 0, 255, 255]);
+        // Up at the ends nothing: the arch comes down there.
+        assert_eq!(at(&out, 2.0, 68.0)[3], 0);
+        assert_eq!(at(&out, 98.0, 68.0)[3], 0);
+        // Low down the picture as it was.
         assert_eq!(at(&out, 10.0, 3.0), [255, 0, 0, 255]);
         assert_eq!(at(&out, 90.0, 3.0), [0, 0, 255, 255]);
     }

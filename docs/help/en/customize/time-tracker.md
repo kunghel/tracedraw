@@ -20,6 +20,10 @@ a bar with:
 
 Starting the clock on a drawing without tasks adds "Task 1".
 
+Click the stopwatch at the left of the bar to make it a mini bar, with only
+the time, the record button and the light, small enough to dock beside other
+toolbars. Click it again for the whole bar.
+
 ## The Time Tracker dialog box {#dialog}
 
 [[menu.tools > menu.tools.time_tracker]] lists the tasks with their time,

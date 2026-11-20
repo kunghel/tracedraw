@@ -83,6 +83,15 @@ it was. The property bar also has the position, size, scale, angle and mirror
 fields. One drag is one step: <kbd>Ctrl+Z</kbd> puts the selection back as it
 was before the drag (and takes the copy away).
 
+## Rotating to match a line {#rotate-by-lines}
+
+To turn an object so that one of its edges lies along another line, select
+it and choose [[menu.object > menu.object.transformations > menu.object.rotate_by_lines]].
+Click the two ends of the base line on the object, then the two ends of the
+target line; the clicks snap to nodes and other snap points. The object turns
+about the first point you clicked, so the base line takes the target line's
+angle. A right click cancels.
+
 ## Undoing transformations {#clear}
 
 [[menu.object > menu.object.clear_transformations]] takes the selected objects

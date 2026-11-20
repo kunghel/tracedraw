@@ -16,6 +16,11 @@
   the active tool's button is tinted.
 - A right click on a tool button or on the toolbox's empty part opens the
   bars' menu (Customize, button size, the bars), as on the other bars.
+  On a tool button the menu starts with Properties... (#3326): it opens
+  Options > Customization > Commands at that tool, on its Shortcut Keys
+  tab, as a right click on a menu row does (#2504;
+  `bars::bar_menu_of`,
+  `pick_drag_tests::a_right_click_on_a_tool_button_opens_its_properties`).
 - Buttons with a flyout have a small arrow at the bottom-right. Clicking
   the arrow, dragging, or pressing and holding the button for 0.4 s
   opens the flyout; a click on the button's main area picks the tool it

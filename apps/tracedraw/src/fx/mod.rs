@@ -15,8 +15,11 @@ pub mod distort;
 pub mod glitch;
 pub mod light;
 pub mod noise;
+pub mod paint;
 pub mod preview;
 pub mod print;
+pub mod sketch;
+pub mod strokes;
 pub mod texture;
 pub mod util;
 

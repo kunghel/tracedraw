@@ -59,6 +59,11 @@ Draw as usual; the rest of the page waits out of reach. Click
 [[toolbar.draw_inside]] again, or Finish Editing Contents, and what you drew
 goes inside the shape, clipped by it.
 
+[[toolbar.draw_behind]], beside it, puts what you draw behind the selected
+objects of the layer instead of on top, or at the back of the layer when
+nothing there is selected. What you have just drawn is selected, so the next
+shape goes behind it in turn. Click it again to draw on top.
+
 ## Opacity masks {#opacity-mask}
 
 [[menu.object > menu.object.clip_frame > menu.object.clip_frame_opacity_mask]]

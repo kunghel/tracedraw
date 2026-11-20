@@ -64,7 +64,7 @@ Beberapa efek, seperti buram, menyebar melewati tepi bitmap.
 - [[menu.bitmaps.crop_bitmap]] memangkas bitmap dengan alat [[tool.crop]];
   menyeret sudut bitmap dengan alat [[tool.shape]] juga memangkasnya.
 - [[menu.bitmaps.edit_bitmap]] membuka bitmap di program lain.
-- [[menu.bitmaps.edit_inside]] (or a double click on the picture with the Pick tool) edits its pixels in place, inside TraceDraw: selections, brush, soft eraser, clone, heal, blur, content fill, red eye and any bitmap effect inside the selection only. Enter finishes, as one undo step.
+- [[menu.bitmaps.edit_inside]] (or a double click on the picture with the Pick tool) edits its pixels in place, inside TraceDraw: selections, brush, soft eraser, clone, heal, blur, content fill, red eye, layers with opacity and merge modes, and any bitmap effect inside the selection only. Enter finishes, as one undo step.
 - [[menu.bitmaps.remove_background]] membuat latar belakang foto menjadi
   transparan.
 - [[menu.bitmaps.remove_background_local]]: [Hapus Latar](remove-background.md).

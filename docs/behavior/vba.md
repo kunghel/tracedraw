@@ -197,7 +197,9 @@ Shared with ranges and the selection:
     `EndNode`.
   - `Text`: `Type`, `Replace(OldText, NewText, CaseSensitive)` and
     `Story`, with `Text`, `Font`, `Size` in points, `Bold`, `Italic`,
-    `Underline`, `Alignment` (`cdrLeftAlignment`...), `Length`,
+    `Underline`, `BackgroundColor` (the colour behind the characters,
+    `Nothing` for none) and `ApplyNoBackground` (#3518),
+    `Alignment` (`cdrLeftAlignment`...), `Length`,
     `Characters.Count` and `Words.Count`.
   - `Rectangle`: `CornerUpperLeft`... as roundness, `RadiusUpperLeft`...
     as lengths, `SetRoundness`, `SetRadius`, `Width`, `Height`.

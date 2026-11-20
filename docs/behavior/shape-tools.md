@@ -200,6 +200,14 @@ just drawn), the text staying open for typing (#3258,
 
 - Rows x columns: default 4 x 3. The result is a group of rows x columns
   rectangles that fill the box exactly.
+- Radial (Cells or Radial on the bar, also on the tool's options page,
+  kept in the preferences): Rings (5) ellipses about the box's middle,
+  ring `i` of `n` (outermost first) `(n - i) / n` of the box across,
+  then Spokes (8, 0 to 360) open lines from the middle to the outer
+  ring at `90° + 360° k / spokes`; one group, filled and outlined as the
+  cells are (the spokes unfilled), one undo step "Graph Paper". The
+  preview shows the rings and spokes (`tools2::radial_grid_path`,
+  `tools2::tests::graph_paper_draws_a_radial_grid`).
 
 ## Common shapes
 
@@ -335,11 +343,17 @@ pointed one; the angle and stray spacing).
   (within 8 pixels) points the tail elsewhere, one undo step. The bar
   shows the selected balloon's style, width and bend, and a change goes
   to the selected balloons (one undo step) and to the next ones.
+- Add Text on the bar (discussion #3522), enabled with a balloon
+  selected: a paragraph text whose frame is the middle of the body (68 %
+  of the body box for Speech and Whisper, 84 % for Caption, 58 % for
+  Thought, 50 % for Shout), centred whatever the bar's alignment for new
+  texts, the caret in it to type.
 
 ## Checks
 
 - `balloons::tests::every_style_makes_one_closed_curve_reaching_the_tip`
 - `balloons::tests::a_balloon_is_drawn_its_tip_dragged_and_its_style_changed`
+- `balloons::tests::add_text_types_inside_the_balloon`
 
 - Given a 3 mm black default outline, while a rectangle or an ellipse is
   dragged out, the outline is painted at its width and the edge line is

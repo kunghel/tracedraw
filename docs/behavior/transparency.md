@@ -196,16 +196,37 @@ Transparency tool's bar keeps its one-row form.
    **Background transparency** (0 % opaque, 100 % invisible; the mask's
    two greys, white opaque) and **Swap**
    (`TransparencyField::MaskColors`).
-7. **Transparency target**: three buttons, Fill, Outline, All.
-8. **Clear Transparency**, as before.
+7. **Tiles** of the patterns (free scale and skew): **Tile size** (the
+   two-colour and bitmap tile's width, 0.5 to 200 mm), **Rotation**
+   (-180 to 180 degrees), **Skew** (-80 to 80 degrees) and **Mirror
+   tiles**, flipping every second column or row, the pattern's own
+   `PatternPlacement`, sent as the whole mask.
+8. **Texture library** of the texture: a list of the kinds (clouds,
+   marble, noise, wood), the feature size and Regenerate (a new seed).
+9. **Save as New** (**+**, beside Edit Transparency, not for Uniform):
+   the current mask is kept in the preferences
+   (`Settings::saved_transparencies`, once each, the newest 48) and
+   shows in the picker of its type after the ready-made ones, marked
+   with a dot; a click applies it, a right click removes it
+   (`transparency_docker::tests::tiles_texture_library_and_saved_transparencies`).
+10. **Transparency target**: three buttons, Fill, Outline, All.
+11. **Clear Transparency**, as before.
 
 Settings that differ across the selection show as mixed; a change sends
 only that setting to each object (`mixed::patch_transparency`).
 
-Not yet: Free scale and skew, the mirror
-tiles button, foreground and background for vector and bitmap patterns,
-the texture library list, saving a new preset from the picker, and the
-docker header's Scroll/Tab mode and style indicators.
+**Style indicators**: the Fill, Outline and Transparency headers of the
+Properties docker show a small accent square at their right end when
+the first selected object is linked to an object style that sets that
+part; its tip names the style (`dockers::style_source`,
+`transparency_docker::tests::a_section_from_an_object_style_names_it`).
+A right click on any section header shows or hides them
+(`Settings::style_indicators`, on by default). The section buttons at
+the top already give the tab form: a click shows that section alone,
+a click on it again shows them all (#2200).
+
+Vector and bitmap pattern masks have no foreground and background of
+their own: their greys are the tile's.
 
 ## Merge modes
 

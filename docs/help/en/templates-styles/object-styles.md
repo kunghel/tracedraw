@@ -71,3 +71,8 @@ are linked to it, and its parts as check boxes:
 You can still change a linked object directly; the next change of its style
 sets the style's parts again. Right-click an object to apply a style from its
 menu.
+
+In the Properties panel, a small square at the end of the Fill, Outline or
+Transparency bar shows that the values come from the linked style; point at it
+to see the style's name. Right-click any of those bars to show or hide these
+style indicators.

@@ -29,6 +29,7 @@ impl App {
                 center,
                 angle,
                 lines,
+                ..
             } => Some((id, *center, *angle, *lines)),
             _ => None,
         })
@@ -44,10 +45,62 @@ impl App {
             .effects
             .iter()
             .map(|e| match e {
-                Effect::Symmetry { .. } => Effect::Symmetry {
+                Effect::Symmetry { rotate, .. } => Effect::Symmetry {
                     center,
                     angle: angle.rem_euclid(360.0),
                     lines: lines.clamp(1, 12),
+                    rotate: *rotate,
+                },
+                other => other.clone(),
+            })
+            .collect();
+        let cmd = Command::SetEffects { shape: id, effects };
+        let r = if self.engine.undo_label() == Some(LABEL) && self.symmetry_step == Some(id) {
+            self.engine.amend(&cmd)
+        } else {
+            self.engine.run_with_label(&cmd, LABEL)
+        };
+        match r {
+            Ok(()) => self.symmetry_step = Some(id),
+            Err(e) => self.status = e.to_string(),
+        }
+    }
+
+    /// Whether the symmetry being edited turns its copies instead of
+    /// mirroring them (#2999).
+    pub fn edited_symmetry_turns(&self) -> bool {
+        let Some(id) = self.symmetry_edit else {
+            return false;
+        };
+        self.doc().find_shape(id).is_some_and(|s| {
+            s.effects
+                .iter()
+                .any(|e| matches!(e, Effect::Symmetry { rotate: true, .. }))
+        })
+    }
+
+    /// Make the symmetry of `id` turn its copies round the centre (`on`)
+    /// or mirror them (#2999); one undo step with the other changes made
+    /// while editing.
+    pub fn set_symmetry_turns(&mut self, id: ShapeId, on: bool) {
+        let Some(s) = self.doc().find_shape(id) else {
+            return;
+        };
+        let effects: Vec<Effect> = s
+            .effects
+            .iter()
+            .map(|e| match e {
+                Effect::Symmetry {
+                    center,
+                    angle,
+                    lines,
+                    ..
+                } => Effect::Symmetry {
+                    center: *center,
+                    angle: *angle,
+                    // Turned copies need two at least to show.
+                    lines: if on { (*lines).max(2) } else { *lines },
+                    rotate: on,
                 },
                 other => other.clone(),
             })

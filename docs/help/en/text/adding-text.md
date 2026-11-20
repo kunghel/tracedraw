@@ -159,6 +159,9 @@ Or click the outline of a path with the [[tool.text]] tool and type. Text on a
 closed shape stands on its outside, centered on its top; clicked on the bottom
 of an ellipse, it starts there.
 
+A text you made narrower or wider with a side handle keeps its letters'
+shape on the path: the change goes into the character width.
+
 With text on a path selected (also with the [[tool.pick]] tool), the property
 bar shows the path's fields first, then the usual text fields:
 
@@ -176,6 +179,10 @@ bar shows the path's fields first, then the usual text fields:
 - The two mirror buttons, which put the text on the other side of the path
   or turn it round, and [[menu.text.straighten_text]], which takes it off the
   path.
+- **Follow path** (off): pressed, the text is fitted to the path again
+  whenever the path is moved, resized or reshaped, keeping its place along
+  it. Undo takes back the path's change and the text's together. Deleting
+  the path leaves the text as it is.
 
 Drag the text to slide it along the path, or across the path to move it away
 from it.

@@ -28,6 +28,12 @@ In the fill section of the [[docker.properties]] panel, choose
 vector pattern, the panel shows how many objects the tile holds, and its
 width and height: changing them scales the content of the tile with it.
 
+The tiles can be laid as a grid, as bricks or as hexagons:
+**Row or column offset** moves each row (or column) along by part of a
+tile, and **Row or column overlap** lays each row (or column) over the one
+before it. For hexagonal tiles, set an offset of 50% and an overlap of 25%:
+the rows interlock with no gaps.
+
 ## Patterns in exported files {#export}
 
 SVG files keep vector patterns as vectors. PDF and EPS files get them as

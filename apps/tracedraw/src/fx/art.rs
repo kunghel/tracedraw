@@ -85,6 +85,12 @@ pub const EFFECTS: &[EffectSpec] = &[
         apply: pen_ink,
         reach: no_reach,
     },
+    super::strokes::CHALKED_EDGES,
+    super::strokes::DIAGONAL_HATCHING,
+    super::strokes::PENCIL_WEAVE,
+    super::strokes::LIGHT_SHADOW_STROKES,
+    super::strokes::SPRAY_STREAKS,
+    super::strokes::INK_WASH,
     EffectSpec {
         id: "pointillist",
         params: &[
@@ -127,6 +133,9 @@ pub const EFFECTS: &[EffectSpec] = &[
         apply: watercolor,
         reach: no_reach,
     },
+    super::sketch::COPIER_TONER,
+    super::sketch::RUBBER_PRINT,
+    super::sketch::WET_FIBER_PAPER,
     EffectSpec {
         id: "felt_marker",
         params: &[
@@ -146,6 +155,14 @@ pub const EFFECTS: &[EffectSpec] = &[
         apply: paper_grain,
         reach: no_reach,
     },
+    super::paint::PAPER_LAYERS,
+    super::paint::BRISTLE_PAINT,
+    super::paint::MURAL_PAINT,
+    super::paint::LUMINOUS_WASH,
+    super::paint::INKED_POSTER,
+    super::paint::DIAGONAL_SMEAR,
+    super::paint::BLOTTED_COLOR,
+    super::paint::PRIMED_CANVAS,
 ];
 
 /// Sobel edge strength 0..1 of the brightness.

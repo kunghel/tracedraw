@@ -1095,7 +1095,7 @@ pub fn draw(app: &App, painter: &egui::Painter, color: egui::Color32) {
 }
 
 /// A small dark tag with `text`, its top left corner at `at`.
-fn tag(painter: &egui::Painter, at: egui::Pos2, text: &str) {
+pub(crate) fn tag(painter: &egui::Painter, at: egui::Pos2, text: &str) {
     let galley = painter.layout_no_wrap(
         text.to_string(),
         egui::FontId::proportional(11.0),

@@ -44,6 +44,19 @@ impl TransparencyType {
         TransparencyType::Texture,
     ];
 
+    /// The type a mask of a transparency picker is: `None` for a mask
+    /// that is not one (a flat colour).
+    pub fn of_mask(mask: &Fill) -> Option<TransparencyType> {
+        match mask {
+            Fill::Fountain(_) => Some(TransparencyType::Fountain),
+            Fill::Texture(_) => Some(TransparencyType::Texture),
+            Fill::Pattern(Pattern::Vector { .. }) => Some(TransparencyType::VectorPattern),
+            Fill::Pattern(Pattern::Bitmap { .. }) => Some(TransparencyType::BitmapPattern),
+            Fill::Pattern(Pattern::TwoColor { .. }) => Some(TransparencyType::TwoColorPattern),
+            _ => None,
+        }
+    }
+
     /// The type of a transparency of `kind` (as
     /// [`crate::mixed::ShapeTransparency::kind`]) with `mask`.
     pub fn of(kind: usize, mask: &Fill) -> TransparencyType {
@@ -593,8 +606,16 @@ pub fn section(app: &mut App, ui: &mut Ui) {
             }
         }
         Some(TransparencyType::Fountain) => fountain(ui, &mut set, &mixed, &mut field),
-        Some(TransparencyType::TwoColorPattern | TransparencyType::Texture) => {
-            two_greys(ui, &mut set, &mut field)
+        Some(TransparencyType::TwoColorPattern) => {
+            two_greys(ui, &mut set, &mut field);
+            tiles(ui, &mut set, &mut field);
+        }
+        Some(TransparencyType::Texture) => {
+            texture(ui, &mut set, &mut field);
+            two_greys(ui, &mut set, &mut field);
+        }
+        Some(TransparencyType::VectorPattern | TransparencyType::BitmapPattern) => {
+            tiles(ui, &mut set, &mut field)
         }
         _ => {}
     }
@@ -737,9 +758,59 @@ fn picker(
                                 ui.close();
                             }
                         }
+                        // The ones saved with Save as New, after the
+                        // ready-made ones; a right click removes one.
+                        let mut remove = None;
+                        for (i, mask) in app.settings.saved_transparencies.iter().enumerate() {
+                            if TransparencyType::of_mask(mask) != Some(t) {
+                                continue;
+                            }
+                            let (r, resp) =
+                                ui.allocate_exact_size(Vec2::new(34.0, 24.0), Sense::click());
+                            let key = egui::Id::new(("transparency_saved", mask_key(mask)));
+                            if let Some(tex) = mask_texture(ui, key, mask, 40.0) {
+                                ui.painter().image(
+                                    tex.id(),
+                                    r,
+                                    Rect::from_min_max(
+                                        egui::pos2(0.0, 0.15),
+                                        egui::pos2(1.0, 0.85),
+                                    ),
+                                    Color32::WHITE,
+                                );
+                            }
+                            frame(ui, r, resp.hovered());
+                            ui.painter().circle_filled(
+                                r.right_top() + Vec2::new(-4.0, 4.0),
+                                2.5,
+                                Tokens::ACCENT,
+                            );
+                            let resp = resp.rich_tip(crate::ui::tips::keyed("transparency.saved"));
+                            if resp.clicked() {
+                                set.kind = t.settings_kind();
+                                set.mask = mask.clone();
+                                *field = Some(F::Mask);
+                                ui.close();
+                            } else if resp.secondary_clicked() {
+                                remove = Some(i);
+                            }
+                        }
+                        if let Some(i) = remove {
+                            app.settings.saved_transparencies.remove(i);
+                            app.settings.save();
+                        }
                     }
                 });
             });
+        // Save as New: the current transparency joins the picker.
+        if t != TransparencyType::Uniform
+            && ui
+                .button("+")
+                .rich_tip(crate::ui::tips::keyed("transparency.save_new"))
+                .clicked()
+        {
+            save_transparency(app, &set.mask);
+        }
         if ui
             .button(tr("transparency.edit"))
             .rich_tip(crate::ui::tips::keyed("transparency.edit"))
@@ -993,6 +1064,121 @@ fn two_greys(ui: &mut Ui, set: &mut TransparencySettings, field: &mut Option<F>)
     }
 }
 
+/// Save `mask` with Save as New: it joins the transparency picker of its
+/// type (once; the oldest go past [`MAX_SAVED`]).
+pub fn save_transparency(app: &mut App, mask: &Fill) {
+    if TransparencyType::of_mask(mask).is_none() {
+        return;
+    }
+    let saved = &mut app.settings.saved_transparencies;
+    saved.retain(|m| m != mask);
+    saved.push(mask.clone());
+    if saved.len() > MAX_SAVED {
+        let extra = saved.len() - MAX_SAVED;
+        saved.drain(..extra);
+    }
+    app.settings.save();
+}
+
+/// How many transparencies Save as New keeps.
+pub const MAX_SAVED: usize = 48;
+
+/// A pattern mask's tiles: their size, turn and lean ("free scale and
+/// skew") and mirrored tiles (#1439).
+fn tiles(ui: &mut Ui, set: &mut TransparencySettings, field: &mut Option<F>) {
+    let Fill::Pattern(p) = &mut set.mask else {
+        return;
+    };
+    let mut changed = false;
+    if let Pattern::TwoColor { size_mm, .. } | Pattern::Bitmap { size_mm, .. } = p {
+        changed |= ui
+            .add(
+                crate::ui::Slider::new(size_mm, 0.5..=200.0)
+                    .suffix(" mm")
+                    .logarithmic(true)
+                    .text(tr("docker.tile_size")),
+            )
+            .rich_tip(tr("docker.tile_size"))
+            .changed();
+    }
+    let pl = p.placement_mut();
+    changed |= ui
+        .add(
+            crate::ui::Slider::new(&mut pl.rotation, -180.0..=180.0)
+                .suffix("\u{b0}")
+                .text(tr("docker.rotation")),
+        )
+        .rich_tip(tr("docker.tile_rotation_tip"))
+        .changed();
+    changed |= ui
+        .add(
+            crate::ui::Slider::new(&mut pl.skew, -80.0..=80.0)
+                .suffix("\u{b0}")
+                .text(tr("docker.skew")),
+        )
+        .rich_tip(tr("docker.tile_skew_tip"))
+        .changed();
+    ui.horizontal(|ui| {
+        dim(ui, tr("docker.mirror_tiles"));
+        use crate::ui::pattern_pick::{draw_mirror, picture_button};
+        for (on, tip, vertical) in [
+            (&mut pl.mirror_horizontal, "docker.mirror_horizontal_tip", false),
+            (&mut pl.mirror_vertical, "docker.mirror_vertical_tip", true),
+        ] {
+            if picture_button(ui, *on, &tr(tip), |p, r| draw_mirror(p, r, vertical)) {
+                *on = !*on;
+                changed = true;
+            }
+        }
+    });
+    if changed {
+        *field = Some(F::Mask);
+    }
+}
+
+/// A texture mask's library (its kind), feature size and a new seed
+/// (#1439).
+fn texture(ui: &mut Ui, set: &mut TransparencySettings, field: &mut Option<F>) {
+    let Fill::Texture(t) = &mut set.mask else {
+        return;
+    };
+    let mut changed = false;
+    dim(ui, tr("transparency.texture_library"));
+    let key = |k: TextureKind| match k {
+        TextureKind::Clouds => "texture.clouds",
+        TextureKind::Marble => "texture.marble",
+        TextureKind::Noise => "texture.noise",
+        TextureKind::Wood => "texture.wood",
+    };
+    crate::ui::keynav::ComboBox::from_id_salt("transparency_docker_texture")
+        .selected_text(tr(key(t.kind)))
+        .width(ui.available_width() - 4.0)
+        .show_ui(ui, |ui| {
+            for k in TextureKind::ALL {
+                if ui.selectable_label(t.kind == k, tr(key(k))).clicked() && t.kind != k {
+                    t.kind = k;
+                    changed = true;
+                }
+            }
+        })
+        .response
+        .rich_tip(crate::ui::tips::keyed("transparency.texture_library"));
+    changed |= ui
+        .add(
+            crate::ui::Slider::new(&mut t.scale, 1.0..=200.0)
+                .logarithmic(true)
+                .text(tr("docker.scale_mm")),
+        )
+        .changed();
+    if ui.small_button(tr("docker.regenerate")).clicked() {
+        t.seed = t.seed.wrapping_add(1);
+        changed = true;
+    }
+    if changed {
+        *field = Some(F::Mask);
+    }
+}
+
 /// Set the foreground and background greys of a two-colour pattern or a
 /// texture mask; other masks are left as they are.
 pub fn set_mask_colors(mask: &mut Fill, fg: Color, bg: Color) {
@@ -1137,6 +1323,111 @@ mod tests {
                 );
             });
         }
+    }
+
+    /// A pattern transparency shows its tile fields and a texture its
+    /// library in the section; Save as New keeps a mask once, in the
+    /// picker of its own type (#1439).
+    #[test]
+    fn tiles_texture_library_and_saved_transparencies() {
+        use crate::app::{App, DockerTab};
+        let ctx = crate::theme::ui_context();
+        let mut app = App::headless();
+        app.show_welcome = false;
+        app.settings.properties_closed = vec!["outline".to_string(), "fill".to_string()];
+        let id = app
+            .new_shape(ShapeKind::Rect {
+                rect: GRect::new(10.0, 10.0, 60.0, 40.0),
+                radius: 0.0,
+                corners: None,
+            })
+            .expect("rect");
+        app.select(vec![id]);
+        app.show_dockers = true;
+        app.docker_tab = DockerTab::Properties;
+        for (t, keys) in [
+            (
+                TransparencyType::TwoColorPattern,
+                &["docker.tile_size", "docker.rotation", "docker.skew", "docker.mirror_tiles"][..],
+            ),
+            (TransparencyType::VectorPattern, &["docker.rotation", "docker.mirror_tiles"][..]),
+            (TransparencyType::Texture, &["transparency.texture_library", "docker.regenerate"][..]),
+        ] {
+            let s = TransparencySettings {
+                kind: t.settings_kind(),
+                mask: t.default_mask().expect("mask"),
+                ..Default::default()
+            };
+            app.patch_transparency(&s, &[F::Mask]);
+            crate::i18n::with_thread_language("en", || {
+                for _ in 0..3 {
+                    crate::ui::dockers::tests::draw(&ctx, &mut app);
+                }
+                let texts = crate::ui::dockers::tests::painted_texts(&ctx, &mut app);
+                for k in keys {
+                    assert!(texts.iter().any(|x| x.contains(&tr(k))), "{t:?} {k}: {texts:?}");
+                }
+            });
+        }
+        // A turned, mirrored tile keeps its placement on the object.
+        let Some(Fill::Pattern(mut p)) = TransparencyType::TwoColorPattern.default_mask() else {
+            panic!("a pattern");
+        };
+        p.placement_mut().rotation = 30.0;
+        p.placement_mut().mirror_vertical = true;
+        let s = TransparencySettings {
+            kind: TransparencyType::TwoColorPattern.settings_kind(),
+            mask: Fill::Pattern(p.clone()),
+            ..Default::default()
+        };
+        app.patch_transparency(&s, &[F::Mask]);
+        let ts = app.selection_transparency();
+        assert_eq!(ts[0].mask, Some(Fill::Pattern(p.clone())));
+
+        // Save as New: once, of its type; a flat colour is no mask.
+        app.settings.saved_transparencies.clear();
+        save_transparency(&mut app, &Fill::Pattern(p.clone()));
+        save_transparency(&mut app, &Fill::Pattern(p.clone()));
+        save_transparency(&mut app, &Fill::Solid(Color::BLACK));
+        assert_eq!(app.settings.saved_transparencies, [Fill::Pattern(p.clone())]);
+        assert_eq!(
+            TransparencyType::of_mask(&app.settings.saved_transparencies[0]),
+            Some(TransparencyType::TwoColorPattern)
+        );
+        for i in 0..(MAX_SAVED + 5) {
+            let mut f = TransparencyType::Texture.default_mask().expect("mask");
+            if let Fill::Texture(t) = &mut f {
+                t.seed = i as u32 + 100;
+            }
+            save_transparency(&mut app, &f);
+        }
+        assert_eq!(app.settings.saved_transparencies.len(), MAX_SAVED);
+        assert!(!app.settings.saved_transparencies.contains(&Fill::Pattern(p)));
+    }
+
+    /// A Properties section whose values come from a linked object style
+    /// names that style; with Style indicators off, or no link, nothing.
+    #[test]
+    fn a_section_from_an_object_style_names_it() {
+        use crate::app::App;
+        let mut app = App::headless();
+        let id = app
+            .new_shape(ShapeKind::Rect {
+                rect: GRect::new(10.0, 10.0, 60.0, 40.0),
+                radius: 0.0,
+                corners: None,
+            })
+            .expect("rect");
+        app.select(vec![id]);
+        assert_eq!(crate::ui::dockers::style_source(&app, "fill"), None);
+        app.new_style_from_selection();
+        let mut styles = app.doc().object_styles.clone();
+        styles[0].name = "Brand".into();
+        styles[0].parts.outline = false;
+        app.run(tracedraw_core::Command::SetObjectStyles { styles });
+        assert_eq!(crate::ui::dockers::style_source(&app, "fill").as_deref(), Some("Brand"));
+        assert_eq!(crate::ui::dockers::style_source(&app, "outline"), None);
+        assert_eq!(crate::ui::dockers::style_source(&app, "summary"), None);
     }
 
     #[test]

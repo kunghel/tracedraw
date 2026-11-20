@@ -12,6 +12,9 @@ freehand loop.
   filled; an unfilled one on its outline. Text, groups, tables and pictures
   count anywhere inside their box.
 - <kbd>Shift</kbd>+click adds an object to the selection or takes it out.
+  With facing pages it also adds an object of the facing page, and a drag
+  around objects takes those of both pages: they move onto the current page,
+  where they show, so you can align them together.
 - **Drag** around objects, starting on an empty spot: the objects wholly
   inside the dashed frame are selected. Hold <kbd>Alt</kbd> as you finish the
   drag to select every object the frame touches; held from the start, the
@@ -76,7 +79,8 @@ Text tool keep their clicks.
   first), with <kbd>Shift</kbd> by the super nudge distance and with
   <kbd>Ctrl</kbd> by the micro nudge distance. Set them on the
   [[options.rulers]] page of the document options.
-- <kbd>+</kbd> duplicates the selection in place.
+- <kbd>+</kbd> duplicates the selection in place. Move, turn or scale the copy
+  while it is selected, and each <kbd>Ctrl+D</kbd> after that does the same again.
 
 ### Dragging with the right button {#right-drag}
 
@@ -124,6 +128,10 @@ that are like the selected ones:
   size as the selected text (in any of its characters).
 - [[menu.edit.similar_kind]]: the same kind of object (rectangles,
   ellipses, curves, artistic text, paragraph text, groups, bitmaps...).
+- **Close Look**: a look close to the selected object's within the
+  **Tolerance** at the bottom of the submenu (10 % at first): fill
+  colours, outline colours and widths, and transparency near enough.
+  Click an object, then choose it, to pick everything that looks alike.
 
 With several objects selected, an object like any of them is taken. The
 objects inside groups are compared too, each on its own, and a selected

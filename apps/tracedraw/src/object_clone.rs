@@ -730,6 +730,7 @@ mod tests {
                 center: tracedraw_core::geometry::Point::new(100.0, 20.0),
                 angle: 90.0,
                 lines: 1,
+                rotate: false,
             }],
         });
         app.select(vec![other]);

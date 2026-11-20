@@ -42,7 +42,7 @@
 
 - [[menu.bitmaps.crop_bitmap]] 用 [[tool.crop]] 工具裁剪位图；用 [[tool.shape]] 工具拖动位图的角也可以裁剪它。
 - [[menu.bitmaps.edit_bitmap]] 在另一个程序中打开位图。
-- [[menu.bitmaps.edit_inside]] (or a double click on the picture with the Pick tool) edits its pixels in place, inside TraceDraw: selections, brush, soft eraser, clone, heal, blur, content fill, red eye and any bitmap effect inside the selection only. Enter finishes, as one undo step.
+- [[menu.bitmaps.edit_inside]] (or a double click on the picture with the Pick tool) edits its pixels in place, inside TraceDraw: selections, brush, soft eraser, clone, heal, blur, content fill, red eye, layers with opacity and merge modes, and any bitmap effect inside the selection only. Enter finishes, as one undo step.
 - [[menu.bitmaps.remove_background]] 使照片的背景变为透明。
 - [[menu.bitmaps.remove_background_local]]: [删除背景](remove-background.md).
 - [[menu.bitmaps.break_link]] 和 [[menu.bitmaps.update_from_link]] 用于链接到文件的位图。

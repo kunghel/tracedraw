@@ -35,6 +35,12 @@ Open the [[docker.vector_mosaic]] panel with
      ends, for a light mosaic on a dark background.
    - **One color**: every tile in the color beside it instead of the
      picture's colors.
+   - **Remove background**: leaves out the tiles of the background's
+     color, so a logo on a solid ground becomes tiles only where the logo
+     is. **Auto** finds the background along the selection's edges; turn it
+     off to pick the color. The percentage is how close a tile's color
+     must be to go. Pick a curve of your own (such as a plus sign) under
+     **Shape** > **Custom** and **Select** to fill the logo with it.
 3. Click [[docker.apply]].
 
 The mosaic is one group placed on top of the selection, and is selected.

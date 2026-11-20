@@ -22,6 +22,15 @@ made in the program and pasted again.
   file without the extension and kept in the settings for every
   drawing. The same program is not added twice; at most 30 are kept.
 - Remove Program: the programs again; a click removes that one.
+- Insert What It Saves (a check mark, off by default, kept in the
+  settings, #3391): a program then opens on a blank white picture
+  (800 x 600 pixels, a PNG in the system's temporary folder, named
+  after the program). Nothing comes in until the program saves it
+  (Ctrl+S there); then the saved picture comes in at the page centre,
+  selected and linked to its file, and every later save there updates
+  it in the drawing, as an edited bitmap's file does (checked once a
+  second). A program that cannot open a PNG says so; its work still
+  comes in through Paste Object.
 
 In a browser and on Android there are no programs to start: the
 submenu holds Paste Object, Paste Special and From File.
@@ -35,3 +44,8 @@ submenu holds Paste Object, Paste Special and From File.
   Equations, Charts; opening Charts names it in the status bar; removing
   the first leaves Charts
   (`insert_object::tests::programs_are_added_once_opened_and_removed`).
+- Given Insert What It Saves on, when a program is opened, then it is
+  handed a blank 800 x 600 picture; nothing comes in until the picture's
+  file changes, then it comes in once, selected and linked to the file
+  (`insert_object::tests::what_the_program_saves_comes_into_the_drawing`,
+  `insert_object::tests::the_blank_picture_is_handed_to_the_program`).

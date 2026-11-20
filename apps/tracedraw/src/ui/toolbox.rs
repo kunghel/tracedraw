@@ -752,8 +752,9 @@ fn tool_button(
         }
     }
     // A right click on a tool button opens the toolbox's menu
-    // (customize, button size, the bars), as on the other bars.
-    crate::ui::bars::bar_menu(app, &resp, crate::ui::bars::Bar::Toolbox);
+    // (customize, button size, the bars), as on the other bars, under
+    // the tool's Properties (#3326).
+    crate::ui::bars::bar_menu_of(app, &resp, crate::ui::bars::Bar::Toolbox, Some(shown.id()));
     // A hover-opened list still allows a plain click to choose its tool.
     // A hold can also produce a click on release, so keep its list open.
     let opened_by_press = resp.clicked()

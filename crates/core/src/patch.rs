@@ -379,7 +379,11 @@ impl FillField {
                 pa.mirror_horizontal == pb.mirror_horizontal
                     && pa.mirror_vertical == pb.mirror_vertical
             }
-            FillField::TileShift => pa.shift_percent == pb.shift_percent && pa.shift == pb.shift,
+            FillField::TileShift => {
+                pa.shift_percent == pb.shift_percent
+                    && pa.shift == pb.shift
+                    && pa.overlap_percent == pb.overlap_percent
+            }
             FillField::TransformWithObject => pa.transform_with_object == pb.transform_with_object,
             _ => a == b,
         }
@@ -405,6 +409,7 @@ impl FillField {
                 let t = to.placement_mut();
                 t.shift_percent = f.shift_percent;
                 t.shift = f.shift;
+                t.overlap_percent = f.overlap_percent;
             }
             FillField::TransformWithObject => {
                 to.placement_mut().transform_with_object = f.transform_with_object

@@ -248,7 +248,7 @@ fn page_file(
         "eps" => tracedraw_io::eps::page_to_eps(doc, k).into_bytes(),
         // The classic AI file: one artboard, so one page per file (#1728).
         "ai" if st.classic_ai() => tracedraw_io::ai::page_to_ai8(doc, k).into_bytes(),
-        "dxf" => tracedraw_io::dxf::page_to_dxf(doc, k).into_bytes(),
+        "dxf" => tracedraw_io::dxf::page_to_dxf_with(doc, k, &st.dxf_options()).into_bytes(),
         "emf" => tracedraw_io::emf::page_to_emf(doc, k),
         "wmf" => tracedraw_io::emf::page_to_wmf(doc, k),
         "plt" => tracedraw_io::plt::page_to_plt_with(doc, k, &st.plt_options()).into_bytes(),

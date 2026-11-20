@@ -103,12 +103,19 @@ On the property bar:
 1. Choose the style on the property bar: Speech, Thought, Whisper, Shout or Caption.
 2. Drag a box: the balloon fills it, its tail welded on in one curve.
 3. Drag the diamond at the tail's tip to point the tail at someone; set its width and bend on the bar.
+4. With a balloon selected, **Add Text** on the bar puts a paragraph text inside it, fitted to its body and centred, ready to type in.
 
 ## Graph Paper {#graph-paper}
 
 The [[tool.graph_paper]] tool (<kbd>D</kbd>) draws a grid of cells: a group of
 rectangles that fill the box exactly. Set the **rows** and **columns** (4 by
 3 at first) on the property bar. Hold <kbd>Ctrl</kbd> for square cells.
+
+Choose **Radial** on the property bar (**Cells** goes back) for a radial grid:
+**Rings** (5 at first) evenly spaced from the middle out to the edge of the
+box, crossed by **Spokes** (8 at first) from the middle to the outer ring, the
+first pointing up. It is one group of ellipses and lines, the outer ring at
+the back; hold <kbd>Ctrl</kbd> for round rings.
 
 The default points, revolutions, rows and columns are also on the tool pages
 of the options; see [Tool options](../customize/tool-options.md).

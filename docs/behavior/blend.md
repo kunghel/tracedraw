@@ -219,6 +219,11 @@ curve and the range the `.cdr` files' blends use, #1192;
   through HSB around the hue circle (Clockwise: the hue rising from the
   start; Counterclockwise: falling), `t'` of the colour acceleration of
   the way.
+- Transparency: the object's uniform transparency (its opacity) mixed
+  from the start's to the end's like the colours, so a blend to a faded
+  end fades; every step took the start's before
+  (`live::tests::a_ribbon_of_many_faded_steps_along_an_s_curve`: two open
+  curves, a yellow outline, the end at 10 %, 146 steps along an S curve).
 - Rotation: each step turns about its own centre by `rotation * t'`.
   With Loop the whole blend turns instead about the middle `M` of the
   two objects' centres: step `k` is the step of the straight blend from

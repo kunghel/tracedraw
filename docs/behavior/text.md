@@ -1628,6 +1628,13 @@ stand-in next to each missing family: "Arial (Liberation Sans)".
   at once. Otherwise the status bar asks for a click on the path (a
   right-click cancels): the selected text goes on it, or with no text
   selected an empty text starts on the path, ready to type.
+- A text squeezed or stretched on one axis (a side handle of the Pick
+  tool) keeps its letters' shape on the path: the squeeze goes into the
+  character width (`width_pct`, times the x axis's length over the y
+  axis's) and the transform keeps only the even scale, the turn and the
+  place, one undo step with the fit; before, the letters standing on
+  the sides of a circle were squeezed across (#3485,
+  `text_path::tests::a_squeezed_text_keeps_its_letters_on_a_circle`).
 - While it waits, the pointer over a path or within 150 screen pixels of
   one shows the selected text where a click puts it: its letters
   outlined in blue, the line they stand on dashed, a dashed line from
@@ -1681,8 +1688,15 @@ stand-in next to each missing family: "Arial (Liberation Sans)".
   preferences: a drag off the path then moves the text away from it in
   whole steps,
   `text_path::tests::tick_snapping_moves_the_text_off_the_path_in_steps`),
-  Mirror horizontally and Mirror vertically (pressed while on) and
-  Straighten Text. Mirror horizontally flips the letters left to right
+  Mirror horizontally and Mirror vertically (pressed while on),
+  Follow path and Straighten Text. Follow path (off by default, shown
+  while the path the text was fitted to is in the drawing; the text keeps
+  the path's identity in its object data, `text_path.follow`) fits the
+  text again whenever the path's outline changes, in the step that
+  changed it: moved, resized or reshaped, the distance, offset and
+  placement kept; on a closed path the start keeps its share of the
+  outline's length. Undo takes both back; a deleted path leaves the text
+  as it is (#3571, `text_follow::tests`). Mirror horizontally flips the letters left to right
   (the text reads the other way along the path), Mirror vertically
   turns them upside down onto the path's other side, and both together
   turn the text round by 180 degrees. The mirrors keep the letters where they are along

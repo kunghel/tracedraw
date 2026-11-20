@@ -485,7 +485,18 @@ impl App {
         match &s.fill {
             Fill::Solid(c) => Some(*c),
             Fill::Fountain(f) => f.stops.first().map(|st| st.color),
-            _ => s.stroke.as_ref().map(|st| st.color),
+            // No fill: the outline's colour on the outline only. Inside an
+            // unfilled object (picked there with Treat All Objects as
+            // Filled) nothing of it shows, and its outline colour was read
+            // as if it were the fill (#3499): nothing is read from it, so
+            // the colour shown there is taken.
+            _ => {
+                let st = s.stroke.as_ref()?;
+                let reach = crate::interaction::outline_reach(s, s.transform);
+                let tol = self.object_pick_tol();
+                (crate::canvas::distance_to_path(&s.page_path(), p) <= (tol * 1.5).max(reach + tol))
+                    .then_some(st.color)
+            }
         }
     }
 
@@ -710,6 +721,7 @@ impl App {
     pub fn took_sampled_color(&mut self, c: Color, shift: bool) {
         self.eyedropper_color = Some(c);
         self.eyedropper_apply = true;
+        crate::ui::color_docker::take_sampled_color(self, c);
         self.status = crate::i18n::trf(
             "status.sampled_color",
             &[("c", &crate::app::color_description(c))],
@@ -824,6 +836,56 @@ mod tests {
         app.eyedropper_click(Point::new(45.0, 5.0), false, false, false);
         let sb = app.doc().find_shape(b).expect("b");
         assert_eq!(sb.fill, Fill::Solid(Color::rgb8(r, g, b8)));
+    }
+
+    /// A colour the Color Eyedropper samples shows in the Colour panel
+    /// as its new colour too, ready to apply or tweak; the panel kept
+    /// the colour it had before.
+    #[test]
+    fn a_sampled_colour_becomes_the_colour_panels_new_colour() {
+        let mut app = App::headless();
+        let a = rect(&mut app, Rect::new(0.0, 0.0, 20.0, 20.0));
+        app.run(Command::SetFill {
+            shapes: vec![a],
+            fill: Fill::Solid(Color::rgb8(30, 120, 210)),
+        });
+        app.select(Vec::new());
+        app.color_model = 0;
+        app.eyedropper_click(Point::new(10.0, 10.0), false, false, false);
+        assert_eq!(app.mixer_color.to_rgb8(), [30, 120, 210]);
+    }
+
+    /// #3499: with Treat All Objects as Filled, a click inside an
+    /// unfilled rectangle with a green outline read the green as its
+    /// fill. Inside, nothing of it shows: nothing is read from it (the
+    /// colour shown there is taken from the window); on its outline the
+    /// green is read, and Shift reads the outline anywhere.
+    #[test]
+    fn an_unfilled_object_gives_its_outline_colour_on_the_outline_only() {
+        let mut app = App::headless();
+        app.settings.treat_all_filled = true;
+        let a = rect(&mut app, Rect::new(0.0, 0.0, 40.0, 40.0));
+        app.run(Command::SetFill {
+            shapes: vec![a],
+            fill: Fill::None,
+        });
+        let green = Color::rgb8(0, 160, 0);
+        app.run(Command::SetStroke {
+            shapes: vec![a],
+            stroke: Some(tracedraw_core::Stroke {
+                color: green,
+                ..Default::default()
+            }),
+        });
+        let inside = Point::new(20.0, 20.0);
+        assert_eq!(app.hit_test_to_read(inside), Some(a), "picked inside");
+        assert_eq!(app.sample_color_at(inside, false), None);
+        assert!(app.eyedropper_wants_screen(inside, false, false));
+        assert_eq!(
+            app.sample_color_at(Point::new(0.0, 20.0), false),
+            Some(green)
+        );
+        assert_eq!(app.sample_color_at(inside, true), Some(green));
     }
 
     #[test]

@@ -69,8 +69,10 @@ pub fn curve_look(
         if let Some(o) = out {
             handles.push((p, o));
         }
-        // The incoming handle of a node reached by a curve.
-        if i > 0 {
+        // The incoming handle of a node reached by a curve; on the first
+        // node, while its handle is pulled, the opposite handle too, so the
+        // direction the curve leaves in shows both ways (#3620).
+        if i > 0 || c.dragging_handle {
             if let Some(h) = c.in_handle(i) {
                 handles.push((p, h));
             }
@@ -288,6 +290,23 @@ mod tests {
         assert_eq!(look.handles.len(), 2);
         assert!(close(look.handles[0].1, pt(70.0, 0.0)));
         assert!(close(look.handles[1].1, pt(50.0, 0.0)));
+    }
+
+    /// #3620: pulling the handle of the first node shows the opposite
+    /// handle too; once placed, the first node shows only its own.
+    #[test]
+    fn the_first_node_shows_both_handles_while_pulled() {
+        let mut c = CurveInProgress {
+            smooth: true,
+            nodes: vec![(pt(0.0, 0.0), Some(pt(10.0, 5.0)))],
+            dragging_handle: true,
+            ..Default::default()
+        };
+        let look = curve_look(&c, Some(pt(10.0, 5.0)), true, None);
+        assert_eq!(look.handles.len(), 2);
+        assert!(close(look.handles[1].1, pt(-10.0, -5.0)));
+        c.dragging_handle = false;
+        assert_eq!(curve_look(&c, None, true, None).handles.len(), 1);
     }
 
     #[test]

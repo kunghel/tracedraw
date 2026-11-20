@@ -91,11 +91,17 @@ pub fn own_kind(s: &Shape) -> BitmapFile {
         .map(|(_, v)| v.as_str());
     link.and_then(BitmapFile::from_name)
         .or_else(|| s.name.as_deref().and_then(BitmapFile::from_name))
-        .unwrap_or(if is_cmyk(s) {
+        .unwrap_or(if is_cmyk(s) || is_lab(s) {
             BitmapFile::Tiff
         } else {
             BitmapFile::Png
         })
+}
+
+/// Whether `s` is a picture in the Lab Color mode. PNG holds no Lab, so
+/// it is written as a CIE Lab TIFF (#3539).
+pub fn is_lab(s: &Shape) -> bool {
+    matches!(&s.kind, ShapeKind::Bitmap { png, .. } if crate::bitmap_fx::png_is_lab(png))
 }
 
 /// The picture's resolution in dots per inch, from its pixel width and
@@ -162,6 +168,10 @@ pub fn write(
         return out.ok_or_else(|| "CMYK encoding failed".to_string());
     }
     let img = crate::bitmap_fx::decode(png).ok_or("the picture cannot be read")?;
+    if kind == BitmapFile::Tiff && crate::bitmap_fx::png_is_lab(png) {
+        // A Lab Color picture stays Lab: it went out as RGB (#3539).
+        return Ok(lab_tiff(&img, dpi));
+    }
     let gray = crate::bitmap_fx::png_is_gray(png);
     let mut out = std::io::Cursor::new(Vec::new());
     match kind {
@@ -244,6 +254,9 @@ pub fn read(bytes: &[u8]) -> Result<ReadPicture, String> {
     if let Some(p) = read_palette_tiff(bytes) {
         return Ok(p);
     }
+    if let Some(p) = read_lab_tiff(bytes) {
+        return Ok(p);
+    }
     let rgba = crate::files::decode_picture(bytes)
         .map_err(|e| e.to_string())?
         .into_rgba8();
@@ -265,6 +278,8 @@ pub enum FileMode {
     BlackWhite,
     /// A palette of at most 256 colours.
     Indexed,
+    /// CIE Lab (a TIFF, #3539).
+    Lab,
 }
 
 /// The colour mode of picture file `bytes`, from its header: PNG (colour
@@ -274,6 +289,9 @@ pub enum FileMode {
 /// its grey picture). Every file came in as RGB, its mode lost (#3025).
 pub fn file_mode(bytes: &[u8]) -> FileMode {
     if bytes.starts_with(b"\x89PNG\r\n\x1a\n") && bytes.get(12..16) == Some(b"IHDR".as_slice()) {
+        if crate::bitmap_fx::png_is_lab(bytes) {
+            return FileMode::Lab;
+        }
         return match (bytes.get(24), bytes.get(25)) {
             (_, Some(3)) => FileMode::Indexed,
             (Some(1), Some(0)) => FileMode::BlackWhite,
@@ -305,6 +323,7 @@ pub fn file_mode(bytes: &[u8]) -> FileMode {
         let bits = tags.short(258).map(|(v, _)| v).unwrap_or(1);
         return match tags.short(262).map(|(v, _)| v) {
             Some(3) => FileMode::Indexed,
+            Some(8) => FileMode::Lab,
             Some(0 | 1) if tags.short(277).is_none_or(|(n, _)| n == 1) => {
                 if bits == 1 {
                     FileMode::BlackWhite
@@ -370,6 +389,7 @@ pub fn encode_as(img: &image::RgbaImage, mode: FileMode) -> Option<Vec<u8>> {
             fx::encode_indexed(img).or_else(|| fx::encode(img))
         }
         FileMode::Gray => fx::encode(img),
+        FileMode::Lab => fx::encode_lab(img),
     }
 }
 
@@ -519,6 +539,142 @@ fn read_palette_tiff(bytes: &[u8]) -> Option<ReadPicture> {
         rgba,
         planes: None,
         mode: FileMode::Indexed,
+    })
+}
+
+/// `img` as an uncompressed CIE Lab TIFF (photometric interpretation 8,
+/// TIFF 6.0 section 23): 8 bits a channel, L* from 0 to 100 over 0 to
+/// 255, a* and b* signed; an alpha channel beside them when a pixel is
+/// see-through; its resolution `dpi` when known (#3539).
+fn lab_tiff(img: &image::RgbaImage, dpi: f64) -> Vec<u8> {
+    let (w, h) = img.dimensions();
+    let alpha = !img.pixels().all(|p| p[3] == 255);
+    let n: u16 = if alpha { 4 } else { 3 };
+    let mut data = Vec::with_capacity(w as usize * h as usize * usize::from(n));
+    for p in img.pixels() {
+        let [l, a, b] = crate::bitmap_modes::rgb_to_lab([p[0], p[1], p[2]]);
+        data.push((l * 255.0 / 100.0).round().clamp(0.0, 255.0) as u8);
+        data.push(a.round().clamp(-128.0, 127.0) as i8 as u8);
+        data.push(b.round().clamp(-128.0, 127.0) as i8 as u8);
+        if alpha {
+            data.push(p[3]);
+        }
+    }
+    let dpi = if dpi.is_finite() && dpi > 0.0 {
+        dpi
+    } else {
+        72.0
+    };
+    // Header, then the values that do not fit a tag, then the pixels,
+    // then the directory.
+    let mut out = b"II*\0\0\0\0\0".to_vec();
+    let bits_at = out.len() as u32;
+    for _ in 0..n {
+        out.extend_from_slice(&8u16.to_le_bytes());
+    }
+    let res_at = out.len() as u32;
+    let res = (dpi * 100.0).round().clamp(1.0, f64::from(u32::MAX)) as u32;
+    out.extend_from_slice(&res.to_le_bytes());
+    out.extend_from_slice(&100u32.to_le_bytes());
+    let data_at = out.len() as u32;
+    out.extend_from_slice(&data);
+    if out.len() % 2 == 1 {
+        out.push(0);
+    }
+    let ifd = out.len() as u32;
+    out[4..8].copy_from_slice(&ifd.to_le_bytes());
+    // (tag, type, count, value): type 3 SHORT, 4 LONG, 5 RATIONAL.
+    let mut tags: Vec<(u16, u16, u32, u32)> = vec![
+        (256, 4, 1, w),
+        (257, 4, 1, h),
+        (258, 3, u32::from(n), bits_at),
+        (259, 3, 1, 1),
+        (262, 3, 1, 8),
+        (273, 4, 1, data_at),
+        (277, 3, 1, u32::from(n)),
+        (278, 4, 1, h),
+        (279, 4, 1, data.len() as u32),
+        (282, 5, 1, res_at),
+        (283, 5, 1, res_at),
+        (284, 3, 1, 1),
+        (296, 3, 1, 2),
+    ];
+    if alpha {
+        // Unassociated alpha.
+        tags.push((338, 3, 1, 2));
+    }
+    out.extend_from_slice(&(tags.len() as u16).to_le_bytes());
+    for (tag, ty, count, value) in tags {
+        out.extend_from_slice(&tag.to_le_bytes());
+        out.extend_from_slice(&ty.to_le_bytes());
+        out.extend_from_slice(&count.to_le_bytes());
+        out.extend_from_slice(&value.to_le_bytes());
+    }
+    out.extend_from_slice(&0u32.to_le_bytes());
+    out
+}
+
+/// A CIE Lab TIFF (photometric interpretation 8, 8 bits a channel,
+/// uncompressed, with or without an alpha channel): its pixels in sRGB
+/// and the Lab mode. The TIFF reader takes no Lab, so the picture
+/// written for Edit Bitmap did not come back (#3539).
+fn read_lab_tiff(bytes: &[u8]) -> Option<ReadPicture> {
+    let tags = TiffTags::new(bytes)?;
+    if tags.short(262)?.0 != 8 || tags.short(259).is_some_and(|(c, _)| c != 1) {
+        return None;
+    }
+    let long = |tag: u16| -> Option<u32> {
+        (0..tags.n).find_map(|i| {
+            let e = tags.ifd + 2 + i * 12;
+            if tags.u16(e)? != tag {
+                return None;
+            }
+            match tags.u16(e + 2)? {
+                3 => Some(u32::from(tags.u16(e + 8)?)),
+                4 => Some(tags.u32(e + 8)?),
+                _ => None,
+            }
+        })
+    };
+    let (w, h) = (long(256)?, long(257)?);
+    let n = long(277).unwrap_or(1) as usize;
+    if !(3..=4).contains(&n) || w == 0 || h == 0 {
+        return None;
+    }
+    let bits_count = (0..tags.n).find_map(|i| {
+        let e = tags.ifd + 2 + i * 12;
+        (tags.u16(e)? == 258).then(|| tags.u32(e + 4)).flatten()
+    });
+    if bits_count.is_some_and(|c| c == 1) && tags.short(258).is_some_and(|(b, _)| b != 8) {
+        return None;
+    }
+    // One strip, or strips one after another.
+    let count = (0..tags.n).find_map(|i| {
+        let e = tags.ifd + 2 + i * 12;
+        (tags.u16(e)? == 273).then(|| tags.u32(e + 4)).flatten()
+    })?;
+    let first = if count == 1 {
+        long(273)?
+    } else {
+        let at = long(273)? as usize;
+        tags.u32(at)?
+    };
+    let len = w as usize * h as usize * n;
+    let data = bytes.get(first as usize..(first as usize).checked_add(len)?)?;
+    let mut rgba = image::RgbaImage::new(w, h);
+    for (p, px) in rgba.pixels_mut().zip(data.chunks_exact(n)) {
+        let lab = [
+            f32::from(px[0]) * 100.0 / 255.0,
+            f32::from(px[1] as i8),
+            f32::from(px[2] as i8),
+        ];
+        let [r, g, b] = crate::bitmap_modes::lab_to_rgb(lab);
+        *p = image::Rgba([r, g, b, if n == 4 { px[3] } else { 255 }]);
+    }
+    Some(ReadPicture {
+        rgba,
+        planes: None,
+        mode: FileMode::Lab,
     })
 }
 
@@ -1933,5 +2089,124 @@ mod tests {
         let cmyk = include_bytes!("../testdata/progressive-cmyk.jpg");
         assert!(tracedraw_core::jpeg_source::decode_rgba(cmyk).is_none());
         let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// A disc of soft-edged colours on a see-through square, `n` pixels
+    /// across: many colours, many see-through levels at its edge.
+    fn soft_disc(n: u32) -> image::RgbaImage {
+        let c = n as f32 / 2.0;
+        image::RgbaImage::from_fn(n, n, |x, y| {
+            let d = ((x as f32 + 0.5 - c).hypot(y as f32 + 0.5 - c) - (c - 4.0)).clamp(-1.0, 3.0);
+            let a = ((1.0 - (d + 1.0) / 4.0) * 255.0).round() as u8;
+            image::Rgba([(x * 255 / n) as u8, (y * 255 / n) as u8, 120, a])
+        })
+    }
+
+    fn bitmap_of(app: &mut App, img: &image::RgbaImage, png: Vec<u8>) -> ShapeId {
+        let (w, h) = img.dimensions();
+        app.new_shape(ShapeKind::Bitmap {
+            rect: Rect::new(0.0, 0.0, w as f64 * 25.4 / 300.0, h as f64 * 25.4 / 300.0),
+            width_px: w,
+            height_px: h,
+            png: png.into(),
+            fx: None,
+        })
+        .expect("bitmap")
+    }
+
+    fn png_of(app: &App, id: ShapeId) -> Vec<u8> {
+        match &app.doc().find_shape(id).expect("bitmap").kind {
+            ShapeKind::Bitmap { png, .. } => png.to_vec(),
+            _ => panic!("a bitmap"),
+        }
+    }
+
+    /// #3539, #3504: Indexed (8-bit) of a see-through picture with soft
+    /// edges is an indexed bitmap (a palette PNG with a clear entry), not
+    /// RGB; Black and White (1-bit) of one is a true 1-bit bitmap on
+    /// white; a Lab Color picture goes to Edit Bitmap as a CIE Lab TIFF,
+    /// which reads back as a Lab bitmap with the same colours.
+    #[test]
+    fn image_modes_of_see_through_and_lab_pictures_stay_in_their_mode() {
+        use crate::bitmap_fx::{self as fx, ColorMode};
+        let mut app = App::headless();
+        let img = soft_disc(64);
+        let id = bitmap_of(&mut app, &img, fx::encode(&img).expect("png"));
+        app.select(vec![id]);
+        app.paletted_bitmaps(&crate::bitmap_modes::PalettedSettings::default());
+        let png = png_of(&app, id);
+        assert!(fx::png_is_paletted(&png), "indexed, not RGB");
+        let out = fx::decode(&png).expect("decodes");
+        assert_eq!(
+            *out.get_pixel(0, 0),
+            image::Rgba([0, 0, 0, 0]),
+            "the corner clear"
+        );
+        assert_eq!(out.get_pixel(32, 32)[3], 255, "the middle opaque");
+        // The fitting alone: at most 256 entries whatever comes in.
+        let many = image::RgbaImage::from_fn(64, 64, |x, y| {
+            image::Rgba([
+                (x * 4) as u8,
+                (y * 4) as u8,
+                ((x + y) * 2) as u8,
+                (x * 3) as u8,
+            ])
+        });
+        assert!(fx::encode_indexed(&many).is_none());
+        assert!(fx::png_is_paletted(
+            &fx::encode_indexed_fitted(&many).expect("indexed")
+        ));
+
+        let id = bitmap_of(&mut app, &img, fx::encode(&img).expect("png"));
+        app.select(vec![id]);
+        app.black_and_white_bitmaps(&Default::default());
+        let png = png_of(&app, id);
+        assert_eq!((png[24], png[25]), (1, 0), "1-bit grey, no alpha");
+        let out = fx::decode(&png).expect("decodes");
+        assert_eq!(
+            *out.get_pixel(0, 0),
+            image::Rgba([255, 255, 255, 255]),
+            "on white"
+        );
+
+        for alpha in [false, true] {
+            let src = if alpha {
+                img.clone()
+            } else {
+                fx::flatten_on_white(&img)
+            };
+            let lab = crate::bitmap_modes::lab_mode(&src);
+            let id = bitmap_of(&mut app, &lab, fx::encode_lab(&lab).expect("png"));
+            let s = app.doc().find_shape(id).expect("bitmap").clone();
+            assert!(is_lab(&s));
+            assert_eq!(own_kind(&s), BitmapFile::Tiff);
+            let d = dir(if alpha { "3539-lab-alpha" } else { "3539-lab" });
+            let path = app.write_bitmap_for_editing(id, &d).expect("written");
+            assert_eq!(path.extension().and_then(|e| e.to_str()), Some("tif"));
+            let bytes = std::fs::read(&path).expect("read");
+            assert_eq!(file_mode(&bytes), FileMode::Lab);
+            let back = read(&bytes).expect("a Lab TIFF reads");
+            assert_eq!(back.mode, FileMode::Lab);
+            assert_eq!(back.rgba.dimensions(), lab.dimensions());
+            for (a, b) in back.rgba.pixels().zip(lab.pixels()) {
+                assert_eq!(a[3], b[3]);
+                if b[3] > 0 {
+                    // 8 bits of L*, a* and b* round a little: the colours
+                    // stay within a just noticeable difference.
+                    let la = crate::bitmap_modes::rgb_to_lab([a[0], a[1], a[2]]);
+                    let lb = crate::bitmap_modes::rgb_to_lab([b[0], b[1], b[2]]);
+                    let de = la
+                        .iter()
+                        .zip(lb)
+                        .map(|(x, y)| (x - y).powi(2))
+                        .sum::<f32>()
+                        .sqrt();
+                    assert!(de < 1.5, "{a:?} {b:?} {de}");
+                }
+            }
+            let (png, _) = back.into_png().expect("png");
+            assert_eq!(fx::mode_of(false, &png), ColorMode::Lab);
+            let _ = std::fs::remove_dir_all(&d);
+        }
     }
 }

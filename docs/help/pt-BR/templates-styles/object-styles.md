@@ -73,3 +73,8 @@ estão ligados a ele e as partes como caixas de seleção:
 Você ainda pode mudar um objeto ligado diretamente; a próxima mudança do estilo
 volta a aplicar as partes dele. Clique com o botão direito em um objeto para
 aplicar um estilo pelo menu.
+
+No painel Propriedades, um pequeno quadrado no fim da barra de Preenchimento,
+Contorno ou Transparência mostra que os valores vêm do estilo vinculado; aponte
+para ele para ver o nome do estilo. Clique com o botão direito numa dessas
+barras para mostrar ou ocultar esses indicadores de estilo.

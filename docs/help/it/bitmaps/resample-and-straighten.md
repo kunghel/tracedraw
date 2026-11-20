@@ -67,7 +67,7 @@ Alcuni effetti, come le sfocature, si estendono oltre i bordi di una bitmap.
   [[tool.crop]]; anche trascinare un angolo di una bitmap con lo strumento
   [[tool.shape]] la ritaglia.
 - [[menu.bitmaps.edit_bitmap]] apre la bitmap in un altro programma.
-- [[menu.bitmaps.edit_inside]] (or a double click on the picture with the Pick tool) edits its pixels in place, inside TraceDraw: selections, brush, soft eraser, clone, heal, blur, content fill, red eye and any bitmap effect inside the selection only. Enter finishes, as one undo step.
+- [[menu.bitmaps.edit_inside]] (or a double click on the picture with the Pick tool) edits its pixels in place, inside TraceDraw: selections, brush, soft eraser, clone, heal, blur, content fill, red eye, layers with opacity and merge modes, and any bitmap effect inside the selection only. Enter finishes, as one undo step.
 - [[menu.bitmaps.remove_background]] rende trasparente lo sfondo di una foto.
 - [[menu.bitmaps.remove_background_local]]: [Rimuovi sfondo](remove-background.md).
 - [[menu.bitmaps.break_link]] e [[menu.bitmaps.update_from_link]] agiscono

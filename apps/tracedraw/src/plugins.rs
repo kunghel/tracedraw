@@ -37,6 +37,24 @@ const TraceDrawPlugin = {
 };
 "#;
 
+/// The command key of a plugin's command, for its menu row and the
+/// keyboard shortcuts of Options > Customization (#3519). Dots would end
+/// the key's last part early (see `i18n::tr`).
+pub fn command_key(plugin: &str, command: &str) -> String {
+    format!(
+        "menu.plugin_command.{}|{}",
+        plugin.replace('.', " "),
+        command.replace('.', " ")
+    )
+}
+
+/// A plugin command's name and plugin, from its key.
+pub fn command_name(key: &str) -> Option<(String, String)> {
+    let rest = key.strip_prefix("menu.plugin_command.")?;
+    let (plugin, command) = rest.split_once('|')?;
+    Some((command.to_string(), plugin.to_string()))
+}
+
 impl App {
     /// Install `src` as a plugin, replacing one of the same name (which
     /// keeps whether it was on). Says so on the status line.
@@ -135,7 +153,7 @@ impl App {
 /// Tools > Plugins: each plugin that is on (its command, or a submenu of
 /// its commands), then the Plugin Manager, New Plugin and Install Plugin.
 pub fn menu_items(app: &mut App, ui: &mut egui::Ui) {
-    use crate::ui::menus::{item, item_label, sep, sub};
+    use crate::ui::menus::{item, item_text, sep, sub};
     let plugins: Vec<Plugin> = app
         .settings
         .plugins
@@ -145,7 +163,7 @@ pub fn menu_items(app: &mut App, ui: &mut egui::Ui) {
         .collect();
     for p in &plugins {
         if let [only] = p.commands.as_slice() {
-            if item_label(ui, only, "", true) {
+            if item_text(ui, only, "", true, None, &command_key(&p.name, only)) {
                 app.run_plugin_command(&p.name, 0);
             }
         } else {
@@ -153,7 +171,7 @@ pub fn menu_items(app: &mut App, ui: &mut egui::Ui) {
             let key = format!("menu.plugin.{}", p.name.replace('.', "\u{b7}"));
             sub(ui, &key, |ui| {
                 for (i, c) in p.commands.iter().enumerate() {
-                    if item_label(ui, c, "", true) {
+                    if item_text(ui, c, "", true, None, &command_key(&p.name, c)) {
                         app.run_plugin_command(&p.name, i);
                     }
                 }

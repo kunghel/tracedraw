@@ -102,7 +102,8 @@ and [[toolbar.corners_together]]. [[options.scale_corners]]:
 
 ![The Graph Paper tool options](../../img/customize-tool-options-graph-paper.png)
 
-[[options.rows]] and [[options.columns]] of the grid.
+[[options.rows]] and [[options.columns]] of the grid; **Radial** draws a radial
+grid of **Rings** and **Spokes** instead.
 
 ## Spiral {#spiral}
 

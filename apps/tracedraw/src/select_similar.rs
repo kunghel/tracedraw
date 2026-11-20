@@ -18,14 +18,19 @@ pub enum Similar {
     TextFormat,
     /// The same kind of object (rectangles, curves, artistic text...).
     Kind,
+    /// A look close to it within the tolerance: fill colours, outline
+    /// colours and widths, and opacity near enough, as a click with a
+    /// wand that picks what looks alike.
+    Look,
 }
 
 impl Similar {
-    pub const ALL: [Similar; 4] = [
+    pub const ALL: [Similar; 5] = [
         Similar::Fill,
         Similar::Outline,
         Similar::TextFormat,
         Similar::Kind,
+        Similar::Look,
     ];
 
     /// The menu item's key.
@@ -35,6 +40,7 @@ impl Similar {
             Similar::Outline => "menu.edit.similar_outline",
             Similar::TextFormat => "menu.edit.similar_text_format",
             Similar::Kind => "menu.edit.similar_kind",
+            Similar::Look => "menu.edit.similar_look",
         }
     }
 
@@ -45,6 +51,7 @@ impl Similar {
             Similar::Outline => "menu.edit.repeat_similar_outline",
             Similar::TextFormat => "menu.edit.repeat_similar_text_format",
             Similar::Kind => "menu.edit.repeat_similar_kind",
+            Similar::Look => "menu.edit.repeat_similar_look",
         }
     }
 }
@@ -99,9 +106,52 @@ fn members<'a>(shape: &'a Shape, groups: bool, out: &mut Vec<&'a Shape>) {
     }
 }
 
-/// Whether `candidate` is like `reference` in the way `how` asks.
-pub fn is_similar(reference: &Shape, candidate: &Shape, how: Similar) -> bool {
+/// How far apart two colours are, 0 (the same) to 1 (black and white):
+/// the largest difference of their red, green and blue.
+fn color_gap(a: tracedraw_core::Color, b: tracedraw_core::Color) -> f64 {
+    let (a, b) = (a.to_rgb8(), b.to_rgb8());
+    (0..3)
+        .map(|i| (a[i] as f64 - b[i] as f64).abs() / 255.0)
+        .fold(0.0, f64::max)
+}
+
+/// Whether two fills look alike within `tol` (0 to 1): solid colours
+/// that far apart at most; any other fill the same.
+fn fills_close(a: &tracedraw_core::Fill, b: &tracedraw_core::Fill, tol: f64) -> bool {
+    use tracedraw_core::Fill;
+    match (a, b) {
+        (Fill::Solid(x), Fill::Solid(y)) => color_gap(*x, *y) <= tol + 1e-9,
+        _ => a == b,
+    }
+}
+
+/// Whether two outlines look alike within `tol` (0 to 1): both none, or
+/// colours that far apart at most and widths within `tol` of the wider.
+fn strokes_close(
+    a: &Option<tracedraw_core::Stroke>,
+    b: &Option<tracedraw_core::Stroke>,
+    tol: f64,
+) -> bool {
+    match (a, b) {
+        (None, None) => true,
+        (Some(x), Some(y)) => {
+            let wide = x.width.max(y.width);
+            color_gap(x.color, y.color) <= tol + 1e-9
+                && (x.width - y.width).abs() <= wide * tol + 1e-9
+        }
+        _ => false,
+    }
+}
+
+/// Whether `candidate` is like `reference` in the way `how` asks; `tol`
+/// (0 to 1) for [`Similar::Look`].
+pub fn is_similar(reference: &Shape, candidate: &Shape, how: Similar, tol: f64) -> bool {
     match how {
+        Similar::Look => {
+            fills_close(&reference.fill, &candidate.fill, tol)
+                && strokes_close(&reference.stroke, &candidate.stroke, tol)
+                && (reference.opacity - candidate.opacity).abs() <= tol + 1e-9
+        }
         Similar::Fill => reference.fill == candidate.fill,
         Similar::Outline => reference.stroke == candidate.stroke,
         Similar::TextFormat => {
@@ -167,6 +217,19 @@ pub fn holds_locked(s: &Shape) -> bool {
         }
 }
 
+/// Select Similar's Tolerance, for Close Look: a field in its submenu.
+pub fn tolerance_row(ui: &mut egui::Ui, tolerance: &mut u32) {
+    ui.separator();
+    ui.horizontal(|ui| {
+        ui.label(crate::i18n::tr("menu.edit.similar_tolerance"));
+        ui.add(
+            crate::ui::field::NumField::new(tolerance)
+                .range(0..=100)
+                .suffix(" %"),
+        );
+    });
+}
+
 impl App {
     /// The objects Select All takes: those of the current page's
     /// unlocked layers neither locked nor holding a locked object (the
@@ -229,6 +292,7 @@ impl App {
         // Object Type compares a selected group as a group; the other ways
         // compare the objects in it.
         let kind = how == Similar::Kind;
+        let tol = f64::from(self.settings.similar_tolerance.min(100)) / 100.0;
         let mut refs = Vec::new();
         for s in shapes {
             if kind {
@@ -244,7 +308,7 @@ impl App {
         }
         candidates
             .into_iter()
-            .filter(|c| refs.iter().any(|r| is_similar(r, c, how)))
+            .filter(|c| refs.iter().any(|r| is_similar(r, c, how, tol)))
             .map(|c| c.id)
             .collect()
     }
@@ -473,6 +537,53 @@ mod tests {
             },
         )
         .expect("rect")
+    }
+
+    /// Close Look picks the objects that look alike within the
+    /// tolerance: near fill colours, near outline colours and widths and
+    /// near opacity, not a far colour, a missing outline or a gradient;
+    /// at 0 % only the same look, and one undo puts the selection back.
+    #[test]
+    fn close_look_picks_what_looks_alike_within_the_tolerance() {
+        let mut app = App::headless();
+        let line = |c: Color, w: f64| Some(Stroke::new(c, w));
+        let red = Color::rgb8(200, 30, 30);
+        let a = rect(&mut app, 0.0, Fill::Solid(red), line(Color::BLACK, 1.0));
+        // 10 % of 255 is 25.5: 20 levels off is close, 40 is not.
+        let near = rect(
+            &mut app,
+            20.0,
+            Fill::Solid(Color::rgb8(220, 40, 20)),
+            line(Color::rgb8(10, 10, 10), 1.05),
+        );
+        let far = rect(
+            &mut app,
+            40.0,
+            Fill::Solid(Color::rgb8(240, 30, 30)),
+            line(Color::BLACK, 1.0),
+        );
+        let thick = rect(&mut app, 60.0, Fill::Solid(red), line(Color::BLACK, 2.0));
+        let bare = rect(&mut app, 80.0, Fill::Solid(red), None);
+        let faint = rect(&mut app, 100.0, Fill::Solid(red), line(Color::BLACK, 1.0));
+        app.run(tracedraw_core::Command::SetOpacity {
+            shapes: vec![faint],
+            opacity: 0.5,
+        });
+        let _ = (far, thick, bare);
+        assert_eq!(app.settings.similar_tolerance, 10);
+        app.select(vec![a]);
+        app.select_similar(Similar::Look);
+        let mut got = app.selection.clone();
+        got.sort();
+        let mut want = vec![a, near];
+        want.sort();
+        assert_eq!(got, want);
+        app.undo();
+        assert_eq!(app.selection, vec![a]);
+        app.settings.similar_tolerance = 0;
+        app.select_similar(Similar::Look);
+        assert_eq!(app.selection, vec![a]);
+        assert!(Similar::ALL.contains(&Similar::Look));
     }
 
     fn ellipse(app: &mut App, x: f64, fill: Fill) -> ShapeId {
@@ -870,7 +981,7 @@ mod tests {
             hue: 90.0,
             ..Default::default()
         };
-        assert!(app.recolor_shapes(vec![s.blue_r], r));
+        assert!(app.recolor_shapes(vec![s.blue_r], r.clone()));
         assert_eq!(app.repeat_on_similar(Similar::Fill), 0, "no other blue");
         app.select(vec![s.red_a]);
         assert!(app.recolor_shapes(vec![s.red_a], r));

@@ -7,7 +7,10 @@
 //!
 //! Several files picked at once (discussion #2695) come in one after
 //! another, each placed in turn, and end up selected together; Esc calls
-//! off the one waiting and those after it.
+//! off the one waiting and those after it. While the drag that places
+//! the first of them lasts, the arrow keys lay them out in a grid: Right
+//! and Left add and take away a column, Up and Down a row, and each file
+//! comes in fitted in its cell, its proportions kept, in the middle of it.
 
 use crate::app::App;
 use crate::i18n::tr;
@@ -32,6 +35,29 @@ pub enum Placement {
     Fit(Rect),
     /// In the middle of the page, at its own size.
     PageCenter,
+    /// Fitted in this box, its proportions kept, in the middle of it.
+    Cell(Rect),
+}
+
+/// Most columns or rows a drag lays files out in.
+pub const MAX_GRID: u32 = 50;
+
+/// The cells of `r` split in `cols` columns and `rows` rows, row by
+/// row from the top left (page space has y up).
+pub fn grid_cells(r: Rect, cols: u32, rows: u32) -> Vec<Rect> {
+    let (cols, rows) = (cols.max(1), rows.max(1));
+    let (x0, y1) = (r.x0.min(r.x1), r.y0.max(r.y1));
+    let w = r.width().abs() / cols as f64;
+    let h = r.height().abs() / rows as f64;
+    let mut out = Vec::with_capacity((cols * rows) as usize);
+    for row in 0..rows {
+        for col in 0..cols {
+            let x = x0 + col as f64 * w;
+            let y = y1 - row as f64 * h;
+            out.push(Rect::new(x, y - h, x + w, y));
+        }
+    }
+    out
 }
 
 /// A placement waiting for an import that asked a question first (how
@@ -78,6 +104,11 @@ pub fn placement_transform(b: Rect, placement: Placement, page: Rect) -> Option<
             Affine::translate(corner.to_vec2())
                 * Affine::scale(s)
                 * Affine::translate(-top_left.to_vec2())
+        }
+        Placement::Cell(r) => {
+            let fit = placement_transform(b, Placement::Fit(r), page)?;
+            let fb = fit.transform_rect_bbox(b);
+            Affine::translate(r.center() - fb.center()) * fit
         }
     };
     let c = t.as_coeffs();
@@ -126,6 +157,7 @@ impl App {
         match self.import_queue.pop_front() {
             Some(next) => self.import_picked(&next),
             None => {
+                self.import_cells.clear();
                 let Some(batch) = self.import_batch.take() else {
                     return;
                 };
@@ -143,6 +175,16 @@ impl App {
     }
 
     pub fn import_picked(&mut self, path: &std::path::Path) {
+        // A file picked with others that a drag laid out in a grid goes
+        // to its cell.
+        if let Some(cell) = self.import_cells.pop_front() {
+            self.import_placing = Some(ImportPlacing {
+                path: path.to_path_buf(),
+                drag_from: None,
+            });
+            self.place_import(Placement::Cell(cell));
+            return;
+        }
         if self.settings.formats.import_with_cursor {
             self.begin_import_placement(path);
         } else {
@@ -156,6 +198,7 @@ impl App {
             path: path.to_path_buf(),
             drag_from: None,
         });
+        self.import_grid = (1, 1);
         if let Some(tag) = self.import_placement_tag() {
             self.status = tag;
         }
@@ -170,7 +213,34 @@ impl App {
             .file_name()
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_default();
-        Some(crate::i18n::trf("status.import_place", &[("name", &name)]))
+        let mut tag = crate::i18n::trf("status.import_place", &[("name", &name)]);
+        if !self.import_queue.is_empty() {
+            let (cols, rows) = self.import_grid;
+            tag.push('\n');
+            tag.push_str(&crate::i18n::trf(
+                "status.import_grid",
+                &[("cols", &cols.to_string()), ("rows", &rows.to_string())],
+            ));
+        }
+        Some(tag)
+    }
+
+    /// The most columns or rows the files waiting can fill.
+    fn import_grid_limit(&self) -> u32 {
+        ((self.import_queue.len() + 1) as u32).min(MAX_GRID)
+    }
+
+    /// The cells of the drag placing several files, when it has more
+    /// than one.
+    pub fn import_placement_cells(&self) -> Vec<Rect> {
+        let Some(r) = self.import_placement_box() else {
+            return Vec::new();
+        };
+        let (cols, rows) = self.import_grid;
+        if cols * rows <= 1 {
+            return Vec::new();
+        }
+        grid_cells(r, cols, rows)
     }
 
     /// Esc or a right click: nothing comes in.
@@ -179,6 +249,7 @@ impl App {
             // The files picked with it are called off too; what came
             // before stays, selected together.
             self.import_queue.clear();
+            self.import_cells.clear();
             self.status = tr("status.cancelled");
         }
     }
@@ -280,6 +351,7 @@ impl App {
                 .map(|s| self.view.to_page(s))
                 .unwrap_or(p);
             placing.drag_from = Some(from);
+            self.import_grid = (1, 1);
             return true;
         }
         if response.drag_stopped_by(PointerButton::Primary) {
@@ -287,8 +359,16 @@ impl App {
                 return true;
             };
             let r = Rect::from_points(from, p);
+            let (cols, rows) = std::mem::replace(&mut self.import_grid, (1, 1));
             let placement = if r.width() < MIN_FIT || r.height() < MIN_FIT {
                 Placement::Corner(from)
+            } else if cols * rows > 1 {
+                // Several files laid out in a grid: this one in the first
+                // cell, those after it in the next ones.
+                let mut cells: std::collections::VecDeque<Rect> = grid_cells(r, cols, rows).into();
+                let first = cells.pop_front().unwrap_or(r);
+                self.import_cells = cells;
+                Placement::Cell(first)
             } else {
                 Placement::Fit(r)
             };
@@ -316,6 +396,40 @@ impl App {
         if key(Key::Space) || key(Key::Enter) {
             self.place_import(Placement::PageCenter);
             return true;
+        }
+        // While the drag placing several files lasts: the arrows change
+        // the columns and rows they are laid out in.
+        let dragging = self
+            .import_placing
+            .as_ref()
+            .is_some_and(|p| p.drag_from.is_some());
+        if dragging && !self.import_queue.is_empty() {
+            let limit = self.import_grid_limit();
+            let (mut cols, mut rows) = self.import_grid;
+            let mut used = false;
+            if key(Key::ArrowRight) {
+                cols += 1;
+                used = true;
+            }
+            if key(Key::ArrowLeft) {
+                cols = cols.saturating_sub(1);
+                used = true;
+            }
+            if key(Key::ArrowUp) {
+                rows += 1;
+                used = true;
+            }
+            if key(Key::ArrowDown) {
+                rows = rows.saturating_sub(1);
+                used = true;
+            }
+            if used {
+                self.import_grid = (cols.clamp(1, limit), rows.clamp(1, limit));
+                if let Some(tag) = self.import_placement_tag() {
+                    self.status = tag;
+                }
+                return true;
+            }
         }
         false
     }
@@ -364,5 +478,27 @@ mod tests {
         let page = Rect::new(0.0, 0.0, 210.0, 297.0);
         let t = placement_transform(b, Placement::PageCenter, page).expect("centre");
         assert!(close(t * b.center(), page.center()));
+    }
+
+    #[test]
+    fn a_grid_splits_the_box_row_by_row_from_the_top_left() {
+        let r = Rect::from_points(Point::new(100.0, 0.0), Point::new(0.0, 60.0));
+        let cells = grid_cells(r, 2, 3);
+        assert_eq!(cells.len(), 6);
+        assert_eq!(cells[0], Rect::new(0.0, 40.0, 50.0, 60.0));
+        assert_eq!(cells[1], Rect::new(50.0, 40.0, 100.0, 60.0));
+        assert_eq!(cells[5], Rect::new(50.0, 0.0, 100.0, 20.0));
+    }
+
+    #[test]
+    fn a_cell_holds_the_import_fitted_in_its_middle() {
+        // 20 x 40 into a 100 x 100 cell: 50 x 100, centred.
+        let b = Rect::new(10.0, 20.0, 30.0, 60.0);
+        let page = Rect::new(0.0, 0.0, 210.0, 297.0);
+        let cell = Rect::new(50.0, 100.0, 150.0, 200.0);
+        let t = placement_transform(b, Placement::Cell(cell), page).expect("cell");
+        let got = t.transform_rect_bbox(b);
+        assert!(close(got.center(), cell.center()), "{got:?}");
+        assert!((got.width() - 50.0).abs() < 1e-9 && (got.height() - 100.0).abs() < 1e-9);
     }
 }
