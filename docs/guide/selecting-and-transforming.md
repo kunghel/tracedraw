@@ -88,7 +88,9 @@ inside a group.
 - Press **Esc** during a drag to cancel it.
 
 While you drag, the objects stay put and a blue outline shows where they
-will land; the status bar shows the distance and angle.
+will land; the status bar shows the distance and angle. To see the
+objects themselves move and stretch while you drag, turn on **Show
+objects while transforming** in Options > Display.
 
 ### Drag with the right mouse button
 

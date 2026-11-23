@@ -68,6 +68,8 @@ A aceleração dos objetos move os passos para uma ponta também quando a mistur
 não segue um caminho. Um efeito de bitmap no objeto inicial mantém a mistura
 desenhada.
 
+![Uma mistura feita com a ferramenta Mistura, curvada pela alça redonda](../../img/effects-blend-bend.png)
+
 ## Misturar ao longo de um caminho {#path}
 
 1. Selecione a mistura.

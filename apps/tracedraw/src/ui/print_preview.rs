@@ -768,6 +768,10 @@ pub fn show(app: &mut App, ui: &mut Ui) {
                         ui.add_enabled_ui(has_selection, |ui| {
                             ui.radio_value(&mut st.range, 3, tr("print.range_selection"));
                         });
+                        if st.range == 3 {
+                            ui.checkbox(&mut st.selection_on_page, tr("print.selection_on_page"))
+                                .rich_tip(crate::ui::tips::keyed("print.selection_on_page"));
+                        }
                         ui.end_row();
                         ui.horizontal(|ui| {
                             if ui
@@ -3074,7 +3078,7 @@ mod tests {
         let size = crate::splash::DEFAULT_SIZE;
         for code in [
             "en", "es", "pt-BR", "fr", "de", "it", "nl", "pl", "cs", "ru", "tr", "id", "ar", "hi",
-            "bn", "ja", "zh-CN", "zh-TW", "lo",
+            "bn", "ja", "zh-CN", "zh-TW", "lo", "vi",
         ] {
             crate::i18n::with_thread_language(code, || {
                 let ctx = crate::theme::ui_context();

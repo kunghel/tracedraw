@@ -69,6 +69,21 @@ while choosing File > Export or clicking the toolbar button, File >
 Export with Options (Ctrl+Shift+E) show the options
 whatever the setting, with the check box ticked so it can be taken off
 (`pick_drag_tests::with_the_options_set_not_to_show_export_writes_at_once`).
+
+On the desktop the export runs off the interface's thread
+(`exporting::Exporting`): the pages to write and what they need of the
+program are made ready at once (`export::prepare_export`), and a worker
+makes the files and writes them (`ExportWork::run`). The status line
+says "Exporting <file>…" and, when it takes more than 0.4 seconds, a
+window "Exporting <name>" shows a bar: "Writing file 3 of 12" filling
+file by file for a format that writes a file for each page, a moving
+bar for one file. What is typed, clicked or dropped is held back until
+it ends (closing the window waits for it), and the status line then
+says what any export says. Before, the program stood still for the
+whole export with nothing on screen. In the browser, in the tests and
+for exports run by macros, agents and the command line the files are
+written at once (`export::tests::an_export_runs_off_the_interfaces_thread`).
+
 In the browser and on Android the setting goes straight to the file
 with the last options, as before.
 
@@ -121,7 +136,7 @@ Preferences saved before are brought back to off once (upgrade 7,
 | BMP, PSD | resolution |
 | JPEG XL | resolution, transparent background; always lossless, so it takes no quality (#3063) |
 | PDF | Export all text as curves (off at first: every text becomes filled outlines, so the file needs no fonts and cannot be searched; #1382, `export::tests::export_pdf_text_as_curves_holds_no_font`), standard (PDF 1.4, PDF/X-1a, PDF/X-3, PDF/X-4), bleed, output condition for PDF/X; the author, subject and keywords come from the drawing's properties (File > Export as PDF has bookmarks and protection, see `publish-to-pdf.md`) |
-| AI | Compatibility: PDF-compatible (the default) or Illustrator 8 (EPS-based); see "AI files" below (#1728) |
+| AI | Compatibility: PDF-compatible (the default) or Classic AI (EPS); see "AI files" below (#1728) |
 | PLT | Scale (100 %), Plotter origin (bottom left of page or centre of page), Plotter units per inch (1016), Curve resolution (0.02 mm), HPGL/2 pen colours and widths (on), One pen for every outline (off); see `plt.md`, "Export choices" (#2652) |
 | SVG, EPS, DXF, HTML, EMF, WMF | none |
 | PostScript (`.ps`), PRN (`.prn`) | none; every exported page in one file (All pages, else the current page), each page setting its size with `setpagedevice` and ending with `showpage` (Document Structuring Conventions 3.0); a `.prn` print file is the same PostScript, to send to a PostScript printer |
@@ -328,6 +343,11 @@ dialog's choices, and Export for Web and Office keep their own (#617,
   their outlines included (also those of objects inside a group), so an
   outline is never cut at the file's edge (#2290,
   `export::tests::a_selection_exported_alone_keeps_its_whole_outline`).
+  The objects are moved to the file's corner; a blend's steps keep
+  running to its end object. A blend inside a clip frame or a group
+  moves with it, and its end was moved once more, so its steps came out
+  as a staircase running off to one side (#3832,
+  `export::tests::a_clipped_blend_exported_as_the_selection_keeps_its_steps`).
 - Under the format's settings: Selected only and the export range; at
   the bottom, above OK and Cancel, "Do not show this dialog again" (see
   "Skipping the options").
@@ -397,8 +417,8 @@ last AI export and in export presets.
   are. It keeps everything the drawing holds (text with its fonts,
   fountain fills, pictures, transparency) and holds every page chosen.
   The default stays so that nobody's exports change without asking.
-- Illustrator 8 (EPS-based): the classic file of version 8, PostScript
-  as the public "Adobe Illustrator File Format Specification" describes
+- Classic AI (EPS): the classic `.ai` file of version 8, PostScript
+  as the public AI file format specification of that version describes
   it, for programs that read only those files (3D and engraving
   programs among them). The file starts `%!PS-Adobe-3.0` with
   `%%Creator: TraceDraw`, `%%AI8_CreatorVersion: 8.0`, `%%Title`,

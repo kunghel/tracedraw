@@ -71,6 +71,7 @@
 
 - [[docker.fill_pattern]] 填色會重複拼貼：雙色、向量圖樣或點陣圖。請參閱[圖樣填色](patterns.md)。
 - [[docker.fill_texture]] 填色是自動產生、外觀自然的材質：[[texture.clouds]]、[[texture.marble]]、[[texture.noise]] 或 [[texture.wood]]，並可設定其色彩和比例。
+- [[texture.holographic]] 和 [[texture.holo_glitter]] 呈現固定的全像箔效果：彩虹色在深色與淺色區域（色彩 A 和 B）之間流動，亮粉帶有閃亮的顆粒。不隨視角改變；PDF 和 SVG 以影像形式保存。
 
 ## 一個物件上的多重填色 {#several-fills}
 

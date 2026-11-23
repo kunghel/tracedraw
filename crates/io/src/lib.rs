@@ -43,15 +43,58 @@ pub enum Error {
 pub type Result<T> = std::result::Result<T, Error>;
 
 /// Whether the nonzero fill rule can fill `path` differently from
-/// even-odd: only when it has more than one subpath. Importers set
+/// even-odd: when it has more than one subpath, or one subpath that
+/// crosses itself (a glyph drawn as one outline looping over itself, such
+/// as the 9 and the 6 of a bold face, showed slivers of holes where the
+/// loop overlapped, #3868). Importers set
 /// [`FillRule::NonZero`](tracedraw_core::shaping::FillRule) only then,
 /// so a plain shape stays as it always was.
 pub(crate) fn nonzero_matters(path: &tracedraw_core::geometry::BezPath) -> bool {
-    path.elements()
+    use tracedraw_core::geometry::{PathEl, Point};
+    let moves = path
+        .elements()
         .iter()
-        .filter(|e| matches!(e, tracedraw_core::geometry::PathEl::MoveTo(_)))
-        .count()
-        > 1
+        .filter(|e| matches!(e, PathEl::MoveTo(_)))
+        .count();
+    if moves != 1 {
+        return moves > 1;
+    }
+    // The outline as straight segments, closed back to its start.
+    let bounds = kurbo::Shape::bounding_box(path);
+    let scale = bounds.width().max(bounds.height()).max(1e-9);
+    let mut pts: Vec<Point> = Vec::new();
+    tracedraw_core::geometry::flatten(path, scale * 1e-4, &mut |e| match e {
+        PathEl::MoveTo(p) | PathEl::LineTo(p) => pts.push(p),
+        _ => {}
+    });
+    if let (Some(&first), Some(&last)) = (pts.first(), pts.last()) {
+        if (first - last).hypot() > 1e-12 {
+            pts.push(first);
+        }
+    }
+    pts.dedup_by(|a, b| (*a - *b).hypot() < 1e-12);
+    let n = pts.len().saturating_sub(1);
+    // Too long an outline to check: the rule that fills it right.
+    if n > 4000 {
+        return true;
+    }
+    let cross = |o: Point, a: Point, b: Point| (a - o).cross(b - o);
+    for i in 0..n {
+        let (a, b) = (pts[i], pts[i + 1]);
+        for j in i + 2..n {
+            // The last segment meets the first at the start.
+            if i == 0 && j == n - 1 {
+                continue;
+            }
+            let (c, d) = (pts[j], pts[j + 1]);
+            let (d1, d2) = (cross(a, b, c), cross(a, b, d));
+            let (d3, d4) = (cross(c, d, a), cross(c, d, b));
+            if d1 * d2 < 0.0 && d3 * d4 < 0.0 {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 /// The document as vector exports should see it: unless the document
@@ -410,6 +453,39 @@ mod tests {
         geometry::{Rect, Size},
         Color, Fill, Pattern, Stroke,
     };
+
+    /// One outline that loops over itself fills differently under the
+    /// two rules (the 9 of a bold face, #3868); a plain one does not.
+    #[test]
+    fn a_self_crossing_outline_needs_the_nonzero_rule() {
+        use tracedraw_core::geometry::{BezPath, Point};
+        let poly = |pts: &[(f64, f64)]| {
+            let mut p = BezPath::new();
+            p.move_to(Point::new(pts[0].0, pts[0].1));
+            for q in &pts[1..] {
+                p.line_to(Point::new(q.0, q.1));
+            }
+            p.close_path();
+            p
+        };
+        let square = poly(&[(0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0)]);
+        assert!(!nonzero_matters(&square));
+        // A tail that runs back across the body, as a 9's does.
+        let looped = poly(&[
+            (0.0, 0.0),
+            (10.0, 0.0),
+            (10.0, 10.0),
+            (2.0, 10.0),
+            (2.0, -5.0),
+            (4.0, -5.0),
+            (4.0, 8.0),
+            (0.0, 8.0),
+        ]);
+        assert!(nonzero_matters(&looped));
+        let mut two = square.clone();
+        two.extend(poly(&[(2.0, 2.0), (4.0, 2.0), (4.0, 4.0)]));
+        assert!(nonzero_matters(&two));
+    }
 
     /// #1331: an inverted star (negative sharpness) reopens as it was
     /// saved, and the SVG export

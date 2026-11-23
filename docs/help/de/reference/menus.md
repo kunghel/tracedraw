@@ -99,6 +99,7 @@ Ihre eigenen Tastenkürzel zeigen; siehe
 | [[menu.view.navigator]] | [Undoing, zooming and panning](../get-started/undo-and-views.md#views) |
 | [[menu.view.proof_colors]] | [Color management](../color/color-management.md#proof) |
 | [[menu.view.simulate_overprints]] | [Color management](../color/color-management.md#proof) |
+| [[menu.view.separations]] | [Color management](../color/color-management.md#proof) |
 | [[menu.view.rasterize_complex_effects]] | [Rulers, grids and guidelines](../pages-layout/guidelines-and-grid.md) |
 | [[menu.view.page]] | [Rulers, grids and guidelines](../pages-layout/guidelines-and-grid.md) |
 | [[menu.view.page_border]] | [Rulers, grids and guidelines](../pages-layout/guidelines-and-grid.md) |
@@ -226,6 +227,15 @@ Ihre eigenen Tastenkürzel zeigen; siehe
 | [[menu.object.front_minus_back]] | [Combining shapes: weld, trim and intersect](../lines-shapes/shaping.md) |
 | [[menu.object.back_minus_front]] | [Combining shapes: weld, trim and intersect](../lines-shapes/shaping.md) |
 | [[menu.object.boundary]] | [Combining shapes: weld, trim and intersect](../lines-shapes/shaping.md) |
+| [[menu.object.break_pieces]] | [Combining shapes: weld, trim and intersect](../lines-shapes/shaping.md) |
+| [[menu.object.merge_colors]] | [Combining shapes: weld, trim and intersect](../lines-shapes/shaping.md) |
+| [[menu.object.cut_to_top]] | [Combining shapes: weld, trim and intersect](../lines-shapes/shaping.md) |
+| [[menu.object.piece_outlines]] | [Combining shapes: weld, trim and intersect](../lines-shapes/shaping.md) |
+| [[menu.object.exclude]] | [Combining shapes: weld, trim and intersect](../lines-shapes/shaping.md) |
+| [[menu.object.combine_live]] | [Combining shapes: weld, trim and intersect](../lines-shapes/shaping.md) |
+| [[menu.object.cut_below]] | [Combining shapes: weld, trim and intersect](../lines-shapes/shaping.md) |
+| [[menu.object.cut_grid]] | [Combining shapes: weld, trim and intersect](../lines-shapes/shaping.md) |
+| [[menu.object.remove_strays]] | [Combining shapes: weld, trim and intersect](../lines-shapes/shaping.md) |
 | [[menu.object.shaping_docker]] | [Combining shapes: weld, trim and intersect](../lines-shapes/shaping.md) |
 | [[menu.object.combine]] | [Organizing objects and layers](../objects/objects-and-layers.md) |
 | [[menu.object.break_apart]] | [Organizing objects and layers](../objects/objects-and-layers.md) |

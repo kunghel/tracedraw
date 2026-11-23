@@ -75,3 +75,10 @@ il pannello [[docker.color]] avvisa di tali colori.
 
 Senza profili caricati, TraceDraw converte i colori con un proprio modello di
 inchiostri di quadricromia su carta patinata.
+
+[[menu.view > menu.view.separations]] mostra la pagina come la stampa un solo
+inchiostro, nel colore di quell'inchiostro: scegliete ciano, magenta, giallo,
+nero o un inchiostro spot del disegno, e si vede solo ciò che quell'inchiostro
+stampa. Potete continuare a disegnare e modificare come sempre; il disegno non
+cambia. [[menu.view.separations_composite]] mostra di nuovo tutti gli
+inchiostri.

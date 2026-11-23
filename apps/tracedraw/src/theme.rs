@@ -1009,7 +1009,10 @@ pub fn bundled_font_definitions() -> egui::FontDefinitions {
 /// script (the bundled one covers Latin, Greek and Cyrillic).
 #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 pub fn needs_system_font(code: &str) -> bool {
-    matches!(code, "zh-CN" | "zh-TW" | "ja" | "ar" | "hi" | "bn" | "lo")
+    matches!(
+        code,
+        "zh-CN" | "zh-TW" | "ja" | "ar" | "hi" | "bn" | "lo" | "vi"
+    )
 }
 
 /// The family of the font folder (browser build) that covers the script
@@ -1021,6 +1024,8 @@ pub fn ui_script_family(code: &str) -> Option<&'static str> {
         "zh-TW" => Some("Noto Sans TC"),
         "ja" => Some("Noto Sans JP"),
         "lo" => Some("Noto Sans Lao"),
+        // The bundled font lacks the Vietnamese letters with two marks.
+        "vi" => Some("Noto Sans"),
         _ => None,
     }
 }
@@ -1106,6 +1111,17 @@ const UI_SCRIPT_FONTS: &[&[&str]] = &[
         "Lao Sangam MN",
         "Leelawadee UI",
         "Saysettha OT",
+    ],
+    // Vietnamese: the letters with two marks (ấ, ể, ợ and the like),
+    // which the bundled font lacks.
+    &[
+        "Noto Sans",
+        "Segoe UI",
+        "Arial",
+        "Helvetica Neue",
+        "DejaVu Sans",
+        "Liberation Sans",
+        "FreeSans",
     ],
     // Thai: file names, layer and page names typed in it (#2168).
     &[
@@ -1215,6 +1231,26 @@ mod theme_tests {
         .join()
         .expect("the other test");
         assert_eq!(theme(), Theme::Light);
+    }
+
+    /// The Vietnamese interface shows its letters with two marks when the
+    /// system has a font for them (the bundled one has none of them).
+    #[test]
+    fn vietnamese_letters_have_an_interface_font() {
+        let vi = UI_SCRIPT_FONTS
+            .iter()
+            .find(|g| g.first() == Some(&"Noto Sans"))
+            .expect("a group of fonts with the Vietnamese letters");
+        assert!(vi.contains(&"Segoe UI") && vi.contains(&"Arial"));
+        if tracedraw_text::fonts().first_face_data(vi).is_some() {
+            let ctx = ui_context();
+            let mut out = ctx.run_ui(Default::default(), |_| {});
+            out.textures_delta.clear();
+            let font = egui::FontId::proportional(14.0);
+            for c in "Tiếng Việt ợ ể".chars().filter(|c| !c.is_whitespace()) {
+                assert!(ctx.fonts_mut(|f| f.has_glyph(&font, c)), "{c}");
+            }
+        }
     }
 
     /// Names typed in Hebrew show in the interface (the file name field,
@@ -1381,7 +1417,7 @@ mod theme_tests {
     /// bundled font covers (#561), Lao among them.
     #[test]
     fn cjk_interface_languages_have_a_font_to_fetch() {
-        for code in ["zh-CN", "zh-TW", "ja", "lo"] {
+        for code in ["zh-CN", "zh-TW", "ja", "lo", "vi"] {
             assert!(needs_system_font(code));
             assert!(ui_script_family(code).is_some(), "{code}");
         }

@@ -578,7 +578,10 @@ impl App {
                     inner.height().max(0.1),
                 )),
                 align: cell.align,
-                para: tracedraw_core::ParagraphStyle::default(),
+                para: tracedraw_core::ParagraphStyle {
+                    vertical_align: cell.valign,
+                    ..tracedraw_core::ParagraphStyle::default()
+                },
                 on_path: None,
             },
         ))

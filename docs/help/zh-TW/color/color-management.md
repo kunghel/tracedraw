@@ -38,3 +38,5 @@ CMYK 描述檔會隨繪圖保存，也會寫入版本 16 以上的 `.cdr` 檔案
 [[menu.view > menu.view.proof_colors]]，或狀態列右端的校樣按鈕，會以印刷時的樣子顯示繪圖：CMYK 油墨無法印出的色彩看起來會比較暗淡。[[docker.color]] 面板也會針對這類色彩發出警告。
 
 沒有載入描述檔時，TraceDraw 會以其本身對塗佈紙上印刷油墨的模型來轉換色彩。
+
+[[menu.view > menu.view.separations]] 依一種油墨的印刷效果、以該油墨的顏色顯示頁面：選擇青、洋紅、黃、黑或繪圖中的特別色，只顯示該油墨印刷的部分。您可以照常繼續繪製與編輯，繪圖本身不會改變。[[menu.view.separations_composite]] 會重新顯示所有油墨。

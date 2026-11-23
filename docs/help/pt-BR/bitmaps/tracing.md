@@ -93,6 +93,10 @@ A guia [[dialog.trace_tab_settings]] contém:
   [[dialog.trace_group_by_color]] põe as curvas de cada cor em um grupo
   próprio; fica disponível quando as áreas de uma cor ainda não estão
   mescladas.
+- **Limpar rascunho a lápis** (desligado no início): para lettering desenhado
+  a lápis. Antes da vetorização, as hachuras e os contornos duplos viram formas
+  pretas sólidas, as linhas de construção e as sujeiras somem e as bordas são
+  suavizadas; o resultado é vetorizado em preto sobre branco.
 - [[dialog.delete_original]]: o bitmap some quando o resultado é colocado.
 
 As configurações que não se aplicam ao tipo de vetorização atual ficam

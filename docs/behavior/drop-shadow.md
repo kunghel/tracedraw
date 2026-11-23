@@ -73,6 +73,11 @@ written (the blend goes out alone, with a warning in the log).
   frame (an empty part of an unfilled frame, or contents outside the
   frame, cast none). The shadow is measured on the frame's box (the
   group's box). Break Drop Shadow Apart makes the same silhouette (#873).
+  Ungroup keeps a group's shadow where it showed (#3831): it comes out
+  as the bitmap Break Drop Shadow Apart makes, just behind the group's
+  objects, in the Ungroup's undo step; the objects get no shadow of
+  their own (each casting one would darken the objects beneath it)
+  (`shadow_tool::tests::ungrouping_keeps_the_groups_drop_shadow`).
 
 - With the Pick tool a click on the drop shadow, away from its object,
   chooses the shadow on its own: it shows a box of its own, out to its

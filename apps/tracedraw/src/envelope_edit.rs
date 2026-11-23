@@ -154,10 +154,16 @@ fn with_frame(effects: &[Effect], at: usize, frame: &Frame) -> Vec<Effect> {
         if let Effect::Envelope {
             keep_lines,
             mapping,
+            reference,
             ..
         } = e
         {
+            // An envelope kept from a group still maps the group's box.
+            let reference = *reference;
             *e = Effect::from_envelope(frame, *keep_lines, *mapping);
+            if let Effect::Envelope { reference: r, .. } = e {
+                *r = reference;
+            }
         }
     }
     out
@@ -591,7 +597,8 @@ impl App {
     /// envelope only when it is edited (#2611); a click on nothing clears
     /// the selection.
     pub fn envelope_tool_input(&mut self, response: &Response, p: Point) {
-        if self.envelope_input(response, p) {
+        // A frame's nodes, then a mesh envelope's grid points.
+        if self.envelope_input(response, p) || self.effect_node_input(response, p) {
             return;
         }
         // A drag from outside the frame of a selected object: a marquee
@@ -651,15 +658,60 @@ impl App {
         self.selected_effect_node = None;
     }
 
-    /// Clear Envelope: each selected object loses its last envelope, one
-    /// undo step.
+    /// Add Mesh Envelope: a grid of `envelope_mesh` columns and rows laid
+    /// over each selected object as it now looks, its points dragged with
+    /// the Envelope (or Shape) tool to bend the object; it takes the
+    /// place of a mesh envelope the object has last, one undo step.
+    pub fn add_mesh_envelope(&mut self) {
+        let (cols, rows) = self.envelope_mesh;
+        let mut cmds = Vec::new();
+        for id in self.selection.clone() {
+            let Some(s) = self.doc().find_shape(id) else {
+                continue;
+            };
+            let mut effects = s.effects.clone();
+            let last_mesh = matches!(effects.last(), Some(Effect::MeshEnvelope { .. }));
+            if last_mesh {
+                effects.pop();
+            }
+            let b = box_at(s, effects.len());
+            if b.width() < 1e-9 || b.height() < 1e-9 {
+                continue;
+            }
+            effects.push(Effect::mesh_envelope_around(b, cols, rows));
+            cmds.push(Command::SetEffects { shape: id, effects });
+        }
+        if cmds.is_empty() {
+            return;
+        }
+        if let Err(e) = self.engine.run_batch("Add Mesh Envelope", &cmds) {
+            self.status = e.to_string();
+        }
+        self.selected_effect_node = None;
+    }
+
+    /// The object has an envelope: a frame or a mesh.
+    pub fn has_any_envelope(&self, id: ShapeId) -> bool {
+        self.doc().find_shape(id).is_some_and(|s| {
+            s.effects
+                .iter()
+                .any(|e| matches!(e, Effect::Envelope { .. } | Effect::MeshEnvelope { .. }))
+        })
+    }
+
+    /// Clear Envelope: each selected object loses its last envelope (a
+    /// frame or a mesh), one undo step.
     pub fn clear_envelope(&mut self) {
         let mut cmds = Vec::new();
         for id in self.selection.clone() {
             let Some(s) = self.doc().find_shape(id) else {
                 continue;
             };
-            let Some((at, _)) = last_envelope(&s.effects) else {
+            let Some(at) = s
+                .effects
+                .iter()
+                .rposition(|e| matches!(e, Effect::Envelope { .. } | Effect::MeshEnvelope { .. }))
+            else {
                 continue;
             };
             let mut effects = s.effects.clone();
@@ -778,7 +830,14 @@ impl App {
                 _ => (self.envelope_keep_lines, self.envelope_mapping),
             };
             if let Some(e) = effects.get_mut(at) {
+                let reference = match e {
+                    Effect::Envelope { reference, .. } => *reference,
+                    _ => None,
+                };
                 *e = Effect::from_envelope(&make(b), keep, mapping);
+                if let Effect::Envelope { reference: r, .. } = e {
+                    *r = reference;
+                }
             }
             cmds.push(Command::SetEffects { shape: id, effects });
         }
@@ -804,10 +863,43 @@ impl App {
     /// The selected objects take `source`'s last envelope, its frame
     /// stretched from `source`'s box to each object's, one undo step. A
     /// source with no envelope gives the shape of its outline, so text
-    /// can be fitted into a drawn shape (#993): as in CorelDRAW, each
+    /// can be fitted into a drawn shape (#993): each
     /// object takes that shape at its size, centred where the object is
     /// (#2178).
     pub fn copy_envelope_from(&mut self, source: ShapeId) {
+        self.envelope_from(source, false);
+    }
+
+    /// Envelope from Top Object: of two or more selected objects, the top
+    /// one's outline becomes the envelope of the others, which are fitted
+    /// into it where it is, and the top object goes; one undo step.
+    pub fn envelope_from_top_object(&mut self) {
+        if self.selection.len() < 2 {
+            return;
+        }
+        let doc = self.doc();
+        let tops: Vec<ShapeId> = self
+            .selection
+            .iter()
+            .map(|id| doc.ancestors(*id).first().copied().unwrap_or(*id))
+            .collect();
+        let mut top = None;
+        for l in self.page_layers().iter() {
+            for s in &l.shapes {
+                if let Some(k) = tops.iter().position(|t| *t == s.id) {
+                    top = Some(self.selection[k]);
+                }
+            }
+        }
+        if let Some(top) = top {
+            self.envelope_from(top, true);
+        }
+    }
+
+    /// [`Self::copy_envelope_from`]; with `fit`, an outline (a source
+    /// with no envelope) is the envelope where it lies on the page, the
+    /// objects fitted into it, and the source is deleted.
+    fn envelope_from(&mut self, source: ShapeId, fit: bool) {
         let Some(src) = self.doc().find_shape(source).cloned() else {
             return;
         };
@@ -862,14 +954,16 @@ impl App {
             let to = box_at(s, at);
             // The frame of an outline keeps the outline's size and shape,
             // centred where the object is: from the page into the
-            // object's own space. As in CorelDRAW (#2178, and the video
+            // object's own space. As in #2178 (and the video
             // of #2344, where the object was moved into the shape by
             // hand afterwards), the object stays where it is; it was
             // moved into the outline.
             let to_page = self.doc().parent_transform(id).unwrap_or(Affine::IDENTITY) * s.transform;
             let into_object = to_page.inverse();
             let finite = into_object.as_coeffs().iter().all(|c| c.is_finite());
-            let m = if on_page && finite {
+            let m = if on_page && finite && fit {
+                into_object
+            } else if on_page && finite {
                 let shift = to_page * to.center() - from.center();
                 into_object * Affine::translate(shift)
             } else {
@@ -888,8 +982,19 @@ impl App {
         if cmds.is_empty() {
             return;
         }
-        if let Err(e) = self.engine.run_batch("Copy Envelope", &cmds) {
+        let label = if fit {
+            cmds.push(Command::DeleteShapes {
+                shapes: vec![source],
+            });
+            "Envelope from Top Object"
+        } else {
+            "Copy Envelope"
+        };
+        if let Err(e) = self.engine.run_batch(label, &cmds) {
             self.status = e.to_string();
+        }
+        if fit {
+            self.selection.retain(|id| *id != source);
         }
     }
 }
@@ -912,6 +1017,76 @@ mod tests {
     fn bounds(app: &App, id: ShapeId) -> Rect {
         let s = app.doc().shape_on_page(id).expect("shape");
         tracedraw_core::live::evaluate(&s).main.bounds()
+    }
+
+    /// Add Mesh lays a grid of the chosen columns and rows over the
+    /// object, leaving it as it was; a moved grid point bends it; Clear
+    /// Envelope takes the mesh off.
+    #[test]
+    fn a_mesh_envelope_bends_the_object_and_clears() {
+        let mut app = App::headless();
+        let id = rect(&mut app, 0.0, 0.0, 40.0, 20.0);
+        app.select(vec![id]);
+        app.envelope_mesh = (4, 2);
+        app.add_mesh_envelope();
+        let effects = |app: &App| app.doc().find_shape(id).expect("shape").effects.clone();
+        let Some(Effect::MeshEnvelope { cols, rows, points }) = effects(&app).last().cloned() else {
+            panic!("no mesh: {:?}", effects(&app));
+        };
+        assert_eq!((cols, rows, points.len()), (4, 2, 15));
+        let b = bounds(&app, id);
+        assert!((b.width() - 40.0).abs() < 1e-6 && (b.height() - 20.0).abs() < 1e-6, "{b:?}");
+        // The top middle point pulled up 10 mm.
+        let mut moved = points.clone();
+        moved[2 * 5 + 2].y += 10.0;
+        let mut e = effects(&app);
+        e.pop();
+        e.push(Effect::MeshEnvelope { cols, rows, points: moved });
+        app.engine
+            .run(&Command::SetEffects { shape: id, effects: e })
+            .expect("set");
+        let b = bounds(&app, id);
+        assert!(b.height() > 29.0, "{b:?}");
+        // The Envelope tool finds the grid point.
+        app.set_tool(crate::tools::Tool::Envelope);
+        let s = app.doc().shape_on_page(id).expect("shape");
+        let at = crate::interaction2::effect_point(&s, crate::interaction2::MESH_ENVELOPE_BASE + 12)
+            .expect("point");
+        assert_eq!(
+            app.effect_node_at(at),
+            Some((id, crate::interaction2::MESH_ENVELOPE_BASE + 12))
+        );
+        // Add Mesh again replaces it; Clear takes it off.
+        app.add_mesh_envelope();
+        assert_eq!(
+            effects(&app).iter().filter(|e| matches!(e, Effect::MeshEnvelope { .. })).count(),
+            1
+        );
+        app.clear_envelope();
+        assert!(effects(&app).is_empty());
+    }
+
+    /// Envelope from Top Object: the top object's outline is the others'
+    /// envelope where it lies, and it goes, in one undo step.
+    #[test]
+    fn the_top_object_becomes_the_envelope_of_the_others() {
+        let mut app = App::headless();
+        let under = rect(&mut app, 0.0, 0.0, 40.0, 20.0);
+        let top = app
+            .new_shape(ShapeKind::Ellipse {
+                rect: Rect::new(100.0, 100.0, 160.0, 130.0),
+                arc: None,
+            })
+            .expect("top");
+        app.select(vec![top, under]);
+        let depth = app.engine.history_labels().0.len();
+        app.envelope_from_top_object();
+        assert!(app.doc().find_shape(top).is_none());
+        assert!(app.selection == vec![under]);
+        let b = bounds(&app, under);
+        assert!((b.x0 - 100.0).abs() < 0.5 && (b.x1 - 160.0).abs() < 0.5, "{b:?}");
+        assert!((b.y0 - 100.0).abs() < 0.5 && (b.y1 - 130.0).abs() < 0.5, "{b:?}");
+        assert_eq!(app.engine.history_labels().0.len(), depth + 1);
     }
 
     /// Several envelope nodes can be chosen, by Shift+click or a marquee

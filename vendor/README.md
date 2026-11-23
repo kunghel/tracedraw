@@ -473,3 +473,14 @@ change marked `TraceDraw:` in a comment.
   carry them: move `drop_files` onto those) and file drops on Wayland,
   and check that egui-winit
   still maps `Touch` forces the same way.
+- Change: macOS, an event that arrives while another is being handled
+  is left out with a line in the log instead of a panic
+  (`platform_impl/macos/event_handler.rs`, `handle_event`). winit queues
+  an event that comes while the handler is in use and delivers it from
+  the run loop; when the system runs its own loop inside the handler (a
+  dialog of the system held open), the queued event reaches the handler
+  while it is still in use. winit panicked there, and a panic cannot
+  unwind through the AppKit block that delivers the event, so the
+  program was ended at once with "panic in a function that cannot
+  unwind" and the drawing was lost (#4017, #4042). One event left out
+  (a redraw, a pointer move) costs nothing next to that.

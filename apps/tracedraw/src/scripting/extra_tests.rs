@@ -375,3 +375,69 @@ fn a_recorded_text_background_plays_back() {
     );
     assert_eq!(backgrounds(&again), vec![Some(black)]);
 }
+
+/// A dimension's label size changed on the Dimension bar while a macro is
+/// recorded is in the recorded script, after the dimension it was drawn
+/// with, and plays back on the dimension the macro draws (#4026: only
+/// the dimension was recorded, at the size new dimensions had).
+#[test]
+fn a_dimension_label_size_change_is_recorded_and_plays_back() {
+    use tracedraw_core::geometry::Point;
+    let mut app = App::headless();
+    app.toggle_recording();
+    app.create_dimension(
+        Point::new(10.0, 10.0),
+        Point::new(50.0, 10.0),
+        Point::new(30.0, 0.0),
+    );
+    let dim = top(&app).pop().expect("dimension").id;
+    app.select(vec![dim]);
+    app.set_dimension_style(|s| s.text_size = 30.0);
+    assert_eq!(dimensions(&app)[0].style.text_size, 30.0);
+    app.toggle_recording();
+    let script = app.script_source.clone();
+    let made = script.find("layer.CreateHorizontalDimension(").expect(&script);
+    let sized = script
+        .find("ActiveSelection.SetDimensionStyle({\"text_size\":30.0});")
+        .expect(&script);
+    assert!(made < sized, "{script}");
+    let mut again = App::headless();
+    js(&mut again, &script);
+    let dims = dimensions(&again);
+    assert_eq!(dims.len(), 1, "{script}");
+    assert_eq!(dims[0].style.text_size, 30.0);
+}
+
+/// Scripts and VBA macros read and set a dimension's label size and the
+/// other settings of its style; other objects are left alone and a
+/// setting the style does not have is an error (#4026).
+#[test]
+fn scripts_and_macros_set_a_dimensions_label_size() {
+    let mut app = App::headless();
+    let out = js(
+        &mut app,
+        "const d = ActiveLayer.CreateParallelDimension(10, 10, 40, 50, 0, 60);
+         const r = ActiveLayer.CreateRectangle(0, 0, 5, 5);
+         d.LabelSize = 300;
+         print(d.LabelSize, r.LabelSize, new ShapeRange([d.id, r.id]).SetDimensionStyle({precision: 3, font: 'Arial'}));",
+    );
+    assert_eq!(out, vec!["300 null 1"]);
+    let d = &dimensions(&app)[0];
+    assert_eq!(d.style.text_size, 300.0);
+    assert_eq!(d.style.precision, 3);
+    assert_eq!(d.style.font, "Arial");
+    assert!(run(&mut app, "ActiveSelection.SetDimensionStyle({label_size: 3});").is_err());
+
+    let mut app = App::headless();
+    let out = run_vgcore(
+        &mut app,
+        "ActiveDocument.Unit = cdrMillimeter;
+         const d = ActiveLayer.CreateLinearDimension(cdrDimensionHorizontal, [0, 0], [40, 30]);
+         ActiveSelection.LabelSize = 24;
+         print(d.LabelSize);",
+        "Macro",
+    )
+    .unwrap();
+    assert_eq!(out, vec!["24"]);
+    assert_eq!(dimensions(&app)[0].style.text_size, 24.0);
+}

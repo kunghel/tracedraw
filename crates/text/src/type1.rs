@@ -1630,6 +1630,16 @@ fn write_cff(
 // Finding the fonts
 // ---------------------------------------------------------------------
 
+/// The encoding a Type 1 program carries in its clear text (`dup <code>
+/// /<name> put` entries), as codes and glyph names; `None` when it names
+/// the Standard encoding or is not a Type 1 program. A PDF uses it for
+/// an embedded font whose dictionary names no encoding (#3810).
+pub fn own_encoding(data: &[u8]) -> Option<Vec<(u8, String)>> {
+    let (clear, _) = split_font(data)?;
+    let (enc, standard) = encoding_of(&clear);
+    (!standard && !enc.is_empty()).then_some(enc)
+}
+
 /// The Type 1 font in `pfb` (with its `.pfm`, `pfm`, when there is one)
 /// as an OpenType font the engine reads.
 pub fn convert(pfb: &[u8], pfm: Option<&[u8]>) -> Option<Vec<u8>> {
@@ -1821,6 +1831,37 @@ const GLYPH_NAMES: &[(&str, u32)] = &[
     ("perthousand", 0x2030), ("guilsinglleft", 0x2039), ("guilsinglright", 0x203A),
     ("fraction", 0x2044), ("Euro", 0x20AC), ("trademark", 0x2122), ("minus", 0x2212),
     ("fi", 0xFB01), ("fl", 0xFB02), ("nbspace", 0xA0), ("sfthyphen", 0xAD), ("middot", 0xB7),
+    // Latin Extended-A (Central European letters, #3810).
+    ("Amacron", 0x100), ("amacron", 0x101), ("Abreve", 0x102), ("abreve", 0x103),
+    ("Aogonek", 0x104), ("aogonek", 0x105), ("Cacute", 0x106), ("cacute", 0x107),
+    ("Ccircumflex", 0x108), ("ccircumflex", 0x109), ("Cdotaccent", 0x10A), ("cdotaccent", 0x10B),
+    ("Ccaron", 0x10C), ("ccaron", 0x10D), ("Dcaron", 0x10E), ("dcaron", 0x10F), ("Dcroat", 0x110),
+    ("dcroat", 0x111), ("Emacron", 0x112), ("emacron", 0x113), ("Ebreve", 0x114),
+    ("ebreve", 0x115), ("Edotaccent", 0x116), ("edotaccent", 0x117), ("Eogonek", 0x118),
+    ("eogonek", 0x119), ("Ecaron", 0x11A), ("ecaron", 0x11B), ("Gcircumflex", 0x11C),
+    ("gcircumflex", 0x11D), ("Gbreve", 0x11E), ("gbreve", 0x11F), ("Gdotaccent", 0x120),
+    ("gdotaccent", 0x121), ("Gcommaaccent", 0x122), ("gcommaaccent", 0x123),
+    ("Hcircumflex", 0x124), ("hcircumflex", 0x125), ("Hbar", 0x126), ("hbar", 0x127),
+    ("Itilde", 0x128), ("itilde", 0x129), ("Imacron", 0x12A), ("imacron", 0x12B),
+    ("Ibreve", 0x12C), ("ibreve", 0x12D), ("Iogonek", 0x12E), ("iogonek", 0x12F),
+    ("Idotaccent", 0x130), ("IJ", 0x132), ("ij", 0x133), ("Jcircumflex", 0x134),
+    ("jcircumflex", 0x135), ("Kcommaaccent", 0x136), ("kcommaaccent", 0x137),
+    ("kgreenlandic", 0x138), ("Lacute", 0x139), ("lacute", 0x13A), ("Lcommaaccent", 0x13B),
+    ("lcommaaccent", 0x13C), ("Lcaron", 0x13D), ("lcaron", 0x13E), ("Ldot", 0x13F),
+    ("ldot", 0x140), ("Nacute", 0x143), ("nacute", 0x144), ("Ncommaaccent", 0x145),
+    ("ncommaaccent", 0x146), ("Ncaron", 0x147), ("ncaron", 0x148), ("napostrophe", 0x149),
+    ("Eng", 0x14A), ("eng", 0x14B), ("Omacron", 0x14C), ("omacron", 0x14D), ("Obreve", 0x14E),
+    ("obreve", 0x14F), ("Ohungarumlaut", 0x150), ("ohungarumlaut", 0x151), ("Racute", 0x154),
+    ("racute", 0x155), ("Rcommaaccent", 0x156), ("rcommaaccent", 0x157), ("Rcaron", 0x158),
+    ("rcaron", 0x159), ("Sacute", 0x15A), ("sacute", 0x15B), ("Scircumflex", 0x15C),
+    ("scircumflex", 0x15D), ("Scedilla", 0x15E), ("scedilla", 0x15F), ("Tcommaaccent", 0x162),
+    ("tcommaaccent", 0x163), ("Tcaron", 0x164), ("tcaron", 0x165), ("Tbar", 0x166),
+    ("tbar", 0x167), ("Utilde", 0x168), ("utilde", 0x169), ("Umacron", 0x16A), ("umacron", 0x16B),
+    ("Ubreve", 0x16C), ("ubreve", 0x16D), ("Uring", 0x16E), ("uring", 0x16F),
+    ("Uhungarumlaut", 0x170), ("uhungarumlaut", 0x171), ("Uogonek", 0x172), ("uogonek", 0x173),
+    ("Wcircumflex", 0x174), ("wcircumflex", 0x175), ("Ycircumflex", 0x176), ("ycircumflex", 0x177),
+    ("Zacute", 0x179), ("zacute", 0x17A), ("Zdotaccent", 0x17B), ("zdotaccent", 0x17C),
+    ("longs", 0x17F),
 ];
 
 #[cfg(test)]

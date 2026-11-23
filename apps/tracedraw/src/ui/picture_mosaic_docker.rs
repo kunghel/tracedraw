@@ -15,6 +15,9 @@ use egui::{RichText, Ui};
 /// The library section: the picture count, the folder, Browse and the
 /// progress while the folder is read.
 fn library(app: &mut App, ui: &mut Ui) {
+    if let Some(dir) = crate::files::take_picked("picture-mosaic-folder") {
+        app.picture_mosaic_load_library(dir);
+    }
     section(ui, Some(&tr("docker.picture_mosaic_library")));
     let none = tr("docker.form_none");
     let n = app.picture_mosaic.images.len();
@@ -90,9 +93,7 @@ fn library(app: &mut App, ui: &mut Ui) {
 fn choose_library(app: &mut App) {
     match crate::files::FolderUse::MosaicLibrary.action() {
         crate::files::FolderAction::PickFolder(token) => {
-            if let Some(dir) = crate::files::pick_folder(token) {
-                app.picture_mosaic_load_library(dir);
-            }
+            crate::files::pick_folder_into(token, None, "picture-mosaic-folder");
         }
         crate::files::FolderAction::OpenFiles => {
             crate::files::Dialog::new()

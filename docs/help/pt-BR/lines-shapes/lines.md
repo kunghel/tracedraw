@@ -121,6 +121,23 @@ controle, sem alças.
 
 O resultado é uma curva comum; os pontos de controle não são guardados.
 
+## Caneta de curvatura {#curvature-pen}
+
+A ferramenta [[tool.curvature_pen]] desenha uma curva suave que passa pelos
+pontos que você clica, sem alças para puxar.
+
+1. Clique para pôr cada ponto. A curva passa por todos eles e se curva suave
+   sozinha; a prévia mostra aonde o próximo clique a leva.
+2. Segure <kbd>Alt</kbd> (ou <kbd>C</kbd> ou <kbd>V</kbd>) ao clicar para
+   fazer daquele ponto um canto.
+3. Clique duas vezes ou pressione <kbd>Enter</kbd> para terminar. Clique no
+   primeiro ponto (a partir de três) para fechar a curva.
+
+O resultado é uma curva comum cujos nós são os pontos clicados, e a
+ferramenta [[tool.shape]] a edita como qualquer outra.
+
+![Quatro cliques com a Caneta de curvatura: uma curva suave passa por cada ponto](../../img/lines-shapes-lines-curvature-pen.png)
+
 ## Polilinha {#polyline}
 
 A ferramenta [[tool.polyline]] desenha segmentos retos um após o outro: clique

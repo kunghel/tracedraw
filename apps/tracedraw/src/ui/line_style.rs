@@ -157,15 +157,22 @@ pub fn cells_from_dash(dash: &[f64], max: usize) -> Vec<bool> {
 /// A short drawing of a pattern, for lists.
 pub fn preview(ui: &mut Ui, dash: &[f64], width: f32) -> egui::Response {
     let (rect, resp) = ui.allocate_exact_size(egui::vec2(width, 10.0), Sense::click());
+    paint_dash(ui.painter(), rect, dash);
+    resp
+}
+
+/// Draw a line with the dash pattern `dash` along the middle of `rect`
+/// (an empty pattern is a solid line, a dash of no length a round dot).
+pub fn paint_dash(painter: &egui::Painter, rect: egui::Rect, dash: &[f64]) {
     let y = rect.center().y;
     let unit = 2.0f32;
     let color = Tokens::text();
     if dash.is_empty() {
-        ui.painter().line_segment(
+        painter.line_segment(
             [egui::pos2(rect.left(), y), egui::pos2(rect.right(), y)],
             egui::Stroke::new(unit, color),
         );
-        return resp;
+        return;
     }
     let mut x = rect.left();
     let mut i = 0usize;
@@ -174,11 +181,10 @@ pub fn preview(ui: &mut Ui, dash: &[f64], width: f32) -> egui::Response {
         let len = raw.max(0.5);
         if i.is_multiple_of(2) && raw <= 0.0 {
             // A dash of no length: a round dot (#3404).
-            ui.painter()
-                .circle_filled(egui::pos2(x, y), unit * 0.75, color);
+            painter.circle_filled(egui::pos2(x, y), unit * 0.75, color);
         } else if i.is_multiple_of(2) {
             let x1 = (x + len).min(rect.right());
-            ui.painter().line_segment(
+            painter.line_segment(
                 [egui::pos2(x, y), egui::pos2(x1, y)],
                 egui::Stroke::new(unit, color),
             );
@@ -186,7 +192,6 @@ pub fn preview(ui: &mut Ui, dash: &[f64], width: f32) -> egui::Response {
         x += len;
         i += 1;
     }
-    resp
 }
 
 /// Edit Line Style.

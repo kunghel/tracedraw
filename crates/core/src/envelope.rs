@@ -1032,6 +1032,92 @@ pub fn point_map(b: Rect, frame: &Frame, mapping: Mapping) -> Option<Box<dyn Fn(
     Some(map)
 }
 
+/// The most columns or rows of a mesh envelope.
+pub const MESH_MAX: u8 = 8;
+
+/// A mesh envelope's grid laid evenly over box `b`: `cols` + 1 points a
+/// row, `rows` + 1 rows, from the bottom-left corner along each row and
+/// row by row upwards (the order [`mesh_point`] reads them in).
+pub fn mesh_grid(b: Rect, cols: u8, rows: u8) -> Vec<Point> {
+    let (cols, rows) = (cols.clamp(1, MESH_MAX), rows.clamp(1, MESH_MAX));
+    let mut out = Vec::with_capacity((cols as usize + 1) * (rows as usize + 1));
+    for r in 0..=rows {
+        for c in 0..=cols {
+            out.push(Point::new(
+                b.x0 + b.width() * c as f64 / cols as f64,
+                b.y0 + b.height() * r as f64 / rows as f64,
+            ));
+        }
+    }
+    out
+}
+
+/// The mesh envelope's grid holds the points it should for its size.
+pub fn mesh_fits(points: &[Point], cols: u8, rows: u8) -> bool {
+    (1..=MESH_MAX).contains(&cols)
+        && (1..=MESH_MAX).contains(&rows)
+        && points.len() == (cols as usize + 1) * (rows as usize + 1)
+        && points.iter().all(|p| p.x.is_finite() && p.y.is_finite())
+}
+
+/// Where point `p` of box `b` goes through a mesh envelope: the box is
+/// split into `cols` x `rows` even cells, and each grid point of that
+/// split is moved to its place in `points` (see [`mesh_grid`]); between
+/// them the map runs smoothly through the grid (a Catmull-Rom spline
+/// each way), so a grid left as laid leaves every point where it was and
+/// one moved point pulls its neighbourhood with it. Outside the box the
+/// edge cells carry on.
+pub fn mesh_point(points: &[Point], cols: u8, rows: u8, b: Rect, p: Point) -> Point {
+    if !mesh_fits(points, cols, rows) || b.width() < 1e-12 || b.height() < 1e-12 {
+        return p;
+    }
+    let (nc, nr) = (cols as i64, rows as i64);
+    let w = nc as usize + 1;
+    // A grid point, the grid carried on straight past its edges.
+    let at = |c: i64, r: i64| -> Vec2 {
+        let cc = c.clamp(0, nc);
+        let rr = r.clamp(0, nr);
+        let base = points[rr as usize * w + cc as usize].to_vec2();
+        let mut v = base;
+        if c != cc {
+            let inner = points[rr as usize * w + (cc - (c - cc).signum()) as usize].to_vec2();
+            v += (base - inner) * (c - cc).abs() as f64;
+        }
+        if r != rr {
+            let inner_r = (rr - (r - rr).signum()) as usize;
+            let cc2 = c.clamp(0, nc) as usize;
+            let inner = points[inner_r * w + cc2].to_vec2();
+            v += (base - inner) * (r - rr).abs() as f64;
+        }
+        v
+    };
+    let u = (p.x - b.x0) / b.width() * nc as f64;
+    let v = (p.y - b.y0) / b.height() * nr as f64;
+    let ci = (u.floor() as i64).clamp(0, nc - 1);
+    let ri = (v.floor() as i64).clamp(0, nr - 1);
+    let (s, t) = (u - ci as f64, v - ri as f64);
+    let cr = |a: Vec2, b: Vec2, c: Vec2, d: Vec2, t: f64| -> Vec2 {
+        let t2 = t * t;
+        let t3 = t2 * t;
+        (b * 2.0
+            + (c - a) * t
+            + (a * 2.0 - b * 5.0 + c * 4.0 - d) * t2
+            + (b * 3.0 - a - c * 3.0 + d) * t3)
+            * 0.5
+    };
+    let row = |r: i64| cr(at(ci - 1, r), at(ci, r), at(ci + 1, r), at(ci + 2, r), s);
+    cr(row(ri - 1), row(ri), row(ri + 1), row(ri + 2), t).to_point()
+}
+
+/// `path` (in box `b`) through a mesh envelope (see [`mesh_point`]),
+/// drawn as short lines finely enough to follow the bends.
+pub fn apply_mesh(path: &BezPath, b: Rect, cols: u8, rows: u8, points: &[Point]) -> BezPath {
+    if !mesh_fits(points, cols, rows) || b.width() < 1e-9 || b.height() < 1e-9 {
+        return path.clone();
+    }
+    crate::live::warp(path, b, |p| mesh_point(points, cols, rows, b, p))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1560,5 +1646,32 @@ mod tests {
         assert_eq!(Mapping::from_id("no.such.key"), Mapping::Putty);
         assert_eq!(Mode::from_id("double_arc"), Mode::DoubleArc);
         assert_eq!(Mode::from_id("no.such.key"), Mode::Unconstrained);
+    }
+
+    /// A mesh envelope left as laid changes nothing; a moved middle
+    /// point pulls the outline near it along and leaves the corners.
+    #[test]
+    fn mesh_envelope_keeps_a_laid_grid_and_follows_a_moved_point() {
+        use crate::geometry::Shape as _;
+        let b = Rect::new(0.0, 0.0, 30.0, 20.0);
+        let grid = mesh_grid(b, 3, 2);
+        assert_eq!(grid.len(), 12);
+        for q in [Point::new(1.0, 1.0), Point::new(17.3, 9.1), Point::new(30.0, 20.0)] {
+            let m = mesh_point(&grid, 3, 2, b, q);
+            assert!((m - q).hypot() < 1e-9, "{q:?} -> {m:?}");
+        }
+        let mut moved = grid.clone();
+        // Row 1, column 1: the point at (10, 10).
+        moved[4 + 1] = Point::new(10.0, 16.0);
+        let m = mesh_point(&moved, 3, 2, b, Point::new(10.0, 10.0));
+        assert!((m - Point::new(10.0, 16.0)).hypot() < 1e-9, "{m:?}");
+        let corner = mesh_point(&moved, 3, 2, b, Point::new(0.0, 0.0));
+        assert!(corner.to_vec2().hypot() < 1e-9);
+        let near = mesh_point(&moved, 3, 2, b, Point::new(12.0, 10.0));
+        assert!(near.y > 12.0, "{near:?}");
+        let rect = Rect::new(0.0, 0.0, 30.0, 20.0).to_path(0.1);
+        let warped = apply_mesh(&rect, b, 3, 2, &moved);
+        assert!(warped.bounding_box().y1 > 20.0 - 1e-6);
+        assert_eq!(apply_mesh(&rect, b, 3, 2, &grid[..5]), rect);
     }
 }

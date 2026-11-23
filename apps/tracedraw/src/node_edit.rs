@@ -156,8 +156,11 @@ impl App {
         let s = self.doc().find_shape(id)?;
         let parent = self.doc().parent_transform(id)?;
         match &s.kind {
-            // A B-spline's control points are edited, not its nodes.
-            ShapeKind::Path { .. } if s.spline.is_some() => None,
+            // A B-spline's control points are edited, not its nodes, and a
+            // common shape's handles (#4045).
+            ShapeKind::Path { .. } if s.spline.is_some() || crate::shape_tool::shows_handles(s) => {
+                None
+            }
             ShapeKind::Path { path, closed } => Some((path.clone(), *closed, parent * s.transform)),
             _ => None,
         }
@@ -231,6 +234,16 @@ impl App {
             .map(|(h, _)| h)
     }
 
+    /// Whether a node edit keeps a curve's rounded corners round
+    /// (Options > Nodes and Handles, on by default, #3265): with the
+    /// corner widgets on, for a curve of no more than a few thousand
+    /// elements (its rounded corners are looked for at every step of a
+    /// drag).
+    pub fn keeps_rounded_corners(&self) -> impl Fn(&BezPath) -> bool {
+        let on = self.settings.nodes.corner_widgets && self.settings.nodes.corners_follow_edits;
+        move |p: &BezPath| on && p.elements().len() <= 4000
+    }
+
     /// The selected curves with their selected nodes, as they are now.
     pub fn start_curves(&self) -> Vec<StartCurve> {
         self.nodes_by_shape()
@@ -251,14 +264,22 @@ impl App {
     /// Apply the page-space affine `a` to the selected nodes of `start`;
     /// the first step of a drag is recorded, later ones join it.
     pub fn transform_start_nodes(&mut self, start: &[StartCurve], a: Affine, begun: bool) {
+        let keep = self.keeps_rounded_corners();
         let cmds: Vec<Command> = start
             .iter()
             .map(|c| {
                 let local = c.transform.inverse() * a * c.transform;
+                let edit = |p: &BezPath, i: &[usize]| nodes::transform_nodes(p, i, local);
+                // Rounded corners beside the nodes stay round (#3265).
+                let path = if keep(&c.path) {
+                    tracedraw_core::corner_cut::edit_keeping_fillets(&c.path, &c.indices, edit)
+                } else {
+                    edit(&c.path, &c.indices)
+                };
                 Command::SetShapeKind {
                     shape: c.shape,
                     kind: ShapeKind::Path {
-                        path: nodes::transform_nodes(&c.path, &c.indices, local),
+                        path,
                         closed: c.closed,
                     },
                 }
@@ -317,31 +338,41 @@ impl App {
             }
         };
         let mut cmds = Vec::new();
+        let keep = self.keeps_rounded_corners();
         for c in start {
             let inv = c.transform.inverse();
-            let mut path = c.path.clone();
-            for n in nodes::nodes(&c.path) {
-                if !c.indices.contains(&n.index) {
-                    continue;
+            let move_on = |from: &BezPath, indices: &[usize]| {
+                let mut path = from.clone();
+                for n in nodes::nodes(from) {
+                    if !indices.contains(&n.index) {
+                        continue;
+                    }
+                    let p = c.transform * n.pos;
+                    let mut dd = d;
+                    // Reflect: nodes across the axis from the grabbed one move
+                    // the mirrored way.
+                    if rh && side(p.x, axis.x) != 0 && side(p.x, axis.x) != side(grab.x, axis.x) {
+                        dd.x = -dd.x;
+                    }
+                    if rv && side(p.y, axis.y) != 0 && side(p.y, axis.y) != side(grab.y, axis.y) {
+                        dd.y = -dd.y;
+                    }
+                    if self.elastic_mode {
+                        // Nodes farther from the grabbed one move less.
+                        let w = 1.0 - 0.5 * (p - grab).hypot() / far;
+                        dd *= w;
+                    }
+                    let ld = (inv * (Point::ZERO + dd)) - (inv * Point::ZERO);
+                    path = nodes::move_node(&path, n.index, ld);
                 }
-                let p = c.transform * n.pos;
-                let mut dd = d;
-                // Reflect: nodes across the axis from the grabbed one move
-                // the mirrored way.
-                if rh && side(p.x, axis.x) != 0 && side(p.x, axis.x) != side(grab.x, axis.x) {
-                    dd.x = -dd.x;
-                }
-                if rv && side(p.y, axis.y) != 0 && side(p.y, axis.y) != side(grab.y, axis.y) {
-                    dd.y = -dd.y;
-                }
-                if self.elastic_mode {
-                    // Nodes farther from the grabbed one move less.
-                    let w = 1.0 - 0.5 * (p - grab).hypot() / far;
-                    dd *= w;
-                }
-                let ld = (inv * (Point::ZERO + dd)) - (inv * Point::ZERO);
-                path = nodes::move_node(&path, n.index, ld);
-            }
+                path
+            };
+            // Rounded corners beside the moved nodes stay round (#3265).
+            let path = if keep(&c.path) {
+                tracedraw_core::corner_cut::edit_keeping_fillets(&c.path, &c.indices, move_on)
+            } else {
+                move_on(&c.path, &c.indices)
+            };
             cmds.push(Command::SetShapeKind {
                 shape: c.shape,
                 kind: ShapeKind::Path {
@@ -363,7 +394,7 @@ impl App {
     /// the run of nodes from the last one selected to it (the shorter way
     /// round a closed subpath); Shift+clicking the end of that run again
     /// selects the other way round instead. Ctrl+Shift selects every node
-    /// of its subpath, as in CorelDRAW (#3007).
+    /// of its subpath (#3007).
     pub fn click_node(&mut self, key: (ShapeId, usize), mods: Modifiers) {
         if (mods.command || mods.ctrl) && mods.shift {
             self.node_run = None;

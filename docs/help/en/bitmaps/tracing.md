@@ -87,6 +87,10 @@ The [[dialog.trace_tab_settings]] tab holds:
   once. [[dialog.trace_group_by_color]] puts the curves of each color in a
   group of their own; it is available when the areas of a color are not
   merged already.
+- **Clean up a pencil sketch** (off at first): for hand lettering drawn in
+  pencil. Before the trace, the hatching and doubled outlines become solid
+  black shapes, construction lines and specks go and the edges are smoothed;
+  the result is traced black on white.
 - [[dialog.delete_original]]: the bitmap goes when the trace is placed.
 
 Settings that do not apply to the current trace type are grayed out: a

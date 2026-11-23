@@ -219,10 +219,11 @@ impl Bar {
         }
     }
 
-    /// Where the bar can go.
+    /// Where the bar can go. A toolbar the user made also docks at a
+    /// side, a column of buttons beside the toolbox (#3723).
     pub fn docks(self) -> &'static [Dock] {
         match self {
-            Bar::Toolbox | Bar::Palette => &[
+            Bar::Toolbox | Bar::Palette | Bar::Custom(_) => &[
                 Dock::Top,
                 Dock::Bottom,
                 Dock::Left,
@@ -234,8 +235,7 @@ impl Bar {
             | Bar::Text
             | Bar::Zoom
             | Bar::Transform
-            | Bar::TimeTracker
-            | Bar::Custom(_) => &[Dock::Top, Dock::Bottom, Dock::Floating],
+            | Bar::TimeTracker => &[Dock::Top, Dock::Bottom, Dock::Floating],
             Bar::Status => &[Dock::Top, Dock::Bottom],
         }
     }
@@ -256,6 +256,10 @@ impl Bar {
     }
 
     pub fn visible(self, app: &App) -> bool {
+        // The image editing mode shows its own bars only.
+        if app.pixel_edit.is_some() && !crate::ui::pixel_mode::shows_bar(self) {
+            return false;
+        }
         match self {
             Bar::Toolbox => app.show_toolbox,
             Bar::Palette => app.settings.palette.show_palette,
@@ -995,7 +999,7 @@ pub fn size_menu(with_default: bool) -> Vec<(&'static str, Option<crate::setting
 }
 
 fn menu_body(app: &mut App, ui: &mut Ui, bar: Bar) {
-    use crate::ui::menus::{check, item, radio, radio_if, sep, sub};
+    use crate::ui::menus::{radio_if, sep};
     ui.set_min_width(200.0);
     let current = app.settings.bars.dock(bar);
     let free = !app.settings.bars.locked;
@@ -1018,6 +1022,27 @@ fn menu_body(app: &mut App, ui: &mut Ui, bar: Bar) {
         }
     }
     sep(ui);
+    common_body(app, ui);
+}
+
+/// The menu bar's context menu (discussion #3918): the part of the bars'
+/// menu that is not about one bar's place, every bar to show or hide,
+/// Customize, Lock Toolbars and Reset Toolbars.
+pub fn menu_bar_menu(app: &mut App, resp: &egui::Response) {
+    egui::Popup::context_menu(resp)
+        .id(resp.id.with("bar_menu"))
+        .style(crate::ui::menus::menu_popup_style)
+        .show(|ui| {
+            crate::ui::menus::body(ui, |ui| {
+                ui.set_min_width(200.0);
+                common_body(app, ui)
+            })
+        });
+}
+
+/// The entries of the bars' menu shared by every bar and the menu bar.
+fn common_body(app: &mut App, ui: &mut Ui) {
+    use crate::ui::menus::{check, item, radio, sep, sub};
     // Every bar, as Window > Toolbars lists them.
     crate::ui::menus::toolbars_list(app, ui);
     sep(ui);
@@ -1397,6 +1422,9 @@ fn beside_zone(app: &App, dock: Dock, drawing: Rect) -> Rect {
 fn drop_zone(app: &App, drag: BarDrag, dock: Dock, screen: Rect, menu_h: f32, p: Pos2) -> Rect {
     let thick = match drag.bar {
         Bar::Toolbox => crate::ui::toolbox::column_width(app),
+        Bar::Custom(_) if matches!(dock, Dock::Left | Dock::Right) => {
+            crate::ui::toolbox::column_width(app)
+        }
         Bar::Palette => crate::ui::palette::thickness(app, crate::ui::palette::Row::Main),
         Bar::Status => crate::ui::status::BAR_H,
         b => b.row_height(),
@@ -1450,6 +1478,67 @@ fn toolbar_body(app: &mut App, ui: &mut Ui, bar: Bar) -> f32 {
         Bar::TimeTracker => overflow::row(ui, "time_tracker", |ui| time_tracker::toolbar(app, ui)),
         Bar::Custom(n) => overflow::row(ui, bar.id(), |ui| toolbar::custom_toolbar(app, ui, n)),
         Bar::Toolbox | Bar::Palette | Bar::Status => 0.0,
+    }
+}
+
+/// The toolbars the user made docked at a side (#3723): each a column
+/// as wide as the toolbox's, inside it, its grip on top and its buttons
+/// down it at the toolbox's size; the whole column takes a command
+/// dragged from Options > Customization > Commands. Where each was drawn
+/// goes to the palette bars' side marks, as the toolbox's does.
+pub fn docked_columns(app: &mut App, ui: &mut Ui) {
+    use crate::ui::bar_items::ItemBar;
+    let bars: Vec<(Bar, Dock)> = app
+        .settings
+        .bars
+        .custom
+        .iter()
+        .filter(|c| c.shown)
+        .map(|c| Bar::Custom(c.slot))
+        .map(|b| (b, app.settings.bars.dock(b)))
+        .filter(|(_, d)| matches!(d, Dock::Left | Dock::Right))
+        .collect();
+    for (bar, dock) in bars {
+        let Bar::Custom(n) = bar else { continue };
+        let panel = if dock == Dock::Left {
+            egui::Panel::left(egui::Id::new(("custom_bar_column", n)))
+        } else {
+            egui::Panel::right(egui::Id::new(("custom_bar_column", n)))
+        };
+        let r = panel
+            .exact_size(crate::ui::toolbox::column_width(app))
+            .resizable(false)
+            .show_separator_line(false)
+            .frame(
+                egui::Frame::new()
+                    .fill(crate::theme::Tokens::panel())
+                    .inner_margin(egui::Margin::symmetric(3, 0)),
+            )
+            .show(ui, |ui| {
+                if !app.drawing_shown() {
+                    ui.disable();
+                }
+                background(app, ui, bar);
+                let room = ui.max_rect();
+                crate::ui::overflow::column(ui, bar.id(), |ui| {
+                    ui.spacing_mut().item_spacing = vec2(0.0, 1.0);
+                    grip(app, ui, bar, false);
+                    let side = crate::theme::Tokens::tool_button();
+                    crate::ui::toolbox::commands(app, ui, ItemBar::Custom(n), side, false);
+                });
+                // An empty column still takes a dropped command.
+                if let Some(s) = app
+                    .bar_slots
+                    .iter_mut()
+                    .rev()
+                    .find(|s| s.bar == ItemBar::Custom(n))
+                {
+                    s.rect = s.rect.union(room);
+                }
+            })
+            .response
+            .rect;
+        crate::ui::palette_bars::mark_bar(app, dock, r);
     }
 }
 
@@ -2882,6 +2971,96 @@ mod tests {
             .map(Bar::salt)
             .collect();
         assert_eq!(salts.len(), 9 + MAX_CUSTOM, "every bar's ids its own");
+    }
+
+    /// #3723: a toolbar the user made also docks at the left or the
+    /// right, a column as wide as the toolbox's, inside it: dropped near
+    /// a side it goes there, its buttons lie down the column, the whole
+    /// column takes a dragged command, and the drawing gives it the room.
+    /// The toolbox's "+" menu ends with Customize..., which opens the
+    /// Commands page whose commands drag onto it.
+    #[test]
+    fn a_toolbar_the_user_makes_docks_at_a_side() {
+        use crate::ui::bar_items::{self, ItemBar};
+        let ctx = crate::theme::ui_context();
+        let mut app = App::headless();
+        app.show_welcome = false;
+        let bar = app.settings.bars.add_custom("Mine").expect("made");
+        bar_items::set_items(
+            &mut app,
+            ItemBar::Custom(0),
+            vec!["new".into(), "open".into()],
+        );
+        assert!(bar.docks().contains(&Dock::Left) && bar.docks().contains(&Dock::Right));
+        assert_eq!(
+            target_dock(bar, screen(), 30.0, pos2(4.0, 500.0)),
+            Dock::Left
+        );
+        assert_eq!(
+            target_dock(bar, screen(), 30.0, pos2(1596.0, 500.0)),
+            Dock::Right
+        );
+        for _ in 0..3 {
+            frame(&ctx, &mut app, Vec::new(), egui::Modifiers::NONE);
+        }
+        let before = app.canvas_rect;
+        move_bar(&mut app, bar, Dock::Left, None);
+        assert_eq!(app.settings.bars.dock(bar), Dock::Left);
+        assert!(app
+            .settings
+            .bars
+            .rows_at(Dock::Top)
+            .iter()
+            .all(|r| !r.contains(&bar)));
+        for _ in 0..3 {
+            frame(&ctx, &mut app, Vec::new(), egui::Modifiers::NONE);
+        }
+        let width = crate::ui::toolbox::column_width(&app);
+        assert!(
+            (app.canvas_rect.left() - before.left() - width).abs() < 2.0,
+            "the drawing makes room: {before:?} then {:?}",
+            app.canvas_rect
+        );
+        let slot = app
+            .shown_bar_slots
+            .iter()
+            .find(|s| s.bar == ItemBar::Custom(0))
+            .expect("the column");
+        assert!(slot.vertical);
+        assert_eq!(slot.items.len(), 2);
+        assert!(slot.items[1].top() > slot.items[0].top(), "down the column");
+        assert!(slot.rect.right() <= app.canvas_rect.left() + 1.0);
+        assert!(slot.rect.height() > 300.0, "the whole column takes a drop");
+        let column_x = slot.rect.center().x;
+        // Emptied, it still takes a drop.
+        bar_items::set_items(&mut app, ItemBar::Custom(0), Vec::new());
+        frame(&ctx, &mut app, Vec::new(), egui::Modifiers::NONE);
+        let p = pos2(column_x, 600.0);
+        assert_eq!(
+            bar_items::drop_target(&app.shown_bar_slots, p).map(|t| (t.0, t.1)),
+            Some((ItemBar::Custom(0), 0))
+        );
+        // At the right, the drawing gives the room on that side.
+        move_bar(&mut app, bar, Dock::Right, None);
+        for _ in 0..3 {
+            frame(&ctx, &mut app, Vec::new(), egui::Modifiers::NONE);
+        }
+        assert!((app.canvas_rect.left() - before.left()).abs() < 2.0);
+        assert!(app.canvas_rect.right() < before.right() - width + 2.0);
+        // Back to the top, in a row.
+        move_bar(&mut app, bar, Dock::Top, None);
+        assert!(app
+            .settings
+            .bars
+            .rows_at(Dock::Top)
+            .iter()
+            .any(|r| r.contains(&bar)));
+        // The "+" menu's Customize...: the Commands page, General tab.
+        app.shortcut_editor.keys_tab = true;
+        crate::ui::toolbox::open_commands_page(&mut app);
+        assert_eq!(app.options_page, crate::ui::options::OptionsPage::Commands);
+        assert!(matches!(app.dialog, crate::ui::dialogs::Dialog::Options));
+        assert!(!app.shortcut_editor.keys_tab);
     }
 
     #[test]

@@ -561,7 +561,9 @@ fn appimage_launch(appimage: &std::path::Path) -> Launch {
 /// with a progress window and no questions, closes nothing that is open
 /// (TraceDraw has exited), never restarts the computer and, through
 /// `/relaunch=1`, starts the new TraceDraw when it is done (the
-/// `[Run]` entry of `packaging/windows/tracedraw.iss`).
+/// `[Run]` entry of `packaging/windows/tracedraw.iss`). It writes its
+/// log beside itself ([`setup_log`]), so an update that did not finish
+/// can be told at the next start ([`unfinished_update`], #3816).
 fn setup_launch(setup: &std::path::Path) -> Launch {
     Launch {
         program: "cmd".into(),
@@ -574,10 +576,55 @@ fn setup_launch(setup: &std::path::Path) -> Launch {
             "/SUPPRESSMSGBOXES",
             "/NORESTART",
             "/relaunch=1",
+            &format!("/LOG={}", setup_log(setup).display()),
         ]
         .map(String::from)
         .to_vec(),
     }
+}
+
+/// The log the setup program `setup` writes: beside it, `.log` for `.exe`.
+fn setup_log(setup: &std::path::Path) -> std::path::PathBuf {
+    setup.with_extension("log")
+}
+
+/// The version and log of an update that did not finish: a setup log in
+/// `dir` (`TraceDraw-<version>-setup.log`, see [`setup_log`]) of a
+/// version newer than `current`, the one that runs. After an update that
+/// worked, the new version runs and its log is not newer. The newest
+/// when there are several.
+pub fn unfinished_update(
+    dir: &std::path::Path,
+    current: &str,
+) -> Option<(String, std::path::PathBuf)> {
+    std::fs::read_dir(dir)
+        .ok()?
+        .flatten()
+        .filter_map(|e| {
+            let name = e.file_name().to_string_lossy().to_string();
+            let version = name.strip_prefix("TraceDraw-")?.strip_suffix("-setup.log")?;
+            is_newer(version, current).then(|| (version.to_string(), e.path()))
+        })
+        .max_by(|a, b| {
+            parse_version(&a.0)
+                .unwrap_or_default()
+                .cmp(&parse_version(&b.0).unwrap_or_default())
+        })
+}
+
+/// The status bar's word at start when an update did not finish: its
+/// version and where the installer's log is (Windows only, where a setup
+/// program installs).
+#[cfg(not(target_arch = "wasm32"))]
+pub fn unfinished_update_note() -> Option<String> {
+    if !cfg!(windows) {
+        return None;
+    }
+    let (version, log) = unfinished_update(&staging_path().ok()?, env!("CARGO_PKG_VERSION"))?;
+    Some(crate::i18n::trf(
+        "status.update_unfinished",
+        &[("version", &version), ("path", &log.display().to_string())],
+    ))
 }
 
 /// Starts the program `exe` again.
@@ -822,13 +869,10 @@ fn install_bundle(
     result
 }
 
-/// The folder the release files of an update are downloaded to, new and
-/// empty. On Linux it is the user's cache folder, closed to everyone
-/// else (mode 0700): a `.deb` waits there to be installed as the
-/// administrator, and a shared `/tmp` would let another user swap the
-/// file after its digest was checked.
+/// Where updates are staged: a folder of the cache (Linux) or of the
+/// temporary folder.
 #[cfg(not(target_arch = "wasm32"))]
-fn staging_dir() -> Result<std::path::PathBuf, String> {
+fn staging_path() -> Result<std::path::PathBuf, String> {
     let base = if cfg!(target_os = "linux") {
         let var = |name: &str| {
             std::env::var_os(name)
@@ -841,7 +885,17 @@ fn staging_dir() -> Result<std::path::PathBuf, String> {
     } else {
         std::env::temp_dir()
     };
-    let dir = base.join("tracedraw-update");
+    Ok(base.join("tracedraw-update"))
+}
+
+/// The folder the release files of an update are downloaded to
+/// ([`staging_path`]), new and empty. On Linux it is the user's cache
+/// folder, closed to everyone else (mode 0700): a `.deb` waits there to
+/// be installed as the administrator, and a shared `/tmp` would let
+/// another user swap the file after its digest was checked.
+#[cfg(not(target_arch = "wasm32"))]
+fn staging_dir() -> Result<std::path::PathBuf, String> {
+    let dir = staging_path()?;
     let _ = std::fs::remove_dir_all(&dir);
     let mut made = std::fs::DirBuilder::new();
     made.recursive(true);
@@ -1104,11 +1158,19 @@ pub fn clean_leftovers() {
         return;
     };
     for entry in entries.flatten() {
-        let name = entry.file_name().to_string_lossy().to_string();
-        if name.starts_with(".tracedraw") && name.ends_with(".old") {
+        if is_leftover(&entry.file_name().to_string_lossy()) {
             let _ = std::fs::remove_file(entry.path());
         }
     }
+}
+
+/// A file an update left beside the program: the old program moved
+/// aside by an update in place, or the thumbnail handler the setup moved
+/// aside because Explorer held it (`tracedraw_thumbnailer.dll.<n>.old`,
+/// see `MoveAsideInUse` in `packaging/windows/tracedraw.iss`, #3816).
+fn is_leftover(name: &str) -> bool {
+    name.ends_with(".old")
+        && (name.starts_with(".tracedraw") || name.starts_with("tracedraw_thumbnailer.dll."))
 }
 
 /// The name a Linux tar.gz entry is installed under beside the running
@@ -2594,7 +2656,8 @@ mod tests {
                 "/SILENT",
                 "/SUPPRESSMSGBOXES",
                 "/NORESTART",
-                "/relaunch=1"
+                "/relaunch=1",
+                r"/LOG=C:\Users\Ana Maria\Temp\TraceDraw-0.29.0-setup.log"
             ]
         );
         let iss = include_str!("../../../packaging/windows/tracedraw.iss");
@@ -3302,6 +3365,37 @@ mod tests {
         assert_eq!(std::fs::read(&target).expect("read"), b"old");
         assert!(InstallState::Checking.busy() && InstallState::Installing.busy());
         assert!(!InstallState::Idle.busy());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// #3816: a quiet update stopped with no word when Explorer held the
+    /// thumbnail handler. The setup moves a file in use aside before the
+    /// files go in and closes only TraceDraw's programs, the moved file
+    /// is cleared at the next start, and a setup log newer than the
+    /// running version tells that the update did not finish.
+    #[test]
+    fn an_update_held_up_by_a_file_in_use_goes_on_or_says_so() {
+        let iss = include_str!("../../../packaging/windows/tracedraw.iss");
+        assert!(iss.contains("CloseApplicationsFilter=*.exe\n"));
+        assert!(iss.contains("if CurStep = ssInstall then\n    MoveAsideInUse('tracedraw_thumbnailer.dll')"));
+        assert!(iss.contains("Aside := Path + '.' + IntToStr(N) + '.old';"));
+        assert!(is_leftover("tracedraw_thumbnailer.dll.1.old"));
+        assert!(is_leftover(".tracedraw.exe.old"));
+        assert!(!is_leftover("tracedraw_thumbnailer.dll"));
+        assert!(!is_leftover("tracedraw.exe"));
+        assert!(!is_leftover("notes.old"));
+
+        let dir = std::env::temp_dir().join(format!("td_unfinished_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("dir");
+        assert_eq!(unfinished_update(&dir, "0.49.0"), None);
+        std::fs::write(dir.join("TraceDraw-0.50.0-setup.exe"), b"").expect("exe");
+        assert_eq!(unfinished_update(&dir, "0.49.0"), None, "no log: not run yet");
+        let log = dir.join("TraceDraw-0.50.0-setup.log");
+        std::fs::write(&log, b"Fatal exception").expect("log");
+        assert_eq!(unfinished_update(&dir, "0.49.0"), Some(("0.50.0".into(), log.clone())));
+        assert_eq!(unfinished_update(&dir, "0.50.0"), None, "the update worked");
+        assert_eq!(setup_log(&dir.join("TraceDraw-0.50.0-setup.exe")), log);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

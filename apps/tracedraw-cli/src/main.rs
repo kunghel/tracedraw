@@ -166,6 +166,33 @@ fn load(
     if !loaded.0.fonts.is_empty() {
         tracedraw_text::fonts().add_document_fonts(&loaded.0.fonts);
     }
+    // The fonts the app was given, and the stand-in for each missing
+    // one, as the app finds it (#3818).
+    static APP_FONTS: std::sync::Once = std::sync::Once::new();
+    APP_FONTS.call_once(|| {
+        if let Some(settings) = app_settings_path() {
+            load_app_fonts(tracedraw_text::fonts(), &settings);
+        }
+    });
+    for line in stand_ins(tracedraw_text::fonts(), &loaded.0) {
+        eprintln!("{path}: {line}");
+    }
+    // The app set to take the automatic fonts and keep them in the
+    // drawing (Missing Fonts > Always, #3725): the CLI writes the
+    // drawing with them too, so the files it makes name fonts that are
+    // installed (#3965).
+    static KEEP_STAND_INS: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    let keep = *KEEP_STAND_INS.get_or_init(|| {
+        app_settings_path()
+            .map(|s| keeps_stand_ins(&s.join("settings.json")) || keeps_stand_ins(&s))
+            .unwrap_or(false)
+    });
+    if keep {
+        let n = replace_missing_fonts(tracedraw_text::fonts(), &mut loaded.0);
+        if n > 0 {
+            eprintln!("{path}: {n} missing font(s) replaced in the drawing by their stand-ins");
+        }
+    }
     // Paragraph text flows around the objects marked to wrap it.
     loaded.0.refresh_text_flow();
     // CMYK colours render through the profile the drawing carries.
@@ -186,6 +213,118 @@ fn load(
     Ok(loaded)
 }
 
+/// The app's preferences file: `settings.json` in its configuration
+/// folder (the `tracedraw-settings` folder beside the program for a
+/// portable copy, or as `TRACEDRAW_CONFIG_DIR` names).
+fn app_settings_path() -> Option<std::path::PathBuf> {
+    let dir = if let Ok(dir) = std::env::var("TRACEDRAW_CONFIG_DIR") {
+        Some(std::path::PathBuf::from(dir))
+    } else if let Some(dir) = std::env::current_exe()
+        .ok()
+        .and_then(|e| Some(e.parent()?.join("tracedraw-settings")))
+        .filter(|d| d.is_dir())
+    {
+        Some(dir)
+    } else if cfg!(windows) {
+        std::env::var_os("APPDATA").map(|p| std::path::PathBuf::from(p).join("TraceDraw"))
+    } else if cfg!(target_os = "macos") {
+        std::env::var_os("HOME")
+            .map(|p| std::path::PathBuf::from(p).join("Library/Application Support/TraceDraw"))
+    } else {
+        std::env::var_os("XDG_CONFIG_HOME")
+            .map(std::path::PathBuf::from)
+            .or_else(|| {
+                std::env::var_os("HOME").map(|p| std::path::PathBuf::from(p).join(".config"))
+            })
+            .map(|p| p.join("tracedraw"))
+    };
+    dir.map(|d| d.join("settings.json"))
+}
+
+/// Load the font files installed for the app in its Font Manager and
+/// those of the folders added there, as the app does at start (#3818):
+/// the CLI then draws with the fonts the app draws with. The
+/// families added.
+fn load_app_fonts(fonts: &tracedraw_text::FontSystem, settings: &std::path::Path) -> usize {
+    let Ok(text) = std::fs::read_to_string(settings) else {
+        return 0;
+    };
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) else {
+        return 0;
+    };
+    let paths = |key: &str| -> Vec<std::path::PathBuf> {
+        v["font_manager"][key]
+            .as_array()
+            .map(|a| {
+                a.iter()
+                    .filter_map(|p| p.as_str())
+                    .map(std::path::PathBuf::from)
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    let folders = paths("folders");
+    let mut files = paths("installed");
+    files.extend(
+        folders
+            .iter()
+            .flat_map(|d| tracedraw_text::catalog::font_files(d)),
+    );
+    if files.is_empty() {
+        return 0;
+    }
+    fonts.set_font_roots(&folders);
+    fonts.install_paths(&files).len()
+}
+
+/// A line for each font of `doc` that is not installed, naming the
+/// installed font that draws its text instead, as the app's Missing
+/// Fonts dialog finds it (#3818).
+fn stand_ins(fonts: &tracedraw_text::FontSystem, doc: &tracedraw_core::Document) -> Vec<String> {
+    doc.font_families_used()
+        .into_iter()
+        .filter_map(|family| {
+            let with = fonts.substitute(&family)?;
+            Some(format!(
+                "font \"{family}\" is not installed: its text is drawn with \"{with}\""
+            ))
+        })
+        .collect()
+}
+
+/// Whether the app's settings file `settings` says to take the automatic
+/// font for each missing one and keep it in the drawing (#3725).
+fn keeps_stand_ins(settings: &std::path::Path) -> bool {
+    let Ok(text) = std::fs::read_to_string(settings) else {
+        return false;
+    };
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) else {
+        return false;
+    };
+    let w = &v["warnings"];
+    w["accept_missing_fonts"].as_bool() == Some(true)
+        && w["accept_missing_fonts_keep"].as_bool() == Some(true)
+}
+
+/// Each font of `doc` that is not installed replaced in the drawing by
+/// the installed font that draws its text instead, as the app's Missing
+/// Fonts dialog does with Always and Replace in the drawing (#3965);
+/// how many families were replaced.
+fn replace_missing_fonts(
+    fonts: &tracedraw_text::FontSystem,
+    doc: &mut tracedraw_core::Document,
+) -> usize {
+    let mut n = 0;
+    for family in doc.font_families_used() {
+        if let Some(with) = fonts.substitute(&family) {
+            if with != family && doc.replace_font_family(&family, &with) > 0 {
+                n += 1;
+            }
+        }
+    }
+    n
+}
+
 fn read_document(
     path: &str,
 ) -> Result<(tracedraw_core::Document, Option<tracedraw_cdr::ParseReport>), String> {
@@ -204,10 +343,17 @@ fn read_document(
         let bytes = std::fs::read(path).map_err(|e| e.to_string())?;
         // TRACEDRAW_PASSWORD opens a protected file.
         let password = std::env::var("TRACEDRAW_PASSWORD").unwrap_or_default();
-        let imported = tracedraw_io::pdf_import::parse_with_password(
+        // TRACEDRAW_PDF_IMPORT_TEXT=curves reads the text as curves from
+        // the fonts the file embeds.
+        let options = tracedraw_io::pdf_import::ImportOptions {
+            text_as_curves: std::env::var("TRACEDRAW_PDF_IMPORT_TEXT").is_ok_and(|v| v == "curves"),
+            ..Default::default()
+        };
+        let imported = tracedraw_io::pdf_import::parse_with_options(
             &bytes,
             &mut tracedraw_core::id::IdSource::default(),
             &password,
+            options,
         )
         .map_err(|e| e.to_string())?;
         for w in &imported.warnings {
@@ -845,7 +991,17 @@ fn main() -> ExitCode {
             } else if output.to_ascii_lowercase().ends_with(".emf") {
                 tracedraw_io::save_emf(&doc, page_index(), output)
             } else if output.to_ascii_lowercase().ends_with(".wmf") {
-                tracedraw_io::save_wmf(&doc, page_index(), output)
+                // TRACEDRAW_WMF_SOLID_DASHES=1 writes dashed outlines as
+                // solid lines, as the export dialog's box does (#3819).
+                let opts = tracedraw_io::emf::WmfOptions {
+                    solid_dashes: std::env::var("TRACEDRAW_WMF_SOLID_DASHES")
+                        .is_ok_and(|v| !v.is_empty() && v != "0"),
+                };
+                std::fs::write(
+                    output,
+                    tracedraw_io::emf::page_to_wmf_with(&doc, page_index(), &opts),
+                )
+                .map_err(tracedraw_io::Error::from)
             } else if output.to_ascii_lowercase().ends_with(".plt") {
                 tracedraw_io::save_plt(&doc, page_index(), output)
             } else if output.to_ascii_lowercase().ends_with(".psd") {
@@ -1032,6 +1188,84 @@ fn page_from(v: Option<&str>) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The fonts installed in the app's Font Manager, file by file and
+    /// by folder, are loaded from its settings, and a font the drawing
+    /// names that is not installed is reported with its stand-in (#3818).
+    #[test]
+    fn the_apps_fonts_load_and_missing_ones_name_their_stand_in() {
+        let dir = std::env::temp_dir().join(format!("td-cli-fonts-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("folder")).expect("dir");
+        let assets =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../tracedraw/assets/fonts");
+        std::fs::copy(
+            assets.join("Selawik-Bold.ttf"),
+            dir.join("folder/Selawik-Bold.ttf"),
+        )
+        .expect("copy");
+        let settings = dir.join("settings.json");
+        let v = serde_json::json!({
+            "font_manager": {
+                "installed": [assets.join("Selawik-Regular.ttf")],
+                "folders": [dir.join("folder")],
+            }
+        });
+        std::fs::write(&settings, v.to_string()).expect("settings");
+        let fonts = tracedraw_text::FontSystem::empty();
+        assert_eq!(load_app_fonts(&fonts, &dir.join("none.json")), 0);
+        assert!(load_app_fonts(&fonts, &settings) >= 1);
+        assert!(fonts.has_family("Selawik"));
+        assert_eq!(
+            fonts.installed_paths().len(),
+            2,
+            "the file and the folder's"
+        );
+        let svg = dir.join("t.svg");
+        std::fs::write(
+            &svg,
+            r#"<svg xmlns="http://www.w3.org/2000/svg" width="100" height="50"><text x="5" y="20" font-family="Selawik">A</text><text x="5" y="40" font-family="Nowhere Grotesk 3818">B</text></svg>"#,
+        )
+        .expect("svg");
+        let (mut doc, _) = read_document(svg.to_str().expect("utf-8")).expect("read");
+        // The reader may name a family it does not know otherwise: the
+        // second text is set in one no computer has.
+        let mut texts = 0;
+        for layer in doc.all_layers_mut() {
+            for shape in &mut layer.shapes {
+                if let tracedraw_core::document::ShapeKind::Text { spans, .. } = &mut shape.kind {
+                    texts += 1;
+                    if texts == 2 {
+                        spans
+                            .iter_mut()
+                            .for_each(|sp| sp.font_family = "Nowhere Grotesk 3818".into());
+                    }
+                }
+            }
+        }
+        assert_eq!(texts, 2);
+        let lines = stand_ins(&fonts, &doc);
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert!(
+            lines[0].contains("\"Nowhere Grotesk 3818\"") && lines[0].contains("\"Selawik\""),
+            "{lines:?}"
+        );
+        // Set to keep the stand-ins (#3965): the drawing names them.
+        let keep = dir.join("keep.json");
+        std::fs::write(
+            &keep,
+            r#"{"warnings":{"accept_missing_fonts":true,"accept_missing_fonts_keep":true}}"#,
+        )
+        .expect("settings");
+        assert!(keeps_stand_ins(&keep));
+        assert!(!keeps_stand_ins(&settings));
+        assert_eq!(replace_missing_fonts(&fonts, &mut doc), 1);
+        assert!(!doc
+            .font_families_used()
+            .contains(&"Nowhere Grotesk 3818".to_string()));
+        assert!(stand_ins(&fonts, &doc).is_empty());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn the_page_to_export_counts_from_one() {

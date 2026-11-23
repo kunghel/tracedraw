@@ -63,3 +63,13 @@ TraceDraw 首次啟動時會詢問是否檢查更新：[[updates.policy_always]]
   分享想法。
 - [[menu.help > menu.help.support]] 開啟問題追蹤系統，你可以在那裡回報問題。
 - [[menu.help > menu.help.message_settings]] 開啟設定 TraceDraw 訊息的選項。
+
+## TraceDraw 停止回應時 {#problem-reports}
+
+當 TraceDraw 的某一步超過 10 秒時，它會儲存一份當時正在做什麼的報告（版本、系統、工具、上一個命令、繪圖的大小以及記錄檔的結尾），絕不包含繪圖的名稱或內容。TraceDraw 恢復回應時，或者它必須被關閉或因錯誤關閉後的下一次啟動時，會有訊息提示傳送報告。
+
+1. 按一下 **[[report.show]]** 閱讀報告。
+2. 按一下 **[[report.send]]**：會開啟一個填好摘要的 GitHub 新問題，以及報告所在的資料夾。
+3. 把報告拖到問題中，寫下你當時在做什麼，然後送出。在此之前不會傳送任何內容。
+
+**[[report.not_now]]** 關閉訊息。每份報告只提示一次。

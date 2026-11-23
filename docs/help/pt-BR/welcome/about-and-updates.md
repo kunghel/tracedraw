@@ -114,3 +114,22 @@ lugar. Escolha
   pode relatar um problema.
 - [[menu.help > menu.help.message_settings]] abre as opções em que as
   mensagens do TraceDraw são definidas.
+
+## Quando o TraceDraw para de responder {#problem-reports}
+
+Quando uma etapa do TraceDraw passa de 10 segundos, ele grava um relatório
+do que estava fazendo: a versão, o sistema, a ferramenta, o último comando e
+o tamanho do desenho, com o fim do seu log. O relatório nunca traz o nome
+do desenho nem o seu conteúdo.
+
+1. Se o TraceDraw voltar a responder, uma mensagem diz por quanto tempo ele
+   ficou parado. Se ele teve de ser fechado, ou fechou com um erro, a
+   mensagem aparece na próxima vez que ele abrir.
+2. Clique em **[[report.show]]** para ler o relatório antes.
+3. Clique em **[[report.send]]**: um issue novo abre no GitHub com um resumo
+   preenchido, e a pasta que guarda o relatório abre ao lado.
+4. Arraste o relatório da pasta para o issue, conte o que você estava
+   fazendo e envie. Nada é enviado antes disso.
+
+Clique em **[[report.not_now]]** para fechar a mensagem. Cada relatório é
+oferecido uma vez só.

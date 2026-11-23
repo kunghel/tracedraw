@@ -15,8 +15,12 @@ The panel lists the page with its layers, topmost first, then the
 thumbnail, the object itself drawn small with its fill and outline, and its
 name, or what it is when it has none ("Rectangle", "Curve with 8 nodes").
 
-- Click an object to select it; <kbd>Shift</kbd>+click adds it to the
-  selection. Its layer becomes the active layer.
+- Click an object to select it; <kbd>Shift</kbd>+click selects every object
+  from the one clicked before to this one, and <kbd>Ctrl</kbd>+click adds
+  one object or takes it out. Its layer becomes the active layer. Layer
+  rows take the same clicks: <kbd>Shift</kbd>+click selects the range of
+  layers from the last clicked one, and <kbd>Ctrl</kbd>+click adds or
+  removes a layer.
 - Click the arrow of a group to see the objects inside it.
 - Each layer has three buttons: [[docker.show_hide]], [[docker.print_layer]]
   and [[docker.lock_layer]]. A hidden or locked layer cannot be edited. The
@@ -32,7 +36,10 @@ name, or what it is when it has none ("Rectangle", "Curve with 8 nodes").
 
 A layer is a sheet on which objects lie. The **active layer**, shown in bold
 with a colored bar, is where new objects go when you draw, paste, duplicate
-or import. Click a layer to make it active.
+or import. Click a layer to make it active. <kbd>Shift</kbd>+click selects
+the range of layers from the last clicked one, and <kbd>Ctrl</kbd>+click
+adds or removes a layer; the eye, the printer, the padlock, Delete and the
+layer menu then act on all the selected layers together.
 
 - [[docker.new_layer]], at the bottom of the panel, adds a layer on top and
   makes it active.

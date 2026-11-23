@@ -40,3 +40,18 @@ seinem eigenen Werkzeug oder Andockfenster bearbeitet.
 - [[menu.object > menu.object.copy_effect]] kopiert einen Effekt von einem
   anderen Objekt, und [[menu.object.clone_effect]] erstellt einen Klon, der
   ihm folgt; siehe [Effekte kopieren und klonen](copy-and-clone.md).
+
+## Handgemachtes Aussehen und Rahmen
+
+Die Ebeneneffekte oben im Bedienfeld enthalten auch diese, alle live:
+
+- [[effect.roughen]] zeichnet den Umriss mit kleinen zufälligen Wellen neu.
+- [[effect.jitter_nodes]] verschiebt die Knoten der Kurve zufällig.
+- [[effect.scribble]] zeichnet die Füllung als lockere Zickzacklinie in der
+  Füllfarbe; der Umriss bleibt.
+- [[effect.shape_frame]] ersetzt den Umriss durch ein Rechteck, ein
+  abgerundetes Rechteck oder eine Ellipse um das Objekt.
+- [[effect.trim_marks]] zeichnet Linien an den Ecken des Objekts, außerhalb.
+- [[effect.feather]] lässt das Objekt zum Rand hin ausblenden.
+
+**Variante** gibt den zufälligen Effekten ein anderes Muster.

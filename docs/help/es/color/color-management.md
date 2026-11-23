@@ -76,3 +76,9 @@ colores que las tintas CMYK no pueden imprimir se ven más apagados. El panel
 
 Sin perfiles cargados, TraceDraw convierte los colores con su propio modelo de
 tintas de cuatricromía sobre papel estucado.
+
+[[menu.view > menu.view.separations]] muestra la página como la imprime una
+sola tinta, en el color de esa tinta: elija cian, magenta, amarillo, negro o
+una tinta directa del dibujo, y solo se ve lo que imprime esa tinta. Puede
+seguir dibujando y editando como siempre; el dibujo no cambia.
+[[menu.view.separations_composite]] vuelve a mostrar todas las tintas.

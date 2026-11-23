@@ -74,5 +74,11 @@ colors.
 Without loaded profiles, TraceDraw converts colors with its own model of
 process inks on coated paper.
 
+[[menu.view > menu.view.separations]] shows the page as one ink prints it, in
+that ink's color: pick cyan, magenta, yellow, black or a spot ink of the
+drawing, and only what that ink prints shows, cyan ink in cyan. You keep
+drawing and editing as usual; the drawing itself does not change.
+[[menu.view.separations_composite]] shows every ink again.
+
 To turn every color of the selection or the drawing into CMYK or RGB through
 these profiles, see [Converting colors to CMYK or RGB](convert-colors.md).

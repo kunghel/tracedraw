@@ -51,6 +51,15 @@ existed only in print imposition.
   same way, so it selects across the spine. Then they align,
   distribute and move together. One undo puts each back on its page
   (`multipage::tests::objects_of_both_facing_pages_select_together`).
+  Selecting does not change the page an object prints on (#3817): once
+  an object brought over leaves the selection (another selection, a
+  click on nothing, another page made current), it goes back to its
+  page and layer where it shows, in one undo step; one moved onto the
+  current page while selected (its middle on that page) stays there
+  (`multipage::tests::objects_selected_across_the_spine_go_back_to_their_page`).
+  In the Multipage View an object let go with its middle on another
+  page's paper, the facing page included, becomes that page's (#3847,
+  see `multipage-view.md`).
 - The page tabs, the navigator and Go To Page make the facing page
   current in place; a page of another spread is shown with its spread,
   fitted to the window.

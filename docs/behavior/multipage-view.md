@@ -102,9 +102,13 @@ off too and is lit while it is on (#1019).
   they show, now in that page's own place, on its topmost visible,
   unlocked layer, and that page becomes current with them selected, as
   one undo step with the move (Move to Page). Let go on the desktop or
-  on the current page, they stay the current page's. Not with facing
-  pages, nor for an object chosen inside a group or one on a master
-  layer (#2055,
+  on the current page, they stay the current page's. With facing pages
+  too, the facing page of the spread included: it was left out, and
+  since objects selected across the spine go back to their page (#3817)
+  an object could not be given to another page at all (#3847,
+  `pick_drag_tests::with_facing_pages_an_object_dropped_on_another_page_becomes_that_page_s`).
+  Not for an object chosen inside a group or one on a master layer
+  (#2055,
   `pick_drag_tests::an_object_dropped_on_another_page_of_the_multipage_view_becomes_that_page_s`).
 - The page tabs and the navigator change the current page the same way.
 - Zoom to Fit (F4) and turning the view on fit every page in the window.

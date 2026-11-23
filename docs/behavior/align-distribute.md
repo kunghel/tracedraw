@@ -37,6 +37,8 @@ are spread:
 |---|---|---|
 | Selection extent (default) | 3 objects | the first and last objects (ordered by the edge or centre distributed; by centre for gaps) stay; the others move so the edges or centres are evenly spaced, or the gaps are equal between the first's low edge and the last's high edge |
 | Page extent | 2 objects | the first object's low edge (left, bottom) touches the page's, the last object's high edge (right, top) touches the page's; edges and centres in between are evenly spaced, or the gaps are equal across the page |
+| Page, even margins | 1 object | the objects, in the order they lie, are spaced along the axis with the same gap at the page's edges as between them, whichever button is used (#3768) |
+| Inside the largest object | 3 objects | the largest selected object stays as the frame; the others are spaced inside it with the same gap at its edges as between them (#3768) |
 
 - With fewer objects the buttons are pale and a line says how many are
   needed.

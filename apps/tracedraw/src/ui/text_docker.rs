@@ -367,7 +367,7 @@ fn number(
 
 /// The picture of a vertical alignment: a frame with three lines at its
 /// top, middle or bottom.
-fn paint_vertical_align(p: &egui::Painter, r: Rect, v: VerticalAlign, color: Color32) {
+pub(crate) fn paint_vertical_align(p: &egui::Painter, r: Rect, v: VerticalAlign, color: Color32) {
     let f = r.shrink(1.0);
     p.rect_stroke(f, 0.0, Stroke::new(1.0, color), egui::StrokeKind::Inside);
     let block = 7.0;
@@ -498,6 +498,14 @@ pub(crate) fn edit_paragraphs(app: &mut App, f: impl Fn(&mut ParagraphStyle)) {
     for id in ids {
         app.edit_paragraph_style(id, &f);
     }
+}
+
+/// A letter of the Arabic script (Arabic, Persian, Urdu and the other
+/// languages written in it).
+fn arabic_script(c: char) -> bool {
+    // As code points: the panel's icon check reads every character
+    // written in this file as one it draws.
+    matches!(c as u32, 0x0600..=0x06FF | 0x0750..=0x077F | 0x08A0..=0x08FF)
 }
 
 /// Set the alignment of the selected text.
@@ -1603,6 +1611,38 @@ fn paragraph(app: &mut App, ui: &mut Ui, first: Option<&tracedraw_core::Shape>) 
             }
         }
     });
+    // Kashida in justified Arabic-script lines (#3827), for right-to-left
+    // paragraphs and text written in Arabic script.
+    let arabic = matches!(&t.kind, ShapeKind::Text { spans, .. }
+        if spans.iter().any(|sp| sp.text.chars().any(arabic_script)));
+    if p.direction.is_right_to_left() || arabic {
+        use tracedraw_core::Kashida as K;
+        ui.horizontal(|ui| {
+            let tip = crate::ui::tips::pair("docker.kashida", "docker.kashida_desc");
+            ui.label(tr("docker.kashida")).rich_tip(&tip);
+            let name = |k: K| {
+                tr(match k {
+                    K::Off => "docker.kashida_off",
+                    K::Low => "docker.kashida_low",
+                    K::Medium => "docker.kashida_medium",
+                    K::High => "docker.kashida_high",
+                })
+            };
+            crate::ui::keynav::ComboBox::from_id_salt("docker_kashida")
+                .width(120.0)
+                .selected_text(name(p.kashida))
+                .show_ui(ui, |ui| {
+                    for k in K::ALL {
+                        if ui.selectable_label(p.kashida == k, name(k)).clicked() && p.kashida != k
+                        {
+                            edit_paragraphs(app, move |q| q.kashida = k);
+                        }
+                    }
+                })
+                .response
+                .rich_tip(&tip);
+        });
+    }
     let before = p.clone();
     let mut pc = false;
     let line_icon = |ui: &mut Ui, icon: ParaIcon, key: &str| {
@@ -1893,6 +1933,11 @@ fn frame(app: &mut App, ui: &mut Ui, first: Option<&tracedraw_core::Shape>) {
             pc = true;
         }
     });
+    // Type block: each line its own size, filling the frame's width.
+    pc |= ui
+        .checkbox(&mut p.type_block, tr("docker.type_block"))
+        .rich_tip(crate::ui::tips::keyed("docker.type_block"))
+        .changed();
     egui::Grid::new("text_frame")
         .num_columns(2)
         .spacing([6.0, 4.0])
@@ -1933,7 +1978,12 @@ fn frame(app: &mut App, ui: &mut Ui, first: Option<&tracedraw_core::Shape>) {
             .changed();
     }
     if pc {
-        app.set_paragraph_style(id, p);
+        if app.table_edit.is_some() {
+            // Table cells being edited: where their text sits (#3859).
+            app.set_cells_vertical_align(p.vertical_align);
+        } else {
+            app.set_paragraph_style(id, p);
+        }
     }
 }
 

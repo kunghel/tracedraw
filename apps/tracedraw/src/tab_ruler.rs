@@ -7,6 +7,8 @@
 //! long text keeps the drag smooth), and the whole drag is one undo step.
 //! The paragraph's left and right indents show as triangles along the
 //! strip's outer edge; dragging one sets the indent the same way (#1993).
+//! The first line's indent has a marker of its own above the left one, so
+//! a hanging or first-line indent is dragged on the ruler too (#3911).
 //! With the rulers shown and the frame upright, the strip is the page's
 //! own horizontal ruler over the frame's width, not a strip on the page
 //! (#1912); a turned or mirrored frame, or rulers hidden, keep the strip
@@ -58,6 +60,9 @@ pub struct TabRuler {
     /// and right edges).
     pub left_indent: f64,
     pub right_indent: f64,
+    /// The first line's indent, mm from the left indent (below 0 for a
+    /// hanging indent, #3911).
+    pub first_line_indent: f64,
     /// The strip is the page's horizontal ruler over the frame's width
     /// (#1912): `a` and `b` stand on the ruler's lower edge, `up` points
     /// up and the strip is the ruler's whole height.
@@ -69,6 +74,8 @@ pub struct TabRuler {
 pub enum IndentSide {
     Left,
     Right,
+    /// The first line's indent, counted from the left indent (#3911).
+    FirstLine,
 }
 
 /// An indent marker being dragged along the ruler (#1993).
@@ -211,20 +218,30 @@ impl TabRuler {
         match side {
             IndentSide::Left => self.left_indent,
             IndentSide::Right => self.width_mm - self.right_indent,
+            IndentSide::FirstLine => self.left_indent + self.first_line_indent,
         }
     }
 
     /// The indent marker under screen point `p`: in the outer half of
     /// the strip (the stops' markers stand in the inner half), within
-    /// grabbing distance of the marker, the nearer one when both are.
+    /// grabbing distance of the marker, the nearer one when both are. The
+    /// first line's marker takes the outer quarter and the left one the
+    /// quarter below it, so the two can be told apart where they meet
+    /// (#3911); the right one takes both.
     pub fn indent_at(&self, p: Pos2) -> Option<IndentSide> {
         let (pos, out) = self.locate(p);
         let (near, far) = self.band();
-        if out < (near + far) / 2.0 || out > far + 3.0 {
+        let mid = (near + far) / 2.0;
+        if out < mid || out > far + 3.0 {
             return None;
         }
         let px = self.len() as f64 / self.width_mm.max(1e-6);
-        [IndentSide::Left, IndentSide::Right]
+        let left = if out >= (mid + far) / 2.0 {
+            IndentSide::FirstLine
+        } else {
+            IndentSide::Left
+        };
+        [left, IndentSide::Right]
             .into_iter()
             .map(|side| (side, ((self.indent_pos(side) - pos) * px).abs()))
             .filter(|(_, d)| *d <= GRAB as f64)
@@ -237,7 +254,15 @@ impl TabRuler {
     #[cfg(test)]
     pub fn on_indents(&self, along: f64) -> Pos2 {
         let (near, far) = self.band();
-        self.at(along, far - (far - near) / 4.0)
+        self.at(along, far - (far - near) * 3.0 / 8.0)
+    }
+
+    /// A point in the outer quarter of the strip, where the first line's
+    /// indent marker is, `along` mm from its left end.
+    #[cfg(test)]
+    pub fn on_first_line(&self, along: f64) -> Pos2 {
+        let (near, far) = self.band();
+        self.at(along, far - (far - near) / 8.0)
     }
 
     /// Whether screen point `p` is far enough from the strip for a
@@ -307,8 +332,12 @@ impl App {
             _ => (para.tabs.clone(), false),
         };
         let (mut left_indent, mut right_indent) = (para.left_indent, para.right_indent);
+        let mut first_line_indent = para.first_line_indent;
         match &self.indent_drag {
             Some(d) if d.shape == id && d.side == IndentSide::Left => left_indent = d.value,
+            Some(d) if d.shape == id && d.side == IndentSide::FirstLine => {
+                first_line_indent = d.value
+            }
             Some(d) if d.shape == id => right_indent = d.value,
             _ => {}
         }
@@ -324,6 +353,7 @@ impl App {
             handle: self.handle_size(),
             left_indent,
             right_indent,
+            first_line_indent,
             docked,
         })
     }
@@ -341,6 +371,7 @@ impl App {
         self.edit_paragraph_style(id, |p| match side {
             IndentSide::Left => p.left_indent = value,
             IndentSide::Right => p.right_indent = value,
+            IndentSide::FirstLine => p.first_line_indent = value,
         });
     }
 
@@ -362,6 +393,11 @@ impl App {
         let value = match d.side {
             IndentSide::Left => pos.clamp(0.0, room(r.right_indent)),
             IndentSide::Right => (r.width_mm - pos).clamp(0.0, room(r.left_indent)),
+            // The first line starts between the frame's left edge and a
+            // millimetre short of the right indent.
+            IndentSide::FirstLine => {
+                pos.clamp(0.0, room(r.right_indent).max(r.left_indent)) - r.left_indent
+            }
         };
         d.value = (value * 10.0).round() / 10.0;
         let time = response.ctx.input(|i| i.time);
@@ -468,6 +504,7 @@ impl App {
                     value: match side {
                         IndentSide::Left => r.left_indent,
                         IndentSide::Right => r.right_indent,
+                        IndentSide::FirstLine => r.first_line_indent,
                     },
                     before: self.engine.last_step_id(),
                     shown: None,
@@ -632,14 +669,32 @@ fn markers(app: &App, painter: &Painter, r: &TabRuler) {
         .as_ref()
         .filter(|d| d.shape == r.shape)
         .map(|d| d.side);
-    for side in [IndentSide::Left, IndentSide::Right] {
-        let color = if moving == Some(side) {
+    let color = |side| {
+        if moving == Some(side) {
             Tokens::SELECTION
         } else {
             ink
-        };
-        indent_marker(painter, r, r.indent_pos(side), color);
-    }
+        }
+    };
+    indent_marker(painter, r, r.indent_pos(IndentSide::Right), color(IndentSide::Right));
+    // The left side: the first line's triangle hanging from the outer
+    // edge over the left indent's, which points up at it (#3911).
+    let (near, far) = r.band();
+    let mid = (near + far) / 2.0;
+    let dir = r.dir();
+    let first = r.at(r.indent_pos(IndentSide::FirstLine), far);
+    let quarter = (far - mid) / 2.0;
+    painter.add(egui::Shape::convex_polygon(
+        vec![first - dir * 4.0, first + dir * 4.0, first - r.up * quarter],
+        color(IndentSide::FirstLine),
+        Stroke::NONE,
+    ));
+    let left = r.at(r.indent_pos(IndentSide::Left), mid);
+    painter.add(egui::Shape::convex_polygon(
+        vec![left - dir * 4.0, left + r.up * quarter, left + dir * 4.0],
+        color(IndentSide::Left),
+        Stroke::NONE,
+    ));
 }
 
 /// Where the dragged stop or indent would go: a line down the frame.

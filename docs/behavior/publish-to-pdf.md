@@ -31,7 +31,9 @@ is downloaded). The dialog is `ui/publish_pdf.rs`; the file comes from
 
 ## Color
 
-For PDF/X: Output condition (FOGRA39 by default) and the note about the
+For PDF/X: Output condition (empty by default: the drawing's CMYK
+profile, shown greyed in the field, see `colour-management.md`, #3829)
+and the note about the
 output intent's profile (the CMYK profile of Colour Management). A plain
 PDF keeps the drawing's colours as they are.
 

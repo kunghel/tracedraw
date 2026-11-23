@@ -182,6 +182,25 @@ pub enum Command {
         index: usize,
         shape: Shape,
     },
+    /// Rename symbol `index` (double-click its name in the Symbols panel).
+    SetSymbolName {
+        index: usize,
+        name: String,
+    },
+    /// Replace objects where they stand: each `(id, shape)` swaps the
+    /// object of that id for the shape given, keeping its place in its
+    /// layer, group or clip frame and its order among the neighbours
+    /// (Symbolize Similar puts each instance where its group was).
+    ReplaceShapes {
+        replacements: Vec<(ShapeId, Shape)>,
+    },
+    /// Merge symbol `from` into symbol `to` (Replace Symbol): every
+    /// instance of `from`, on any page or master layer, in groups, clip
+    /// frames and inside other symbols' definitions, becomes an instance
+    /// of `to`; the definition of `from` goes and the indices after it
+    /// shift down. One undo step. A symbol cannot merge into itself, nor
+    /// into one whose definition draws it.
+    MergeSymbols { from: usize, to: usize },
     /// Move a page to another index (Page Sorter drag).
     MovePage {
         page: PageId,
@@ -274,6 +293,15 @@ pub enum Command {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         fixed: Option<Vec<bool>>,
     },
+    /// A shape of the Common Shapes tool drawn again (#4045): the curve's
+    /// outline becomes `path` (local space, closed) and it keeps `params`
+    /// (see [`Shape::common_shape`]), so its handles show where the new
+    /// settings put them.
+    SetCommonShape {
+        shape: ShapeId,
+        params: Box<crate::document::CommonShapeParams>,
+        path: crate::geometry::BezPath,
+    },
     /// A QR code object's settings (its children are set with
     /// [`Command::SetShapeKind`] in the same step).
     SetQrCode {
@@ -331,6 +359,10 @@ pub enum Command {
         shapes: Vec<ShapeId>,
         fills: Vec<Fill>,
         strokes: Vec<Stroke>,
+        /// The further fills' looks of their own (`Shape::fill_looks`);
+        /// `None` keeps them, as many as there are fills.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        looks: Option<Vec<crate::document::FillLook>>,
     },
     SetOverprint {
         shapes: Vec<ShapeId>,
@@ -408,6 +440,10 @@ pub enum Command {
     /// objects follow a colour style that changes (#778).
     ReplaceColors {
         pairs: Vec<(crate::Color, crate::Color)>,
+        /// Only these objects (any depth inside them); empty: the whole
+        /// drawing (#3534).
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        shapes: Vec<ShapeId>,
     },
     /// Move `shapes` directly in front of (or behind) `reference` in its layer.
     OrderRelative {
@@ -442,6 +478,11 @@ pub enum Command {
     },
     /// Split a curve into one object per subpath, like Ctrl+K.
     BreakApart {
+        shape: ShapeId,
+    },
+    /// Break Apart that keeps each hole with the part around it: a
+    /// letter's counter stays in the letter (#3700).
+    BreakApartKeepHoles {
         shape: ShapeId,
     },
     SetShadow {
@@ -558,6 +599,66 @@ impl Command {
         )
     }
 
+    /// True when the command cannot change any text's characters, content
+    /// links, geometry, stacking, visibility or wrap, nor the baseline
+    /// grid: the engine then skips the linked-text sync and the text-flow
+    /// walk after it, which on a heavy drawing is the difference between
+    /// a paint command and a full document pass. Anything touching a
+    /// path, a transform, the order of shapes or layers, a visibility or
+    /// wrap flag, a text or the document grid is NOT text alone and is
+    /// left out of this list on purpose.
+    pub fn leaves_text_alone(&self) -> bool {
+        matches!(
+            self,
+            Command::SetTitle { .. }
+                | Command::MovePage { .. }
+                | Command::RenamePage { .. }
+                | Command::RenameLayer { .. }
+                | Command::SetLayerLocked { .. }
+                | Command::SetLayerPrintable { .. }
+                | Command::SetPageBackground { .. }
+                | Command::SetCmykProfile { .. }
+                | Command::SetSelectionGroup { .. }
+                | Command::SetTimeTracker { .. }
+                | Command::SetSavedView { .. }
+                | Command::SetComments { .. }
+                | Command::SetObjectStyles { .. }
+                | Command::LinkObjectStyle { .. }
+                | Command::SetObjectDefaults { .. }
+                | Command::SetColorStyles { .. }
+                | Command::SetDocumentPalette { .. }
+                | Command::SetDocumentPaletteNames { .. }
+                | Command::SetInks { .. }
+                | Command::SetOpacityMask { .. }
+                | Command::SetRasterFx { .. }
+                | Command::SetFill { .. }
+                | Command::SetStroke { .. }
+                | Command::PatchStroke { .. }
+                | Command::PatchFill { .. }
+                | Command::SwapColors { .. }
+                | Command::SetOpacity { .. }
+                | Command::SetLocked { .. }
+                | Command::SetExtraPaint { .. }
+                | Command::SetOverprint { .. }
+                | Command::SetLink { .. }
+                | Command::SetFillRule { .. }
+                | Command::SetObjectData { .. }
+                | Command::SetPictureInks { .. }
+                | Command::ConvertColors { .. }
+                | Command::Recolor { .. }
+                | Command::ReplaceColors { .. }
+                | Command::SetShadow { .. }
+                | Command::SetShapeName { .. }
+                | Command::SetTocLevel { .. }
+                | Command::AddGuide { .. }
+                | Command::MoveGuide { .. }
+                | Command::DeleteGuide { .. }
+                | Command::SetGuides { .. }
+                | Command::SetMasterGuides { .. }
+                | Command::SetGuidesShown { .. }
+        )
+    }
+
     /// Short label for the History panel and the Edit menu ("Undo Move").
     pub fn label(&self) -> &'static str {
         match self {
@@ -592,6 +693,9 @@ impl Command {
             Command::SetRasterFx { .. } => "Effect",
             Command::AddSymbol { .. } => "New Symbol",
             Command::SetSymbolShape { .. } => "Edit Symbol",
+            Command::SetSymbolName { .. } => "Rename Symbol",
+            Command::ReplaceShapes { .. } => "Replace Objects",
+            Command::MergeSymbols { .. } => "Replace Symbol",
             Command::MovePage { .. } => "Move Page",
             Command::DeleteLayer { .. } => "Delete Layer",
             Command::SetLayerVisible { .. } => "Layer Visibility",
@@ -608,6 +712,7 @@ impl Command {
             Command::SetShapeName { .. } => "Rename Object",
             Command::SetTocLevel { .. } => "Table of Contents Heading",
             Command::SetSpline { .. } => "Edit B-Spline",
+            Command::SetCommonShape { .. } => "Edit Shape",
             Command::SetQrCode { .. } => "QR Code",
             Command::Reorder { .. } => "Order",
             Command::Group { .. } => "Group",
@@ -641,7 +746,7 @@ impl Command {
             Command::PlaceInGroup { .. } => "Add to Group",
             Command::ReverseOrder { .. } => "Reverse Order",
             Command::Combine { .. } => "Combine",
-            Command::BreakApart { .. } => "Break Apart",
+            Command::BreakApart { .. } | Command::BreakApartKeepHoles { .. } => "Break Apart",
             Command::PlaceInside { .. } => "Place Inside Frame",
             Command::ExtractContents { .. } => "Extract Contents",
             Command::RenamePage { .. } => "Rename Page",
@@ -893,6 +998,81 @@ impl Command {
                     sym.shape.scale_grid = grid;
                 }
             }
+            Command::SetSymbolName { index, name } => {
+                let sym = doc
+                    .symbols
+                    .get_mut(*index)
+                    .ok_or(Error::SymbolNotFound(*index))?;
+                sym.name = name.clone();
+            }
+            Command::ReplaceShapes { replacements } => {
+                for (id, shape) in replacements {
+                    let slot = doc
+                        .find_shape_mut(*id)
+                        .ok_or(Error::ShapeNotFound(*id))?;
+                    *slot = shape.clone();
+                }
+            }
+            Command::MergeSymbols { from, to } => {
+                let (from, to) = (*from, *to);
+                if from >= doc.symbols.len() {
+                    return Err(Error::SymbolNotFound(from));
+                }
+                if to >= doc.symbols.len() {
+                    return Err(Error::SymbolNotFound(to));
+                }
+                // Into itself, or into a symbol whose definition draws the
+                // source: the result would draw itself without end.
+                if from == to
+                    || crate::document::draws_symbol(&doc.symbols[to].shape, from, &doc.symbols)
+                {
+                    return Err(Error::SymbolCycle(from));
+                }
+                fn remap(s: &mut Shape, from: usize, to: usize) {
+                    match &mut s.kind {
+                        ShapeKind::SymbolInstance { index } if *index == from => *index = to,
+                        ShapeKind::Group { children } => {
+                            children.iter_mut().for_each(|c| remap(c, from, to))
+                        }
+                        ShapeKind::ClipFrame { frame, contents } => {
+                            remap(frame, from, to);
+                            contents.iter_mut().for_each(|c| remap(c, from, to));
+                        }
+                        _ => {}
+                    }
+                }
+                for l in doc.all_layers_mut() {
+                    for s in &mut l.shapes {
+                        remap(s, from, to);
+                    }
+                }
+                for sym in &mut doc.symbols {
+                    remap(&mut sym.shape, from, to);
+                }
+                doc.symbols.remove(from);
+                // The indices after the removed one shift down a place.
+                fn shift(s: &mut Shape, from: usize) {
+                    match &mut s.kind {
+                        ShapeKind::SymbolInstance { index } if *index > from => *index -= 1,
+                        ShapeKind::Group { children } => {
+                            children.iter_mut().for_each(|c| shift(c, from))
+                        }
+                        ShapeKind::ClipFrame { frame, contents } => {
+                            shift(frame, from);
+                            contents.iter_mut().for_each(|c| shift(c, from));
+                        }
+                        _ => {}
+                    }
+                }
+                for l in doc.all_layers_mut() {
+                    for s in &mut l.shapes {
+                        shift(s, from);
+                    }
+                }
+                for sym in &mut doc.symbols {
+                    shift(&mut sym.shape, from);
+                }
+            }
             Command::MovePage { page, to } => {
                 let from = doc
                     .pages
@@ -1070,6 +1250,7 @@ impl Command {
                 // A B-spline given any other outline is an ordinary curve.
                 s.spline = None;
                 s.spline_fixed.clear();
+                s.common_shape = None;
                 s.kind = kind.clone();
                 if let Some(before) = before {
                     let after = crate::geometry::Shape::bounding_box(&(parent * s.page_path()));
@@ -1121,7 +1302,39 @@ impl Command {
                 let after = crate::geometry::Shape::bounding_box(&(parent * s.page_path()));
                 s.keep_paint_in_place(before, after);
                 s.node_types.clear();
+                s.common_shape = None;
                 s.spline = Some(points.clone());
+                keep_clip_frame_paint(doc, holder);
+            }
+            Command::SetCommonShape {
+                shape,
+                params,
+                path,
+            } => {
+                let finite = crate::geometry::Shape::bounding_box(path).is_finite()
+                    && params.rect.is_finite()
+                    && params.values.iter().all(|v| v.is_finite());
+                if !finite || path.elements().is_empty() {
+                    return Err(Error::BadShape);
+                }
+                let parent = doc.parent_transform(*shape).unwrap_or(Affine::IDENTITY);
+                let holder = clip_frame_of_frame(doc, *shape);
+                let s = any_mut(doc, *shape)?;
+                if !matches!(s.kind, ShapeKind::Path { .. }) {
+                    return Err(Error::BadShape);
+                }
+                let before = crate::geometry::Shape::bounding_box(&(parent * s.page_path()));
+                s.kind = ShapeKind::Path {
+                    path: path.clone(),
+                    closed: true,
+                };
+                // Its gradients stay in place, as for any new outline.
+                let after = crate::geometry::Shape::bounding_box(&(parent * s.page_path()));
+                s.keep_paint_in_place(before, after);
+                s.node_types.clear();
+                s.spline = None;
+                s.spline_fixed.clear();
+                s.common_shape = Some(params.clone());
                 keep_clip_frame_paint(doc, holder);
             }
             Command::SetNodeTypes { shape, types } => {
@@ -1251,11 +1464,18 @@ impl Command {
                 shapes,
                 fills,
                 strokes,
+                looks,
             } => {
                 for id in shapes {
                     let s = any_mut(doc, *id)?;
                     s.extra_fills = fills.clone();
                     s.extra_strokes = strokes.clone();
+                    let mut l = match looks {
+                        Some(l) => l.clone(),
+                        None => s.fill_looks.as_deref().cloned().unwrap_or_default(),
+                    };
+                    l.truncate(fills.len());
+                    s.fill_looks = (!l.iter().all(|x| x.is_plain())).then(|| Box::new(l));
                 }
             }
             Command::SetOverprint {
@@ -1360,8 +1580,15 @@ impl Command {
             Command::ReplaceFontFamily { from, to } => {
                 doc.replace_font_family(from, to);
             }
-            Command::ReplaceColors { pairs } => {
-                crate::color_convert::replace_colors(doc, pairs);
+            Command::ReplaceColors { pairs, shapes } => {
+                if shapes.is_empty() {
+                    crate::color_convert::replace_colors(doc, pairs);
+                } else {
+                    for id in shapes {
+                        any(doc, *id)?;
+                    }
+                    crate::color_convert::replace_colors_in(doc, shapes, pairs);
+                }
             }
             Command::OrderRelative {
                 shapes,
@@ -1471,7 +1698,8 @@ impl Command {
                 let target = &mut doc.layer_mut(layer_id)?.shapes;
                 target.insert(insert_at.min(target.len()), combined);
             }
-            Command::BreakApart { shape } => {
+            Command::BreakApart { shape } | Command::BreakApartKeepHoles { shape } => {
+                let keep_holes = matches!(self, Command::BreakApartKeepHoles { .. });
                 let (layer_id, idx) = doc.locate(*shape)?;
                 let s = doc.shape(*shape)?.1.clone();
                 // A brush stroke: its band becomes a group of plain filled
@@ -1534,6 +1762,9 @@ impl Command {
                 if !cur.elements().is_empty() {
                     parts.push(cur);
                 }
+                if keep_holes {
+                    parts = crate::shaping::islands_with_holes(parts);
+                }
                 if parts.len() < 2 {
                     return Ok(());
                 }
@@ -1573,6 +1804,7 @@ impl Command {
                                 f.node_types.clear();
                                 f.spline = None;
                                 f.spline_fixed.clear();
+                                f.common_shape = None;
                                 f
                             })
                             .collect();
@@ -1727,11 +1959,11 @@ impl Command {
                     any_mut(doc, *id)?.shadow = *shadow;
                 }
             }
-            Command::AddGuide { page, guide } => doc.page_mut(*page)?.guides.push(*guide),
+            Command::AddGuide { page, guide } => doc.page_mut(*page)?.guides.push(guide.clone()),
             Command::MoveGuide { page, index, guide } => {
                 let p = doc.page_mut(*page)?;
                 if let Some(g) = p.guides.get_mut(*index) {
-                    *g = *guide;
+                    *g = guide.clone();
                 }
             }
             Command::DeleteGuide { page, index } => {
@@ -1755,8 +1987,9 @@ impl Command {
             Command::Ungroup { group } => {
                 let (layer_id, idx) = doc.locate(*group)?;
                 let g = doc.layer_mut(layer_id)?.shapes.remove(idx);
-                // The group's perspective stays on each of its objects, which
-                // are drawn as they were (#674); its other effects go.
+                // The group's perspective and envelopes stay on each of its
+                // objects, which are drawn as they were (#674, #3714); its
+                // other effects go.
                 let group_path = g.local_path();
                 let group_effects = g.effects.clone();
                 let pieces: Vec<Shape> = match g.kind {
@@ -1768,6 +2001,8 @@ impl Command {
                                 &group_path,
                                 &group_effects,
                             );
+                            // And its envelopes, so text stays bent (#3714).
+                            crate::live::take_group_envelopes(&mut c, &group_path, &group_effects);
                             c.absorb(g.transform);
                             // The group's uniform transparency stays on
                             // each of its objects.
@@ -2930,6 +3165,93 @@ mod tests {
         }
     }
 
+    /// #4045: a common shape keeps its settings with its outline, one
+    /// undo step each time; any other outline, a B-spline or Convert To
+    /// Curves makes it an ordinary curve; broken input is refused.
+    #[test]
+    fn a_common_shape_keeps_its_settings_until_the_outline_is_changed_otherwise() {
+        use crate::document::CommonShapeParams;
+        use crate::geometry::{Point, Rect};
+        let mut doc = Document::default();
+        let page = doc.pages[0].id;
+        let layer = doc.page(page).expect("page").layers[0].id;
+        let id = doc.ids_mut().shape();
+        let square = |w: f64| {
+            let mut p = BezPath::new();
+            p.move_to(Point::new(0.0, 0.0));
+            p.line_to(Point::new(w, 0.0));
+            p.line_to(Point::new(w, 10.0));
+            p.close_path();
+            p
+        };
+        let shape = Shape::new(
+            id,
+            ShapeKind::Path {
+                path: square(10.0),
+                closed: true,
+            },
+        );
+        let mut eng = crate::Engine::new(doc);
+        eng.run(&Command::AddShape { layer, shape }).expect("added");
+        let params = Box::new(CommonShapeParams {
+            shape: "shape.trapezoid".into(),
+            rect: Rect::new(0.0, 0.0, 20.0, 10.0),
+            values: vec![0.3],
+        });
+        eng.run(&Command::SetCommonShape {
+            shape: id,
+            params: params.clone(),
+            path: square(20.0),
+        })
+        .expect("set");
+        assert_eq!(eng.undo_label(), Some("Edit Shape"));
+        let s = eng.document().find_shape(id).expect("shape").clone();
+        assert_eq!(s.common_shape.as_ref(), Some(&params));
+        assert_eq!(
+            s.kind,
+            ShapeKind::Path {
+                path: square(20.0),
+                closed: true
+            }
+        );
+        // Kept in the file.
+        let back: Shape = serde_json::from_str(&serde_json::to_string(&s).expect("save"))
+            .expect("open");
+        assert_eq!(back.common_shape, s.common_shape);
+        // Undone in one step.
+        eng.undo().expect("undo");
+        assert!(eng.document().find_shape(id).expect("shape").common_shape.is_none());
+        eng.redo().expect("redo");
+        // Another outline: an ordinary curve.
+        eng.run(&Command::SetShapeKind {
+            shape: id,
+            kind: ShapeKind::Path {
+                path: square(30.0),
+                closed: true,
+            },
+        })
+        .expect("kind");
+        assert!(eng.document().find_shape(id).expect("shape").common_shape.is_none());
+        eng.undo().expect("undo");
+        let s = eng.document().find_shape(id).expect("shape").clone();
+        assert!(s.converts_to_curves());
+        let mut ids = || ShapeId(999);
+        let curve = s.converted_to_curves(&[], &mut ids).expect("converted");
+        assert!(curve.common_shape.is_none());
+        assert_eq!(curve.kind, s.kind);
+        // Broken input changes nothing.
+        let mut bad = params.clone();
+        bad.values = vec![f64::NAN];
+        assert!(eng
+            .run(&Command::SetCommonShape {
+                shape: id,
+                params: bad,
+                path: square(5.0),
+            })
+            .is_err());
+        assert_eq!(eng.document().find_shape(id).expect("shape").common_shape, Some(params));
+    }
+
     #[test]
     fn a_spline_follows_its_control_points_until_the_outline_is_changed_otherwise() {
         use crate::geometry::Point;
@@ -3789,6 +4111,100 @@ mod tests {
                     // Contours are fitted with curves within 0.05 mm (#821).
                     assert!((g - w).abs() < 0.05, "{effects:?}: {got:?} != {want:?}");
                 }
+            }
+        }
+    }
+
+    /// A group's envelope stays on each of its objects when it is ungrouped
+    /// (#3714), mapping the group's box, so each is drawn where it was in
+    /// the group, and the envelope can still be edited.
+    #[test]
+    fn ungrouping_keeps_the_envelope_on_each_object() {
+        use crate::geometry::Shape as _;
+        use crate::live::Effect;
+        let mut doc = Document::default();
+        let layer = doc.pages[0].layers[0].id;
+        let a = rect(&mut doc, 0.0);
+        let mut b = rect(&mut doc, 20.0);
+        b.transform = Affine::translate((3.0, 4.0)) * Affine::scale_non_uniform(1.5, 0.5);
+        let (ia, ib) = (a.id, b.id);
+        for s in [a, b] {
+            Command::AddShape { layer, shape: s }
+                .apply(&mut doc)
+                .unwrap();
+        }
+        Command::Group {
+            shapes: vec![ia, ib],
+        }
+        .apply(&mut doc)
+        .unwrap();
+        let gid = doc.layer(layer).unwrap().shapes[0].id;
+        Command::TransformShapes {
+            shapes: vec![gid],
+            transform: Affine::translate((5.0, 7.0)) * Affine::rotate(0.3),
+        }
+        .apply(&mut doc)
+        .unwrap();
+        let bb = doc.find_shape(gid).unwrap().local_path().bounding_box();
+        let mut nodes = crate::envelope::default_nodes(bb);
+        nodes[1].y -= 6.0;
+        nodes[5].y += 8.0;
+        let envelope = Effect::Envelope {
+            nodes,
+            keep_lines: false,
+            handles: Vec::new(),
+            corners: Vec::new(),
+            mapping: crate::envelope::Mapping::Putty,
+            reference: None,
+        };
+        Command::SetEffects {
+            shape: gid,
+            effects: vec![envelope],
+        }
+        .apply(&mut doc)
+        .unwrap();
+        let main = crate::live::evaluate(doc.find_shape(gid).unwrap()).main;
+        let ShapeKind::Group { children } = &main.kind else {
+            panic!("a group: {:?}", main.kind);
+        };
+        let drawn: Vec<_> = children
+            .iter()
+            .map(|c| {
+                let mut c = c.clone();
+                c.transform_by(main.transform);
+                c.visual_bounds()
+            })
+            .collect();
+        Command::Ungroup { group: gid }.apply(&mut doc).unwrap();
+        for (id, want) in [ia, ib].into_iter().zip(drawn) {
+            let s = doc.find_shape(id).unwrap();
+            assert!(
+                matches!(
+                    s.effects.as_slice(),
+                    [Effect::Envelope {
+                        reference: Some(_),
+                        ..
+                    }]
+                ),
+                "{:?}",
+                s.effects
+            );
+            // The envelope tool edits it in the group's box.
+            let Effect::Envelope {
+                reference: Some(r), ..
+            } = &s.effects[0]
+            else {
+                unreachable!()
+            };
+            assert_eq!(crate::live::warp_box(s, 0), *r);
+            let got = s.visual_bounds();
+            for (g, w) in [
+                (got.x0, want.x0),
+                (got.y0, want.y0),
+                (got.x1, want.x1),
+                (got.y1, want.y1),
+            ] {
+                assert!((g - w).abs() < 1e-6, "{got:?} != {want:?}");
             }
         }
     }
@@ -5298,6 +5714,215 @@ mod tests {
         assert!(f.handles.is_some());
         let t1 = f.param_at(s.bounds(), thirty * p0).expect("after");
         assert!((t0 - t1).abs() < 1e-9, "{t0} {t1}");
+    }
+
+    /// Replace Objects swaps each object where it stands: the order among
+    /// its neighbours, on the layer and inside a group, stays; one undo
+    /// puts the old objects back; an id that is not there is refused.
+    #[test]
+    fn replace_shapes_keep_the_place_and_the_order() {
+        use crate::document::ShapeKind;
+        let rect = |id: u64, x: f64| {
+            Shape::new(
+                ShapeId(id),
+                ShapeKind::Rect {
+                    rect: Rect::new(x, 0.0, x + 5.0, 5.0),
+                    radius: 0.0,
+                    corners: None,
+                },
+            )
+        };
+        let mut e = crate::Engine::default();
+        let layer = e.document().pages[0].layers[0].id;
+        for id in [1, 2, 3] {
+            e.run(&Command::AddShape {
+                layer,
+                shape: rect(id, id as f64 * 10.0),
+            })
+            .unwrap();
+        }
+        let group = Shape::new(
+            ShapeId(4),
+            ShapeKind::Group {
+                children: vec![rect(5, 0.0), rect(6, 10.0)],
+            },
+        );
+        e.run(&Command::AddShape { layer, shape: group }).unwrap();
+        let order = |e: &crate::Engine| -> Vec<u64> {
+            e.document().pages[0].layers[0]
+                .shapes
+                .iter()
+                .map(|s| s.id.raw())
+                .collect()
+        };
+        assert_eq!(order(&e), vec![1, 2, 3, 4]);
+        // The middle object and the group's second child swap in place.
+        e.run(&Command::ReplaceShapes {
+            replacements: vec![(ShapeId(2), rect(20, 20.0)), (ShapeId(6), rect(60, 10.0))],
+        })
+        .unwrap();
+        assert_eq!(order(&e), vec![1, 20, 3, 4], "the layer order stays");
+        let g = e.document().find_shape(ShapeId(4)).unwrap();
+        let ShapeKind::Group { children } = &g.kind else {
+            panic!("group")
+        };
+        assert_eq!(
+            children.iter().map(|c| c.id.raw()).collect::<Vec<_>>(),
+            vec![5, 60],
+            "the group order stays"
+        );
+        assert!(
+            (children[1].bounds().x0 - 10.0).abs() < 1e-9,
+            "the new child keeps the place"
+        );
+        e.undo();
+        assert_eq!(order(&e), vec![1, 2, 3, 4]);
+        assert!(e
+            .run(&Command::ReplaceShapes {
+                replacements: vec![(ShapeId(99), rect(99, 0.0))],
+            })
+            .is_err());
+        assert_eq!(order(&e), vec![1, 2, 3, 4]);
+    }
+
+    /// Rename Symbol changes the name, keeps the instances, and one undo
+    /// puts the old name back; an index that is not there is refused.
+    #[test]
+    fn renaming_a_symbol_keeps_its_instances() {
+        use crate::document::{ShapeKind, Symbol};
+        let mut e = crate::Engine::default();
+        let layer = e.document().pages[0].layers[0].id;
+        e.run(&Command::AddSymbol {
+            symbol: Symbol {
+                name: "Old".into(),
+                shape: Shape::new(
+                    ShapeId(0),
+                    ShapeKind::Rect {
+                        rect: Rect::new(0.0, 0.0, 5.0, 5.0),
+                        radius: 0.0,
+                        corners: None,
+                    },
+                ),
+            },
+        })
+        .unwrap();
+        let id = e.new_shape_id();
+        let mut inst = Shape::new(id, ShapeKind::SymbolInstance { index: 0 });
+        inst.transform = Affine::translate((10.0, 10.0));
+        e.run(&Command::AddShape { layer, shape: inst }).unwrap();
+        e.run(&Command::SetSymbolName {
+            index: 0,
+            name: "New".into(),
+        })
+        .unwrap();
+        assert_eq!(e.document().symbols[0].name, "New");
+        assert!(matches!(
+            e.document().find_shape(id).unwrap().kind,
+            ShapeKind::SymbolInstance { index: 0 }
+        ));
+        e.undo();
+        assert_eq!(e.document().symbols[0].name, "Old");
+        assert!(e
+            .run(&Command::SetSymbolName {
+                index: 5,
+                name: "X".into(),
+            })
+            .is_err());
+    }
+
+    /// Replace Symbol merges one symbol into another: every instance,
+    /// nested in a group or inside another definition, follows; the source
+    /// goes and the indices after it shift; one undo brings it all back.
+    /// A merge into itself, or into a symbol that draws the source, is
+    /// refused.
+    #[test]
+    fn merging_symbols_remaps_instances_and_shifts_indices() {
+        use crate::document::{ShapeKind, Symbol};
+        let rect = |w: f64| {
+            Shape::new(
+                ShapeId(0),
+                ShapeKind::Rect {
+                    rect: Rect::new(0.0, 0.0, w, 5.0),
+                    radius: 0.0,
+                    corners: None,
+                },
+            )
+        };
+        let instance = |id: u64, index: usize| {
+            Shape::new(ShapeId(id), ShapeKind::SymbolInstance { index })
+        };
+        let mut e = crate::Engine::default();
+        let layer = e.document().pages[0].layers[0].id;
+        for (name, w) in [("A", 10.0), ("B", 20.0), ("C", 30.0)] {
+            e.run(&Command::AddSymbol {
+                symbol: Symbol {
+                    name: name.into(),
+                    shape: rect(w),
+                },
+            })
+            .unwrap();
+        }
+        // C's definition draws an instance of A: merging A into C cycles.
+        let c_def = Shape::new(
+            ShapeId(0),
+            ShapeKind::Group {
+                children: vec![rect(30.0), instance(0, 0)],
+            },
+        );
+        e.run(&Command::SetSymbolShape {
+            index: 2,
+            shape: c_def,
+        })
+        .unwrap();
+        e.run(&Command::AddShape {
+            layer,
+            shape: instance(1, 0),
+        })
+        .unwrap();
+        e.run(&Command::AddShape {
+            layer,
+            shape: instance(2, 2),
+        })
+        .unwrap();
+        let nested = Shape::new(
+            ShapeId(3),
+            ShapeKind::Group {
+                children: vec![instance(4, 0)],
+            },
+        );
+        e.run(&Command::AddShape { layer, shape: nested }).unwrap();
+        let index_of = |e: &crate::Engine, id: u64| -> usize {
+            let s = e.document().find_shape(ShapeId(id)).unwrap();
+            let ShapeKind::SymbolInstance { index } = s.kind else {
+                panic!("instance")
+            };
+            index
+        };
+        // Into itself and into C (which draws A) are refused.
+        assert!(e.run(&Command::MergeSymbols { from: 0, to: 0 }).is_err());
+        assert!(e.run(&Command::MergeSymbols { from: 0, to: 2 }).is_err());
+        assert_eq!(e.document().symbols.len(), 3);
+        // A into B: the instances follow, C shifts down a place.
+        e.run(&Command::MergeSymbols { from: 0, to: 1 }).unwrap();
+        let names: Vec<&str> = e.document().symbols.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names, vec!["B", "C"]);
+        assert_eq!(index_of(&e, 1), 0, "the plain instance follows B");
+        assert_eq!(index_of(&e, 4), 0, "the nested instance follows B");
+        assert_eq!(index_of(&e, 2), 1, "C shifted down a place");
+        let c = &e.document().symbols[1].shape;
+        let ShapeKind::Group { children } = &c.kind else {
+            panic!("group")
+        };
+        let ShapeKind::SymbolInstance { index } = children[1].kind else {
+            panic!("instance")
+        };
+        assert_eq!(index, 0, "the instance inside C's definition follows too");
+        e.undo();
+        let names: Vec<&str> = e.document().symbols.iter().map(|s| s.name.as_str()).collect();
+        assert_eq!(names, vec!["A", "B", "C"]);
+        assert_eq!(index_of(&e, 1), 0);
+        assert_eq!(index_of(&e, 2), 2);
+        assert_eq!(index_of(&e, 4), 0);
     }
 
     /// Edit Symbol (#1980): a new definition shows in every instance at

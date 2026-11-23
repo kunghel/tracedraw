@@ -218,7 +218,11 @@ pub fn file_formats_page(app: &mut App, ui: &mut Ui) {
             ui,
             crate::ui::tips::keyed("dialog.output_condition"),
             |ui| {
-                ui.add(egui::TextEdit::singleline(&mut f.output_condition).desired_width(130.0));
+                ui.add(
+                    egui::TextEdit::singleline(&mut f.output_condition)
+                        .hint_text(tr("dialog.output_condition_drawing"))
+                        .desired_width(130.0),
+                );
             },
         );
 
@@ -406,6 +410,25 @@ pub fn warnings_page(app: &mut App, ui: &mut Ui) {
             "options.ask_missing_fonts",
             "options.ask_missing_fonts_tip",
         ));
+    ui.checkbox(&mut w.accept_missing_fonts, tr("options.accept_missing_fonts"))
+        .rich_tip(crate::ui::tips::pair(
+            "options.accept_missing_fonts",
+            "options.accept_missing_fonts_tip",
+        ));
+    if w.accept_missing_fonts {
+        ui.indent("accept_missing_fonts", |ui| {
+            ui.radio_value(
+                &mut w.accept_missing_fonts_keep,
+                false,
+                tr("missing_fonts.session"),
+            );
+            ui.radio_value(
+                &mut w.accept_missing_fonts_keep,
+                true,
+                tr("missing_fonts.keep"),
+            );
+        });
+    }
     ui.checkbox(&mut w.shelf_remove, tr("options.warn_shelf_remove"))
         .rich_tip(crate::ui::tips::pair(
             "options.warn_shelf_remove",

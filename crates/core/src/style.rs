@@ -16,16 +16,21 @@ pub enum FountainKind {
     /// Follows the object's outline: 0 on its edge, 1 at the point
     /// deepest inside it.
     Shaped,
+    /// Colour points placed anywhere in the object (see
+    /// [`Fountain::points`]): each spot takes the colours of the points
+    /// near it, the nearest the most.
+    Points,
 }
 
 impl FountainKind {
     /// Every kind, in the order the fill editor lists them.
-    pub const ALL: [FountainKind; 5] = [
+    pub const ALL: [FountainKind; 6] = [
         FountainKind::Linear,
         FountainKind::Radial,
         FountainKind::Conical,
         FountainKind::Square,
         FountainKind::Shaped,
+        FountainKind::Points,
     ];
 }
 
@@ -195,6 +200,15 @@ pub struct Fountain {
     /// keep the nearest equivalent for formats that know only those).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub handles: Option<FountainHandles>,
+    /// Dithered: a faint even noise over the colours, so a long blend
+    /// between close colours shows no steps.
+    #[serde(default, skip_serializing_if = "is_default")]
+    pub dither: bool,
+    /// Colour points (the Points kind): where each stop's colour sits,
+    /// box-relative as [`FountainHandles`] are. Stops without one are
+    /// placed round the middle (see [`Fountain::point_places`]).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub points: Vec<Point>,
 }
 
 /// The nodes of a fountain fill placed freely (see [`Fountain::handles`]),
@@ -280,6 +294,8 @@ impl Fountain {
             smooth: false,
             acceleration: 0,
             handles: None,
+            dither: false,
+            points: Vec::new(),
         }
     }
 
@@ -368,6 +384,50 @@ impl Fountain {
         sample_stop(blended, self.band_param(self.stop_param(t)))
     }
 
+    /// Where each stop's colour point is (box-relative): its own place,
+    /// or, for a stop without one, a place round the middle.
+    pub fn point_places(&self) -> Vec<Point> {
+        let n = self.stops.len().max(1) as f64;
+        (0..self.stops.len())
+            .map(|i| {
+                self.points.get(i).copied().unwrap_or_else(|| {
+                    let a = std::f64::consts::TAU * i as f64 / n + std::f64::consts::FRAC_PI_4;
+                    Point::new(0.6 * a.cos(), 0.6 * a.sin())
+                })
+            })
+            .collect()
+    }
+
+    /// The colour and opacity of a Points fill at the page point `p` for
+    /// the object's box `b`: every point's colour weighed by one over its
+    /// squared distance, so the nearest point counts the most; on a point,
+    /// its own colour.
+    pub fn points_sample(&self, places: &[Point], b: Rect, p: Point) -> (Color, f32) {
+        let scale = b.width().hypot(b.height()).max(1e-9);
+        let (mut rgb, mut op, mut sum) = ([0.0f64; 3], 0.0f64, 0.0f64);
+        for (stop, r) in self.stops.iter().zip(places) {
+            let d = Self::rel_to_page(b, *r).distance(p) / scale;
+            if d < 1e-6 {
+                return (stop.color, stop.opacity);
+            }
+            let w = 1.0 / (d * d);
+            let c = stop.color.to_rgb8();
+            for k in 0..3 {
+                rgb[k] += w * f64::from(c[k]);
+            }
+            op += w * f64::from(stop.opacity);
+            sum += w;
+        }
+        if sum <= 0.0 {
+            return (Color::BLACK, 1.0);
+        }
+        let ch = |v: f64| (v / sum).round().clamp(0.0, 255.0) as u8;
+        (
+            Color::rgb8(ch(rgb[0]), ch(rgb[1]), ch(rgb[2])),
+            (op / sum).clamp(0.0, 1.0) as f32,
+        )
+    }
+
     /// A box-relative point (see [`FountainHandles`]) on the page, for the
     /// object's bounding box `b`.
     pub fn rel_to_page(b: Rect, r: Point) -> Point {
@@ -396,7 +456,7 @@ impl Fountain {
     /// nodes when they are placed freely, else `None` (the angle and the
     /// offset place the fill). A frame that is flat counts as none.
     pub fn frame(&self, b: Rect) -> Option<Affine> {
-        if self.kind == FountainKind::Shaped {
+        if matches!(self.kind, FountainKind::Shaped | FountainKind::Points) {
             return None;
         }
         let h = self.handles?;
@@ -428,7 +488,7 @@ impl Fountain {
                 }
             }
             FountainKind::Square => u.abs().max(v.abs()),
-            FountainKind::Shaped => return None,
+            FountainKind::Shaped | FountainKind::Points => return None,
         })
     }
 
@@ -441,7 +501,7 @@ impl Fountain {
         let c = b.center();
         let rel = |p: Point| Self::page_to_rel(b, p);
         match self.kind {
-            FountainKind::Linear | FountainKind::Shaped => {
+            FountainKind::Linear | FountainKind::Shaped | FountainKind::Points => {
                 let half = (b.width() * ca.abs() + b.height() * sa.abs()) / 2.0;
                 let d = Vec2::new(ca, sa) * half;
                 let s = c - d;
@@ -867,6 +927,7 @@ impl Fountain {
         Fountain {
             kind: match self.kind {
                 FountainKind::Shaped => FountainKind::Square,
+                FountainKind::Points => FountainKind::Radial,
                 k => k,
             },
             stops,
@@ -882,6 +943,8 @@ impl Fountain {
             smooth: false,
             acceleration: 0,
             handles: None,
+            dither: self.dither,
+            points: Vec::new(),
         }
     }
 }
@@ -1502,21 +1565,41 @@ pub enum TextureKind {
     Marble,
     Noise,
     Wood,
+    /// A fixed holographic (iridescent) foil look: rainbow bands that
+    /// flow through dark and light patches like a film of oil on metal,
+    /// from colour A (the dark patches) to colour B (the light ones).
+    /// It does not change with the viewing angle: the picture is the
+    /// same on screen, in print and in every export.
+    Holographic,
+    /// [`TextureKind::Holographic`] with fine sparkling grains of
+    /// spectral colour over it (holographic glitter).
+    HoloGlitter,
 }
 
 impl TextureKind {
-    pub const ALL: [TextureKind; 4] = [
+    pub const ALL: [TextureKind; 6] = [
         TextureKind::Clouds,
         TextureKind::Marble,
         TextureKind::Noise,
         TextureKind::Wood,
+        TextureKind::Holographic,
+        TextureKind::HoloGlitter,
     ];
+
+    /// The holographic kinds, which are coloured from the spectrum and
+    /// not only mixed from the two colours.
+    pub fn is_holographic(self) -> bool {
+        matches!(self, TextureKind::Holographic | TextureKind::HoloGlitter)
+    }
+
     pub fn name(self) -> &'static str {
         match self {
             TextureKind::Clouds => "Clouds",
             TextureKind::Marble => "Marble",
             TextureKind::Noise => "Noise",
             TextureKind::Wood => "Wood",
+            TextureKind::Holographic => "Holographic",
+            TextureKind::HoloGlitter => "Holo glitter",
         }
     }
 }
@@ -2843,6 +2926,10 @@ pub struct Stroke {
     /// and line ends fall in the middle of a dash.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub align_dashes: bool,
+    /// A gradient of the outline's own fill runs along the line, from its
+    /// start to its end, instead of across the drawing.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub fill_along: bool,
 }
 
 /// Where an outline lies relative to the path of a closed object.
@@ -3155,6 +3242,7 @@ impl Default for Stroke {
             position: OutlinePosition::Center,
             miter_limit: Self::DEFAULT_MITER_LIMIT,
             align_dashes: false,
+            fill_along: false,
         }
     }
 }

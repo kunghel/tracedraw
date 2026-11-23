@@ -68,6 +68,9 @@ fn format_combo(ui: &mut Ui, salt: impl std::hash::Hash + std::fmt::Debug, forma
 
 pub fn export_docker(app: &mut App, ui: &mut Ui) {
     app.prune_export_assets();
+    if let Some(folder) = crate::files::take_picked("export-docker-folder") {
+        app.export_assets.folder = Some(folder);
+    }
     let drawing = app.has_document() && !app.show_welcome;
     ui.horizontal_wrapped(|ui| {
         if ui
@@ -233,9 +236,7 @@ pub fn export_docker(app: &mut App, ui: &mut Ui) {
                     .rich_tip(crate::ui::tips::keyed("export_docker.browse"))
                     .clicked()
                 {
-                    if let Some(f) = crate::files::pick_folder(token) {
-                        app.export_assets.folder = Some(f);
-                    }
+                    crate::files::pick_folder_into(token, None, "export-docker-folder");
                 }
             });
         }

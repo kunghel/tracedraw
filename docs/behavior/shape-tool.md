@@ -305,6 +305,24 @@ round their corners with their own handles either way.
   the curve (sharp or rounded) takes the new radius (a rounded corner is
   chosen by any node of its arc). Dragging back past the corner makes it sharp. Scallops
   and chamfers are found again only right after they were cut (below).
+- Rounded corners follow node edits (#3265): Options > Nodes and
+  Handles > Rounded corners follow node edits (on at first, under the
+  rings option, which it needs). Moving nodes (a drag, the arrow keys,
+  the node transform handles) or bending a segment of a curve with
+  rounded corners makes the edit on the curve with those corners taken
+  back to their sharp corners, then rounds each of them again with the
+  radius it had, so a rounded corner beside a moved node or a bent side
+  stays a circular arc tangent to its sides where they now run, and
+  keeps its widget. A rounded corner whose arc nodes are all among the
+  moved ones moves as its sharp corner; one with only some of its arc
+  nodes moved, or whose own arc is bent, is left as curve, as before. A
+  corner whose sides no longer take its radius gets the largest radius
+  they take; one whose sides come into line stays sharp. Looked for on
+  curves of up to 4000 elements. Off, the arc stays as it was drawn and
+  loses its widget once its sides move, as before
+  (`tracedraw_core` `corner_cut::tests::rounded_corners_stay_round_when_nodes_move`,
+  `corner_cut::tests::rounded_corners_stay_round_when_a_side_bends`,
+  `pick_drag_tests::rounded_corners_stay_round_when_a_node_beside_them_moves`).
 - On a stretched or skewed curve corners round on the page, so a new
   rounding is round, also on a curve stretched after other corners were
   rounded. A corner rounded before the stretch keeps its stretched arc

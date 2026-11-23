@@ -445,13 +445,13 @@ fn boundary_of_open_lines_is_one_solid_object() {
         .filter(|e| matches!(e, tracedraw_core::geometry::PathEl::MoveTo(_)))
         .count();
     assert_eq!(contours, 1, "one outer edge");
-    // No fill, an outline, as CorelDRAW draws a boundary (#2640).
+    // No fill, an outline (#2640).
     assert!(matches!(s.fill, tracedraw_core::Fill::None), "{:?}", s.fill);
     assert!(s.stroke.is_some(), "an outline");
 }
 
 /// Create Boundary around filled objects: an outline with no fill, so the
-/// objects stay in sight under it, as in CorelDRAW (#2640: it took the
+/// objects stay in sight under it (#2640: it took the
 /// target's fill and covered them); the target's outline is kept.
 #[test]
 fn boundary_has_no_fill() {

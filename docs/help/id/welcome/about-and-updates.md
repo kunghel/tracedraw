@@ -73,3 +73,13 @@ dan [[menu.help.user_guide]] membuka halaman belajarnya, dan
   melaporkan masalah.
 - [[menu.help > menu.help.message_settings]] membuka opsi tempat pesan
   TraceDraw diatur.
+
+## Saat TraceDraw berhenti merespons {#problem-reports}
+
+Saat satu langkah TraceDraw memakan lebih dari 10 detik, ia menyimpan laporan tentang apa yang sedang dikerjakannya (versi, sistem, alat, perintah terakhir, ukuran gambar, dan akhir log-nya), tidak pernah nama atau isi gambar. Sebuah pesan menawarkannya saat TraceDraw merespons lagi, atau pada pembukaan berikutnya bila harus ditutup atau tertutup karena galat.
+
+1. Klik **[[report.show]]** untuk membaca laporan.
+2. Klik **[[report.send]]**: issue GitHub baru dengan ringkasan dan folder laporan akan terbuka.
+3. Seret laporan ke issue, ceritakan apa yang sedang Anda kerjakan, lalu kirim. Tidak ada yang terkirim sebelumnya.
+
+**[[report.not_now]]** menutup pesan. Setiap laporan ditawarkan sekali saja.

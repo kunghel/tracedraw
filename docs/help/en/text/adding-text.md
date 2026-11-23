@@ -123,6 +123,11 @@ drawn, printed or exported. To make it fit:
   keep their size;
 - choose [[menu.text > menu.text.paragraph_text_frame > menu.text.frame_fit_text]]
   to resize the text to fill the frame;
+- tick **Type block** in the frame settings of the text panel: the words are
+  shared out between the lines and each line takes a size of its own, so that
+  every line fills the frame's width exactly and the lines together fill its
+  height. Resize the frame and the block is set anew; each word keeps its
+  font;
 - link the frame to another one, so the text flows on:
   [[menu.text.frame_link]]. [[menu.text.frame_unlink]] breaks the link.
   With two frames picked, the first flows into the second; an empty frame
@@ -139,6 +144,8 @@ drawn, printed or exported. To make it fit:
   while you choose, a dashed line runs from the tab to the pointer.
 
 [[menu.text > menu.text.show_text_frames]] shows or hides the frames.
+
+![A paragraph text set as a type block: each line fills the frame width](../../img/text-adding-text-type-block.png)
 
 ## Moving and turning characters {#characters}
 
@@ -162,11 +169,19 @@ of an ellipse, it starts there.
 A text you made narrower or wider with a side handle keeps its letters'
 shape on the path: the change goes into the character width.
 
+To bend a text with no path to draw, select it and click the **Curve Text**
+button on the text property bar (beside the alignment): choose a circle, an
+arch, a bowl or a wave, or Straight to undo it. The text stays editable, keeps
+its place and takes the path fields below. Drag a circle text onto a round
+object and let go near its middle: the text takes the object's center and runs
+round just inside its edge.
+
 With text on a path selected (also with the [[tool.pick]] tool), the property
 bar shows the path's fields first, then the usual text fields:
 
-- The orientation of the letters: rotated, vertical skew, horizontal skew or
-  upright.
+- The orientation of the letters: rotated, vertical skew, horizontal skew,
+  upright, or radial (each letter's upright on a line through the middle of
+  the path's box, like the numbers round a dial).
 - The vertical placement: on the baseline, the ascender, the descender, or
   centred on the path.
 - The placement along the path: at its start, centre or end, and on a closed
@@ -186,6 +201,10 @@ bar shows the path's fields first, then the usual text fields:
 
 Drag the text to slide it along the path, or across the path to move it away
 from it.
+
+![Curve Text: circle, arch, bowl and wave](../../img/text-adding-text-curve-text.png)
+
+![Radial letters round a dial](../../img/text-adding-text-radial.png)
 
 ## Other text commands {#commands}
 

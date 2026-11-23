@@ -101,10 +101,24 @@ Export > PDF offers PDF 1.4, PDF/X-1a:2003, PDF/X-3:2003 and PDF/X-4
 - Every level writes an Info dictionary (Title, Creator, Producer,
   dates, Trapped False, GTS_PDFXVersion and, for X-1a, Conformance), a
   trailer ID, an XMP metadata stream with the pdfxid version, and an
-  OutputIntent (`/S /GTS_PDFX`) whose identifier is the output condition
-  typed in the dialog (default FOGRA39; when empty, the embedded
-  profile's description, "Custom" if it has none, or "CGATS TR 001"
-  without a profile). The CMYK profile loaded in Colour Management, else
+  OutputIntent (`/S /GTS_PDFX`) for the output condition typed in the
+  dialog. Left empty (the default), the condition is the drawing's CMYK
+  profile: the one loaded in Colour Management, else the one the drawing
+  carries or was made with (File > New's colour settings); the field
+  shows it greyed. It was "FOGRA39" whatever the drawing's profile, and
+  preferences that kept that old default follow the drawing once
+  (upgrade 10, #3829). A condition a well-known profile names goes by
+  the ICC registry's name as `/OutputConditionIdentifier`, the name as
+  given staying as `/OutputCondition` and `/Info`: "U.S. Web Coated
+  (SWOP) v2" is "CGATS TR 001", "Coated FOGRA39" and "ISO Coated v2" are
+  "FOGRA39", "PSO Coated v3" "FOGRA51", "Japan Color 2001 Coated"
+  "JC200103" (`tracedraw_io::pdf::registered_condition`); others go by
+  their own name. With no condition at all: the embedded profile's
+  description, "Custom" if it has none, or "CGATS TR 001" without a
+  profile (`export::tests::a_pdfx_export_is_made_for_the_drawings_cmyk_profile`,
+  `pdf::pdfx_tests::a_well_known_profile_goes_by_its_registered_condition`,
+  `settings::tests::the_old_default_output_condition_follows_the_drawing`).
+  The CMYK profile loaded in Colour Management, else
   the CMYK profile the drawing carries (`Document::cmyk_profile`, read
   from .cdr files), is embedded as
   DestOutputProfile (`/N` from its colour space signature).

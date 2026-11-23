@@ -75,7 +75,9 @@ impl StrokeField {
     /// True when `a` and `b` have the same value for this field.
     pub fn same(self, a: &Stroke, b: &Stroke) -> bool {
         match self {
-            StrokeField::Paint => a.color == b.color && a.fill == b.fill,
+            StrokeField::Paint => {
+                a.color == b.color && a.fill == b.fill && a.fill_along == b.fill_along
+            }
             StrokeField::Width => a.width == b.width,
             StrokeField::Cap => a.cap == b.cap,
             StrokeField::Join => a.join == b.join,
@@ -106,6 +108,7 @@ impl StrokeField {
             StrokeField::Paint => {
                 to.color = from.color;
                 to.fill = from.fill.clone();
+                to.fill_along = from.fill_along;
             }
             StrokeField::Width => to.width = from.width,
             StrokeField::Cap => to.cap = from.cap,
@@ -235,6 +238,8 @@ pub enum FillField {
     Smooth,
     /// The acceleration that skews every blend's midpoint.
     Acceleration,
+    /// The faint noise against banding.
+    Dither,
     /// Where the nodes are placed freely (see `Fountain::handles`), or
     /// none: the angle and the offset place the fill.
     Handles,
@@ -334,7 +339,7 @@ impl FillField {
     }
 
     /// The gradient fields, in the order an editor shows them.
-    pub const FOUNTAIN: [FillField; 15] = [
+    pub const FOUNTAIN: [FillField; 16] = [
         FillField::FountainKind,
         FillField::StartColor,
         FillField::EndColor,
@@ -349,6 +354,7 @@ impl FillField {
         FillField::Steps,
         FillField::Smooth,
         FillField::Acceleration,
+        FillField::Dither,
         FillField::Handles,
     ];
 
@@ -448,6 +454,7 @@ impl FillField {
             FillField::Steps => a.steps == b.steps,
             FillField::Smooth => a.smooth == b.smooth,
             FillField::Acceleration => a.acceleration == b.acceleration,
+            FillField::Dither => a.dither == b.dither,
             FillField::Handles => a.handles == b.handles,
             _ => true,
         }
@@ -481,6 +488,7 @@ impl FillField {
             FillField::Steps => to.steps = from.steps,
             FillField::Smooth => to.smooth = from.smooth,
             FillField::Acceleration => to.acceleration = from.acceleration,
+            FillField::Dither => to.dither = from.dither,
             FillField::Handles => to.handles = from.handles,
             _ => {}
         }
@@ -869,13 +877,15 @@ mod tests {
         e2.blend_direction = ColorBlend::Clockwise;
         e2.smooth = true;
         e2.acceleration = -30;
+        e2.dither = true;
         let fields = fill_changes(&Fill::Fountain(a.clone()), &Fill::Fountain(e2.clone()));
         assert_eq!(
             fields,
             vec![
                 FillField::BlendDirection,
                 FillField::Smooth,
-                FillField::Acceleration
+                FillField::Acceleration,
+                FillField::Dither
             ]
         );
         let Fill::Fountain(pb) =
@@ -887,6 +897,7 @@ mod tests {
             (pb.blend_direction, pb.smooth, pb.acceleration, pb.angle),
             (ColorBlend::Clockwise, true, -30, 45.0)
         );
+        assert!(pb.dither);
         let m = fill_mixed([&Fill::Fountain(a), &Fill::Fountain(e2)]);
         assert!(m.has(FillField::Acceleration) && !m.has(FillField::Steps));
     }

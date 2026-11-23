@@ -432,7 +432,12 @@ pub fn vector_base(
     // A blend's steps are drawn beside the picture, not in it.
     c.effects
         .retain(|e| !tracedraw_core::document::beside_picture(e));
-    c.transform = Affine::scale_non_uniform(sx, sy);
+    // Fountain fills lie on the page box, so they are turned and mirrored
+    // the way the picture will be turned back on the page, or a turned or
+    // mirrored object's gradient ran the wrong way in its picture (#3983).
+    let local = Affine::scale_non_uniform(sx, sy);
+    c.carry_fills(local * shape.transform.inverse(), Affine::IDENTITY);
+    c.transform = local;
     let b = c.bounds();
     if !(b.width().is_finite() && b.height().is_finite()) || b.width() <= 0.0 && b.height() <= 0.0 {
         return None;

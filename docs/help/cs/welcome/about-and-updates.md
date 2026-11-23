@@ -70,3 +70,13 @@ výukovou stránku a [[menu.help.whats_new]] novinky.
   nahlásit problém.
 - [[menu.help > menu.help.message_settings]] otevře volby, kde se nastavují
   zprávy TraceDraw.
+
+## Když TraceDraw přestane reagovat {#problem-reports}
+
+Když krok TraceDraw trvá déle než 10 sekund, uloží zprávu o tom, co dělal (verze, systém, nástroj, poslední příkaz, velikost kresby a konec protokolu), nikdy název ani obsah kresby. Zpráva se nabídne, když TraceDraw znovu reaguje, nebo při dalším spuštění, pokud musel být zavřen nebo se zavřel kvůli chybě.
+
+1. Klepněte na **[[report.show]]** a přečtěte si zprávu.
+2. Klepněte na **[[report.send]]**: otevře se nový problém na GitHubu se shrnutím a složka se zprávou.
+3. Přetáhněte zprávu do problému, popište, co jste dělali, a odešlete. Předtím se nic neodesílá.
+
+**[[report.not_now]]** zprávu zavře. Každá zpráva se nabízí jen jednou.

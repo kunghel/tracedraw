@@ -117,6 +117,9 @@ výplň odebere. Změna řádků a sloupců sítě zachová její barvy.
 - Výplň [[docker.fill_texture]] je generovaná, přirozeně působící textura:
   [[texture.clouds]], [[texture.marble]], [[texture.noise]] nebo
   [[texture.wood]], s vlastními barvami a měřítkem.
+- [[texture.holographic]] a [[texture.holo_glitter]] dávají pevný vzhled holografické fólie: duhové barvy mezi
+  tmavými a světlými místy (barvy A a B), třpytky se zrnky. Nemění se s úhlem
+  pohledu; PDF a SVG je nesou jako obrázek.
 
 ## Více výplní na jednom objektu {#several-fills}
 

@@ -36,8 +36,8 @@ pub const HOLD_MM_PER_S: f64 = 10.0;
 
 /// How far Twirl turns per second while the button is down, as a pointer
 /// move (mm): at the bar's 50 % (0.05 rad per mm) one whole turn a
-/// second at the nib's centre, as CorelDRAW's Twirl winds the outline
-/// round while it is held. It went on as if the pointer moved 10 mm a
+/// second at the nib's centre, winding the outline round while it is
+/// held. It went on as if the pointer moved 10 mm a
 /// second, a turn every 12 s, and read as slow (#2640).
 pub const TWIRL_MM_PER_S: f64 = std::f64::consts::TAU / 0.05;
 
@@ -714,7 +714,7 @@ mod hold_tests {
 
     /// Held still on the right side of a square for four seconds at the
     /// bar's 50 %, Twirl winds the side round the nib's centre about four
-    /// times, as CorelDRAW's does (#2640: it turned a little over half a
+    /// times (#2640: it turned a little over half a
     /// turn in that time and left a single hook). The outline comes back
     /// a smooth spiral of a bounded number of curves, and each held step
     /// is quick, since it is one twirl of the outline the hold found.

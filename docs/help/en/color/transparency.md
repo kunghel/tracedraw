@@ -18,6 +18,10 @@ pattern or texture.
   fill and outline, at the amount used last, 50% at first) and **Object >
   Remove Transparency**. Both can be given a keyboard shortcut in
   Customization > Commands.
+- **Object > Flatten Transparency** turns the selected see-through objects
+  into one opaque bitmap of how they look over what lies beneath them, shaped
+  like them, for printers and files that cannot mix transparency. The objects
+  beneath stay as they are.
 
 ## Settings {#settings}
 

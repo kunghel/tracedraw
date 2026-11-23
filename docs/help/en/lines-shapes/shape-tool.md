@@ -100,7 +100,9 @@ are off at first, so they do not get in the way of editing nodes; turn on
 - **Selection mode**: rectangular or freehand marquee.
 - **Add node** and **Delete node**. Add node puts a node in the middle of
   each segment ending at a selected node and keeps the nodes selected with
-  the new ones, so pressing it again doubles the nodes again.
+  the new ones, so pressing it again doubles the nodes again. With any tool,
+  **Object > Nodes > Add Node to Every Segment** puts a node in the middle of
+  every segment of the selected curves at once, their shape unchanged.
 - **Join nodes** joins two end nodes into one; **Break curve** splits the
   curve at the selected node.
 - **Convert to line** and **Convert to curve** make the segment ending at

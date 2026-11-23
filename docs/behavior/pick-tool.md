@@ -117,8 +117,7 @@ move its letters further apart or closer, 5 % of a space's width a
 press (the Text docker's Character spacing), for a text fitted to a
 path too
 (`text_nodes::tests::the_spacing_keys_step_the_character_spacing_of_selected_texts`,
-#193). While a text is edited they space single letters, as in
-CorelDRAW: with the caret, only the gap at the caret (the letter before
+#193). While a text is edited they space single letters: with the caret, only the gap at the caret (the letter before
 it gets 2 % of the size more or less range kerning a press); with
 characters selected, or chosen with the Shape tool, only those (#2171,
 `text_nodes::tests::the_spacing_keys_space_one_letter_at_the_caret_or_the_chosen_ones`).
@@ -179,7 +178,20 @@ where they are and their outline shows where they would go: a blue line
 on a white halo, which reads as two light lines on a dark fill. The
 outline is the one the release makes: a rectangle's corners that keep
 their size stay round while it is stretched
-(`Shape::page_path_after`). The handles return on release.
+(`Shape::page_path_after`), and an object an envelope, a perspective or
+a distortion reshapes shows its reshaped outline, not the plain object
+beneath it (#3569,
+`canvas::tests::the_drag_outline_of_a_warped_object_is_its_warped_shape`).
+The handles return on release.
+
+With Options > Display > Show objects while transforming (off by
+default, #3569) the objects themselves are also drawn where they would
+go while the drag lasts, fills, effects and blends included, and drawn
+where they were no longer; slower on large drawings. A dashed frame
+stays at the selection's box as it was when the drag began, so the
+change can be judged against it; the handles and the box take the new
+size on release (#3949,
+`canvas::tests::a_frame_stays_where_a_live_transform_started`).
 
 A move grabbed on a mark (see below) carries that point: a node,
 midpoint, centre or the point of an edge lands on other objects' points
@@ -290,7 +302,7 @@ object under the pointer, the topmost object there is selected first
 (#1684, `pick_drag_tests::a_right_click_on_a_covered_selected_object_keeps_the_selection`).
 
 Keys held as the right button is let go over another object skip the
-menu, as in CorelDRAW: Shift gives that object the outline of the first
+menu: Shift gives that object the outline of the first
 selected object (Copy Outline Here), Alt its fill (Copy Fill Here) and
 Ctrl (Cmd on macOS) its fill, outline and transparency (Copy All
 Properties). While the keys are held the object that would take them is

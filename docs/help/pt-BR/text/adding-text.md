@@ -126,6 +126,11 @@ cabe não é desenhado, impresso nem exportado. Para fazê-lo caber:
   mantêm o tamanho;
 - escolha [[menu.text > menu.text.paragraph_text_frame > menu.text.frame_fit_text]]
   para redimensionar o texto até preencher a moldura;
+- marque **Bloco tipográfico** nas configurações de quadro do painel de texto:
+  as palavras são distribuídas entre as linhas e cada linha ganha um tamanho
+  próprio, de modo que cada linha preenche exatamente a largura do quadro e as
+  linhas juntas preenchem a altura. Redimensione o quadro e o bloco se refaz;
+  cada palavra mantém a sua fonte;
 - ligue a moldura a outra, para o texto continuar nela:
   [[menu.text.frame_link]]. [[menu.text.frame_unlink]] desfaz a ligação.
   Ou clique na pequena aba sob a borda de baixo do quadro e depois clique
@@ -140,6 +145,8 @@ cabe não é desenhado, impresso nem exportado. Para fazê-lo caber:
   ponteiro.
 
 [[menu.text > menu.text.show_text_frames]] mostra ou oculta as molduras.
+
+![Um texto de parágrafo como bloco tipográfico: cada linha preenche a largura do quadro](../../img/text-adding-text-type-block.png)
 
 ## Mover e girar caracteres {#characters}
 
@@ -156,6 +163,13 @@ verticais.
 1. Selecione um texto e uma curva ou forma.
 2. Escolha [[menu.text > menu.text.fit_text_to_path]].
 
+Para curvar um texto sem desenhar caminho, selecione-o e clique no botão
+**Curvar texto** da barra de propriedades do texto (ao lado do alinhamento):
+escolha círculo, arco para cima, arco para baixo ou onda, ou Reto para desfazer.
+O texto continua editável, fica no mesmo lugar e ganha os campos de caminho.
+Arraste um texto em círculo para cima de um objeto redondo e solte perto do
+meio: o texto pega o centro do objeto e corre por dentro da borda.
+
 Ou clique no contorno de um caminho com a ferramenta [[tool.text]] e digite. O
 texto em uma forma fechada fica do lado de fora dela, centralizado no alto;
 clicado na parte de baixo de uma elipse, ele começa ali.
@@ -168,7 +182,8 @@ barra de propriedades mostra primeiro os campos do caminho e depois os campos
 de texto de sempre:
 
 - A orientação das letras: giradas, inclinação vertical, inclinação
-  horizontal ou em pé.
+  horizontal, em pé ou radiais (a haste de cada letra numa linha que passa
+  pelo meio da caixa do caminho, como os números de um mostrador).
 - A posição vertical: na linha de base, na ascendente, na descendente ou
   centralizada no caminho.
 - A posição ao longo do caminho: no início, no centro ou no fim e, em um
@@ -188,6 +203,10 @@ de texto de sempre:
 
 Arraste o texto para deslizá-lo pelo caminho, ou através do caminho para
 afastá-lo dele.
+
+![Curvar texto: círculo, arco, tigela e onda](../../img/text-adding-text-curve-text.png)
+
+![Letras radiais em volta de um mostrador](../../img/text-adding-text-radial.png)
 
 ## Outros comandos de texto {#commands}
 

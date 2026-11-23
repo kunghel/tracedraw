@@ -302,8 +302,13 @@ impl Parser<'_> {
     /// breaks lines at the top only.
     fn row(&mut self, in_group: bool) -> Vec<Node> {
         let mut out: Vec<Node> = Vec::new();
+        // Whether the last part is words (`\text{...}` or a word in a
+        // script of its own), for the space typed after it (#3793).
+        let mut last_words = false;
         loop {
+            let before = self.pos;
             self.skip_space();
+            let spaced = self.pos > before;
             let Some(c) = self.peek() else { break };
             if c == '}' {
                 if in_group {
@@ -327,14 +332,18 @@ impl Parser<'_> {
                     self.pos = save;
                     break;
                 }
+                let words = matches!(name.as_str(), "text" | "textrm");
                 if let Some(n) = self.command_node(&name) {
-                    out.push(n);
+                    push_spaced(&mut out, n, spaced && (words || last_words));
                 }
+                last_words = words;
                 continue;
             }
+            let words = in_script_word(c);
             if let Some(n) = self.atom() {
-                out.push(n);
+                push_spaced(&mut out, n, spaced && (words || last_words));
             }
+            last_words = words;
         }
         out
     }
@@ -575,9 +584,56 @@ impl Parser<'_> {
             let t: String = self.chars[start..self.pos].iter().collect();
             return Some(upright(&t));
         }
+        // A word in a script of its own (Hindi, Russian, Arabic...): one
+        // run, shaped as text with the spaces between its words, as the
+        // letters and vowel signs of Devanagari join only when shaped
+        // together. One sign at a time left the vowel signs apart from
+        // their letters and the spaces out (#3572).
+        if in_script_word(c) {
+            let start = self.pos;
+            loop {
+                while self.peek().is_some_and(in_script_word) {
+                    self.pos += 1;
+                }
+                let mut ahead = self.pos;
+                while self.chars.get(ahead).is_some_and(|c| *c == ' ') {
+                    ahead += 1;
+                }
+                if ahead > self.pos && self.chars.get(ahead).is_some_and(|c| in_script_word(*c)) {
+                    self.pos = ahead;
+                } else {
+                    break;
+                }
+            }
+            let t: String = self.chars[start..self.pos].iter().collect();
+            return Some(upright(&t));
+        }
         self.pos += 1;
         Some(sym_for_char(c))
     }
+}
+
+/// A character of a word written in a script other than Latin and Greek
+/// (whose letters are the formula's variables) and not a mathematical
+/// sign: Devanagari, Cyrillic, Arabic and the like, with their marks.
+fn in_script_word(c: char) -> bool {
+    let u = c as u32;
+    u >= 0x0400
+        && !c.is_whitespace()
+        && !(0x2000..=0x2BFF).contains(&u)
+        && !(0x1D400..=0x1D7FF).contains(&u)
+}
+
+/// Push `n` onto the row `out`, after a word space when `space` (a space
+/// typed between words and the formula, #3793: math ignores spaces, so
+/// "Area = " ran into what followed) and neither side is a sign that
+/// brings its own space.
+fn push_spaced(out: &mut Vec<Node>, n: Node, space: bool) {
+    let spaced_sign = |n: &Node| matches!(class_of(n), Class::Bin | Class::Rel | Class::Punct);
+    if space && out.last().is_some_and(|l| !spaced_sign(l)) && !spaced_sign(&n) {
+        out.push(Node::Space(0.33));
+    }
+    out.push(n);
 }
 
 fn upright(t: &str) -> Node {
@@ -1113,6 +1169,47 @@ mod tests {
             source: src.into(),
             ..Default::default()
         }
+    }
+
+    /// #3572: Hindi in a formula is one word shaped as text, its vowel
+    /// signs with their letters and the spaces between its words kept;
+    /// Greek letters and signs stay one at a time.
+    #[test]
+    fn a_hindi_word_is_one_run_with_its_spaces() {
+        let (lines, _) = parse("मेरा नाम = \\alpha + β");
+        let Node::Row(items) = &lines[0] else {
+            panic!()
+        };
+        let texts: Vec<&str> = items
+            .iter()
+            .filter_map(|n| match n {
+                Node::Sym { text, .. } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(texts, ["मेरा नाम", "=", "α", "+", "β"]);
+    }
+
+    /// #3793: a space typed between words and the formula is kept as a
+    /// word space; between math symbols spaces still count for nothing.
+    #[test]
+    fn a_space_after_words_is_kept() {
+        let spaces = |src: &str| -> usize {
+            let (lines, _) = parse(src);
+            let Node::Row(items) = &lines[0] else {
+                panic!()
+            };
+            items.iter().filter(|n| matches!(n, Node::Space(_))).count()
+        };
+        assert_eq!(spaces(r"\text{Area} \frac{a}{b}"), 1);
+        assert_eq!(spaces(r"\text{Area}\frac{a}{b}"), 0);
+        assert_eq!(spaces(r"\frac{a}{b} \text{cm}"), 1);
+        assert_eq!(spaces("मेरा x"), 1);
+        assert_eq!(spaces("a b"), 0, "math ignores spaces");
+        assert_eq!(spaces(r"\text{Area} = x"), 0, "the sign brings its own");
+        let with = layout(&spec(r"\text{A} x")).path.bounding_box();
+        let without = layout(&spec(r"\text{A}x")).path.bounding_box();
+        assert!(with.width() > without.width());
     }
 
     #[test]

@@ -251,6 +251,20 @@ fn paint(p: &Painter, r: Rect, icon: Icon, color: Color32) {
                     pen.line(4.0, 2.0, 4.0, 5.0, 0.9);
                     pen.line(6.5, 2.0, 6.5, 5.0, 0.9);
                 }
+                DistributeTo::PageEven => {
+                    // The page with equal room at its edges.
+                    pen.frame(1.5, 1.5, 14.5, 14.5, 1.2);
+                    pen.block(3.5, 6.0, 5.5, 10.0);
+                    pen.block(7.0, 6.0, 9.0, 10.0);
+                    pen.block(10.5, 6.0, 12.5, 10.0);
+                }
+                DistributeTo::Frame => {
+                    // A filled frame object with the blocks inside it.
+                    pen.frame(1.0, 3.0, 15.0, 13.0, 1.0);
+                    pen.block(3.5, 6.0, 5.5, 10.0);
+                    pen.block(7.0, 6.0, 9.0, 10.0);
+                    pen.block(10.5, 6.0, 12.5, 10.0);
+                }
             }
         }
         Icon::Outline => {
@@ -579,6 +593,8 @@ pub fn align_distribute(app: &mut App, ui: &mut Ui) {
             (DistributeTo::Selection, "docker.distribute_selection"),
             (DistributeTo::Page, "docker.distribute_page"),
             (DistributeTo::Spacing, "docker.distribute_spacing"),
+            (DistributeTo::PageEven, "docker.distribute_page_even"),
+            (DistributeTo::Frame, "docker.distribute_frame"),
         ] {
             if button(
                 ui,
@@ -599,6 +615,8 @@ pub fn align_distribute(app: &mut App, ui: &mut Ui) {
             DistributeTo::Selection => "docker.distribute_selection",
             DistributeTo::Page => "docker.distribute_page",
             DistributeTo::Spacing => "docker.distribute_spacing",
+            DistributeTo::PageEven => "docker.distribute_page_even",
+            DistributeTo::Frame => "docker.distribute_frame",
         }),
     );
     // The set spacing, in the ruler unit through the drawing scale.
@@ -613,6 +631,8 @@ pub fn align_distribute(app: &mut App, ui: &mut Ui) {
                 DistributeTo::Selection => "docker.distribute_hint",
                 DistributeTo::Page => "docker.distribute_page_hint",
                 DistributeTo::Spacing => "docker.distribute_spacing_hint",
+                DistributeTo::PageEven => "docker.distribute_page_even_hint",
+                DistributeTo::Frame => "docker.distribute_frame_hint",
             }),
         );
     }
@@ -722,6 +742,61 @@ mod tests {
         let tops = [bounds(&app, a).y1, bounds(&app, c).y1];
         assert!(tops.iter().any(|t| near(*t, page.y1)));
         assert!(tops.iter().any(|t| near(*t, page.y0 + 10.0)));
+    }
+
+    /// Even margins (#3768): across the page, and inside the largest
+    /// selected object, the gaps at the edges equal the gaps between the
+    /// objects; the frame object stays put.
+    #[test]
+    fn distribute_with_even_margins_on_the_page_and_in_a_frame() {
+        let mut app = App::headless();
+        let page = app.page_rect();
+        let a = rect(&mut app, 0.0, 0.0, 10.0, 10.0);
+        let b = rect(&mut app, 30.0, 0.0, 50.0, 10.0);
+        app.select(vec![a]);
+        assert!(app.can_distribute(DistributeTo::PageEven));
+        app.select(vec![a, b]);
+        app.distribute_with(Distribute::SpacingH, DistributeTo::PageEven);
+        let gap = (page.width() - 30.0) / 3.0;
+        assert!(near(bounds(&app, a).x0, page.x0 + gap));
+        assert!(near(bounds(&app, b).x0, page.x0 + 2.0 * gap + 10.0));
+        assert!(near(page.x1 - bounds(&app, b).x1, gap));
+        let frame = rect(&mut app, 100.0, 0.0, 170.0, 40.0);
+        app.select(vec![a, b, frame]);
+        assert!(app.can_distribute(DistributeTo::Frame));
+        app.distribute_with(Distribute::Left, DistributeTo::Frame);
+        // 70 wide, 30 of objects: three gaps of 40 / 3.
+        let g = 40.0 / 3.0;
+        assert!(near(bounds(&app, frame).x0, 100.0), "the frame stays");
+        assert!(near(bounds(&app, a).x0, 100.0 + g));
+        assert!(near(bounds(&app, b).x0, 100.0 + 2.0 * g + 10.0));
+        // Along y, inside the frame too.
+        app.distribute_with(Distribute::SpacingV, DistributeTo::Frame);
+        let ys = [bounds(&app, a).y0, bounds(&app, b).y0];
+        let g = 20.0 / 3.0;
+        assert!(ys.iter().any(|y| near(*y, g)), "{ys:?}");
+        assert!(ys.iter().any(|y| near(*y, 2.0 * g + 10.0)), "{ys:?}");
+    }
+
+    /// Fill With Copies (#3834): the smaller object fills the inside of
+    /// the larger in a grid of whole copies, counted; it takes the first
+    /// place itself.
+    #[test]
+    fn fill_with_copies_fills_the_larger_object_and_counts_the_copies() {
+        let mut app = App::headless();
+        let frame = rect(&mut app, 0.0, 0.0, 100.0, 50.0);
+        let item = rect(&mut app, 200.0, 0.0, 210.0, 10.0);
+        app.select(vec![frame, item]);
+        assert_eq!(app.fill_with_copies(2.0, 2.0), 32);
+        assert_eq!(app.selection.len(), 32);
+        assert!(app.selection.contains(&item) && !app.selection.contains(&frame));
+        let b = bounds(&app, item);
+        assert!(b.x0 > 0.0 && b.x1 < 100.0 && b.y1 < 50.0 && b.y0 > 0.0, "{b:?}");
+        assert!(app.status.contains("32"), "{}", app.status);
+        // With no gap, four fit in a box twice as wide and high.
+        let big = rect(&mut app, 400.0, 0.0, 420.0, 20.0);
+        app.select(vec![big, item]);
+        assert_eq!(app.fill_with_copies(0.0, 0.0), 4);
     }
 
     /// A set spacing: the first object stays, the others follow it the

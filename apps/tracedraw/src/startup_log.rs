@@ -90,18 +90,46 @@ pub fn init() {
             return;
         }
         log::error!("{report}");
+        // The first error is the cause. One that follows it (the system
+        // ending a program whose error cannot pass through its own
+        // code, as on macOS) is added under it, never written over it:
+        // the reports of #4017 and #4042 held the second alone.
+        let first = !REPORTED.swap(true, Ordering::SeqCst);
         let saved = dir.lock().ok().and_then(|d| d.clone()).and_then(|d| {
             let path = crash_path(&d);
-            std::fs::write(&path, &report).ok().map(|_| path)
+            write_report(&path, &report, first).ok().map(|_| path)
         });
         default(info);
-        show(&report, saved.as_deref());
+        if first {
+            show(&report, saved.as_deref());
+        }
     }));
+}
+
+/// Whether a panic of this run was reported already.
+static REPORTED: AtomicBool = AtomicBool::new(false);
+
+/// `report` to the file at `path`: the `first` of a run starts the file
+/// afresh, the ones after it are added under it.
+fn write_report(path: &Path, report: &str, first: bool) -> std::io::Result<()> {
+    if first {
+        return std::fs::write(path, report);
+    }
+    let mut file = std::fs::OpenOptions::new().create(true).append(true).open(path)?;
+    write!(file, "\n\nAfter that:\n{report}")
+}
+
+/// Whether the crash report `text` was written by this version of
+/// TraceDraw (its first line names the version).
+pub fn is_of_this_version(text: &str) -> bool {
+    text.lines()
+        .next()
+        .is_some_and(|l| l.starts_with(&format!("TraceDraw {} ", env!("CARGO_PKG_VERSION"))))
 }
 
 /// The computer, for the log (#616): the processor and how many threads
 /// it runs, and on Windows the build.
-fn system() -> String {
+pub(crate) fn system() -> String {
     let threads = std::thread::available_parallelism()
         .map(|n| n.get())
         .unwrap_or(1);
@@ -257,6 +285,48 @@ mod tests {
         assert!(text.contains("no adapter"), "{text}");
         assert!(text.contains(env!("CARGO_PKG_VERSION")));
         assert!(text.contains("startup_log.rs"));
+    }
+
+    /// The first error of a run stays at the top of the report; one that
+    /// follows is added under it (#4017, #4042: the report held only
+    /// "panic in a function that cannot unwind"). A report names its
+    /// version in the first line.
+    #[test]
+    fn a_second_error_is_added_under_the_first() {
+        let d = std::env::temp_dir().join(format!("td_crash_{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&d);
+        let path = crash_path(&d);
+        std::fs::write(&path, "an older run").expect("old");
+        write_report(&path, "TraceDraw 9 stopped: index out of bounds", true).expect("first");
+        write_report(&path, "TraceDraw 9 stopped: cannot unwind", false).expect("second");
+        let text = std::fs::read_to_string(&path).expect("read");
+        assert!(text.starts_with("TraceDraw 9 stopped: index out of bounds"), "{text}");
+        assert!(text.contains("After that:\nTraceDraw 9 stopped: cannot unwind"), "{text}");
+        assert!(!text.contains("older run"));
+        let ours = format!("TraceDraw {} (linux x86_64) stopped: x", env!("CARGO_PKG_VERSION"));
+        assert!(is_of_this_version(&ours));
+        assert!(!is_of_this_version("TraceDraw 0.47.0 (macos x86_64) stopped: x"));
+        assert!(!is_of_this_version(""));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// macOS: an event that arrives while another is being handled is
+    /// left out, never a panic. A panic there cannot unwind through the
+    /// system's code and ended the program at once (#4017, #4042); the
+    /// patched copy of the window library must keep that arm quiet
+    /// (vendor/README.md).
+    #[test]
+    fn an_event_during_another_never_ends_the_program_on_macos() {
+        let text = include_str!(
+            "../../../vendor/winit/src/platform_impl/macos/event_handler.rs"
+        );
+        let arm = text
+            .split("fn handle_event")
+            .nth(1)
+            .and_then(|t| t.split("Err(_) =>").nth(1))
+            .expect("the arm for an event during another");
+        assert!(!arm.contains("panic!"), "{arm}");
+        assert!(arm.contains("tracing::warn!"), "{arm}");
     }
 
     /// The log names the processor and its threads (#616).

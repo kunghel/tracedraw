@@ -18,8 +18,12 @@ miniatura, o próprio objeto desenhado em tamanho pequeno com o preenchimento e
 o contorno, e o nome, ou o que ele é quando não tem nome ("Retângulo", "Curva
 com 8 nós").
 
-- Clique em um objeto para selecioná-lo; <kbd>Shift</kbd>+clique o acrescenta à
-  seleção. A camada dele passa a ser a camada ativa.
+- Clique em um objeto para selecioná-lo; <kbd>Shift</kbd>+clique seleciona
+  todos os objetos do clicado antes até este, e <kbd>Ctrl</kbd>+clique
+  acrescenta um objeto ou o retira. A camada dele passa a ser a camada
+  ativa. As linhas das camadas aceitam as mesmas teclas:
+  <kbd>Shift</kbd>+clique seleciona o intervalo de camadas a partir da
+  última clicada, e <kbd>Ctrl</kbd>+clique acrescenta ou retira uma camada.
 - Clique na seta de um grupo para ver os objetos dentro dele.
 - Cada camada tem três botões: [[docker.show_hide]], [[docker.print_layer]] e
   [[docker.lock_layer]]. Uma camada oculta ou bloqueada não pode ser editada. O
@@ -36,6 +40,10 @@ com 8 nós").
 Uma camada é uma folha onde ficam os objetos. A **camada ativa**, em negrito e
 com uma barra colorida, é para onde vão os novos objetos quando você desenha,
 cola, duplica ou importa. Clique em uma camada para torná-la ativa.
+<kbd>Shift</kbd>+clique seleciona o intervalo de camadas a partir da última
+clicada, e <kbd>Ctrl</kbd>+clique acrescenta ou retira uma camada; o olho, a
+impressora, o cadeado, Excluir e o menu da camada então agem sobre todas as
+camadas selecionadas juntas.
 
 - [[docker.new_layer]], embaixo do painel, acrescenta uma camada no topo e a
   torna ativa.

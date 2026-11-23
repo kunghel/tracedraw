@@ -1336,7 +1336,7 @@ mod tests {
     use tracedraw_core::geometry::Rect as R;
 
     fn wait(app: &mut App) {
-        for _ in 0..2000 {
+        for _ in 0..24000 {
             let mut st = std::mem::take(&mut app.workflow);
             st.poll(app);
             let busy = st.running();

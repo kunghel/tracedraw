@@ -43,6 +43,14 @@ Pattern Fill (in a browser, the picture import). Below the type row:
   selection..." and "Import picture..." (a picture file read through
   `files`, its tile as wide as the picture at the resolution the file
   records, else 96 dpi; applied to the selection as one undo step).
+  Below them "Picture folder..." (#3323, desktop only; greyed with a tip
+  in a browser and on Android) chooses a folder of pictures, remembered
+  in the settings (`Settings::pattern_folder`); from then on the list
+  ends with "Pictures in <folder>": a row per picture file of the folder
+  (PNG, JPEG, GIF, BMP, WebP, TIFF; not its subfolders; sorted by name,
+  500 at most), each with a thumbnail made a few a frame, and the one
+  clicked becomes the tile as Import picture... would make it
+  (`ui::pattern_pick::tests::the_pattern_folders_pictures_are_listed_and_one_becomes_the_tile`).
 
 Picking a pattern keeps the placement the fill had. Then the placement
 fields every kind shares (below).

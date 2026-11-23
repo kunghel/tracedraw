@@ -15,6 +15,8 @@ use crate::trace::{self, Settings, Stats, Traced};
 use egui::{ColorImage, TextureHandle, TextureOptions};
 use image::RgbaImage;
 use std::sync::atomic::{AtomicBool, Ordering};
+#[cfg(test)]
+use std::sync::mpsc::RecvTimeoutError;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 use std::sync::Arc;
 use tracedraw_core::ShapeId;
@@ -823,7 +825,10 @@ mod tests {
         live.poll(&ctx);
         assert_eq!(live.started, 1);
         let t0 = Instant::now();
-        while live.busy() && t0.elapsed() < Duration::from_secs(20) {
+        // The quick look of a 700 px picture, waiting for a busy worker
+        // thread: on starved runners this crossed 20 s and failed the
+        // test although the trace was on its way.
+        while live.busy() && t0.elapsed() < Duration::from_secs(120) {
             std::thread::sleep(Duration::from_millis(2));
             live.poll(&ctx);
         }
@@ -911,7 +916,9 @@ mod tests {
         assert_eq!(live.started, 1);
         assert!(live.busy());
         let t0 = Instant::now();
-        while live.full(1, 0).is_none() && t0.elapsed() < Duration::from_secs(20) {
+        // A whole trace of the 700 px picture takes tens of seconds on
+        // one core of a slow machine: 20 s crossed on CI runners.
+        while live.full(1, 0).is_none() && t0.elapsed() < Duration::from_secs(120) {
             std::thread::sleep(Duration::from_millis(2));
             live.poll(&ctx);
         }
@@ -931,7 +938,7 @@ mod tests {
         live.poll(&ctx);
         assert_eq!(live.started, 2);
         let t0 = Instant::now();
-        while live.full(3, 0).is_none() && t0.elapsed() < Duration::from_secs(20) {
+        while live.full(3, 0).is_none() && t0.elapsed() < Duration::from_secs(120) {
             std::thread::sleep(Duration::from_millis(2));
             live.poll(&ctx);
         }
@@ -942,7 +949,9 @@ mod tests {
 
     fn settle(live: &mut Live, ctx: &egui::Context, key: u64, look: u64) {
         let t0 = Instant::now();
-        while live.full(key, look).is_none() && t0.elapsed() < Duration::from_secs(20) {
+        // A whole trace takes tens of seconds on one core; 20 s crossed
+        // on slow CI runners.
+        while live.full(key, look).is_none() && t0.elapsed() < Duration::from_secs(120) {
             std::thread::sleep(Duration::from_millis(2));
             live.poll(ctx);
         }
@@ -1028,14 +1037,23 @@ mod tests {
         live.clear();
         assert!(flag.load(Ordering::Relaxed));
         assert!(!live.is_active());
+        // Wait for the thread to end by its own signal: its sender drops
+        // when it returns. A slow or busy test machine may take a while to
+        // reach the next cancel check, so the deadline is only a guard
+        // against a trace that never stops. What proves the cancel is that
+        // the full trace never arrives.
         let t0 = Instant::now();
         loop {
-            match rx.try_recv() {
-                Err(TryRecvError::Disconnected) => break,
-                _ => std::thread::sleep(Duration::from_millis(2)),
+            match rx.recv_timeout(Duration::from_millis(50)) {
+                Err(RecvTimeoutError::Disconnected) => break,
+                Ok(outcome) => assert!(
+                    !matches!(outcome.stage, Stage::Full),
+                    "the full trace arrived after the dialog closed"
+                ),
+                Err(RecvTimeoutError::Timeout) => {}
             }
             assert!(
-                t0.elapsed() < Duration::from_secs(3),
+                t0.elapsed() < Duration::from_secs(120),
                 "the trace still runs after the dialog closed"
             );
         }

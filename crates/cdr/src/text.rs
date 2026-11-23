@@ -283,6 +283,10 @@ pub(crate) struct RunStyle {
     /// describe the run's fill as an object with its colour);
     /// `Some(None)` is no fill.
     pub fill_color: Option<Option<tracedraw_core::Color>>,
+    /// Version 16+ style strings: the characters' own outline (the
+    /// `outline` member of the `character` section, #4055); `Some(None)`
+    /// is none (width 0), which leaves the object's outline on them.
+    pub outline: Option<Option<tracedraw_core::Stroke>>,
     /// Version 16+ style strings: underline and strikeout on or off.
     pub underline: Option<bool>,
     pub strikethrough: Option<bool>,
@@ -298,7 +302,7 @@ pub(crate) struct RunStyle {
     /// Hebrew...): the `RTL` section of a version 16+ style string, when
     /// it is not the Latin one. A version 27 file sets its Persian title
     /// at 154 pt there with the Latin slot at 24 pt on some letters, and
-    /// CorelDRAW draws them all at 154 pt (#2886).
+    /// the file means them all at 154 pt (#2886).
     pub rtl: Option<ScriptFont>,
 }
 
@@ -482,6 +486,7 @@ impl RunStyle {
             para_after: self.para_after.or(base.para_after),
             spacing_method: self.spacing_method.or(base.spacing_method),
             fill_color: self.fill_color.or(base.fill_color),
+            outline: self.outline.clone().or_else(|| base.outline.clone()),
             underline: self.underline.or(base.underline),
             strikethrough: self.strikethrough.or(base.strikethrough),
             char_shift: self.char_shift.or(base.char_shift),
@@ -2312,11 +2317,17 @@ fn apply_style_object(s: &mut RunStyle, obj: &Json, depth: usize) {
                         s.fill_color = Some(c);
                     }
                 }
-                // An inline outline and the frame are not read; the Latin
-                // font settings apply to the text, the East Asian ones to
-                // its East Asian letters, the right-to-left ones to its
-                // Arabic, Persian or Hebrew letters (#2886).
-                ("outline" | "frame", Json::Obj(_)) => {}
+                // The characters' own outline (#4055); the frame is not
+                // read. The Latin font settings apply to the text, the
+                // East Asian ones to its East Asian letters, the
+                // right-to-left ones to its Arabic, Persian or Hebrew
+                // letters (#2886).
+                ("outline", Json::Obj(_)) => {
+                    if let Some(o) = inline_outline(v) {
+                        s.outline = Some(o);
+                    }
+                }
+                ("frame", Json::Obj(_)) => {}
                 ("farEast" | "RTL", Json::Obj(_)) => {
                     let mut f = RunStyle::default();
                     apply_style_object(&mut f, v, depth + 1);
@@ -2697,16 +2708,24 @@ pub(crate) fn frame_columns(style: &str) -> Option<(u32, f64)> {
     let Json::Str(cols) = &frame.iter().find(|(k, _)| k == "columns")?.1 else {
         return None;
     };
-    let v: Vec<f64> = cols
-        .split(',')
-        .map(|p| p.trim().parse::<f64>().ok())
-        .collect::<Option<Vec<f64>>>()?;
+    let v = column_numbers(cols)?;
     let n = v.len().div_ceil(2);
     if !(2..=64).contains(&n) {
         return None;
     }
     let gap = v.get(1).copied().filter(|g| g.is_finite() && *g >= 0.0)?;
     Some((n as u32, gap))
+}
+
+/// The numbers of a frame's `columns` setting, each column's width and
+/// the gap after it. A file of version 27 with two columns lists them
+/// `"556846,127000|556846,0"`, a bar between columns; a comma between all
+/// of them is read too. The bar was not, so such a frame lost its columns
+/// (#3506).
+fn column_numbers(cols: &str) -> Option<Vec<f64>> {
+    cols.split([',', '|'])
+        .map(|p| p.trim().parse::<f64>().ok())
+        .collect()
 }
 
 /// The width of a paragraph frame from an object's version 16+ style
@@ -2726,10 +2745,7 @@ pub(crate) fn frame_width_units(style: &str) -> Option<f64> {
     let Json::Str(cols) = &frame.iter().find(|(k, _)| k == "columns")?.1 else {
         return None;
     };
-    let v: Vec<f64> = cols
-        .split(',')
-        .map(|p| p.trim().parse::<f64>().ok())
-        .collect::<Option<Vec<f64>>>()?;
+    let v = column_numbers(cols)?;
     if v.is_empty() {
         return None;
     }
@@ -2768,6 +2784,51 @@ fn inline_fill_color(fill: &Json) -> Option<Option<tracedraw_core::Color>> {
     parse_color_spec(spec).map(Some)
 }
 
+/// An inline outline of a version 16+ style string (#4055):
+/// `{"width":"5000","color":"CMYK100,USER,...","behindFill":"0",
+/// "joinType":"0","miterLimit":"5",...}`, the width in 1/254000 inch
+/// (10000 to the millimetre). `Some(None)` for width 0 (no outline of
+/// the characters' own), `None` when the width is not given.
+fn inline_outline(outline: &Json) -> Option<Option<tracedraw_core::Stroke>> {
+    use tracedraw_core::{LineCap, LineJoin, Stroke};
+    let Json::Obj(items) = outline else {
+        return None;
+    };
+    let get = |key: &str| items.iter().find(|(k, _)| k == key).map(|(_, v)| v);
+    let width = get("width").and_then(Json::num)?;
+    if !width.is_finite() || width <= 0.0 {
+        return Some(None);
+    }
+    let color = match get("color") {
+        Some(Json::Str(spec)) => parse_color_spec(spec).unwrap_or(tracedraw_core::Color::BLACK),
+        _ => tracedraw_core::Color::BLACK,
+    };
+    let mut st = Stroke::new(color, width / 10_000.0);
+    let flag = |key: &str| get(key).and_then(Json::num).is_some_and(|n| n != 0.0);
+    st.behind_fill = flag("behindFill");
+    st.scale_with_object = flag("scaleWithObject");
+    st.join = match get("joinType").and_then(Json::num) {
+        Some(1.0) => LineJoin::Round,
+        Some(2.0) => LineJoin::Bevel,
+        _ => LineJoin::Miter,
+    };
+    st.cap = match get("endCaps").and_then(Json::num) {
+        Some(1.0) => LineCap::Round,
+        Some(2.0) => LineCap::Square,
+        _ => LineCap::Butt,
+    };
+    if let Some(a) = get("miterLimit")
+        .and_then(Json::num)
+        .filter(|a| a.is_finite() && *a > 0.0)
+    {
+        st.miter_limit = a.clamp(
+            *Stroke::MITER_LIMIT_RANGE.start(),
+            *Stroke::MITER_LIMIT_RANGE.end(),
+        );
+    }
+    Some(Some(st))
+}
+
 /// A colour written `MODEL,PALETTE,v1,v2,...` in version 16+ style strings.
 pub(crate) fn parse_color_spec(spec: &str) -> Option<tracedraw_core::Color> {
     use tracedraw_core::Color;
@@ -2786,6 +2847,22 @@ pub(crate) fn parse_color_spec(spec: &str) -> Option<tracedraw_core::Color> {
             unit(nums[2], 255.0) * 100.0,
             unit(nums[3], 255.0) * 100.0,
         ),
+        // `CMYK100` holds its inks on 0..255 too where a value passes
+        // 100 (an orange outline written "CMYK100,USER,0,152,255,0,100",
+        // #4055), else on 0..100.
+        "CMYK100" if nums.len() >= 4 => {
+            let max = if nums[..4].iter().any(|v| *v > 100.0) {
+                255.0
+            } else {
+                100.0
+            };
+            Color::cmyk_pct(
+                unit(nums[0], max) * 100.0,
+                unit(nums[1], max) * 100.0,
+                unit(nums[2], max) * 100.0,
+                unit(nums[3], max) * 100.0,
+            )
+        }
         "CMYK" if nums.len() >= 4 => Color::cmyk_pct(
             unit(nums[0], 100.0) * 100.0,
             unit(nums[1], 100.0) * 100.0,
@@ -3212,8 +3289,30 @@ mod tests {
             Some(210.0)
         );
         assert_eq!(frame_width_units(r#"{"frame":{}}"#), None);
+        // Version 27, two columns: a bar between the columns (#3506).
+        let two = r#"{"frame":{"columns":"556846,127000|556846,0","equalWidthColumns":"1"}}"#;
+        assert_eq!(frame_columns(two), Some((2, 127000.0)));
+        assert_eq!(frame_width_units(two), Some(556846.0 * 2.0 + 127000.0));
         assert_eq!(frame_width_units(r#"{"frame":{"columns":"x"}}"#), None);
         assert_eq!(frame_width_units("not json"), None);
+    }
+
+    /// A version 24 run's own outline (#4055): 5000 units is 0.5 mm, the
+    /// `CMYK100` colour on 0..255 an orange; width 0 is no outline.
+    #[test]
+    fn a_character_outline_is_read_from_the_style_string() {
+        let st = r#"{"character":{"fill":{"type":"1","primaryColor":"CMYK,USER,0,0,0,100,100,u"},"outline":{"width":"5000","color":"CMYK100,USER,0,152,255,0,100,00000000-0000-0000-0000-000000000000","behindFill":"0","type":"0","miterLimit":"5","joinType":"0"},"latin":{"font":"Arial","size":"1354667"}}}"#;
+        let s = parse_style_string(st);
+        let Some(Some(o)) = s.outline else {
+            panic!("{:?}", s.outline);
+        };
+        assert!((o.width - 0.5).abs() < 1e-9, "{o:?}");
+        assert_eq!(o.color.to_rgb8(), tracedraw_core::Color::cmyk_pct(0.0, 152.0 / 2.55, 100.0, 0.0).to_rgb8());
+        assert!(!o.behind_fill);
+        assert_eq!(o.join, tracedraw_core::LineJoin::Miter);
+        let none = parse_style_string(r#"{"character":{"outline":{"width":"0","color":"CMYK,USER,0,0,0,100,100,u"}}}"#);
+        assert_eq!(none.outline, Some(None));
+        assert!(parse_color_spec("CMYK100,USER,0,60,100,0,100,u").is_some_and(|c| c.to_rgb8() == tracedraw_core::Color::cmyk_pct(0.0, 60.0, 100.0, 0.0).to_rgb8()));
     }
 
     #[test]

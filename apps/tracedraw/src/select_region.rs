@@ -308,8 +308,17 @@ pub fn takes_how(
             }
         }
     }
-    // The whole region lies inside the object.
-    (inside && region.sample().is_some_and(|p| outline.contains(p))).then_some(Take::Within)
+    // The whole region lies inside the object; an open curve's inside is
+    // that of the curve closed across its open ends, as its fill shows
+    // (the raw path took one half of a slanted line's box, #4032). The
+    // raw path stays the outline crossed above: the closing chord is no
+    // drawn edge.
+    let inside_path = if s.kind.is_open_curve() {
+        tracedraw_core::command::close_subpaths(&outline)
+    } else {
+        outline
+    };
+    (inside && region.sample().is_some_and(|p| inside_path.contains(p))).then_some(Take::Within)
 }
 
 #[cfg(test)]
@@ -352,6 +361,38 @@ mod tests {
         assert!(!takes(inside, &s, true, &filled));
         let f = rect_shape(2, Rect::new(10.0, 10.0, 30.0, 30.0), true);
         assert!(takes(inside, &f, true, &filled));
+    }
+
+    /// A slanted open line is taken by a touching marquee that crosses
+    /// it, not by one lying in the empty half of its box (#4032); an
+    /// open zigzag is not taken by a marquee crossing only the chord that
+    /// would close it.
+    #[test]
+    fn an_open_line_is_not_inside_the_empty_half_of_its_box() {
+        let mut path = tracedraw_core::geometry::BezPath::new();
+        path.move_to((0.0, 0.0));
+        path.line_to((100.0, 100.0));
+        let line = Shape::new(ShapeId(1), ShapeKind::Path { path, closed: false });
+        let all = |_: &Shape| true;
+        for empty in [
+            Rect::new(70.0, 10.0, 80.0, 20.0),
+            Rect::new(10.0, 70.0, 20.0, 80.0),
+        ] {
+            assert_eq!(takes_how(Region::Rect(empty), &line, true, &all), None, "{empty:?}");
+        }
+        let across = Region::Rect(Rect::new(40.0, 45.0, 60.0, 55.0));
+        assert_eq!(takes_how(across, &line, true, &all), Some(Take::Outline));
+        // A V open at the top: the chord across the top is not an edge.
+        let mut v = tracedraw_core::geometry::BezPath::new();
+        v.move_to((0.0, 0.0));
+        v.line_to((50.0, 100.0));
+        v.line_to((100.0, 0.0));
+        let v = Shape::new(ShapeId(2), ShapeKind::Path { path: v, closed: false });
+        let on_chord = Region::Rect(Rect::new(40.0, -6.0, 60.0, 4.0));
+        assert_eq!(takes_how(on_chord, &v, true, &all), None);
+        // Inside the V (its fill as shown) it is taken as lying within.
+        let within = Region::Rect(Rect::new(45.0, 20.0, 55.0, 30.0));
+        assert_eq!(takes_how(within, &v, true, &all), Some(Take::Within));
     }
 
     /// A touching frame or lasso drawn round a small object that lies

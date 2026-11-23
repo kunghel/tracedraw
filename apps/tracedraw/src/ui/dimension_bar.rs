@@ -337,6 +337,29 @@ pub fn dimension_bar(app: &mut App, ui: &mut Ui) {
     if precision != style.precision.min(6) {
         app.set_dimension_style(|s| s.precision = precision);
     }
+    // Decimal, fractional, or feet and inches (#4056).
+    dim(ui, tr("options.dimension_style"));
+    let mut notation = style.notation();
+    crate::ui::keynav::ComboBox::from_id_salt("dimension_notation")
+        .selected_text(tr(notation.key()))
+        .width(120.0)
+        .show_ui(ui, |ui| {
+            for n in crate::dimensions::Notation::ALL {
+                ui.selectable_value(
+                    &mut notation,
+                    n,
+                    format!("{}   {}", tr(n.key()), n.sample(style.precision)),
+                );
+            }
+        })
+        .response
+        .rich_tip(crate::ui::tips::pair(
+            "options.dimension_style",
+            "options.dimension_style_tip",
+        ));
+    if notation != style.notation() {
+        app.set_dimension_style(|s| s.set_notation(notation));
+    }
     dim(ui, tr("dimension.units"));
     let choices = units_choices();
     let mut units = style.units.clone();
@@ -407,16 +430,22 @@ pub fn dimension_bar(app: &mut App, ui: &mut Ui) {
     if along != style.label_along {
         app.set_dimension_style(|s| s.label_along = along);
     }
-    let mut size = style.text_size;
+    // In the text units, as the font size of the label itself shows when
+    // it is picked (Options > Text > Text units, #3857); kept in points.
+    let u = app.text_units();
+    let mut size = u.from_pt(style.text_size);
     let r = ui
         .add(
             NumField::new(&mut size)
-                .speed(0.5)
-                .range(1.0..=500.0)
-                .suffix(" pt"),
+                .speed(u.from_pt(0.5))
+                .range(u.from_pt(1.0)..=u.from_pt(500.0))
+                .max_decimals(if u == crate::app::Units::Points { 1 } else { 3 })
+                .unit_mm(u.mm())
+                .suffix(format!(" {}", u.short())),
         )
         .rich_tip(tr("dimension.text_size"));
-    if r.changed() && (size - style.text_size).abs() > 1e-9 {
+    let size = u.to_pt(size);
+    if r.changed() && (size - style.text_size).abs() > 1e-6 {
         app.set_dimension_style(|s| s.text_size = size);
     }
     style_part(app, ui, &style);
@@ -639,5 +668,38 @@ mod tests {
         }
         assert_eq!(precision_sample(0), "1");
         assert_eq!(precision_sample(3), "1.235");
+    }
+
+    /// The bar's text size is in the text units, as the label's own font
+    /// size is when it is picked (#3857): millimetres there, millimetres
+    /// here too, not points.
+    #[test]
+    fn the_text_size_shows_in_the_text_units() {
+        let ctx = crate::theme::ui_context();
+        let mut app = App::headless();
+        app.tool = Tool::ParallelDimension;
+        app.settings.text_units = "mm".into();
+        app.set_dimension_style(|s| s.text_size = 72.0);
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(1600.0, 400.0),
+            )),
+            ..Default::default()
+        };
+        let mut out = ctx.run_ui(input, |ui| {
+            ui.horizontal(|ui| dimension_bar(&mut app, ui));
+        });
+        out.textures_delta.clear();
+        let texts: Vec<String> = out
+            .shapes
+            .iter()
+            .filter_map(|c| match &c.shape {
+                egui::Shape::Text(t) => Some(t.galley.text().to_string()),
+                _ => None,
+            })
+            .collect();
+        assert!(texts.iter().any(|t| t.contains("25.4 mm")), "{texts:?}");
+        assert!(!texts.iter().any(|t| t.contains("72 pt")), "{texts:?}");
     }
 }

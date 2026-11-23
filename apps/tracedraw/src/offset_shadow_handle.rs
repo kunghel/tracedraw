@@ -122,6 +122,7 @@ impl App {
                         opacity: st.opacity,
                         blur: st.blur,
                         merge: st.merge,
+                        spread: st.spread,
                     },
                     true,
                 );
@@ -226,6 +227,7 @@ mod tests {
                 opacity: 0.4,
                 blur: 1.0,
                 merge: tracedraw_core::live::MergeMode::Multiply,
+                spread: 0.0,
             },
             true,
         );

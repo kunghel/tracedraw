@@ -340,6 +340,24 @@ fn copy_glyph(ch: char) {
     }
 }
 
+/// A glyph's picture `r` placed in its cell `cell`: as it is when it fits,
+/// else made smaller and centred, so that a glyph reaching far above,
+/// below or beside the letters shows whole instead of being cut by its
+/// neighbours (#3906).
+fn fit_in_cell(cell: egui::Rect, r: egui::Rect) -> egui::Rect {
+    if cell.contains_rect(r) {
+        return r;
+    }
+    let k = (cell.width() / r.width())
+        .min(cell.height() / r.height())
+        .min(1.0);
+    let r = egui::Rect::from_center_size(r.center(), r.size() * k);
+    // Moved back inside, the room it has being at least its size.
+    let dx = (cell.left() - r.left()).max(0.0) + (cell.right() - r.right()).min(0.0);
+    let dy = (cell.top() - r.top()).max(0.0) + (cell.bottom() - r.bottom()).min(0.0);
+    r.translate(Vec2::new(dx, dy))
+}
+
 /// A glyph cell: the glyph large, and a small arrow under it when it has
 /// alternates. Returns (clicked, arrow response).
 fn cell(
@@ -370,9 +388,12 @@ fn cell(
         Some(p) => {
             let sz = p.texture.size_vec2() / ppp;
             let base_y = rect.top() + size * 0.72;
-            let r = egui::Rect::from_min_size(
-                egui::pos2(rect.center().x - sz.x / 2.0, base_y - p.baseline_px / ppp),
-                sz,
+            let r = fit_in_cell(
+                rect,
+                egui::Rect::from_min_size(
+                    egui::pos2(rect.center().x - sz.x / 2.0, base_y - p.baseline_px / ppp),
+                    sz,
+                ),
             );
             ui.painter().image(
                 p.texture.id(),
@@ -834,5 +855,24 @@ mod tests {
         let mut out = ctx.run_ui(input, |ui| glyphs(&mut app, ui));
         out.textures_delta.clear();
         assert!(!app.glyph_font.is_empty());
+    }
+
+    /// #3906: a glyph bigger than its cell, or reaching out of it, is made
+    /// smaller and moved inside, whole; one that fits stays as it is.
+    #[test]
+    fn a_glyph_too_big_for_its_cell_shows_whole() {
+        let cell = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), Vec2::new(40.0, 46.0));
+        let fits = egui::Rect::from_min_size(egui::pos2(10.0, 8.0), Vec2::new(20.0, 30.0));
+        assert_eq!(fit_in_cell(cell, fits), fits);
+        for r in [
+            egui::Rect::from_min_size(egui::pos2(-15.0, 5.0), Vec2::new(30.0, 30.0)),
+            egui::Rect::from_min_size(egui::pos2(5.0, -20.0), Vec2::new(30.0, 90.0)),
+            egui::Rect::from_min_size(egui::pos2(-30.0, -30.0), Vec2::new(100.0, 100.0)),
+        ] {
+            let got = fit_in_cell(cell, r);
+            assert!(cell.expand(1e-3).contains_rect(got), "{r:?} -> {got:?}");
+            let k = got.width() / r.width();
+            assert!((got.height() / r.height() - k).abs() < 1e-4, "kept its shape");
+        }
     }
 }

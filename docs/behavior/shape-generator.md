@@ -186,3 +186,71 @@ the settings) and `ui/shape_gen_docker.rs`. Issues #3412 and #3413.
   layer in one undo step with the originals deleted (kept with Keep
   original).
 
+## Differential growth (`shape_gen_growth.rs`)
+
+- Start: a ring of points one spacing apart (radius size % of half the
+  box's smaller side, at least two spacings), a horizontal open line
+  (size % of the width), or n rings at seeded random places; each is
+  halved until all its points are allowed, up to eight times. The start
+  is the box's middle, or the inside cell nearest to it.
+- Allowed: inside the box less half a spacing, and inside the outline
+  with half a spacing to spare left, right, up and down (a grid of
+  inside flags, 400 cells along the box's longer side).
+- A step: each point moves by a quarter of each neighbour edge's stretch
+  past the spacing, plus smoothing times the way to its neighbours'
+  middle, plus half a spacing times the sum of pushes (unit vector times
+  (r - d) / r) from points within the repulsion radius (spacing times
+  Repulsion; its own neighbours left out), at most half a spacing; a move
+  to a place not allowed is not made. Then edges longer than 1.4
+  spacings split at their middle, and Growth rate random edges split, up
+  to the point limit.
+- It settles when nothing split and no point moved a hundredth of a
+  spacing, or 50 steps after the point limit; at most 5000 steps.
+- Seeded and deterministic: Create and Update run the saved steps (or
+  reuse the live growth when it is exactly there).
+- Live: the panel advances it up to 12 ms a frame; running, Steps
+  follows it; paused, it catches up with Steps (going back restarts it);
+  any other change restarts it. Space over the panel starts or pauses,
+  Shift+Space or Stop makes the curves (Create, one undo step).
+
+## Deform and split (`shape_gen_warp.rs`)
+
+- After any generator but the cone template, slice grid and growth.
+- Pins: anchor as a share of Width and Height, pull as a share of the
+  longer side (at most 64). Every curve is flattened (tolerance side /
+  4000, pieces at most side / 300 long) and each point moves by the sum
+  of the pulls times exp(-d^2 / 2 sigma^2), sigma = Reach % of the longer
+  side; the curves become straight-line paths, closed ones stay closed.
+  The drawing's frame stays its unbent box.
+- Split by shape: the picked outline (the selection's closed curves and
+  text welded, holes kept) is stored centred on the origin and placed on
+  the drawing's middle; outline-only curves are cut where they cross it
+  (`shaping::cut_open`, nonzero inside): Inside in another colour keeps
+  both sides, the inside parts with the second colour and width (0 keeps
+  the line width); Inside only and Outside only keep one side as plain
+  lines. Every piece is open; filled marks are left whole. Create puts
+  the drawing's middle on the picked outline's middle.
+- Preview: drag from empty space adds a pin and sets its pull, drag a
+  pin's end or start edits it, right click deletes it (Voronoi keeps its
+  site editing instead).
+
+## Backgrounds (`shape_gen_bg.rs`)
+
+- Palette: 1 to 6 colours; `Paint::Tone(t)` fills with the colour a share
+  t / 255 along it, mixed linearly between neighbouring colours. The i-th
+  of n shapes gets t = i / (n - 1) (the first colour for one shape).
+- Layered waves: band 0 (the back) is the whole box when there are two
+  or more; band i of n has its level at h (n - i) / n and an edge sampled at 97 points: the level plus
+  amplitude % of h times a weighted sum of `Detail` sines (frequency near
+  k x Waves across, random phase, weights 1/k times 0.5 to 1.5, summed
+  to 1), clamped to the box; Catmull-Rom curve through them, closed down
+  to the bottom (or up to the top) corners.
+- Blobs: points round a circle at evenly spaced angles nudged by up to
+  0.2 x randomness of a step, each at r (1 - randomness x u); closed
+  Catmull-Rom curve. One blob: centred, r = size % of the shorter side
+  / 2. Several: centres at random in the box, r scaled by 0.45 to 1.
+- Soft gradient: the box as a closed rectangle filled with a smooth
+  `Mesh` of size x size cells; every node a random palette colour, inner
+  nodes moved by up to 0.45 x wander % of a cell (edge nodes stay on the
+  edge). The mesh moves with the drawing onto the page. Deform and split
+  do not apply to it.

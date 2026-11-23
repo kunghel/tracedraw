@@ -204,24 +204,27 @@ fn shown(e: &Entry) -> Thumb {
     }
 }
 
-/// The symbols `shape` shows (its instances and those in its groups),
-/// by index.
-fn symbol_indices(shape: &Shape, out: &mut Vec<usize>) {
+/// The symbols `shape` shows (its instances, those in its groups and
+/// clip frames, and the symbols those definitions draw), by index.
+fn symbol_indices(shape: &Shape, doc: &Document, out: &mut Vec<usize>) {
     match &shape.kind {
         ShapeKind::SymbolInstance { index } => {
             if !out.contains(index) {
                 out.push(*index);
+                if let Some(sym) = doc.symbols.get(*index) {
+                    symbol_indices(&sym.shape, doc, out);
+                }
             }
         }
         ShapeKind::Group { children } => {
             for c in children {
-                symbol_indices(c, out);
+                symbol_indices(c, doc, out);
             }
         }
         ShapeKind::ClipFrame { frame, contents } => {
-            symbol_indices(frame, out);
+            symbol_indices(frame, doc, out);
             for c in contents {
-                symbol_indices(c, out);
+                symbol_indices(c, doc, out);
             }
         }
         _ => {}
@@ -230,7 +233,7 @@ fn symbol_indices(shape: &Shape, out: &mut Vec<usize>) {
 
 fn symbols_of(shape: &Shape, doc: &Document) -> Vec<(usize, Symbol)> {
     let mut idx = Vec::new();
-    symbol_indices(shape, &mut idx);
+    symbol_indices(shape, doc, &mut idx);
     idx.into_iter()
         .filter_map(|i| doc.symbols.get(i).map(|s| (i, s.clone())))
         .collect()
@@ -240,18 +243,47 @@ fn symbols_same(kept: &[(usize, Symbol)], doc: &Document) -> bool {
     kept.iter().all(|(i, s)| doc.symbols.get(*i) == Some(s))
 }
 
+/// The widest outline `shape` or any object it holds (in groups, clip
+/// frames or symbol definitions) draws, scaled by the transforms above
+/// it, so edge strokes inside groups and symbols fit in the picture.
+fn max_stroke_width(shape: &Shape, symbols: &[Symbol], depth: usize) -> f64 {
+    if depth > 8 {
+        return 0.0;
+    }
+    let [a, b, c, d, _, _] = shape.transform.as_coeffs();
+    let s = a.hypot(b).max(c.hypot(d));
+    let scale = if s.is_finite() { s } else { 1.0 };
+    let own = shape
+        .stroke
+        .as_ref()
+        .map(|st| st.width)
+        .filter(|w| w.is_finite() && *w > 0.0)
+        .unwrap_or(0.0);
+    let inner = match &shape.kind {
+        ShapeKind::Group { children } => children
+            .iter()
+            .map(|k| max_stroke_width(k, symbols, depth + 1))
+            .fold(0.0_f64, f64::max),
+        ShapeKind::ClipFrame { frame, contents } => contents
+            .iter()
+            .map(|k| max_stroke_width(k, symbols, depth + 1))
+            .fold(max_stroke_width(frame, symbols, depth + 1), f64::max),
+        ShapeKind::SymbolInstance { index } => symbols
+            .get(*index)
+            .map(|sym| max_stroke_width(&sym.shape, symbols, depth + 1))
+            .unwrap_or(0.0),
+        _ => 0.0,
+    };
+    own.max(inner) * scale
+}
+
 /// `shape` drawn alone, at most `px` pixels on its long side, on a
 /// transparent background: premultiplied RGBA and its size. `None` when
 /// it draws nothing.
 pub fn render(doc: &Document, shape: &Shape, px: u32) -> Option<(Vec<u8>, u32, u32)> {
-    let b = shape.visual_bounds();
+    let b = shape.visual_bounds_with(&doc.symbols);
     let px = f64::from(px.clamp(4, 1024));
-    let stroke = shape.stroke.as_ref().map(|s| s.width).unwrap_or(0.0);
-    let stroke = if stroke.is_finite() {
-        stroke.max(0.0)
-    } else {
-        0.0
-    };
+    let stroke = max_stroke_width(shape, &doc.symbols, 0);
     // A margin so that outlines on the edge show whole, and a smallest
     // side so that a line still shows.
     let pad = (b.width().max(b.height()) * 0.03)
@@ -278,10 +310,14 @@ pub fn render(doc: &Document, shape: &Shape, px: u32) -> Option<(Vec<u8>, u32, u
         .map(|p| p.size)
         .unwrap_or(Size::new(210.0, 297.0));
     let mut tmp = Document::new("thumb", page_size);
+    tmp.inks = doc.inks.clone();
+    tmp.fonts = doc.fonts.clone();
+    tmp.cmyk_profile = doc.cmyk_profile.clone();
+    tmp.metadata.fill_open_curves = doc.metadata.fill_open_curves;
     let page = tmp.pages.first()?.id;
     let layer = tmp.pages.first()?.layers.first()?.id;
     let mut idx = Vec::new();
-    symbol_indices(shape, &mut idx);
+    symbol_indices(shape, doc, &mut idx);
     if !idx.is_empty() {
         tmp.symbols = doc.symbols.clone();
     }
@@ -428,5 +464,75 @@ mod tests {
         assert_eq!(clamp_size(500.0), MAX_SIZE);
         assert_eq!(clamp_size(f32::NAN), DEFAULT_SIZE);
         assert_eq!(clamp_size(30.4), 30.0);
+    }
+
+    #[test]
+    fn symbol_thumbnails_frame_off_origin_sized_and_nested_definitions() {
+        let mut doc = Document::new("t", Size::new(210.0, 297.0));
+        // A definition sitting far from the origin, as .cdr definitions sit
+        // around the page centre, and wider than tall (60 x 30 mm).
+        let mut off = Shape::new(
+            ShapeId(0),
+            ShapeKind::Rect {
+                rect: Rect::new(105.0, 148.5, 165.0, 178.5),
+                radius: 0.0,
+                corners: None,
+            },
+        );
+        off.fill = Fill::Solid(Color::rgb8(220, 20, 20));
+        off.stroke = None;
+        doc.symbols.push(Symbol {
+            name: "OffOrigin".into(),
+            shape: off,
+        });
+        let inst0 = Shape::new(ShapeId(9001), ShapeKind::SymbolInstance { index: 0 });
+        let (rgba, w, h) = render(&doc, &inst0, 40).expect("off-origin symbol renders");
+        assert_eq!(w, 40);
+        assert!((19..=22).contains(&h), "{w}x{h}");
+        let mid = ((h / 2 * w + w / 2) * 4) as usize;
+        assert!(rgba[mid] > 180 && rgba[mid + 1] < 40 && rgba[mid + 3] == 255);
+
+        // A tiny map symbol (0.6 x 0.6 mm) fills the tile instead of a speck
+        // in a 10 x 10 mm placeholder.
+        let mut tiny = Shape::new(
+            ShapeId(0),
+            ShapeKind::Rect {
+                rect: Rect::new(-250.0, 310.0, -249.4, 310.6),
+                radius: 0.0,
+                corners: None,
+            },
+        );
+        tiny.fill = Fill::Solid(Color::rgb8(20, 40, 220));
+        tiny.stroke = None;
+        doc.symbols.push(Symbol {
+            name: "Tiny".into(),
+            shape: tiny,
+        });
+        let inst1 = Shape::new(ShapeId(9002), ShapeKind::SymbolInstance { index: 1 });
+        let (rgba_t, wt, ht) = render(&doc, &inst1, 32).expect("tiny symbol renders");
+        assert_eq!(wt, 32);
+        assert_eq!(ht, 32);
+        let mid_t = ((ht / 2 * wt + wt / 2) * 4) as usize;
+        assert!(rgba_t[mid_t + 2] > 180 && rgba_t[mid_t + 3] == 255);
+
+        // A nested symbol (symbol 2 draws symbol 0): changing symbol 0
+        // invalidates symbol 2's cached picture too.
+        doc.symbols.push(Symbol {
+            name: "Outer".into(),
+            shape: Shape::new(ShapeId(1), ShapeKind::SymbolInstance { index: 0 }),
+        });
+        let inst2 = Shape::new(ShapeId(9003), ShapeKind::SymbolInstance { index: 2 });
+        let ctx = egui::Context::default();
+        let mut thumbs = ObjectThumbs::default();
+        thumbs.begin_frame();
+        assert!(matches!(
+            thumbs.get(&ctx, &doc, (1, 1), &inst2, 32),
+            Thumb::Picture(..)
+        ));
+        assert_eq!(thumbs.renders, 1);
+        doc.symbols[0].shape.fill = Fill::Solid(Color::rgb8(20, 200, 40));
+        thumbs.begin_frame();
+        thumbs.get(&ctx, &doc, (1, 2), &inst2, 32);
+        assert_eq!(thumbs.renders, 2);
     }
 }

@@ -9,7 +9,21 @@ use egui::{Color32, Painter, Pos2, Rect as ERect};
 use tracedraw_core::document::{Guide, GuideLine};
 use tracedraw_core::geometry::{Rect, Size, Vec2};
 use tracedraw_core::spreads::{self, PageSide};
-use tracedraw_core::{PageId, ShapeId};
+use tracedraw_core::{LayerId, PageId, ShapeId};
+
+/// An object of another page of the spread brought onto the current page
+/// to be selected with its objects (see [`App::adopt_spread_objects`]).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Adopted {
+    pub shape: ShapeId,
+    /// The page and layer it came from.
+    pub home: PageId,
+    pub layer: LayerId,
+    /// The page it was brought onto.
+    pub host: PageId,
+    /// Where its page lies in the coordinates of `host`.
+    pub offset: Vec2,
+}
 
 /// The spacings Page > Page Spacing offers, in millimetres; Custom...
 /// takes any other.
@@ -367,6 +381,7 @@ impl App {
                 {
                     self.page = id;
                     self.selection.clear();
+                    self.selected_layers.clear();
                 }
             }
         }
@@ -429,6 +444,7 @@ impl App {
                 self.selection.clear();
                 self.focus.clear();
                 self.picked_layer = None;
+                self.selected_layers.clear();
             }
             return;
         };
@@ -439,6 +455,7 @@ impl App {
         self.selection.clear();
         self.focus.clear();
         self.picked_layer = None;
+        self.selected_layers.clear();
     }
 
     /// In the Multipage View and a spread of facing pages, a press on
@@ -532,14 +549,18 @@ impl App {
     /// In the Multipage View, the page (its index and its place in the
     /// grid) that a move of the selection by `total`, let go, gives the
     /// selection to: another shown page whose paper holds the middle of
-    /// the moved selection's box (#2055). None off every paper, over the
-    /// current page, with facing pages (a spread is edited as one), and
+    /// the moved selection's box (#2055), the facing page of a spread
+    /// included (#3847). None off every paper, over the current page, and
     /// when an object selected is inside a group or on a master layer.
     pub fn multipage_drop_page(
         &self,
         total: tracedraw_core::geometry::Vec2,
     ) -> Option<(usize, Rect)> {
-        if !self.multipage || self.doc().facing().is_some() || self.selection.is_empty() {
+        // With facing pages too (#3847): the objects let go on the facing
+        // page of their spread, or on a page of another spread, are that
+        // page's. Since objects selected across the spine go back to
+        // their page (#3817), this is how one goes to another page.
+        if !self.multipage || self.selection.is_empty() {
             return None;
         }
         let middle = self.selection_bounds()?.center() + total;
@@ -683,6 +704,15 @@ impl App {
         self.adopt_spread_objects(&ids)
     }
 
+    /// With facing pages, every object of the other page of the spread
+    /// comes onto the current page, where it shows, for Select All to take
+    /// the whole spread shown (#3744: a text frame continued on the facing
+    /// page was left out). They go back once deselected.
+    pub fn adopt_whole_spread(&mut self) -> Vec<ShapeId> {
+        let ids = self.spread_objects(|_, _, _| true);
+        self.adopt_spread_objects(&ids)
+    }
+
     /// Bring the objects `ids` of the other pages of the current spread
     /// onto the current page, where they show (a spread is edited as
     /// one): each on the current page's layer of the same name, else the
@@ -696,6 +726,7 @@ impl App {
         let active = self.active_layer();
         let mut cmds = Vec::new();
         let mut came = Vec::new();
+        let mut adopted = Vec::new();
         for (pid, r) in &others {
             let Ok(page) = doc.page(*pid) else { continue };
             for l in &page.layers {
@@ -712,6 +743,13 @@ impl App {
                         tracedraw_core::geometry::Affine::translate((r.x0, r.y0)) * moved.transform;
                     came.push(sh.id);
                     cmds.push((to, moved));
+                    adopted.push(Adopted {
+                        shape: sh.id,
+                        home: *pid,
+                        layer: l.id,
+                        host: self.page,
+                        offset: Vec2::new(r.x0, r.y0),
+                    });
                 }
             }
         }
@@ -729,7 +767,72 @@ impl App {
             self.status = e.to_string();
             return Vec::new();
         }
+        self.spread_adopted.extend(adopted);
         came
+    }
+
+    /// Objects of the facing page brought over to be selected (#3488) go
+    /// back to their page once they leave the selection, where they show
+    /// (#3817): selecting must not change the page an object prints on.
+    /// One that was moved onto the current page (its middle on it) stays
+    /// there. Not while a drag runs. One undo step.
+    pub fn return_spread_adopted(&mut self) {
+        if self.spread_adopted.is_empty() || !matches!(self.drag, crate::app::Drag::None) {
+            return;
+        }
+        let (gone, keep): (Vec<Adopted>, Vec<Adopted>) = std::mem::take(&mut self.spread_adopted)
+            .into_iter()
+            .partition(|a| a.host != self.page || !self.selection.contains(&a.shape));
+        self.spread_adopted = keep;
+        let doc = self.doc();
+        let mut batch = Vec::new();
+        let mut back = Vec::new();
+        for a in gone {
+            // Still where it was brought (an undo may have taken it home).
+            let Ok(host) = doc.page(a.host) else { continue };
+            let Some(shape) = host
+                .layers
+                .iter()
+                .flat_map(|l| l.shapes.iter())
+                .find(|s| s.id == a.shape)
+            else {
+                continue;
+            };
+            let Ok(home) = doc.page(a.home) else { continue };
+            let c = shape.bounds().center();
+            let size = host.size;
+            if c.x >= 0.0 && c.x <= size.width && c.y >= 0.0 && c.y <= size.height {
+                continue;
+            }
+            let Some(layer) = home
+                .layers
+                .iter()
+                .find(|l| l.id == a.layer && !l.locked)
+                .or_else(|| home.layers.iter().find(|l| !l.locked))
+                .map(|l| l.id)
+            else {
+                continue;
+            };
+            let mut moved = shape.clone();
+            moved.transform =
+                tracedraw_core::geometry::Affine::translate((-a.offset.x, -a.offset.y)) * moved.transform;
+            back.push(a.shape);
+            batch.push((layer, moved));
+        }
+        if back.is_empty() {
+            return;
+        }
+        let mut cmds = vec![tracedraw_core::Command::DeleteShapes { shapes: back.clone() }];
+        cmds.extend(
+            batch
+                .into_iter()
+                .map(|(layer, shape)| tracedraw_core::Command::AddShape { layer, shape }),
+        );
+        if let Err(e) = self.engine.run_batch("Select Across the Spread", &cmds) {
+            self.status = e.to_string();
+            return;
+        }
+        self.selection.retain(|id| !back.contains(id));
     }
 
     /// Another page of the current spread whose visible object lies at
@@ -785,7 +888,7 @@ impl App {
             // The page's own guidelines and the master page's (#1928),
             // those their eye shows (#1775).
             for g in doc.guides_on_page(page.id).unwrap_or_default().iter() {
-                let mut g = *g;
+                let mut g = g.clone();
                 g.line = shifted(g.line, r.x0, r.y0);
                 out.push((g, r));
             }
@@ -1603,6 +1706,114 @@ mod tests {
         app.set_facing_pages(false, PageSide::Right);
         app.select(vec![a]);
         assert!(!app.spread_shift_press(on_b));
+    }
+
+    /// #3744: Select All on a page of a spread takes the facing page's
+    /// objects too (a text frame continued there among them); once
+    /// deselected they are back on their page.
+    #[test]
+    fn select_all_takes_both_facing_pages() {
+        let mut app = facing_app();
+        app.set_facing_pages(true, PageSide::Right);
+        app.fit_pending = false;
+        let (p2, p3) = (app.doc().pages[1].id, app.doc().pages[2].id);
+        app.page = p3;
+        let b = app
+            .new_shape(tracedraw_core::ShapeKind::Rect {
+                rect: Rect::new(50.0, 100.0, 80.0, 130.0),
+                radius: 0.0,
+                corners: None,
+            })
+            .expect("rect");
+        app.page = p2;
+        let own = app.selectable_ids();
+        app.select_all();
+        assert!(app.selection.contains(&b), "{:?}", app.selection);
+        assert!(own.iter().all(|id| app.selection.contains(id)));
+        app.select(Vec::new());
+        app.return_spread_adopted();
+        let home = app
+            .doc()
+            .pages
+            .iter()
+            .find(|p| p.layers.iter().any(|l| l.shapes.iter().any(|s| s.id == b)))
+            .map(|p| p.id);
+        assert_eq!(home, Some(p3));
+        // Without facing pages: the current page only.
+        app.set_facing_pages(false, PageSide::Right);
+        app.select_all();
+        assert!(!app.selection.contains(&b));
+    }
+
+    /// #3817: selecting objects of both facing pages does not move any to
+    /// the other page for good. Once deselected, an object brought over
+    /// goes back to its page where it showed; one moved onto the current
+    /// page stays there; one an undo took home is left alone.
+    #[test]
+    fn objects_selected_across_the_spine_go_back_to_their_page() {
+        let mut app = facing_app();
+        app.set_facing_pages(true, PageSide::Right);
+        app.fit_pending = false;
+        let (p2, p3) = (app.doc().pages[1].id, app.doc().pages[2].id);
+        let w = app.doc().pages[1].size.width;
+        let a = app.doc().page(p2).expect("p2").layers[0].shapes[0].id;
+        app.page = p3;
+        let add = |app: &mut App, x: f64, y: f64| {
+            app.new_shape(tracedraw_core::ShapeKind::Rect {
+                rect: Rect::new(x, y, x + 30.0, y + 30.0),
+                radius: 0.0,
+                corners: None,
+            })
+            .expect("rect")
+        };
+        let b = add(&mut app, 50.0, 100.0);
+        let c = add(&mut app, 50.0, 200.0);
+        app.page = p2;
+        let page_of = |app: &App, id: ShapeId| {
+            app.doc()
+                .pages
+                .iter()
+                .find(|p| p.layers.iter().any(|l| l.shapes.iter().any(|s| s.id == id)))
+                .map(|p| p.id)
+        };
+        let shift_click = |app: &mut App, x: f64, y: f64| {
+            let s = app.view.to_screen(Point::new(x, y));
+            assert!(app.spread_shift_press(s));
+        };
+        // Selected together: b comes over while selected.
+        app.select(vec![a]);
+        shift_click(&mut app, w + 60.0, 110.0);
+        app.select(vec![a, b]);
+        app.return_spread_adopted();
+        assert_eq!(page_of(&app, b), Some(p2), "still selected: stays");
+        // Deselected: back on page 3, where it was.
+        app.select(Vec::new());
+        app.return_spread_adopted();
+        assert_eq!(page_of(&app, b), Some(p3));
+        let bb = app.doc().find_shape(b).expect("b").bounds();
+        assert!((bb.x0 - 50.0).abs() < 1e-6 && (bb.y0 - 100.0).abs() < 1e-6, "{bb:?}");
+        assert!(app.spread_adopted.is_empty());
+        // Moved onto page 2 while selected: it stays on page 2.
+        app.select(vec![a]);
+        shift_click(&mut app, w + 60.0, 210.0);
+        app.select(vec![a, c]);
+        app.run(tracedraw_core::Command::TransformShapes {
+            shapes: vec![c],
+            transform: tracedraw_core::geometry::Affine::translate((-(w - 10.0), 0.0)),
+        });
+        app.select(Vec::new());
+        app.return_spread_adopted();
+        assert_eq!(page_of(&app, c), Some(p2));
+        // Taken home by an undo: nothing more happens to it.
+        app.select(vec![a]);
+        let on_b = app.view.to_screen(Point::new(w + 60.0, 110.0));
+        assert!(app.spread_shift_press(on_b));
+        app.undo();
+        assert_eq!(page_of(&app, b), Some(p3));
+        app.select(Vec::new());
+        app.return_spread_adopted();
+        assert_eq!(page_of(&app, b), Some(p3));
+        assert!(app.spread_adopted.is_empty());
     }
 
     /// The facing page's guidelines show within it, snapping finds its

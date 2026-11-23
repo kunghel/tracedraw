@@ -89,7 +89,102 @@ impl GuidePreset {
     }
 }
 
+/// Where a Guides row's Move To sends its guidelines (#3578): to the
+/// guidelines every page shows, or to the own guidelines of the odd or
+/// the even pages (counted from 1).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GuidesTarget {
+    AllPages,
+    OddPages,
+    EvenPages,
+}
+
 impl App {
+    /// Name the guideline `index` of those being edited (#3574); an empty
+    /// name takes the name away.
+    pub fn rename_guide(&mut self, index: usize, name: &str) {
+        let Some(g) = self.page_guides().get(index).cloned() else {
+            return;
+        };
+        let name = name.trim();
+        let name = (!name.is_empty()).then(|| name.to_string());
+        if g.name == name {
+            return;
+        }
+        self.replace_guide(index, Guide { name, ..g }, "Rename Guideline");
+    }
+
+    /// Move all the guidelines being edited to `target` (#3578), in one
+    /// undo step: the page's own to the guidelines of all pages, or the
+    /// page's or all pages' to the own guidelines of every odd or even
+    /// page. A page among the targets keeps its own; the guidelines of
+    /// all pages moved to them are no longer on the others.
+    pub fn move_guides_to(&mut self, target: GuidesTarget) {
+        let moved = self.page_guides();
+        if moved.is_empty() || (self.edit_master_guides && target == GuidesTarget::AllPages) {
+            return;
+        }
+        let doc = self.doc();
+        let from_page = (!self.edit_master_guides).then_some(self.page);
+        let mut cmds = Vec::new();
+        match target {
+            GuidesTarget::AllPages => {
+                let mut all = doc.master_guides.clone();
+                all.extend(moved.iter().cloned());
+                cmds.push(Command::SetMasterGuides { guides: all });
+                if let Some(page) = from_page {
+                    cmds.push(Command::SetGuides {
+                        page,
+                        guides: Vec::new(),
+                    });
+                }
+            }
+            GuidesTarget::OddPages | GuidesTarget::EvenPages => {
+                let odd = target == GuidesTarget::OddPages;
+                let mut source_is_target = false;
+                let mut reached = 0;
+                for (k, p) in doc.pages.iter().enumerate() {
+                    if (k % 2 == 0) != odd {
+                        continue;
+                    }
+                    if Some(p.id) == from_page {
+                        source_is_target = true;
+                        continue;
+                    }
+                    reached += 1;
+                    let mut own = p.guides.clone();
+                    own.extend(moved.iter().cloned());
+                    cmds.push(Command::SetGuides {
+                        page: p.id,
+                        guides: own,
+                    });
+                }
+                // No page to take them (Even Pages in a one-page
+                // drawing): nothing moves, nothing is lost.
+                if reached == 0 {
+                    return;
+                }
+                match from_page {
+                    None => cmds.push(Command::SetMasterGuides { guides: Vec::new() }),
+                    Some(page) if !source_is_target => cmds.push(Command::SetGuides {
+                        page,
+                        guides: Vec::new(),
+                    }),
+                    Some(_) => {}
+                }
+            }
+        }
+        if cmds.is_empty() {
+            return;
+        }
+        if let Err(e) = self.engine.run_batch("Move Guidelines", &cmds) {
+            self.status = format!("Move Guidelines: {e}");
+            return;
+        }
+        self.selected_guides.clear();
+        self.guide_rotate = None;
+    }
+
     /// The guidelines being edited: the active page's own, or the master
     /// page's (every page shows them, #1928) while those are chosen.
     pub fn page_guides(&self) -> Vec<Guide> {
@@ -204,8 +299,8 @@ impl App {
     pub fn move_guide_from_form(&mut self, line: GuideLine) -> bool {
         if let [i] = self.selected_guides.as_slice() {
             let i = *i;
-            if self.guide_form_from.is_none_or(|(at, _)| at != i) {
-                self.guide_form_from = self.page_guides().get(i).copied().map(|g| (i, g));
+            if self.guide_form_from.as_ref().is_none_or(|(at, _)| *at != i) {
+                self.guide_form_from = self.page_guides().get(i).cloned().map(|g| (i, g));
             }
         }
         self.set_selected_guide_line(line)
@@ -216,7 +311,7 @@ impl App {
     /// so Add leaves it in place and only adds the new one (#3068); Modify
     /// is how it moves for good.
     pub fn add_guide_from_form(&mut self, line: GuideLine) {
-        if let (Some((i, was)), [sel]) = (self.guide_form_from, self.selected_guides.as_slice()) {
+        if let (Some((i, was)), [sel]) = (self.guide_form_from.clone(), self.selected_guides.as_slice()) {
             if i == *sel && self.page_guides().get(i).is_some_and(|g| g.line == line) {
                 self.replace_guide(i, was, "Move Guideline");
             }
@@ -289,7 +384,7 @@ impl App {
             return false;
         };
         let i = *i;
-        let Some(g) = self.page_guides().get(i).copied() else {
+        let Some(g) = self.page_guides().get(i).cloned() else {
             return false;
         };
         if g.locked {
@@ -307,7 +402,7 @@ impl App {
     /// it or Properties in its menu asks: the guideline selected (alone),
     /// the panel shown with its values in the fields.
     pub fn open_guide_properties(&mut self, index: usize) {
-        let Some(g) = self.page_guides().get(index).copied() else {
+        let Some(g) = self.page_guides().get(index).cloned() else {
             return;
         };
         if !self.selection.is_empty() {
@@ -338,7 +433,7 @@ impl App {
         }
         self.guide_form_for = single;
         self.guide_form_from = None;
-        if let Some(g) = single.and_then(|i| self.page_guides().get(i).copied()) {
+        if let Some(g) = single.and_then(|i| self.page_guides().get(i).cloned()) {
             let mut form = self.guide_form;
             form.load(self, &g.line);
             self.guide_form = form;
@@ -370,7 +465,7 @@ impl App {
             .iter()
             .enumerate()
             .filter(|(i, g)| g.locked || !self.selected_guides.contains(i))
-            .map(|(_, g)| *g)
+            .map(|(_, g)| g.clone())
             .collect();
         if keep.len() == guides.len() {
             return false;
@@ -411,7 +506,7 @@ impl App {
             return 0;
         }
         let n = target.len();
-        target.extend(moved.iter().map(|(_, g)| *g));
+        target.extend(moved.iter().map(|(_, g)| g.clone()));
         let keep: Vec<Guide> = keep.into_iter().map(|(_, g)| g).collect();
         let command = |page: Option<tracedraw_core::PageId>, guides: Vec<Guide>| match page {
             None => Command::SetMasterGuides { guides },
@@ -445,7 +540,7 @@ impl App {
             .filter_map(|i| guides.get(*i))
             .map(|g| Guide {
                 locked: false,
-                ..*g
+                ..g.clone()
             })
             .collect();
         if copied.is_empty() {
@@ -522,7 +617,7 @@ impl App {
         let g = self
             .page_guides()
             .get(index)
-            .copied()
+            .cloned()
             .filter(|g| !g.locked)?;
         self.guide_pivots
             .iter()
@@ -583,14 +678,14 @@ impl App {
             self.set_guides(guides, label);
             return true;
         }
-        let mut last: Vec<Guide> = picked.iter().map(|i| guides[*i]).collect();
+        let mut last: Vec<Guide> = picked.iter().map(|i| guides[*i].clone()).collect();
         for _ in 0..copies {
             last = last
                 .iter()
                 .map(|g| Guide {
                     locked: false,
                     line: transformed_line(g.line, t, mid),
-                    ..*g
+                    ..g.clone()
                 })
                 .collect();
             guides.extend_from_slice(&last);
@@ -671,12 +766,12 @@ impl App {
             return true;
         }
         if let Some((index, pivot)) = self.rotate_handle_at(p) {
-            if let Some(g) = self.page_guides().get(index).copied() {
+            if let Some(g) = self.page_guides().get(index).cloned() {
                 let v = p - pivot;
                 self.drag = Drag::RotateGuide {
                     index,
                     pivot,
-                    guide: g,
+                    guide: g.clone(),
                     start: g,
                     grab: v.y.atan2(v.x).to_degrees(),
                 };
@@ -686,7 +781,7 @@ impl App {
         let Some(index) = self.pick_guide_at(p) else {
             return false;
         };
-        let Some(g) = self.page_guides().get(index).copied() else {
+        let Some(g) = self.page_guides().get(index).cloned() else {
             return false;
         };
         if extend {
@@ -706,7 +801,7 @@ impl App {
             Drag::MoveGuide {
                 index,
                 press: p,
-                start: g,
+                start: g.clone(),
                 guide: g,
                 delta: Vec2::ZERO,
             }
@@ -783,7 +878,7 @@ impl App {
         let picked: Vec<(GuideLine, Guide)> = self
             .selected_guides
             .iter()
-            .filter_map(|i| guides.get(*i).map(|g| (*i, *g)))
+            .filter_map(|i| guides.get(*i).map(|g| (*i, g.clone())))
             .map(|(i, g)| {
                 let from = last
                     .as_ref()
@@ -827,7 +922,7 @@ impl App {
         let kept: Vec<Guide> = all
             .iter()
             .filter(|g| g.locked || GuideKind::of(&g.line) != kind)
-            .copied()
+            .cloned()
             .collect();
         if kept.len() != all.len() {
             self.set_guides(kept, "Clear Guidelines");
@@ -908,8 +1003,8 @@ impl App {
                 self.drag = Drag::MoveGuide {
                     index,
                     press,
-                    start,
                     guide: start.with_line(line),
+                    start,
                     delta,
                 };
             }
@@ -963,7 +1058,7 @@ impl App {
             return Vec::new();
         };
         let guides = self.page_guides();
-        let mut out = vec![(*index, *guide)];
+        let mut out = vec![(*index, guide.clone())];
         for &i in &self.selected_guides {
             if i == *index {
                 continue;
@@ -1005,13 +1100,13 @@ impl App {
                 } else if guide != start {
                     if copy {
                         let n = guides.len();
-                        guides.extend(moves.iter().map(|(_, g)| *g));
+                        guides.extend(moves.iter().map(|(_, g)| g.clone()));
                         self.set_guides(guides, "Copy Guidelines");
                         self.selected_guides = (n..n + moves.len()).collect();
                     } else {
                         for (i, g) in &moves {
                             if let Some(slot) = guides.get_mut(*i) {
-                                *slot = *g;
+                                *slot = g.clone();
                             }
                         }
                         let label = if moves.len() > 1 {
@@ -1060,7 +1155,7 @@ impl App {
         let g = self
             .page_guides()
             .get(index)
-            .copied()
+            .cloned()
             .filter(|g| !g.locked)?;
         let line = match &self.drag {
             Drag::RotateGuide {
@@ -1233,6 +1328,62 @@ mod tests {
         app.add_guide_from_form(again);
         assert_eq!(app.page_guides().len(), i + 4);
         assert_eq!(app.page_guides()[i + 3].line, again);
+    }
+
+    /// #3578: a page's own guidelines moved to all pages go to the
+    /// guidelines every page shows; all pages' moved to the odd pages go
+    /// to the own guidelines of pages 1 and 3 and leave the shared set;
+    /// a page among the targets keeps its own; each move undoes in one
+    /// step, and Even Pages in a drawing of one page moves nothing.
+    #[test]
+    fn a_guides_row_moves_its_guidelines_to_all_odd_or_even_pages() {
+        let mut app = app();
+        app.move_guides_to(GuidesTarget::EvenPages);
+        app.add_guide(Guide::vertical(30.0));
+        app.move_guides_to(GuidesTarget::EvenPages);
+        assert_eq!(app.doc().master_guides.len(), 1, "no even page: kept");
+        app.add_page();
+        app.add_page();
+        let pages: Vec<_> = app.doc().pages.iter().map(|p| p.id).collect();
+        assert_eq!(pages.len(), 3);
+        app.goto_page(0);
+        app.choose_master_guides(true);
+        app.move_guides_to(GuidesTarget::OddPages);
+        assert!(app.doc().master_guides.is_empty());
+        let own = |app: &App, k: usize| app.doc().page(pages[k]).unwrap().guides.len();
+        assert_eq!((own(&app, 0), own(&app, 1), own(&app, 2)), (1, 0, 1));
+        app.undo();
+        assert_eq!(app.doc().master_guides.len(), 1);
+        assert_eq!((own(&app, 0), own(&app, 1), own(&app, 2)), (0, 0, 0));
+        app.redo();
+        // Page 1's own to all pages: the shared set, page 1 empty.
+        app.choose_master_guides(false);
+        app.move_guides_to(GuidesTarget::AllPages);
+        assert_eq!(app.doc().master_guides.len(), 1);
+        assert_eq!(own(&app, 0), 0);
+        // Page 3's own to the odd pages: page 1 gets a copy, page 3 keeps
+        // its own.
+        app.goto_page(2);
+        app.choose_master_guides(false);
+        app.move_guides_to(GuidesTarget::OddPages);
+        assert_eq!((own(&app, 0), own(&app, 1), own(&app, 2)), (1, 0, 1));
+    }
+
+    /// #3574: a guideline takes a name (trimmed), saved with the drawing
+    /// and undone; an empty name takes it away.
+    #[test]
+    fn a_guideline_is_renamed() {
+        let mut app = app();
+        app.add_guide(Guide::vertical(30.0));
+        app.rename_guide(0, "  Fold  ");
+        assert_eq!(app.page_guides()[0].name.as_deref(), Some("Fold"));
+        let json = app.doc().to_json().expect("save");
+        let back = tracedraw_core::Document::from_json(&json).expect("open");
+        assert_eq!(back.master_guides[0].name.as_deref(), Some("Fold"));
+        app.rename_guide(0, " ");
+        assert_eq!(app.page_guides()[0].name, None);
+        app.undo();
+        assert_eq!(app.page_guides()[0].name.as_deref(), Some("Fold"));
     }
 
     /// #1775: in a new drawing a guideline goes to the master page's
@@ -1563,7 +1714,7 @@ mod tests {
         app.add_guide(Guide::vertical(20.0));
         app.add_guide(Guide::horizontal(30.0));
         app.set_guides_locked(&[1], true);
-        let locked = app.page_guides()[1];
+        let locked = app.page_guides()[1].clone();
         app.select_all_guides();
         let red = tracedraw_core::Color::rgb8(255, 0, 0);
         assert!(app.edit_selected_guides("Guideline Color", |g| g.color = Some(red)));

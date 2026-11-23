@@ -24,3 +24,16 @@
 - [[menu.effects.picker]] 显示可应用到所选内容的效果列表。
 - [[menu.object > menu.object.clear_effect]] 删除所选内容的效果。
 - [[menu.object > menu.object.copy_effect]] 从另一个对象复制效果，[[menu.object.clone_effect]] 创建跟随它的克隆；请参阅 [复制和克隆效果](copy-and-clone.md)。
+
+## 手绘效果与外框
+
+面板顶部的图层效果中还有以下实时效果：
+
+- [[effect.roughen]] 用随机的小起伏重新绘制轮廓。
+- [[effect.jitter_nodes]] 随机移动曲线的节点。
+- [[effect.scribble]] 用填充色的松散锯齿线绘制填充，轮廓保留。
+- [[effect.shape_frame]] 用对象周围的矩形、圆角矩形或椭圆替换轮廓。
+- [[effect.trim_marks]] 在对象外的四角绘制线条。
+- [[effect.feather]] 让对象朝边缘逐渐淡出。
+
+“变体”为随机效果换一种图案。

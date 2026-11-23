@@ -93,7 +93,9 @@ Eles vêm desligados, para não atrapalhar a edição de nós; ligue
 ## A barra de propriedades {#property-bar}
 
 - **Modo de seleção**: área retangular ou à mão livre.
-- **Acrescentar nó** e **Excluir nó**.
+- **Acrescentar nó** e **Excluir nó**. Com qualquer ferramenta, **Objeto > Nós >
+  Acrescentar nó a cada segmento** põe um nó no meio de todos os segmentos das
+  curvas selecionadas de uma vez, sem mudar a forma delas.
 - **Unir nós** junta dois nós de ponta em um; **Quebrar curva** divide a curva
   no nó selecionado.
 - **Converter em linha** e **Converter em curva** tornam reto ou curvo o

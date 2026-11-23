@@ -416,6 +416,39 @@ and `--reset-settings` starts open windows of their own.
   shown in a message box naming that file, once; the Windows build has
   no console, so a start that failed showed nothing (#570,
   `startup_log::tests::the_log_and_the_crash_report_go_in_the_settings_folder`).
+- A TraceDraw that closed with an error offers its report at the next
+  start; a step that takes long never brings a message
+  (`hang_watch.rs`, desktop and Android; not in the browser). The frame
+  marks when it begins and ends and the steps it passes
+  (`frame_stats::mark`); a watch thread looks every second, and a frame
+  still being built after 10 s has `hang.log` written in the settings
+  folder, once: the version, the system, the renderer, the last step
+  the frame got through, the tool, the last command, how many drawings
+  are open and how many pages, objects and pictures the active one
+  holds (never its name or contents), and the last 40 lines of
+  `tracedraw.log`; the log gets a warning line. A frame that comes
+  through adds "Responding again after N s.". That file is there for a
+  report the user chooses to make: no message is shown for it, in that
+  run or at the next start, where it is moved to `last-hang.log`. From
+  0.50.3 to 0.51.0 a message offered it, which made every long step (a
+  big file saved, a heavy effect) read as a crash (#4011, #4018, #4025,
+  #4035, #4048). A `crash.log` (a panic) is offered at the next start,
+  once: it is moved to `last-crash.log`; one older than 14 days, or
+  written by another version (#4042), is moved aside without asking.
+  The first panic of a run starts `crash.log` and is the one shown;
+  one that follows it is added under "After that:" (on macOS a panic
+  in the window's code is followed by "panic in a function that cannot
+  unwind", which alone reached the reports of #4017 and #4042). The
+  message (Help: "When TraceDraw closes with an error") has Send Report
+  (a new issue on GitHub from the bug report form, with the title, the
+  summary, the system and the version filled in, never the log, and
+  the folder holding the report opened for it to be attached), Show
+  Report (the report in the system's viewer) and Not Now. Nothing is
+  sent by itself (#3687, #3665, #3883,
+  `hang_watch::tests::a_long_step_is_noted_in_the_file_once`,
+  `only_a_crash_of_this_version_is_offered`,
+  `the_issue_is_filled_in_with_the_summary`,
+  `startup_log::tests::a_second_error_is_added_under_the_first`).
 - At start the log names the processor and its threads (and on Windows
   the version and build, from `RtlGetVersion`), and wgpu's own lines on
   which backends started and which adapters it left out

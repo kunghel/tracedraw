@@ -740,6 +740,9 @@ enum Action {
 }
 
 pub fn dialog(app: &mut App, ctx: &Context, st: &mut FontManagerState, close: &mut bool) {
+    if let Some(dir) = crate::files::take_picked("font-manager-folder") {
+        add_font_folder(app, st, dir);
+    }
     let busy = app
         .font_catalog
         .refresh(&app.settings.font_manager.folders.clone());
@@ -919,6 +922,30 @@ fn folder_enabled(folder: crate::files::FolderUse) -> bool {
     !matches!(folder.action(), crate::files::FolderAction::Unavailable(_))
 }
 
+fn add_font_folder(app: &mut App, st: &mut FontManagerState, dir: PathBuf) {
+    let prefs = &mut app.settings.font_manager;
+    if !prefs.folders.contains(&dir) {
+        prefs.folders.push(dir.clone());
+    }
+    tracedraw_text::fonts().set_font_roots(&prefs.folders);
+    // Its fonts are usable without Install (#866), once they are in: they
+    // come in off the interface's thread, as a folder of tens of thousands
+    // of fonts froze the window for hours (d#2166).
+    let files = catalog::font_files(&dir);
+    st.note = Some(trf(
+        "font_manager.installed_n",
+        &[("n", &files.len().to_string())],
+    ));
+    let shown = dir.clone();
+    app.font_installs.push(spawn(move || {
+        let added = tracedraw_text::fonts().install_paths(&files);
+        log::info!("fonts of {}: {}", shown.display(), added.len());
+        added
+    }));
+    st.library = Library::Folder(dir);
+    app.save_settings();
+}
+
 /// Carry out an action.
 fn run(app: &mut App, st: &mut FontManagerState, a: Action) {
     let fonts = tracedraw_text::fonts();
@@ -926,29 +953,7 @@ fn run(app: &mut App, st: &mut FontManagerState, a: Action) {
     match a {
         Action::AddFolder => match crate::files::FolderUse::FontFolder.action() {
             crate::files::FolderAction::PickFolder(token) => {
-                if let Some(dir) = crate::files::pick_folder(token) {
-                    if !prefs.folders.contains(&dir) {
-                        prefs.folders.push(dir.clone());
-                    }
-                    fonts.set_font_roots(&prefs.folders);
-                    // Its fonts are usable without Install (#866), once
-                    // they are in: they come in off the interface's
-                    // thread, as a folder of tens of thousands of fonts
-                    // froze the window for hours (d#2166).
-                    let files = catalog::font_files(&dir);
-                    st.note = Some(trf(
-                        "font_manager.installed_n",
-                        &[("n", &files.len().to_string())],
-                    ));
-                    let shown = dir.clone();
-                    app.font_installs.push(spawn(move || {
-                        let added = tracedraw_text::fonts().install_paths(&files);
-                        log::info!("fonts of {}: {}", shown.display(), added.len());
-                        added
-                    }));
-                    st.library = Library::Folder(dir);
-                    app.save_settings();
-                }
+                crate::files::pick_folder_into(token, None, "font-manager-folder");
             }
             // No folder can be read: the fonts it would hold are picked,
             // several at once, and added as Add Font adds one (#1399).

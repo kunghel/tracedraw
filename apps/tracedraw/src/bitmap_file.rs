@@ -257,13 +257,263 @@ pub fn read(bytes: &[u8]) -> Result<ReadPicture, String> {
     if let Some(p) = read_lab_tiff(bytes) {
         return Ok(p);
     }
-    let rgba = crate::files::decode_picture(bytes)
-        .map_err(|e| e.to_string())?
-        .into_rgba8();
-    Ok(ReadPicture {
+    read_within(bytes, crate::files::picture_decode_limit())
+}
+
+/// Read a picture file through the image library within `limit` bytes;
+/// a TIFF the library turns away (too large for its memory guard, extra
+/// channels it takes no colour from) is read again strip by strip or
+/// tile by tile ([`read_tiff_by_chunks`], #4036).
+fn read_within(bytes: &[u8], limit: u64) -> Result<ReadPicture, String> {
+    match crate::files::decode_picture_within(bytes, limit) {
+        Ok(img) => Ok(ReadPicture {
+            rgba: img.into_rgba8(),
+            planes: None,
+            mode: file_mode(bytes),
+        }),
+        Err(e) => read_tiff_by_chunks(bytes, picture_pixel_budget(limit)).ok_or_else(|| e.to_string()),
+    }
+}
+
+/// Most pixels a picture read piece by piece keeps: as many as the
+/// decoding limit holds at four bytes a pixel, and never more than a
+/// PDF's pictures read at their own size.
+fn picture_pixel_budget(limit: u64) -> u64 {
+    (limit / 4).min(tracedraw_io::pdf_import::FULL_PICTURE_PIXELS)
+}
+
+/// The colours a TIFF stores, as [`read_tiff_by_chunks`] takes them.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum TiffInks {
+    /// Grey levels (the TIFF reader turns white-is-zero files round).
+    Grey,
+    Rgb,
+    Cmyk,
+}
+
+/// A TIFF read one strip or tile at a time into an RGBA picture (#4036).
+/// The image library decodes the whole picture into one buffer, and its
+/// guard on that buffer turned a 10000 x 21000 pixel TIFF away with
+/// "Memory limit exceeded"; here only one piece is decoded at a time, so
+/// a picture takes the memory of its pixels and no more. A picture of
+/// more than `max_pixels` pixels is left to the library's answer. Grey, RGB and CMYK files are read, 1 to 16
+/// bits a sample or 32-bit floating point, chunky or planar, with
+/// their alpha (an extra channel the file marks as alpha) and with any
+/// other extra channels (a picture's saved selections) left out.
+pub fn read_tiff_by_chunks(bytes: &[u8], max_pixels: u64) -> Option<ReadPicture> {
+    use tiff::decoder::{ChunkType, Decoder, DecodingResult, Limits};
+    use tiff::tags::Tag;
+    let tiff_magic = [&b"II*\0"[..], b"MM\0*", b"II+\0", b"MM\0+"];
+    if !tiff_magic.iter().any(|m| bytes.starts_with(m)) {
+        return None;
+    }
+    // One piece at a time: a piece may be large (a whole picture in one
+    // strip), the tags hold no more than their file.
+    let piece = bytes
+        .len()
+        .max(1 << 20)
+        .saturating_mul(64)
+        .clamp(256 << 20, 2 << 30);
+    let limits = {
+        let mut l = Limits::default();
+        l.decoding_buffer_size = piece;
+        l.intermediate_buffer_size = piece;
+        l.ifd_value_size = piece;
+        l
+    };
+    let mut dec = Decoder::new(std::io::Cursor::new(bytes))
+        .ok()?
+        .with_limits(limits);
+    let (w, h) = dec.dimensions().ok()?;
+    if w == 0 || h == 0 {
+        return None;
+    }
+    let photometric: u16 = dec
+        .find_tag_unsigned(Tag::PhotometricInterpretation)
+        .ok()
+        .flatten()
+        .unwrap_or(1);
+    let (inks, colours, bits, samples) = match dec.colortype().ok()? {
+        tiff::ColorType::Gray(b) => (TiffInks::Grey, 1, b, 1),
+        tiff::ColorType::GrayA(b) => (TiffInks::Grey, 1, b, 2),
+        tiff::ColorType::RGB(b) => (TiffInks::Rgb, 3, b, 3),
+        tiff::ColorType::RGBA(b) => (TiffInks::Rgb, 3, b, 4),
+        tiff::ColorType::CMYK(b) => (TiffInks::Cmyk, 4, b, 4),
+        tiff::ColorType::CMYKA(b) => (TiffInks::Cmyk, 4, b, 5),
+        tiff::ColorType::Multiband {
+            bit_depth,
+            num_samples,
+        } => match photometric {
+            0 | 1 => (
+                TiffInks::Grey,
+                1,
+                bit_depth,
+                num_samples,
+            ),
+            2 if num_samples >= 3 => (TiffInks::Rgb, 3, bit_depth, num_samples),
+            5 if num_samples >= 4 => (TiffInks::Cmyk, 4, bit_depth, num_samples),
+            _ => return None,
+        },
+        _ => return None,
+    };
+    let colours: usize = colours;
+    if !matches!(bits, 1 | 2 | 4 | 8 | 16 | 32) || usize::from(samples) < colours {
+        return None;
+    }
+    // The first extra channel is alpha when the file says so (associated
+    // or unassociated); the types with alpha in their name have it.
+    let extra: Vec<u16> = dec
+        .find_tag_unsigned_vec(Tag::ExtraSamples)
+        .ok()
+        .flatten()
+        .unwrap_or_default();
+    let alpha = usize::from(samples) > colours
+        && (extra.first().is_some_and(|&e| e == 1 || e == 2)
+            || (extra.is_empty() && usize::from(samples) == colours + 1));
+    let premultiplied = extra.first() == Some(&1);
+    let planar = dec
+        .find_tag_unsigned::<u16>(Tag::PlanarConfiguration)
+        .ok()
+        .flatten()
+        == Some(2);
+    if planar && (inks == TiffInks::Cmyk || dec.get_chunk_type() != ChunkType::Strip) {
+        return None;
+    }
+    if u64::from(w) * u64::from(h) > max_pixels {
+        return None;
+    }
+    let (ow, oh) = (w, h);
+    let out_len = usize::try_from(u64::from(ow) * u64::from(oh) * 4).ok()?;
+    let mut out = vec![0u8; out_len];
+    if !alpha {
+        for px in out.chunks_exact_mut(4) {
+            px[3] = 255;
+        }
+    }
+    let (cw, ch) = dec.chunk_dimensions();
+    if cw == 0 || ch == 0 {
+        return None;
+    }
+    let across = w.div_ceil(cw);
+    let per_plane = across * h.div_ceil(ch);
+    let planes = if planar { u32::from(samples) } else { 1 };
+    let in_chunk = if planar { 1usize } else { usize::from(samples) };
+    for plane in 0..planes {
+        // A plane of extra channels other than alpha is left out.
+        let sample_of_plane = plane as usize;
+        if planar && sample_of_plane >= colours + usize::from(alpha) {
+            break;
+        }
+        for k in 0..per_plane {
+            let index = plane * per_plane + k;
+            let (dw, dh) = dec.chunk_data_dimensions(index);
+            let (x0, y0) = ((k % across) * cw, (k / across) * ch);
+            let data = dec.read_chunk(index).ok()?;
+            let samples_per_row = dw as usize * in_chunk;
+            // A sample at (column, row, channel) of the piece, 0 to 1.
+            let read: Box<dyn Fn(usize, usize, usize) -> f32 + '_> = match &data {
+                DecodingResult::U8(v) if bits == 8 => Box::new(move |x, y, c| {
+                    f32::from(v[y * samples_per_row + x * in_chunk + c]) / 255.0
+                }),
+                DecodingResult::U8(v) => {
+                    let row_bytes = (samples_per_row * usize::from(bits)).div_ceil(8);
+                    let max = f32::from((1u16 << bits) - 1);
+                    Box::new(move |x, y, c| {
+                        let bit = (x * in_chunk + c) * usize::from(bits);
+                        let byte = v[y * row_bytes + bit / 8];
+                        let shift = 8 - usize::from(bits) - bit % 8;
+                        f32::from((byte >> shift) & ((1u16 << bits) - 1) as u8) / max
+                    })
+                }
+                DecodingResult::U16(v) => Box::new(move |x, y, c| {
+                    f32::from(v[y * samples_per_row + x * in_chunk + c]) / 65535.0
+                }),
+                DecodingResult::U32(v) => Box::new(move |x, y, c| {
+                    v[y * samples_per_row + x * in_chunk + c] as f32 / u32::MAX as f32
+                }),
+                DecodingResult::F32(v) => Box::new(move |x, y, c| {
+                    v[y * samples_per_row + x * in_chunk + c].clamp(0.0, 1.0)
+                }),
+                DecodingResult::F64(v) => Box::new(move |x, y, c| {
+                    v[y * samples_per_row + x * in_chunk + c].clamp(0.0, 1.0) as f32
+                }),
+                _ => return None,
+            };
+            let needed = dh as usize * samples_per_row;
+            let have = match &data {
+                DecodingResult::U8(v) if bits < 8 => {
+                    v.len() * 8 / usize::from(bits).max(1)
+                }
+                DecodingResult::U8(v) => v.len(),
+                DecodingResult::U16(v) => v.len(),
+                DecodingResult::U32(v) => v.len(),
+                DecodingResult::F32(v) => v.len(),
+                DecodingResult::F64(v) => v.len(),
+                _ => 0,
+            };
+            if have < needed {
+                return None;
+            }
+            for y in 0..dh as usize {
+                let py = y0 as usize + y;
+                if py >= h as usize {
+                    break;
+                }
+                let oy = py;
+                for x in 0..dw as usize {
+                    let px = x0 as usize + x;
+                    if px >= w as usize {
+                        break;
+                    }
+                    let o = oy * ow as usize + px;
+                    let value = |c: usize| -> u8 { (read(x, y, c) * 255.0).round() as u8 };
+                    // The channels this piece holds, as RGBA.
+                    let mut rgba = [None; 4];
+                    if planar {
+                        let v = value(0);
+                        match (inks, sample_of_plane) {
+                            (TiffInks::Grey, 0) => rgba = [Some(v), Some(v), Some(v), None],
+                            (TiffInks::Rgb, c @ 0..=2) => rgba[c] = Some(v),
+                            _ => rgba[3] = Some(v),
+                        }
+                    } else {
+                        let a = alpha.then(|| read(x, y, colours));
+                        // Premultiplied colours are divided by their alpha.
+                        let un = |v: f32| match a {
+                            Some(a) if premultiplied && a > 0.0 => (v / a).min(1.0),
+                            _ => v,
+                        };
+                        let to8 = |v: f32| (v * 255.0).round() as u8;
+                        let [r, g, b] = match inks {
+                            TiffInks::Grey => [to8(un(read(x, y, 0))); 3],
+                            TiffInks::Rgb => {
+                                [to8(un(read(x, y, 0))), to8(un(read(x, y, 1))), to8(un(read(x, y, 2)))]
+                            }
+                            TiffInks::Cmyk => {
+                                let k = 1.0 - un(read(x, y, 3));
+                                [0, 1, 2].map(|c| to8((1.0 - un(read(x, y, c))) * k))
+                            }
+                        };
+                        rgba = [Some(r), Some(g), Some(b), a.map(to8)];
+                    }
+                    for (c, v) in rgba.into_iter().enumerate() {
+                        let Some(v) = v else { continue };
+                        out[o * 4 + c] = v;
+                    }
+                }
+            }
+        }
+    }
+    let rgba = image::RgbaImage::from_raw(ow, oh, out)?;
+    let mode = match inks {
+        TiffInks::Grey if bits == 1 => FileMode::BlackWhite,
+        TiffInks::Grey => FileMode::Gray,
+        _ => FileMode::Rgb,
+    };
+    Some(ReadPicture {
         rgba,
         planes: None,
-        mode: file_mode(bytes),
+        mode,
     })
 }
 
@@ -374,12 +624,16 @@ fn jpeg_components(b: &[u8]) -> Option<u8> {
 /// than black and white is indexed), else RGB.
 pub fn encode_as(img: &image::RgbaImage, mode: FileMode) -> Option<Vec<u8>> {
     use crate::bitmap_fx as fx;
-    let grey = || img.pixels().all(|p| p[0] == p[1] && p[1] == p[2]);
+    let grey = || {
+        img.as_raw()
+            .chunks_exact(4)
+            .all(|p| p[0] == p[1] && p[1] == p[2])
+    };
     match mode {
         FileMode::Rgb => fx::encode(img),
         FileMode::Gray if grey() => fx::encode_gray(img),
         FileMode::BlackWhite
-            if img.pixels().all(|p| {
+            if img.as_raw().chunks_exact(4).all(|p| {
                 p[3] == 0 || (p[0] == p[1] && p[1] == p[2] && matches!(p[0], 0 | 255))
             }) =>
         {
@@ -943,6 +1197,151 @@ mod tests {
     use crate::app::App;
     use tracedraw_core::geometry::Rect;
     use tracedraw_core::{Command, ShapeId};
+
+    /// A little-endian TIFF of uncompressed strips: `spp` samples of
+    /// `bps` bits, `photometric`, chunky or planar, with `extra` as its
+    /// ExtraSamples, `rows` rows a strip (#4036).
+    #[allow(clippy::too_many_arguments)]
+    fn raw_tiff(
+        w: u32,
+        h: u32,
+        spp: u16,
+        bps: u16,
+        photometric: u16,
+        planar: bool,
+        extra: &[u16],
+        rows: u32,
+        data: &[u8],
+    ) -> Vec<u8> {
+        let planes = if planar { u32::from(spp) } else { 1 };
+        let row_bytes = (w as usize * if planar { 1 } else { spp as usize } * bps as usize).div_ceil(8);
+        let per_plane = h.div_ceil(rows);
+        let mut strips = Vec::new();
+        let mut at = 0usize;
+        for _ in 0..planes {
+            for k in 0..per_plane {
+                let n = row_bytes * (rows.min(h - k * rows)) as usize;
+                strips.push((8 + at as u32, n as u32));
+                at += n;
+            }
+        }
+        assert_eq!(at, data.len(), "data length");
+        let mut out = b"II*\0".to_vec();
+        let ifd = 8 + data.len() as u32 + (data.len() as u32 & 1);
+        out.extend_from_slice(&ifd.to_le_bytes());
+        out.extend_from_slice(data);
+        if data.len() & 1 == 1 {
+            out.push(0);
+        }
+        let mut entries: Vec<(u16, u16, u32, Vec<u8>)> = vec![
+            (256, 4, 1, w.to_le_bytes().to_vec()),
+            (257, 4, 1, h.to_le_bytes().to_vec()),
+            (258, 3, u32::from(spp), (0..spp).flat_map(|_| bps.to_le_bytes()).collect()),
+            (259, 3, 1, 1u16.to_le_bytes().to_vec()),
+            (262, 3, 1, photometric.to_le_bytes().to_vec()),
+            (273, 4, strips.len() as u32, strips.iter().flat_map(|s| s.0.to_le_bytes()).collect()),
+            (277, 3, 1, spp.to_le_bytes().to_vec()),
+            (278, 4, 1, rows.to_le_bytes().to_vec()),
+            (279, 4, strips.len() as u32, strips.iter().flat_map(|s| s.1.to_le_bytes()).collect()),
+            (284, 3, 1, if planar { 2u16 } else { 1 }.to_le_bytes().to_vec()),
+        ];
+        if !extra.is_empty() {
+            entries.push((338, 3, extra.len() as u32, extra.iter().flat_map(|e| e.to_le_bytes()).collect()));
+        }
+        let n = entries.len() as u32;
+        let mut values = ifd + 2 + n * 12 + 4;
+        let mut tail = Vec::new();
+        out.extend_from_slice(&(n as u16).to_le_bytes());
+        for (tag, kind, count, bytes) in &entries {
+            out.extend_from_slice(&tag.to_le_bytes());
+            out.extend_from_slice(&kind.to_le_bytes());
+            out.extend_from_slice(&count.to_le_bytes());
+            if bytes.len() <= 4 {
+                let mut v = bytes.clone();
+                v.resize(4, 0);
+                out.extend_from_slice(&v);
+            } else {
+                out.extend_from_slice(&values.to_le_bytes());
+                tail.extend_from_slice(bytes);
+                values += bytes.len() as u32;
+            }
+        }
+        out.extend_from_slice(&0u32.to_le_bytes());
+        out.extend_from_slice(&tail);
+        out
+    }
+
+    /// #4036: a TIFF too large for the library's guard on its buffer is
+    /// read strip by strip, the same pixels the library reads.
+    #[test]
+    fn a_tiff_beyond_the_decoding_guard_is_read_strip_by_strip() {
+        let (w, h) = (37u32, 23u32);
+        let data: Vec<u8> = (0..w * h * 3).map(|i| (i * 7 % 251) as u8).collect();
+        let tif = raw_tiff(w, h, 3, 8, 2, false, &[], 5, &data);
+        let whole = crate::files::decode_picture_within(&tif, 1 << 20).expect("library").into_rgba8();
+        assert!(crate::files::decode_picture_within(&tif, 1000).is_err());
+        let p = read_within(&tif, 1000 * 1000).expect("read");
+        assert_eq!(p.rgba, whole);
+        let pieces = read_tiff_by_chunks(&tif, u64::MAX).expect("pieces");
+        assert_eq!(pieces.rgba, whole);
+        assert_eq!(pieces.mode, FileMode::Rgb);
+    }
+
+    /// #4036: the guard's own answer stands for a picture beyond the
+    /// pixels a picture may keep.
+    #[test]
+    fn a_tiff_beyond_the_picture_pixels_is_not_read_in_pieces() {
+        let tif = raw_tiff(4, 4, 1, 8, 1, false, &[], 4, &[9; 16]);
+        assert!(read_tiff_by_chunks(&tif, 15).is_none());
+        assert!(read_tiff_by_chunks(&tif, 16).is_some());
+    }
+
+    /// An RGB TIFF with alpha and a saved selection beside it (two extra
+    /// channels), which the library takes no colours from: its colours
+    /// and alpha come in, the selection is left out.
+    #[test]
+    fn a_tiff_with_extra_channels_keeps_colour_and_alpha() {
+        let px = [[255u8, 0, 0, 128, 7], [0, 0, 255, 255, 200]];
+        let data: Vec<u8> = px.iter().flatten().copied().collect();
+        let tif = raw_tiff(2, 1, 5, 8, 2, false, &[2, 0], 1, &data);
+        let p = read(&tif).expect("read");
+        assert_eq!(p.rgba.get_pixel(0, 0).0, [255, 0, 0, 128]);
+        assert_eq!(p.rgba.get_pixel(1, 0).0, [0, 0, 255, 255]);
+    }
+
+    /// Planar RGB (each colour a plane of strips of its own).
+    #[test]
+    fn a_planar_tiff_is_read_by_planes() {
+        let (w, h) = (3u32, 2u32);
+        let r = [10u8, 20, 30, 40, 50, 60];
+        let g = [1u8, 2, 3, 4, 5, 6];
+        let b = [200u8; 6];
+        let data: Vec<u8> = r.iter().chain(&g).chain(&b).copied().collect();
+        let tif = raw_tiff(w, h, 3, 8, 2, true, &[], 1, &data);
+        let p = read_tiff_by_chunks(&tif, u64::MAX).expect("planar");
+        assert_eq!(p.rgba.get_pixel(0, 0).0, [10, 1, 200, 255]);
+        assert_eq!(p.rgba.get_pixel(2, 1).0, [60, 6, 200, 255]);
+    }
+
+    /// One bit a pixel, white as zero, and 16-bit grey.
+    #[test]
+    fn bilevel_and_sixteen_bit_grey_tiffs_are_read_in_pieces() {
+        // 10 pixels a row: two bytes, the last six bits padding.
+        let tif = raw_tiff(10, 2, 1, 1, 0, false, &[], 1, &[0b1000_0000, 0b0100_0000, 0, 0]);
+        let p = read_tiff_by_chunks(&tif, u64::MAX).expect("bilevel");
+        assert_eq!(p.mode, FileMode::BlackWhite);
+        assert_eq!(p.rgba.get_pixel(0, 0).0, [0, 0, 0, 255]);
+        assert_eq!(p.rgba.get_pixel(1, 0).0, [255, 255, 255, 255]);
+        assert_eq!(p.rgba.get_pixel(9, 0).0, [0, 0, 0, 255]);
+        assert_eq!(p.rgba.get_pixel(5, 1).0, [255, 255, 255, 255]);
+        let grey: Vec<u8> = [0u16, 65535, 32896].iter().flat_map(|v| v.to_le_bytes()).collect();
+        let tif = raw_tiff(3, 1, 1, 16, 1, false, &[], 1, &grey);
+        let p = read_tiff_by_chunks(&tif, u64::MAX).expect("grey");
+        assert_eq!(p.mode, FileMode::Gray);
+        assert_eq!(p.rgba.get_pixel(0, 0).0[0], 0);
+        assert_eq!(p.rgba.get_pixel(1, 0).0[0], 255);
+        assert_eq!(p.rgba.get_pixel(2, 0).0[0], 128);
+    }
 
     /// Four by two pixels: cyan ink on the left half, black on the
     /// right, as a `.cdr` CMYK image is read (pixels for the screen and

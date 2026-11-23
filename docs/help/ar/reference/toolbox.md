@@ -71,6 +71,7 @@
 | [[tool.common_shapes]] |  | [→](../lines-shapes/polygons-stars-spirals.md#common-shapes) |
 | [[tool.action_lines]] |  | [→](../lines-shapes/polygons-stars-spirals.md#action-lines) |
 | [[tool.graph_paper]] | <kbd>D</kbd> | [→](../lines-shapes/polygons-stars-spirals.md#graph-paper) |
+| [[tool.shape_generator]] |  | [→](../objects/shape-generator.md#tool) |
 
 ## النص والجداول {#text-tables}
 

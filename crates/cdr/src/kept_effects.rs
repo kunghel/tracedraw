@@ -112,7 +112,9 @@ pub(crate) fn decode(bytes: &[u8]) -> Vec<KeptEffect> {
                         || k.source.raster_fx.is_some()
                         || k.source.shadow.is_some()
                         || italic_text(&k.source)
-                        || not_held(&k.source))
+                        || not_held(&k.source)
+                        || matches!(&k.source.kind, ShapeKind::ClipFrame { contents, .. }
+                            if clip_contents_kept(contents)))
             })
             .collect(),
         Ok(m) => {
@@ -180,6 +182,26 @@ pub(crate) fn restore(
         n += 1;
     }
     n
+}
+
+/// Whether any of a clip frame's `contents` (inside groups and nested
+/// clips too) holds live effects, a drop shadow, a picture effect or what
+/// [`not_held`] names. The objects inside a clip container carry no
+/// static id, so the member keeps the whole clip frame instead, named by
+/// the frame's id (#3804: a graded transparency on a clipped picture
+/// opened stretched over it whole).
+pub(crate) fn clip_contents_kept(contents: &[Shape]) -> bool {
+    contents.iter().any(|c| {
+        !c.effects.is_empty()
+            || c.shadow.is_some()
+            || c.raster_fx.is_some()
+            || not_held(c)
+            || match &c.kind {
+                ShapeKind::Group { children } => clip_contents_kept(children),
+                ShapeKind::ClipFrame { contents, .. } => clip_contents_kept(contents),
+                _ => false,
+            }
+    })
 }
 
 /// Whether `s` itself (not its effects or shadow) holds what the writer

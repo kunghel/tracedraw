@@ -705,7 +705,7 @@ impl HostInner {
                     out.push(copy.id);
                     self.run(Command::AddShape { layer, shape: copy })?;
                 }
-                // What is pasted is selected, as in CorelDRAW.
+                // What is pasted is selected.
                 self.selection = out.clone();
                 json!({"ids": out.iter().map(|i| i.raw()).collect::<Vec<_>>()})
             }

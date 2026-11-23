@@ -92,6 +92,16 @@ target line; the clicks snap to nodes and other snap points. The object turns
 about the first point you clicked, so the base line takes the target line's
 angle. A right click cancels.
 
+## Transforming each object {#transform-each}
+
+[[menu.object > menu.object.transformations > menu.object.transform_each]]
+scales, moves and turns every selected object by the same amounts, each about
+its own centre, in one undo step. With **Random** on, each object takes an
+amount of its own somewhere between none and the amount set, so a row of
+copies can be varied at once. The dialog keeps the amounts for next time.
+
+![The Transform Each dialog box](../../img/objects-transforming-transform-each.png)
+
 ## Undoing transformations {#clear}
 
 [[menu.object > menu.object.clear_transformations]] takes the selected objects

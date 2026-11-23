@@ -73,6 +73,9 @@ struct Actions {
     /// Every object row of the list, top to bottom (laid out or not), for
     /// Shift+click's range (#2483).
     row_order: Vec<ShapeId>,
+    /// Every layer row drawn, top to bottom as they show, for
+    /// Shift+click's range (#3966).
+    layer_order: Vec<LayerId>,
     /// The selection as a set: each row asks whether its object is
     /// selected, and asking the list for each of 50,000 selected objects
     /// took most of a second a frame.
@@ -115,6 +118,9 @@ struct Actions {
     move_guides: Option<(Option<PageId>, usize, Option<PageId>)>,
     /// Paste from a Guides row's right-click menu, into its set (#3599).
     paste_guides: Option<Option<PageId>>,
+    /// A command of a Guides row's own right-click menu, on all of its
+    /// guidelines: its set (master page or not) and the command (#3578).
+    guides_cmd: Option<(bool, GuidesCmd)>,
     /// A layer moved to another page, from its menu (#1477).
     layer_to_page: Option<(LayerId, PageId)>,
     /// A layer's Properties, from its menu (#1477).
@@ -134,7 +140,10 @@ struct Actions {
 enum GuideRowAct {
     Hide(bool),
     Lock(bool),
-    Select,
+    /// A click: alone it selects the guideline; with Ctrl it is added to
+    /// or taken from the selection, with Shift the guidelines from the
+    /// last one clicked to it are selected (#3575).
+    Select { ctrl: bool, shift: bool },
     /// A command of its right-click menu (#3012).
     Menu(GuideCmd),
 }
@@ -149,6 +158,19 @@ enum GuideCmd {
     Paste,
     Lock(bool),
     Hide(bool),
+    /// Name the guideline (#3574).
+    Rename,
+}
+
+/// The commands of a Guides row's right-click menu (#3578): they act on
+/// every guideline of the row.
+#[derive(Clone, Copy, Debug, PartialEq)]
+enum GuidesCmd {
+    Cut,
+    Copy,
+    /// Move them to the guidelines of all pages, or to the own
+    /// guidelines of the odd or even pages.
+    MoveTo(crate::guides::GuidesTarget),
 }
 
 /// Where a layer sits: its index in its list (0 at the bottom), how many
@@ -168,7 +190,7 @@ struct Place {
 #[derive(Clone, Copy, PartialEq)]
 enum Look {
     Object { selected: bool },
-    Layer { active: bool },
+    Layer { active: bool, selected: bool },
     Node,
 }
 
@@ -176,7 +198,21 @@ enum Look {
 pub fn object_label(s: &Shape) -> String {
     match s.name.as_deref().map(str::trim) {
         Some(n) if !n.is_empty() => n.to_string(),
-        _ => crate::ui::dockers::tagged_kind(s, kind_name(&s.kind)),
+        _ => {
+            let kind = match &s.kind {
+                // A bitmap shows its colour mode too, as in the status
+                // bar (#3557).
+                k @ ShapeKind::Bitmap { png, .. } => trf(
+                    "status.bitmap_mode",
+                    &[
+                        ("k", &kind_name(k)),
+                        ("mode", &tr(crate::bitmap_fx::mode_key(s.cmyk_bitmap, png))),
+                    ],
+                ),
+                k => kind_name(k),
+            };
+            crate::ui::dockers::tagged_kind(s, kind)
+        }
     }
 }
 
@@ -484,7 +520,7 @@ fn row_of(ui: &mut Ui, look: Look, height: f32) -> (Rect, egui::Response) {
 fn paint_row(ui: &Ui, look: Look, rect: Rect, resp: &egui::Response) {
     let p = ui.painter();
     match look {
-        Look::Object { selected: true } => {
+        Look::Object { selected: true } | Look::Layer { active: false, selected: true } => {
             p.rect_filled(rect, 0.0, crate::theme::Tokens::selected_row());
             p.rect_stroke(
                 rect,
@@ -493,7 +529,7 @@ fn paint_row(ui: &Ui, look: Look, rect: Rect, resp: &egui::Response) {
                 egui::epaint::StrokeKind::Inside,
             );
         }
-        Look::Layer { active: true } => {
+        Look::Layer { active: true, .. } => {
             p.rect_filled(rect, 0.0, crate::theme::Tokens::tool_active());
             p.rect_filled(
                 Rect::from_min_size(rect.min, Vec2::new(3.0, rect.height())),
@@ -504,7 +540,7 @@ fn paint_row(ui: &Ui, look: Look, rect: Rect, resp: &egui::Response) {
         _ if resp.hovered() => {
             p.rect_filled(rect, 0.0, crate::theme::Tokens::hovered_row());
         }
-        Look::Layer { active: false } => {
+        Look::Layer { active: false, .. } => {
             p.rect_filled(rect, 0.0, crate::theme::Tokens::tab_strip());
         }
         _ => {}
@@ -556,12 +592,15 @@ fn zoom_thumbs(app: &mut App, steps: i32) {
     );
 }
 
+/// The selection the list last showed (see [`scroll_target`]).
+const SEEN_SELECTION: &str = "objects_seen_selection";
+
 /// The object whose row the list scrolls to this frame: the first
 /// selected one, when the selection is not the one the list last showed
 /// (a pick on the page, a Select All, an undo), so a selection far down a
 /// long list comes into view (#1044).
 fn scroll_target(app: &App, ui: &Ui) -> Option<ShapeId> {
-    let seen = egui::Id::new("objects_seen_selection");
+    let seen = egui::Id::new(SEEN_SELECTION);
     let changed = ui.data_mut(|d| {
         let last = d.get_temp::<Vec<ShapeId>>(seen);
         d.insert_temp(seen, app.selection.clone());
@@ -724,7 +763,12 @@ fn layer_rows(
 ) {
     let open = !app.objects_collapsed.contains(&layer.id);
     let is_active = active == Some(layer.id);
-    let (rect, resp) = row(ui, Look::Layer { active: is_active });
+    let is_selected = app.selected_layers.contains(&layer.id);
+    act.layer_order.push(layer.id);
+    let (rect, resp) = row(ui, Look::Layer {
+        active: is_active,
+        selected: is_selected,
+    });
     let resp = resp.rich_tip_with(|| format!("{}\n{}", layer.name, tr("docker.layer_row_desc")));
     let base = egui::Id::new(("objects_layer", layer.id.raw()));
     let mut x = rect.left() + 3.0 + INDENT;
@@ -809,6 +853,15 @@ fn layer_rows(
         }
         // A new layer beside this one: on its page, or a master layer
         // showing on the same pages.
+        let aimed = target_layers(app, layer.id);
+        let has = aimed
+            .iter()
+            .any(|id| app.doc().layer(*id).is_ok_and(|l| !l.shapes.is_empty()));
+        let cuttable = aimed.iter().any(|id| {
+            app.doc()
+                .layer(*id)
+                .is_ok_and(|l| !l.shapes.is_empty() && !l.locked)
+        });
         let new_key = if at.master {
             "docker.new_master_layer_short"
         } else {
@@ -824,10 +877,7 @@ fn layer_rows(
             ui.close();
         }
         if ui
-            .add_enabled(
-                !layer.shapes.is_empty(),
-                egui::Button::new(tr("docker.select_layer_objects")),
-            )
+            .add_enabled(has, egui::Button::new(tr("docker.select_layer_objects")))
             .clicked()
         {
             act.goto = elsewhere;
@@ -837,10 +887,9 @@ fn layer_rows(
         // The layer's objects to the clipboard, or the clipboard's onto
         // the layer (#1992).
         ui.separator();
-        let has = !layer.shapes.is_empty();
         let can_paste = app.clipboard.is_some() && !layer.locked;
         for (what, key, on) in [
-            (LayerClip::Cut, "menu.edit.cut", has && !layer.locked),
+            (LayerClip::Cut, "menu.edit.cut", cuttable),
             (LayerClip::Copy, "menu.edit.copy", has),
             (LayerClip::Paste, "menu.edit.paste", can_paste),
         ] {
@@ -967,7 +1016,7 @@ fn layer_rows(
         ui.separator();
         if ui
             .add_enabled(
-                at.master || at.count > 1,
+                !deletable_layers_from(app.doc(), &target_layers(app, layer.id)).is_empty(),
                 egui::Button::new(tr("docker.delete_layer")),
             )
             .clicked()
@@ -977,10 +1026,65 @@ fn layer_rows(
         }
     });
     if open {
-        for s in layer.shapes.iter().rev() {
+        // While a PowerClip's contents are edited they stay listed inside
+        // it (#3846: the frame showed as an object of its own beside
+        // them), so a content can still be dragged out of it.
+        let contents = app.clip_edit_contents();
+        let frame = app.clip_frame_edit.as_ref().map(|(f, _)| *f);
+        // Objects of the facing page selected with the current page's are
+        // brought onto it only while selected (#3488, #3817): with every
+        // page listed they stay under their own page and layer, where
+        // they go back, instead of all showing under the current page as
+        // if selecting had moved them there (#3935).
+        let (away, here) = spread_borrowed(app, at.page, layer.id);
+        for s in here.iter().filter_map(|id| app.doc().find_shape(*id)) {
             object_rows(app, ui, s, LAYER_OBJECT_DEPTH, act);
         }
+        for s in layer.shapes.iter().rev() {
+            if contents.contains(&s.id) || away.contains(&s.id) {
+                continue;
+            }
+            object_rows(app, ui, s, LAYER_OBJECT_DEPTH, act);
+            if Some(s.id) == frame {
+                for c in app
+                    .page_layers()
+                    .iter()
+                    .flat_map(|l| l.shapes.iter().rev())
+                    .filter(|c| contents.contains(&c.id))
+                {
+                    object_rows(app, ui, c, LAYER_OBJECT_DEPTH + 1, act);
+                }
+            }
+        }
     }
+}
+
+/// With every page listed, the objects of the facing page brought onto
+/// the page `page` to be selected with its own (#3488): the ones listed
+/// on `layer` of `page` that belong elsewhere, and the ones whose own
+/// page and layer these are, to list here (#3935).
+fn spread_borrowed(
+    app: &App,
+    page: Option<PageId>,
+    layer: LayerId,
+) -> (Vec<ShapeId>, Vec<ShapeId>) {
+    let Some(page) = page.filter(|_| app.settings.objects_all_pages) else {
+        return (Vec::new(), Vec::new());
+    };
+    let away = app
+        .spread_adopted
+        .iter()
+        .filter(|a| a.host == page)
+        .map(|a| a.shape)
+        .collect();
+    let here = app
+        .spread_adopted
+        .iter()
+        .rev()
+        .filter(|a| a.home == page && a.layer == layer && a.host != page)
+        .map(|a| a.shape)
+        .collect();
+    (away, here)
 }
 
 /// Opens the context menu of the object `id` from its Objects docker
@@ -1114,7 +1218,7 @@ fn guides_row(
 ) {
     let master = page.is_none();
     let chosen = app.edit_master_guides == master && page.is_none_or(|p| p == app.page);
-    let (rect, resp) = row(ui, Look::Layer { active: chosen });
+    let (rect, resp) = row(ui, Look::Layer { active: chosen, selected: false });
     let desc = if master {
         "docker.guides_master_row_desc"
     } else {
@@ -1157,16 +1261,57 @@ fn guides_row(
             }
         }
     }
-    // Right-click: Paste the guidelines copied into this set, also when it
-    // has none yet (#3599).
+    // Right-click: Cut, Copy and Paste all of the row's guidelines, and
+    // Move them to all pages, the odd pages or the even pages (#3578).
     resp.context_menu(|ui| {
+        use crate::guides::GuidesTarget;
+        let any = !guides.is_empty();
         let can_paste = app.clipboard.as_ref().is_some_and(|c| !c.guides.is_empty());
+        let mut pick = None;
+        for (key, enabled, cmd) in [
+            ("menu.edit.cut", any && guides.iter().any(|g| !g.locked), GuidesCmd::Cut),
+            ("menu.edit.copy", any, GuidesCmd::Copy),
+                    ] {
+            if ui
+                .add_enabled(enabled, egui::Button::new(tr(key)))
+                .clicked()
+            {
+                pick = Some(cmd);
+                ui.close();
+            }
+        }
+        // Paste into this set, also when it has none yet (#3599).
         if ui
             .add_enabled(can_paste, egui::Button::new(tr("menu.edit.paste")))
             .clicked()
         {
             act.paste_guides = Some(page);
             ui.close();
+        }
+        ui.separator();
+        ui.add_enabled_ui(any, |ui| {
+            ui.menu_button(tr("guides.move_to"), |ui| {
+                for (key, target) in [
+                    ("dialog.all_pages", GuidesTarget::AllPages),
+                    ("options.scope_odd", GuidesTarget::OddPages),
+                    ("options.scope_even", GuidesTarget::EvenPages),
+                ] {
+                    let enabled = !(master && target == GuidesTarget::AllPages);
+                    if ui
+                        .add_enabled(enabled, egui::Button::new(tr(key)))
+                        .clicked()
+                    {
+                        pick = Some(GuidesCmd::MoveTo(target));
+                        ui.close();
+                    }
+                }
+            });
+        });
+        if let Some(cmd) = pick {
+            act.guides_cmd = Some((master, cmd));
+            if let Some(p) = page.filter(|p| *p != app.page) {
+                act.goto = Some(p);
+            }
         }
     });
     let base = match page {
@@ -1293,15 +1438,24 @@ fn guide_rows(
         } else {
             Tokens::text()
         };
+        // A named guideline shows its name, where it is beside it.
+        let shown_text = match g.name.as_deref().map(str::trim) {
+            Some(n) if !n.is_empty() => format!("{n}  ({kind} {text})"),
+            _ => format!("{kind}  {text}"),
+        };
         ui.painter().text(
             Pos2::new(x, rect.center().y),
             egui::Align2::LEFT_CENTER,
-            format!("{kind}  {text}"),
+            shown_text,
             egui::FontId::proportional(12.0),
             color,
         );
         if done.is_none() && resp.clicked() {
-            done = Some(GuideRowAct::Select);
+            let m = ui.input(|i| i.modifiers);
+            done = Some(GuideRowAct::Select {
+                ctrl: m.command,
+                shift: m.shift,
+            });
         }
         // Dragged onto another Guides row, it moves there (#3599).
         if resp.drag_started() && !g.locked {
@@ -1329,6 +1483,7 @@ fn guide_rows(
                 ("menu.edit.paste", can_paste, GuideCmd::Paste),
                 (lock_key, true, GuideCmd::Lock(!g.locked)),
                 (hide_key, true, GuideCmd::Hide(!g.hidden)),
+                ("docker.rename", true, GuideCmd::Rename),
             ] {
                 if ui
                     .add_enabled(enabled, egui::Button::new(tr(key)))
@@ -1376,13 +1531,85 @@ fn guide_menu_command(app: &mut App, i: usize, cmd: GuideCmd) {
                 app.set_guide_hidden(g, hidden);
             }
         }
+        GuideCmd::Rename => {
+            let name = app
+                .page_guides()
+                .get(i)
+                .and_then(|g| g.name.clone())
+                .unwrap_or_default();
+            app.dialog = crate::ui::dialogs::Dialog::RenameGuide { index: i, name };
+        }
+    }
+}
+
+/// A click on a guideline's row (#3575): alone it selects that one; with
+/// Ctrl it joins the selection or leaves it; with Shift the guidelines
+/// from the last one clicked to it (in the docker's order) are selected.
+/// Hidden guidelines are never selected.
+fn select_guide_row(app: &mut App, i: usize, ctrl: bool, shift: bool) {
+    let guides = app.page_guides();
+    if guides.get(i).is_none_or(|g| g.hidden) {
+        return;
+    }
+    app.select(Vec::new());
+    app.selected_layers.clear();
+    app.guide_rotate = None;
+    if shift {
+        let from = app.selected_guides.last().copied().unwrap_or(i);
+        let (a, b) = (from.min(i), from.max(i));
+        let mut chosen: Vec<usize> = if ctrl {
+            app.selected_guides.clone()
+        } else {
+            Vec::new()
+        };
+        for k in a..=b {
+            if guides.get(k).is_some_and(|g| !g.hidden) && !chosen.contains(&k) {
+                chosen.push(k);
+            }
+        }
+        // The one clicked last stays the anchor of the next range.
+        chosen.retain(|k| *k != i);
+        chosen.push(i);
+        app.selected_guides = chosen;
+    } else if ctrl {
+        if app.selected_guides.contains(&i) {
+            app.selected_guides.retain(|k| *k != i);
+        } else {
+            app.selected_guides.push(i);
+        }
+    } else {
+        app.selected_guides = vec![i];
+    }
+}
+
+/// A command of a Guides row's menu (#3578), on all of the row's
+/// guidelines (the edited set is the row's already).
+fn guides_menu_command(app: &mut App, cmd: GuidesCmd) {
+    let all: Vec<usize> = (0..app.page_guides().len()).collect();
+    if all.is_empty() {
+        return;
+    }
+    match cmd {
+        GuidesCmd::Copy => {
+            app.select(Vec::new());
+            app.selected_guides = all;
+            app.copy_selected_guides();
+        }
+        GuidesCmd::Cut => {
+            app.select(Vec::new());
+            app.selected_guides = all;
+            if app.copy_selected_guides() {
+                app.delete_selected_guides();
+            }
+        }
+        GuidesCmd::MoveTo(target) => app.move_guides_to(target),
     }
 }
 
 /// The Document Grid row of the Master Page: the eye shows or hides the
 /// grid, which never prints and cannot be edited.
 fn grid_row(app: &App, ui: &mut Ui, act: &mut Actions) {
-    let (rect, resp) = row(ui, Look::Layer { active: false });
+    let (rect, resp) = row(ui, Look::Layer { active: false, selected: false });
     resp.rich_tip_with(|| crate::ui::tips::pair("menu.view.document_grid", "docker.grid_row_desc"));
     let mut x = rect.left() + 3.0 + INDENT + 16.0;
     let (er, e) = hot(ui, rect, x, 18.0, egui::Id::new("objects_grid_eye"));
@@ -1786,6 +2013,7 @@ pub fn new_layer(app: &mut App) {
         .ok()
         .and_then(|p| p.layers.last())
         .map(|l| l.id);
+    app.selected_layers = app.picked_layer.into_iter().collect();
     app.objects_closed_pages.remove(&page);
 }
 
@@ -1803,6 +2031,7 @@ pub fn new_master_layer(app: &mut App, scope: MasterScope) {
     let name = free_name(&names, "docker.master_layer_n", names.len() + 1);
     app.run(Command::AddMasterLayer { name, scope });
     app.picked_layer = app.doc().master.last().map(|l| l.id);
+    app.selected_layers = app.picked_layer.into_iter().collect();
     app.objects_master_closed = false;
     // In front of the page's layers when the preferences say so for
     // master layers of these pages (#1132, #1477): one undo step.
@@ -1890,21 +2119,37 @@ enum LayerClip {
     Paste,
 }
 
-/// Select the objects of `layer` that can be (shown and not locked).
+/// The layers a click on `clicked` acts on: all the layers picked in the
+/// docker when the clicked one is among them, else that one alone
+/// (#3966). Layers another window removed are left out.
+fn target_layers(app: &App, clicked: LayerId) -> Vec<LayerId> {
+    if app.selected_layers.len() > 1 && app.selected_layers.contains(&clicked) {
+        app.selected_layers
+            .iter()
+            .copied()
+            .filter(|id| app.doc().layer(*id).is_ok())
+            .collect()
+    } else {
+        vec![clicked]
+    }
+}
+
+/// Select the objects of the aimed layers that can be (shown and not
+/// locked), in document order; the layer selection is let go.
 fn select_layer_objects(app: &mut App, layer: LayerId) {
-    let ids: Vec<ShapeId> = app
-        .doc()
-        .all_layers()
-        .find(|l| l.id == layer)
-        .map(|l| {
-            l.shapes
-                .iter()
-                .filter(|s| s.visible && !s.locked)
-                .map(|s| s.id)
-                .collect()
-        })
-        .unwrap_or_default();
+    let aimed = target_layers(app, layer);
+    let mut ids: Vec<ShapeId> = Vec::new();
+    for l in app.doc().all_layers() {
+        if aimed.contains(&l.id) {
+            for s in &l.shapes {
+                if s.visible && !s.locked {
+                    ids.push(s.id);
+                }
+            }
+        }
+    }
     app.picked_layer = Some(layer);
+    app.selected_layers.clear();
     app.select(ids);
 }
 
@@ -1968,6 +2213,7 @@ pub fn move_to_layer(app: &mut App, ids: &[ShapeId], layer: LayerId) {
         .filter(|id| layer_holding(app, *id) == Some(layer))
         .collect();
     app.select(moved);
+    app.selected_layers = vec![layer];
 }
 
 /// Objects panel > Edit Across Layers on or off, kept in the settings;
@@ -2038,6 +2284,7 @@ pub fn copy_to_layer(app: &mut App, ids: &[ShapeId], layer: LayerId) {
     }
     app.picked_layer = Some(layer);
     app.select(new_ids);
+    app.selected_layers = vec![layer];
 }
 
 /// The look of `from` given to the new layer `to`, its objects moved
@@ -2068,133 +2315,203 @@ fn hand_over(app: &mut App, from: &Layer, to: LayerId, keep: bool) {
     if app.picked_layer == Some(from.id) || !keep {
         app.picked_layer = Some(to);
     }
+    if app.selected_layers.contains(&from.id) {
+        app.selected_layers.retain(|id| *id != from.id);
+        app.selected_layers.push(to);
+    } else {
+        app.selected_layers.retain(|id| *id != from.id);
+    }
     app.selection.clear();
 }
 
 /// A page's layer becomes a master layer showing on every page (with its
-/// objects, name and look), one undo step (#1477).
+/// objects, name and look), one undo step (#1477). With several layers
+/// picked they all go, joining the one undo step.
 fn layer_to_master(app: &mut App, layer: LayerId) {
-    let doc = app.doc();
-    let Some(page) = doc
-        .pages
-        .iter()
-        .find(|p| p.layers.iter().any(|l| l.id == layer))
-    else {
-        return;
-    };
-    let keep = page.layers.len() <= 1;
-    let Some(from) = page.layers.iter().find(|l| l.id == layer).cloned() else {
-        return;
-    };
-    let scope = MasterScope::All;
-    if let Err(e) = app.engine.run_with_label(
-        &Command::AddMasterLayer {
+    let aimed: Vec<LayerId> = target_layers(app, layer)
+        .into_iter()
+        .filter(|id| {
+            app.doc()
+                .pages
+                .iter()
+                .any(|p| p.layers.iter().any(|l| l.id == *id))
+        })
+        .collect();
+    let mut started = false;
+    for id in aimed {
+        let found = {
+            let doc = app.doc();
+            doc.pages
+                .iter()
+                .find(|p| p.layers.iter().any(|l| l.id == id))
+                .and_then(|p| {
+                    p.layers
+                        .iter()
+                        .find(|l| l.id == id)
+                        .cloned()
+                        .map(|l| (p.layers.len() <= 1, l))
+                })
+        };
+        let Some((keep, from)) = found else {
+            continue;
+        };
+        let add = Command::AddMasterLayer {
             name: from.name.clone(),
-            scope,
-        },
-        "Move Layer",
-    ) {
-        app.status = e.to_string();
-        return;
+            scope: MasterScope::All,
+        };
+        if !started {
+            if let Err(e) = app.engine.run_with_label(&add, "Move Layer") {
+                app.status = e.to_string();
+                return;
+            }
+            started = true;
+        } else if let Err(e) = app.engine.amend(&add) {
+            app.status = e.to_string();
+            return;
+        }
+        let Some(to) = app.doc().master.last().map(|l| l.id) else {
+            return;
+        };
+        hand_over(app, &from, to, keep);
+        if master_front_default(app, MasterScope::All) {
+            let _ = app.engine.amend(&Command::SetLayerInFront {
+                layer: to,
+                in_front: true,
+            });
+        }
+        app.objects_master_closed = false;
     }
-    let Some(to) = app.doc().master.last().map(|l| l.id) else {
-        return;
-    };
-    hand_over(app, &from, to, keep);
-    if master_front_default(app, scope) {
-        let _ = app.engine.amend(&Command::SetLayerInFront {
-            layer: to,
-            in_front: true,
-        });
-    }
-    app.objects_master_closed = false;
 }
 
 /// A master layer becomes a layer on top of the current page (with its
 /// objects, name and look), one undo step: what it held shows on that
-/// page only (#1477).
+/// page only (#1477). With several layers picked they all go, joining
+/// the one undo step.
 fn master_to_page(app: &mut App, layer: LayerId) {
-    let Some(from) = app.doc().master.iter().find(|l| l.id == layer).cloned() else {
-        return;
-    };
+    let aimed: Vec<LayerId> = target_layers(app, layer)
+        .into_iter()
+        .filter(|id| app.doc().master.iter().any(|l| l.id == *id))
+        .collect();
     let page = app.page;
-    if let Err(e) = app.engine.run_with_label(
-        &Command::AddLayer {
+    let mut started = false;
+    for id in aimed {
+        let from = {
+            let doc = app.doc();
+            doc.master.iter().find(|l| l.id == id).cloned()
+        };
+        let Some(from) = from else {
+            continue;
+        };
+        let add = Command::AddLayer {
             page,
             name: from.name.clone(),
-        },
-        "Move Layer",
-    ) {
-        app.status = e.to_string();
-        return;
+        };
+        if !started {
+            if let Err(e) = app.engine.run_with_label(&add, "Move Layer") {
+                app.status = e.to_string();
+                return;
+            }
+            started = true;
+        } else if let Err(e) = app.engine.amend(&add) {
+            app.status = e.to_string();
+            return;
+        }
+        let Some(to) = app
+            .doc()
+            .page(page)
+            .ok()
+            .and_then(|p| p.layers.last())
+            .map(|l| l.id)
+        else {
+            return;
+        };
+        hand_over(app, &from, to, false);
+        app.objects_closed_pages.remove(&page);
     }
-    let Some(to) = app
-        .doc()
-        .page(page)
-        .ok()
-        .and_then(|p| p.layers.last())
-        .map(|l| l.id)
-    else {
-        return;
-    };
-    hand_over(app, &from, to, false);
-    app.objects_closed_pages.remove(&page);
 }
 
 /// A layer, of a page or the master page, becomes a layer on top of
 /// `page` (with its objects, name and look), one undo step, and that
 /// page is shown; a page's last layer stays behind, empty (#1477).
+/// With several layers picked they all go, joining the one undo step.
 pub(crate) fn layer_to_page(app: &mut App, layer: LayerId, page: PageId) {
-    let doc = app.doc();
-    if doc.page(page).is_err() {
+    if app.doc().page(page).is_err() {
         return;
     }
-    let (from, keep) = match doc.master.iter().find(|l| l.id == layer) {
-        Some(l) => (l.clone(), false),
-        None => {
-            let Some(p) = doc
-                .pages
-                .iter()
-                .find(|p| p.layers.iter().any(|l| l.id == layer))
-            else {
-                return;
-            };
-            if p.id == page {
-                return;
+    // The clicked layer must be one that can go: a master layer, or a
+    // layer of another page. The others picked go with it.
+    let aimed: Vec<LayerId> = target_layers(app, layer)
+        .into_iter()
+        .filter(|id| {
+            let doc = app.doc();
+            if doc.master.iter().any(|l| l.id == *id) {
+                return true;
             }
-            let Some(l) = p.layers.iter().find(|l| l.id == layer).cloned() else {
-                return;
-            };
-            (l, p.layers.len() <= 1)
-        }
-    };
-    if let Err(e) = app.engine.run_with_label(
-        &Command::AddLayer {
-            page,
-            name: from.name.clone(),
-        },
-        "Move Layer",
-    ) {
-        app.status = e.to_string();
+            doc.pages.iter().any(|p| {
+                p.id != page && p.layers.iter().any(|l| l.id == *id)
+            })
+        })
+        .collect();
+    if !aimed.contains(&layer) {
         return;
     }
-    let Some(to) = app
-        .doc()
-        .page(page)
-        .ok()
-        .and_then(|p| p.layers.last())
-        .map(|l| l.id)
-    else {
-        return;
-    };
-    hand_over(app, &from, to, keep);
-    app.objects_closed_pages.remove(&page);
     if let Some(i) = app.doc().pages.iter().position(|p| p.id == page) {
         if page != app.page {
             app.goto_page(i);
         }
     }
-    app.picked_layer = Some(to);
+    let mut started = false;
+    for id in aimed {
+        let found = {
+            let doc = app.doc();
+            match doc.master.iter().find(|l| l.id == id) {
+                Some(l) => Some((l.clone(), false)),
+                None => doc
+                    .pages
+                    .iter()
+                    .find(|p| p.layers.iter().any(|l| l.id == id))
+                    .and_then(|p| {
+                        if p.id == page {
+                            return None;
+                        }
+                        p.layers
+                            .iter()
+                            .find(|l| l.id == id)
+                            .cloned()
+                            .map(|l| (l, p.layers.len() <= 1))
+                    }),
+            }
+        };
+        let Some((from, keep)) = found else {
+            continue;
+        };
+        let add = Command::AddLayer {
+            page,
+            name: from.name.clone(),
+        };
+        if !started {
+            if let Err(e) = app.engine.run_with_label(&add, "Move Layer") {
+                app.status = e.to_string();
+                return;
+            }
+            started = true;
+        } else if let Err(e) = app.engine.amend(&add) {
+            app.status = e.to_string();
+            return;
+        }
+        let Some(to) = app
+            .doc()
+            .page(page)
+            .ok()
+            .and_then(|p| p.layers.last())
+            .map(|l| l.id)
+        else {
+            return;
+        };
+        hand_over(app, &from, to, keep);
+        app.objects_closed_pages.remove(&page);
+        app.picked_layer = Some(to);
+    }
 }
 
 /// The Layer Properties dialog's values (#1477): the name and switches of
@@ -2309,16 +2626,57 @@ pub fn layer_properties_fields(ui: &mut Ui, st: &mut LayerProps) {
     }
 }
 
+/// The layers that may be deleted from `candidates`: master layers
+/// always, and of any page at most all but one of its layers in
+/// `candidates`, so every page keeps at least one layer (#3966).
+pub(crate) fn deletable_layers_from(
+    doc: &tracedraw_core::Document,
+    candidates: &[LayerId],
+) -> Vec<LayerId> {
+    let mut out: Vec<LayerId> = Vec::new();
+    for id in candidates {
+        if doc.layer(*id).is_err() {
+            continue;
+        }
+        if doc.master.iter().any(|l| l.id == *id) {
+            if !out.contains(id) {
+                out.push(*id);
+            }
+            continue;
+        }
+        let Some(page) = doc
+            .pages
+            .iter()
+            .find(|p| p.layers.iter().any(|l| l.id == *id))
+        else {
+            continue;
+        };
+        let taken = out
+            .iter()
+            .filter(|taken| page.layers.iter().any(|l| l.id == **taken))
+            .count();
+        if taken < page.layers.len().saturating_sub(1) && !out.contains(id) {
+            out.push(*id);
+        }
+    }
+    out
+}
+
+/// The layers the docker may delete now: the ones picked, else the
+/// active one.
+fn deletable_layers(app: &App) -> Vec<LayerId> {
+    let candidates: Vec<LayerId> = if app.selected_layers.is_empty() {
+        app.active_layer().into_iter().collect()
+    } else {
+        app.selected_layers.clone()
+    };
+    deletable_layers_from(app.doc(), &candidates)
+}
+
 /// The active layer when Delete can take it: a master layer, or one of
 /// several layers of the page (a page keeps its last layer).
 fn deletable_layer(app: &App) -> Option<LayerId> {
-    let id = app.active_layer()?;
-    let doc = app.doc();
-    if doc.master.iter().any(|l| l.id == id) {
-        return Some(id);
-    }
-    let page = doc.page(app.page).ok()?;
-    (page.layers.len() > 1 && page.layers.iter().any(|l| l.id == id)).then_some(id)
+    deletable_layers(app).first().copied()
 }
 
 /// The bar's Delete: the selected objects, else the active layer.
@@ -2331,22 +2689,47 @@ pub fn delete_current(app: &mut App) {
 }
 
 fn delete_layer(app: &mut App, layer: LayerId) {
+    let aimed = deletable_layers_from(app.doc(), &target_layers(app, layer));
+    if aimed.is_empty() {
+        return;
+    }
     app.selection.clear();
-    // A frame of a linked chain on the layer leaves its text to the
+    // A frame of a linked chain on a layer leaves its text to the
     // frames left, as a deleted frame does (#1986).
-    let ids: Vec<ShapeId> = app
-        .doc()
-        .layer(layer)
-        .map(|l| l.shapes.iter().map(|s| s.id).collect())
-        .unwrap_or_default();
+    let mut ids: Vec<ShapeId> = Vec::new();
+    for id in &aimed {
+        if let Ok(l) = app.doc().layer(*id) {
+            ids.extend(l.shapes.iter().map(|s| s.id));
+        }
+    }
     let flow = app.flow_around_deleted(&ids);
     let revision = app.engine.revision();
-    app.run(Command::DeleteLayer { layer });
+    if let [one] = aimed.as_slice() {
+        app.run(Command::DeleteLayer { layer: *one });
+    } else {
+        let cmds: Vec<Command> = aimed
+            .iter()
+            .map(|id| Command::DeleteLayer { layer: *id })
+            .collect();
+        if let Err(e) = app.engine.run_batch("Delete Layer", &cmds) {
+            app.status = e.to_string();
+        }
+    }
     if app.engine.revision() != revision {
         app.amend_flow("Delete Layer", flow);
     }
-    if app.picked_layer == Some(layer) {
-        app.picked_layer = None;
+    let keep: Vec<LayerId> = app
+        .selected_layers
+        .iter()
+        .copied()
+        .filter(|id| app.doc().layer(*id).is_ok() && !aimed.contains(id))
+        .collect();
+    app.selected_layers = keep;
+    if app
+        .picked_layer
+        .is_some_and(|id| aimed.contains(&id) || app.doc().layer(id).is_err())
+    {
+        app.picked_layer = app.selected_layers.last().copied();
     }
 }
 
@@ -2555,7 +2938,13 @@ fn drop_rows(app: &mut App, ids: &[ShapeId], drop: RowDrop) {
         }
         RowDrop::Layer(l) => Some(l),
     };
+    let frees = frees_clip_contents(app, ids, drop);
     let cmds = drop_commands(app, ids, drop);
+    if cmds.is_empty() && frees {
+        // Already on that layer: only out of the PowerClip.
+        free_clip_contents(app, ids);
+        return;
+    }
     let Some(layer) = layer.filter(|_| !cmds.is_empty()) else {
         return;
     };
@@ -2577,6 +2966,44 @@ fn drop_rows(app: &mut App, ids: &[ShapeId], drop: RowDrop) {
     }
     app.picked_layer = Some(layer);
     app.select(ids.to_vec());
+    app.selected_layers = vec![layer];
+    if frees {
+        free_clip_contents(app, ids);
+    }
+}
+
+/// `ids`, contents of the PowerClip being edited, stay out of it when the
+/// edit ends (#3846); with nothing left inside, the edit ends now.
+fn free_clip_contents(app: &mut App, ids: &[ShapeId]) {
+    if let Some((_, outside)) = app.clip_frame_edit.as_mut() {
+        outside.extend(ids.iter().copied());
+    }
+    if app.clip_edit_contents().is_empty() {
+        app.finish_clip_frame_edit();
+    }
+    app.select(ids.to_vec());
+}
+
+/// Whether dropping the rows of `ids` where `drop` says takes them out
+/// of the PowerClip whose contents are being edited (#3846): they are all
+/// contents, and they go onto a layer, or beside the frame or an object
+/// outside it. They then stay out when the edit ends.
+fn frees_clip_contents(app: &App, ids: &[ShapeId], drop: RowDrop) -> bool {
+    let Some((frame, outside)) = &app.clip_frame_edit else {
+        return false;
+    };
+    let contents = app.clip_edit_contents();
+    if ids.is_empty() || !ids.iter().all(|id| contents.contains(id)) {
+        return false;
+    }
+    let out = |id: ShapeId| id == *frame || outside.contains(&id);
+    match drop {
+        RowDrop::Layer(_) => true,
+        RowDrop::Object { reference, .. } => {
+            out(reference) || app.doc().ancestors(reference).into_iter().any(out)
+        }
+        RowDrop::Into(_) | RowDrop::Clip(_) => false,
+    }
 }
 
 /// Whether rows carrying `ids` can be dropped into `target` as a
@@ -2765,19 +3192,65 @@ fn drag_rows(
     None
 }
 
+/// Turn a layer switch (`on`) on every layer the click aims at that does
+/// not have it yet, one undo step; one layer goes through `app.run` as
+/// before (#3966).
+fn apply_layer_switch(
+    app: &mut App,
+    clicked: LayerId,
+    on: bool,
+    label: &'static str,
+    make: impl Fn(LayerId, bool) -> Command,
+    current: impl Fn(&Layer) -> bool,
+) {
+    let cmds: Vec<Command> = target_layers(app, clicked)
+        .into_iter()
+        .filter(|id| app.doc().layer(*id).is_ok_and(|l| current(l) != on))
+        .map(|id| make(id, on))
+        .collect();
+    if let [one] = cmds.as_slice() {
+        app.run(one.clone());
+    } else if !cmds.is_empty() {
+        if let Err(e) = app.engine.run_batch(label, &cmds) {
+            app.status = e.to_string();
+        }
+    }
+}
+
 fn apply(app: &mut App, ui: &Ui, mut act: Actions) {
     if let Some((id, pos, page)) = drag_rows(app, ui, &act.object_rows, &act.layer_drop_rows) {
         act.goto = act.goto.or(page);
         act.object_menu = Some((id, pos));
     }
     if let Some((layer, visible)) = act.visible {
-        app.run(Command::SetLayerVisible { layer, visible });
+        apply_layer_switch(
+            app,
+            layer,
+            visible,
+            "Layer Visible",
+            |id, on| Command::SetLayerVisible { layer: id, visible: on },
+            |l| l.visible,
+        );
     }
     if let Some((layer, printable)) = act.printable {
-        app.run(Command::SetLayerPrintable { layer, printable });
+        apply_layer_switch(
+            app,
+            layer,
+            printable,
+            "Layer Print",
+            |id, on| Command::SetLayerPrintable { layer: id, printable: on },
+            |l| l.printable,
+        );
     }
     if let Some((layer, locked)) = act.locked {
-        app.run(Command::SetLayerLocked { layer, locked });
+        apply_layer_switch(
+            app,
+            layer,
+            locked,
+            "Layer Lock",
+            |id, on| Command::SetLayerLocked { layer: id, locked: on },
+            |l| l.locked,
+        );
     }
     if let Some(on) = act.across {
         set_edit_across_layers(app, on);
@@ -2823,10 +3296,17 @@ fn apply(app: &mut App, ui: &Ui, mut act: Actions) {
             app.objects_closed_pages.insert(page);
         }
     }
-    // A row of another page: its page first (the selection there is new).
+    // A row of another page: its page first (the selection there is new,
+    // except a Ctrl/Shift layer click across pages keeps the picked layers).
     if let Some(page) = act.goto {
+        let keep_layers = act.pick.is_some()
+            && ui.input(|i| i.modifiers.shift || i.modifiers.command || i.modifiers.ctrl);
+        let kept = keep_layers.then(|| app.selected_layers.clone());
         if let Some(i) = app.doc().pages.iter().position(|p| p.id == page) {
             app.goto_page(i);
+        }
+        if let Some(layers) = kept {
+            app.selected_layers = layers;
         }
     }
     if act.toggle_master {
@@ -2846,13 +3326,7 @@ fn apply(app: &mut App, ui: &Ui, mut act: Actions) {
         match what {
             GuideRowAct::Hide(hidden) => app.set_guide_hidden(i, hidden),
             GuideRowAct::Lock(locked) => app.set_guides_locked(&[i], locked),
-            GuideRowAct::Select => {
-                if app.page_guides().get(i).is_some_and(|g| !g.hidden) {
-                    app.select(Vec::new());
-                    app.selected_guides = vec![i];
-                    app.guide_rotate = None;
-                }
-            }
+            GuideRowAct::Select { ctrl, shift } => select_guide_row(app, i, ctrl, shift),
             GuideRowAct::Menu(cmd) => guide_menu_command(app, i, cmd),
         }
     }
@@ -2878,6 +3352,10 @@ fn apply(app: &mut App, ui: &Ui, mut act: Actions) {
         }
         app.choose_master_guides(page.is_none());
         app.paste();
+    }
+    if let Some((master, cmd)) = act.guides_cmd {
+        app.choose_master_guides(master);
+        guides_menu_command(app, cmd);
     }
     if let Some((layer, page)) = act.layer_to_page {
         layer_to_page(app, layer, page);
@@ -2908,8 +3386,20 @@ fn apply(app: &mut App, ui: &Ui, mut act: Actions) {
         app.run(Command::ReorderLayer { layer, index });
     }
     if let Some(layer) = act.pick {
-        app.picked_layer = Some(layer);
-        app.select(Vec::new());
+        let (shift, ctrl) = ui.input(|i| {
+            (
+                i.modifiers.shift,
+                i.modifiers.command || i.modifiers.ctrl,
+            )
+        });
+        let key = egui::Id::new("objects_docker_layer_anchor");
+        let anchor: Option<LayerId> = ui.data(|d| d.get_temp(key));
+        let anchor = select_layer_row(app, layer, &act.layer_order, anchor, shift, ctrl);
+        ui.data_mut(|d| d.insert_temp(key, anchor));
+        // A pick made in the list itself is in view already: the list
+        // stays where it is scrolled, not jumping to the first selected
+        // object of a selection just let go (#3822).
+        ui.data_mut(|d| d.insert_temp(egui::Id::new(SEEN_SELECTION), app.selection.clone()));
     }
     if act.new_layer {
         new_layer(app);
@@ -2946,15 +3436,96 @@ fn apply(app: &mut App, ui: &Ui, mut act: Actions) {
         master_to_page(app, layer);
     }
     if let Some(id) = act.select.filter(|id| !select_clip_content(app, *id)) {
+        app.selected_layers.clear();
         let (shift, ctrl) = ui.input(|i| (i.modifiers.shift, i.modifiers.command));
         let key = egui::Id::new("objects_docker_anchor");
         let anchor: Option<ShapeId> = ui.data(|d| d.get_temp(key));
         let anchor = select_row(app, id, &act.row_order, anchor, shift, ctrl);
         ui.data_mut(|d| d.insert_temp(key, anchor));
+        // A selection made in the list itself is in view already: the list
+        // stays where it is scrolled, not jumping back to the first
+        // selected row on a Ctrl+click (#3822).
+        ui.data_mut(|d| d.insert_temp(egui::Id::new(SEEN_SELECTION), app.selection.clone()));
         if let Some(layer) = layer_holding(app, id) {
             app.picked_layer = Some(layer);
         }
     }
+}
+
+/// A click on the row of `layer` in the list whose layer rows are
+/// `order` (top to bottom as they show), as in a file list (#3966):
+/// alone it picks that layer; Shift selects every layer row from the
+/// row last clicked (`anchor`) to this one, Ctrl+Shift adds that range;
+/// Ctrl adds the layer or takes it out. Objects and guidelines are let
+/// go. Gives the row a next Shift+click counts from.
+pub(crate) fn select_layer_row(
+    app: &mut App,
+    layer: LayerId,
+    order: &[LayerId],
+    anchor: Option<LayerId>,
+    shift: bool,
+    ctrl: bool,
+) -> LayerId {
+    app.select(Vec::new());
+    app.selected_guides.clear();
+    let mut base: Vec<LayerId> = app
+        .selected_layers
+        .iter()
+        .copied()
+        .filter(|id| app.doc().layer(*id).is_ok())
+        .collect();
+    if base.is_empty() && (ctrl || shift) {
+        // Ctrl or Shift right after a drawing was opened: the layer that
+        // was active already belongs to the selection.
+        base = app.active_layer().into_iter().collect();
+    }
+    if !shift && !ctrl {
+        app.selected_layers = vec![layer];
+        app.picked_layer = Some(layer);
+        return layer;
+    }
+    if ctrl && !shift {
+        if let Some(i) = base.iter().position(|id| *id == layer) {
+            base.remove(i);
+            app.selected_layers = base;
+            if app.picked_layer == Some(layer) {
+                app.picked_layer = app.selected_layers.last().copied();
+            }
+            return anchor.unwrap_or(layer);
+        }
+        base.push(layer);
+        app.selected_layers = base;
+        app.picked_layer = Some(layer);
+        return layer;
+    }
+    let from = anchor
+        .filter(|a| order.contains(a))
+        .or_else(|| base.last().copied().filter(|a| order.contains(a)))
+        .unwrap_or(layer);
+    let (ia, ib) = match (
+        order.iter().position(|id| *id == from),
+        order.iter().position(|id| *id == layer),
+    ) {
+        (Some(a), Some(b)) => (a, b),
+        _ => {
+            app.selected_layers = vec![layer];
+            app.picked_layer = Some(layer);
+            return layer;
+        }
+    };
+    let range = &order[ia.min(ib)..=ia.max(ib)];
+    if ctrl {
+        for id in range {
+            if !base.contains(id) {
+                base.push(*id);
+            }
+        }
+        app.selected_layers = base;
+    } else {
+        app.selected_layers = range.to_vec();
+    }
+    app.picked_layer = Some(layer);
+    from
 }
 
 /// A click on the row of `id` in the list whose rows are `rows` (top to
@@ -3102,6 +3673,33 @@ pub(crate) mod tests {
         assert_eq!(object_label(&s), "Water");
         s.name = Some("   ".into());
         assert_eq!(object_label(&s), "Rectangle");
+    }
+
+    /// A bitmap's row names its colour mode, as the status bar does
+    /// (#3557); a name still wins.
+    #[test]
+    fn a_bitmap_row_shows_its_colour_mode() {
+        crate::i18n::set_language("en");
+        let png = {
+            let mut pm = tiny_skia::Pixmap::new(1, 1).expect("pixmap");
+            pm.fill(tiny_skia::Color::WHITE);
+            pm.encode_png().expect("png")
+        };
+        let mut s = Shape::new(
+            ShapeId(1),
+            ShapeKind::Bitmap {
+                rect: tracedraw_core::geometry::Rect::new(0.0, 0.0, 10.0, 10.0),
+                width_px: 1,
+                height_px: 1,
+                png: png.into(),
+                fx: None,
+            },
+        );
+        assert_eq!(object_label(&s), "Bitmap 1 x 1 px (RGB)");
+        s.cmyk_bitmap = true;
+        assert_eq!(object_label(&s), "Bitmap 1 x 1 px (CMYK)");
+        s.name = Some("Photo".into());
+        assert_eq!(object_label(&s), "Photo");
     }
 
     /// Each object's row has its own eye and padlock: a click hides or
@@ -3965,6 +4563,86 @@ pub(crate) mod tests {
         assert!(!shown(row_of(far)), "{:?}", row_of(far));
     }
 
+    /// #3822: with an object far down the list selected, the list
+    /// scrolled up by hand and a row there Ctrl+clicked, the list jumped
+    /// back down to the first selected object; it stays where it is.
+    #[test]
+    fn a_ctrl_click_in_the_list_keeps_its_scroll() {
+        let ctx = crate::theme::ui_context();
+        let mut app = App::headless();
+        let ids: Vec<ShapeId> = (0..80)
+            .map(|_| app.new_shape(rect_kind()).expect("shape"))
+            .collect();
+        ctx.all_styles_mut(|s| s.scroll_animation = egui::style::ScrollAnimation::none());
+        let run = |app: &mut App, events: Vec<egui::Event>, ctrl: bool| {
+            let mut all = vec![egui::Event::ModifiersChanged(if ctrl {
+                egui::Modifiers::COMMAND
+            } else {
+                egui::Modifiers::NONE
+            })];
+            all.extend(events);
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(300.0, 300.0),
+                )),
+                events: all,
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(input, |ui| objects_docker(app, ui));
+            out.textures_delta.clear();
+        };
+        let row_of = |id: ShapeId| {
+            ctx.read_response(egui::Id::new(("objects_object", id.raw())).with("eye"))
+                .map(|r| r.rect)
+        };
+        let shown =
+            |r: Option<egui::Rect>| r.is_some_and(|r| r.top() >= 0.0 && r.bottom() <= 300.0);
+        let far = ids[0];
+        app.select(vec![far]);
+        for _ in 0..4 {
+            run(&mut app, Vec::new(), false);
+        }
+        assert!(shown(row_of(far)), "{:?}", row_of(far));
+        // Back up to the top of the list by hand.
+        for _ in 0..4 {
+            run(
+                &mut app,
+                vec![
+                    egui::Event::PointerMoved(Pos2::new(150.0, 150.0)),
+                    egui::Event::MouseWheel {
+                        unit: egui::MouseWheelUnit::Point,
+                        delta: Vec2::new(0.0, 5000.0),
+                        phase: egui::TouchPhase::Move,
+                        modifiers: egui::Modifiers::NONE,
+                    },
+                ],
+                false,
+            );
+        }
+        let top = *ids.last().expect("ids");
+        let r = row_of(top)
+            .filter(|r| shown(Some(*r)))
+            .expect("top row in view");
+        // Ctrl+click on its name, left of its eye.
+        let at = Pos2::new(r.left() - 100.0, r.center().y);
+        let press = |pressed| egui::Event::PointerButton {
+            pos: at,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::COMMAND,
+        };
+        run(&mut app, vec![egui::Event::PointerMoved(at)], true);
+        run(&mut app, vec![press(true)], true);
+        run(&mut app, vec![press(false)], true);
+        for _ in 0..3 {
+            run(&mut app, Vec::new(), false);
+        }
+        assert!(app.selection.contains(&top), "{:?}", app.selection);
+        assert!(app.selection.contains(&far), "{:?}", app.selection);
+        assert!(shown(row_of(top)), "jumped away: {:?}", row_of(top));
+    }
+
     #[test]
     fn the_docker_draws_layers_groups_and_selection() {
         let mut app = App::headless();
@@ -4331,11 +5009,241 @@ pub(crate) mod tests {
         run(&mut app, (low, LayerClip::Paste));
         assert_eq!(count(&app, low), 2);
     }
+
+    /// #3966: in the Objects docker a layer row takes the same clicks as
+    /// an object row: alone it is picked, Ctrl+click adds it or takes it
+    /// out, Shift+click selects the run from the last one clicked (across
+    /// the page's layers and the master layers), Ctrl+Shift+click adds
+    /// that run. Picking an object on the page lets the layers go.
+    #[test]
+    fn ctrl_and_shift_clicks_select_multiple_layers() {
+        let mut app = without_desktop();
+        let first = app.doc().pages[0].layers[0].id;
+        new_layer(&mut app);
+        let second = app.picked_layer.expect("new layer");
+        new_master_layer(&mut app, MasterScope::All);
+        let master = app.picked_layer.expect("master layer");
+        // The list shows the page's layers topmost first, then the
+        // Master Page's.
+        let order = vec![second, first, master];
+        // A plain click picks that layer alone, and lets the objects go.
+        let a = select_layer_row(&mut app, first, &order, None, false, false);
+        assert_eq!(a, first);
+        assert_eq!(app.selected_layers, vec![first]);
+        assert_eq!(app.picked_layer, Some(first));
+        assert!(app.selection.is_empty());
+        // Ctrl+click adds a layer.
+        let a = select_layer_row(&mut app, second, &order, Some(a), false, true);
+        assert_eq!(a, second);
+        assert_eq!(app.selected_layers, vec![first, second]);
+        assert_eq!(app.picked_layer, Some(second));
+        // Ctrl+click again takes it out; the pick moves to the last left.
+        let a = select_layer_row(&mut app, second, &order, Some(a), false, true);
+        assert_eq!(a, second, "the anchor if there was one");
+        assert_eq!(app.selected_layers, vec![first]);
+        assert_eq!(app.picked_layer, Some(first));
+        // Taking the picked one out leaves no pick.
+        select_layer_row(&mut app, first, &order, Some(a), false, true);
+        assert!(app.selected_layers.is_empty());
+        assert_eq!(app.picked_layer, None);
+        // Ctrl+click with nothing picked seeds from the active layer, the
+        // page's topmost one, so it is in the selection already.
+        select_layer_row(&mut app, first, &order, None, false, true);
+        assert_eq!(app.selected_layers, vec![second, first]);
+        assert_eq!(app.picked_layer, Some(first));
+        // Shift+click from the top page layer to the master layer takes
+        // every layer row between, across the page and the Master Page.
+        let a = select_layer_row(&mut app, second, &order, None, false, false);
+        select_layer_row(&mut app, master, &order, Some(a), true, false);
+        assert_eq!(app.selected_layers, vec![second, first, master]);
+        assert_eq!(app.picked_layer, Some(master));
+        // Shift to a layer in the middle, still counting from the first
+        // row clicked.
+        select_layer_row(&mut app, first, &order, Some(a), true, false);
+        assert_eq!(app.selected_layers, vec![second, first]);
+        // Ctrl+Shift adds the run to what was picked already.
+        select_layer_row(&mut app, first, &order, None, false, false);
+        select_layer_row(&mut app, master, &order, None, false, true);
+        assert_eq!(app.selected_layers, vec![first, master]);
+        select_layer_row(&mut app, second, &order, Some(master), true, true);
+        assert_eq!(app.selected_layers, vec![first, master, second]);
+        // A layer out of the list falls back to a plain click.
+        let other = {
+            app.add_page();
+            app.doc().pages[1].layers[0].id
+        };
+        let a = select_layer_row(&mut app, other, &order, Some(master), true, false);
+        assert_eq!(app.selected_layers, vec![other]);
+        assert_eq!(a, other);
+        // Picking an object on the page lets the layers go.
+        app.page = app.doc().pages[0].id;
+        app.selected_layers = vec![first, second];
+        let id = app.new_shape(rect_kind()).expect("shape");
+        app.select(vec![id]);
+        assert!(app.selected_layers.is_empty(), "objects let the layers go");
+        assert_eq!(app.selection, vec![id]);
+    }
+
+    /// #3966: with several layers picked, the eye, the printer, the
+    /// padlock, Select the Layer's Objects and Delete act on all of them
+    /// in one undo step; a page always keeps one layer.
+    #[test]
+    fn selected_layers_batch_visibility_lock_print_select_and_delete() {
+        let mut app = without_desktop();
+        let first = app.doc().pages[0].layers[0].id;
+        app.picked_layer = Some(first);
+        let on_first = app.new_shape(rect_kind()).expect("shape");
+        new_layer(&mut app);
+        let second = app.picked_layer.expect("second");
+        let on_second = app.new_shape(rect_kind()).expect("shape");
+        new_layer(&mut app);
+        let third = app.picked_layer.expect("third");
+        new_master_layer(&mut app, MasterScope::All);
+        let master = app.picked_layer.expect("master");
+        let on_master = app.new_shape(rect_kind()).expect("shape");
+        let run = |app: &mut App, act: Actions| {
+            let mut once = Some(act);
+            with_ui(|ui| {
+                if let Some(act) = once.take() {
+                    apply(app, ui, act);
+                }
+            });
+        };
+        // The eye of one of them hides or shows them all.
+        app.selected_layers = vec![first, second, master];
+        app.picked_layer = Some(master);
+        run(
+            &mut app,
+            Actions {
+                visible: Some((second, false)),
+                ..Default::default()
+            },
+        );
+        assert!(!app.doc().layer(first).expect("first").visible);
+        assert!(!app.doc().layer(second).expect("second").visible);
+        assert!(app.doc().layer(third).expect("third").visible);
+        assert!(!app.doc().layer(master).expect("master").visible);
+        app.undo();
+        assert!(app.doc().layer(first).expect("first").visible);
+        assert!(app.doc().layer(second).expect("second").visible);
+        assert!(app.doc().layer(master).expect("master").visible);
+        // The printer, one undo step.
+        run(
+            &mut app,
+            Actions {
+                printable: Some((second, false)),
+                ..Default::default()
+            },
+        );
+        assert!(!app.doc().layer(first).expect("first").printable);
+        assert!(!app.doc().layer(second).expect("second").printable);
+        assert!(app.doc().layer(third).expect("third").printable);
+        assert!(!app.doc().layer(master).expect("master").printable);
+        app.undo();
+        assert!(app.doc().layer(first).expect("first").printable);
+        assert!(app.doc().layer(master).expect("master").printable);
+        // The padlock, one undo step.
+        run(
+            &mut app,
+            Actions {
+                locked: Some((second, true)),
+                ..Default::default()
+            },
+        );
+        assert!(app.doc().layer(first).expect("first").locked);
+        assert!(app.doc().layer(second).expect("second").locked);
+        assert!(!app.doc().layer(third).expect("third").locked);
+        assert!(app.doc().layer(master).expect("master").locked);
+        app.undo();
+        assert!(!app.doc().layer(first).expect("first").locked);
+        assert!(!app.doc().layer(master).expect("master").locked);
+        // Select the Layer's Objects takes them from every picked layer.
+        run(
+            &mut app,
+            Actions {
+                select_layer: Some(second),
+                ..Default::default()
+            },
+        );
+        let mut want = vec![on_first, on_second, on_master];
+        want.sort();
+        let mut got = app.selection.clone();
+        got.sort();
+        assert_eq!(got, want);
+        assert_eq!(app.picked_layer, Some(second));
+        assert!(app.selected_layers.is_empty(), "objects let the layers go");
+        // Delete two of the three page layers and the master layer in one
+        // undo step; the page keeps its last layer.
+        app.select(Vec::new());
+        app.selected_layers = vec![first, second, master];
+        app.picked_layer = Some(second);
+        assert!(deletable_layer(&app).is_some());
+        delete_current(&mut app);
+        assert_eq!(app.doc().pages[0].layers.len(), 1, "one layer left");
+        assert_eq!(app.doc().pages[0].layers[0].id, third);
+        assert!(app.doc().master.is_empty());
+        assert!(app.selected_layers.is_empty());
+        app.undo();
+        assert_eq!(app.doc().pages[0].layers.len(), 3);
+        assert!(app.doc().master.iter().any(|l| l.id == master));
+        // The layer menu's Delete takes the same set.
+        app.selected_layers = vec![first, master];
+        app.picked_layer = Some(first);
+        run(
+            &mut app,
+            Actions {
+                delete_layer: Some(first),
+                ..Default::default()
+            },
+        );
+        assert_eq!(app.doc().pages[0].layers.len(), 2);
+        assert!(app.doc().master.is_empty());
+        app.undo();
+        assert_eq!(app.doc().pages[0].layers.len(), 3);
+        assert!(app.doc().master.iter().any(|l| l.id == master));
+        // All three page layers picked: only two may go, the page keeps
+        // one.
+        app.selected_layers = vec![first, second, third];
+        app.picked_layer = Some(first);
+        assert_eq!(
+            deletable_layers_from(app.doc(), &[first, second, third]),
+            vec![first, second]
+        );
+        delete_current(&mut app);
+        assert_eq!(app.doc().pages[0].layers.len(), 1);
+        assert_eq!(app.doc().pages[0].layers[0].id, third);
+        app.undo();
+        assert_eq!(app.doc().pages[0].layers.len(), 3);
+    }
 }
 
 #[cfg(test)]
 mod drag_tests {
     use super::*;
+
+    /// #3575: in the docker a guideline row's click selects it alone,
+    /// Ctrl+click adds it or takes it away, Shift+click selects the run
+    /// from the last one clicked, skipping hidden ones.
+    #[test]
+    fn guideline_rows_take_ctrl_and_shift_clicks() {
+        let mut app = App::headless();
+        for x in [10.0, 20.0, 30.0, 40.0, 50.0] {
+            app.add_guide(tracedraw_core::document::Guide::vertical(x));
+        }
+        app.set_guide_hidden(3, true);
+        select_guide_row(&mut app, 1, false, false);
+        assert_eq!(app.selected_guides, vec![1]);
+        select_guide_row(&mut app, 4, false, true);
+        assert_eq!(app.selected_guides, vec![1, 2, 4], "the hidden one left out");
+        select_guide_row(&mut app, 2, true, false);
+        assert_eq!(app.selected_guides, vec![1, 4]);
+        select_guide_row(&mut app, 0, true, false);
+        assert_eq!(app.selected_guides, vec![1, 4, 0]);
+        select_guide_row(&mut app, 3, true, false);
+        assert_eq!(app.selected_guides, vec![1, 4, 0], "a hidden one is not picked");
+        select_guide_row(&mut app, 2, false, false);
+        assert_eq!(app.selected_guides, vec![2]);
+    }
 
     fn rect_kind() -> ShapeKind {
         ShapeKind::Rect {
@@ -4780,6 +5688,38 @@ mod drag_tests {
         assert_eq!(children(&app, g), [b]);
     }
 
+    /// #3846: while a PowerClip's contents are edited (after a click on a
+    /// content's row) they stay listed inside the frame's row, and a
+    /// content's row dragged onto the layer's row takes it out of the
+    /// PowerClip for good; the others go back in when the edit ends.
+    #[test]
+    fn a_content_row_dragged_out_of_a_powerclip_frees_it() {
+        let ctx = crate::theme::ui_context();
+        let mut app = App::headless();
+        let a = app.new_shape(rect_kind()).expect("a");
+        let b = app.new_shape(rect_kind()).expect("b");
+        let c = app.new_shape(rect_kind()).expect("c");
+        clip_rows(&mut app, &[b, c], a);
+        app.select(vec![a]);
+        app.edit_clip_frame();
+        assert!(app.clip_frame_edit.is_some());
+        frame(&ctx, &mut app, Vec::new());
+        let (ra, rb, rc) = (object_row(&ctx, a), object_row(&ctx, b), object_row(&ctx, c));
+        // Listed under the frame, one step in.
+        assert!(rb.top() >= ra.bottom() - 0.5 && rc.top() >= ra.bottom() - 0.5, "{ra:?} {rb:?} {rc:?}");
+        let layer = app.active_layer().expect("layer");
+        let rl = layer_row(&ctx, layer);
+        app.select(vec![c]);
+        drag(&ctx, &mut app, rc.center(), rl.center());
+        app.finish_clip_frame_edit();
+        let contents = match &app.doc().find_shape(a).expect("a").kind {
+            ShapeKind::ClipFrame { contents, .. } => contents.iter().map(|s| s.id).collect::<Vec<_>>(),
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(contents, [b]);
+        assert!(app.doc().shape(c).is_ok(), "c on the layer, free");
+    }
+
     /// PowerClips in the list (#3053): a row let go in the middle of
     /// another object's row puts the object inside it as a PowerClip, one
     /// undo step; the PowerClip's row opens to its contents, and a click
@@ -4844,5 +5784,35 @@ mod drag_tests {
         app2.run(Command::SetLocked { shapes: vec![x], locked: true });
         assert!(!can_clip_into(&app2, &[y], x));
         assert!(!can_clip_into(&app2, &[y], y), "not into itself");
+    }
+
+    /// #3935: an object of the facing page selected with the current
+    /// page's is brought onto the current page while selected (#3488),
+    /// but with every page listed the docker keeps it under its own page
+    /// and layer, not under the current page as if it had moved there.
+    #[test]
+    fn objects_selected_across_the_spine_stay_listed_on_their_page() {
+        let mut app = App::headless();
+        app.show_welcome = false;
+        for _ in 0..3 {
+            app.add_page();
+        }
+        app.set_facing_pages(true, tracedraw_core::spreads::PageSide::Right);
+        let (p2, p3) = (app.doc().pages[1].id, app.doc().pages[2].id);
+        app.page = p3;
+        let b = app.new_shape(rect_kind()).expect("b");
+        let home = app.doc().page(p3).expect("p3").layers[0].id;
+        app.page = p2;
+        let a = app.new_shape(rect_kind()).expect("a");
+        let host = app.doc().page(p2).expect("p2").layers[0].id;
+        assert_eq!(app.adopt_spread_objects(&[b]), vec![b]);
+        app.select(vec![a, b]);
+        app.settings.objects_all_pages = true;
+        assert_eq!(spread_borrowed(&app, Some(p2), host).0, vec![b]);
+        assert_eq!(spread_borrowed(&app, Some(p3), home).1, vec![b]);
+        assert!(spread_borrowed(&app, Some(p3), home).0.is_empty());
+        // The current page alone listed: it shows there, being selected.
+        app.settings.objects_all_pages = false;
+        assert!(spread_borrowed(&app, Some(p2), host).0.is_empty());
     }
 }

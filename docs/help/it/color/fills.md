@@ -132,6 +132,9 @@ maglia ne mantiene i colori.
 - Un riempimento [[docker.fill_texture]] è una texture generata dall'aspetto
   naturale: [[texture.clouds]], [[texture.marble]], [[texture.noise]] o
   [[texture.wood]], con i suoi colori e la sua scala.
+- [[texture.holographic]] e [[texture.holo_glitter]] danno un aspetto fisso di lamina olografica: colori
+  dell'arcobaleno tra zone scure e chiare (colori A e B), il glitter con grani
+  brillanti. Non cambia con l'angolo di vista; PDF e SVG lo portano come immagine.
 
 ## Più riempimenti su un oggetto {#several-fills}
 

@@ -53,6 +53,7 @@ objects/index
   objects/tables
   objects/barcodes
   objects/formulas
+  objects/light-flare
   objects/tracecut
   objects/shape-generator
 color/index

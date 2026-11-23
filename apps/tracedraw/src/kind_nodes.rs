@@ -34,6 +34,10 @@ pub enum KindNode {
     Polygon { outer: bool, index: usize },
     /// A B-spline's control point (its index in [`Shape::spline`]).
     Spline { index: usize },
+    /// An adjustment handle of a shape of the Common Shapes tool (its
+    /// index among the shape's handles, #4045): dragging it draws the
+    /// shape again with new settings (head length, slant, thickness...).
+    Adjust { index: usize },
 }
 
 /// The nodes of `s` in page space; empty for other kinds of objects.
@@ -45,6 +49,20 @@ pub fn nodes(s: &Shape) -> Vec<(KindNode, Point)> {
             .iter()
             .enumerate()
             .map(|(index, p)| (KindNode::Spline { index }, t * *p))
+            .collect();
+    }
+    // A common shape shows its adjustment handles, not its nodes (#4045).
+    if let Some((shape, rect, values)) = s
+        .common_shape
+        .is_some()
+        .then(|| crate::common_shapes::live(s))
+        .flatten()
+    {
+        return shape
+            .handles(rect, &values)
+            .into_iter()
+            .enumerate()
+            .map(|(index, p)| (KindNode::Adjust { index }, t * p))
             .collect();
     }
     match &s.kind {
@@ -222,7 +240,9 @@ pub fn node_at(s: &Shape, p: Point, tol: f64) -> Option<KindNode> {
 /// so two close corner nodes keep apart.
 fn reach(n: KindNode) -> f64 {
     match n {
-        KindNode::Corner { .. } | KindNode::Edge { .. } => CORNER_REACH,
+        KindNode::Corner { .. } | KindNode::Edge { .. } | KindNode::Adjust { .. } => {
+            CORNER_REACH
+        }
         _ => 1.0,
     }
 }
@@ -641,6 +661,9 @@ pub fn label_for(s: &Shape, node: Option<KindNode>) -> &'static str {
     }
     if matches!(node, Some(KindNode::Edge { .. })) {
         return "Edge Bulge";
+    }
+    if matches!(node, Some(KindNode::Adjust { .. })) {
+        return "Edit Shape";
     }
     match s.kind {
         ShapeKind::Rect { .. } => "Corner Radius",

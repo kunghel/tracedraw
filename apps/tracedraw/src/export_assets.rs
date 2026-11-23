@@ -236,11 +236,16 @@ impl App {
     /// the system's picker says (#1399).
     pub fn export_assets(&mut self) {
         let folder = match crate::files::FolderUse::ExportAssets.action() {
-            crate::files::FolderAction::PickFolder(token) => self
-                .export_assets
-                .folder
-                .clone()
-                .or_else(|| crate::files::pick_folder(token)),
+            crate::files::FolderAction::PickFolder(token) => {
+                if let Some(folder) = self.export_assets.folder.clone() {
+                    self.export_assets_to_folder(folder);
+                } else {
+                    crate::files::pick_folder_with(token, None, |app, folder| {
+                        app.export_assets_to_folder(folder);
+                    });
+                }
+                return;
+            }
             crate::files::FolderAction::SaveZip => {
                 self.export_assets_through_picker();
                 return;
@@ -249,9 +254,11 @@ impl App {
                 None
             }
         };
-        let Some(folder) = folder else {
-            return;
-        };
+        let Some(folder) = folder else { return };
+        self.export_assets_to_folder(folder);
+    }
+
+    fn export_assets_to_folder(&mut self, folder: PathBuf) {
         self.export_assets.folder = Some(folder.clone());
         let (written, errors) = self.export_assets_to(&folder);
         self.status = export_status(written, &errors);

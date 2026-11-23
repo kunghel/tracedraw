@@ -122,6 +122,7 @@ fn every_kind_of_shadow_breaks_off_its_object() {
             opacity: 0.8,
             blur: 1.0,
             merge: MergeMode::Multiply,
+            spread: 0.0,
         },
         true,
     );

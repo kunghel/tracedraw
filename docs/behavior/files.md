@@ -17,6 +17,24 @@ keeps the whole new file and the error on the status line names it. A
 new file is the `.part` file renamed. Exports and every other file the
 desktop writes go the same way (`files::tests::a_failed_write_keeps_the_file_it_was_replacing`).
 
+A large `.tdraw` drawing saved from the File menu, the toolbar, Ctrl+S,
+Ctrl+Shift+S or the Save Drawing dialog is written off the interface's
+thread (`saving::Saving`, #4011): one whose file is already 2 MB or
+more, or with 10 000 objects or more on its layers
+(`saving::is_large`). The status line says "Saving <file>…" and, when it
+takes more than 0.4 seconds, a window "Saving <name>" shows how many
+megabytes are written with a moving bar, so the program never stands
+still with nothing on screen during a long save. Until the file is
+written the drawing counts as unsaved and what is typed, clicked or
+dropped is held back (`saving::hold_input`; the window can be moved and
+closed: closing waits for the file). Then it is saved as after any
+save: the status line, the recent files, the thumbnail. A drawing
+changed meanwhile (a macro, an agent) keeps its unsaved changes. Small
+drawings, `.cdr` files, the browser, and saves that something waits for
+(the question on closing a drawing, macros, packages) are written at
+once, as before (`documents::tests::a_large_drawing_is_saved_off_the_interfaces_thread`,
+`saving::tests::a_drawing_is_written_on_a_worker_with_its_bytes_counted`).
+
 ## Save Drawing
 
 One window, 760 px wide, the same on every system:
@@ -130,8 +148,8 @@ One window, 760 px wide, the same on every system:
 - In the browser, where every save is a download, the dialog keeps the
   file name, type, version and properties, and says the browser saves
   the file in its downloads folder.
-- Options > General > Use the system's save dialog (on by default on
-  macOS, off elsewhere; not in the browser or on Android, #2965): Save
+- Options > General > Use the system's save dialog (off by default on
+  every system; not in the browser or on Android, #2965): Save
   As, and Save of a drawing without a file, open the system's own save
   dialog instead, in the folder and with the name the Save Drawing
   dialog would offer, with TraceDraw and CorelDRAW as its types (the
@@ -139,6 +157,11 @@ One window, 760 px wide, the same on every system:
   versions are the ones Options sets, the system asks before replacing a
   file, and Cancel saves nothing
   (`ui::save_as::tests::the_system_save_dialog_saves_in_the_type_chosen_there`).
+  It was on by default on macOS, where the system's dialog shows no type
+  list, so Save As offered no way to choose `.cdr` or its version
+  (#3811): it is off by default now, and preferences that had it on are
+  set back to the Save Drawing dialog once (upgrade 9); turned on again
+  it stays (`settings::tests::save_as_offers_the_type_and_version_by_default`).
 
 ## `.cdr` versions
 

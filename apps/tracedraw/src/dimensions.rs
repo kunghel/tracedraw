@@ -195,6 +195,100 @@ pub struct DimensionStyle {
     /// A linear label in fractions (halves, quarters... down to 64ths as
     /// the precision rises) instead of decimals (#1436).
     pub fractional: bool,
+    /// A linear label in feet and inches, 2' 3.5" (with `fractional`,
+    /// 2' 3 1/2"), whatever the units (#4056): see [`Notation`].
+    pub feet_inches: bool,
+}
+
+/// How a linear dimension writes its length (#4056): with decimals, in
+/// fractions, or in feet and inches, the inches with decimals
+/// (engineering) or in fractions (architectural).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Notation {
+    Decimal,
+    Fractional,
+    Engineering,
+    Architectural,
+}
+
+impl Notation {
+    pub const ALL: [Notation; 4] = [
+        Notation::Decimal,
+        Notation::Fractional,
+        Notation::Engineering,
+        Notation::Architectural,
+    ];
+
+    pub fn key(self) -> &'static str {
+        match self {
+            Notation::Decimal => "options.decimal",
+            Notation::Fractional => "options.fractional",
+            Notation::Engineering => "dimension.notation_engineering",
+            Notation::Architectural => "dimension.notation_architectural",
+        }
+    }
+
+    /// A sample of the notation: 1.25 or 1 1/4 at precision 2, and
+    /// 14.5 inches in feet and inches.
+    pub fn sample(self, precision: u8) -> String {
+        let decimals = precision.min(6) as usize;
+        match self {
+            Notation::Decimal => format!("{:.decimals$}", 1.25),
+            Notation::Fractional => fraction_text(1.25, precision.max(2)),
+            Notation::Engineering | Notation::Architectural => {
+                feet_inches_text(14.5, self == Notation::Architectural, precision.max(1))
+            }
+        }
+    }
+}
+
+impl DimensionStyle {
+    /// The style's [`Notation`].
+    pub fn notation(&self) -> Notation {
+        match (self.feet_inches, self.fractional) {
+            (false, false) => Notation::Decimal,
+            (false, true) => Notation::Fractional,
+            (true, false) => Notation::Engineering,
+            (true, true) => Notation::Architectural,
+        }
+    }
+
+    pub fn set_notation(&mut self, n: Notation) {
+        self.fractional = matches!(n, Notation::Fractional | Notation::Architectural);
+        self.feet_inches = matches!(n, Notation::Engineering | Notation::Architectural);
+    }
+}
+
+/// `inches` in feet and inches (#4056): 2' 3.5" with `precision`
+/// decimals, or with `fraction`, 2' 3 1/2" in fractions down to
+/// `2^precision`; a length under a foot is inches alone, and inches
+/// that round up to 12 carry into the feet.
+pub fn feet_inches_text(inches: f64, fraction: bool, precision: u8) -> String {
+    let sign = if inches < 0.0 { "-" } else { "" };
+    let a = inches.abs();
+    // Rounded first, so 11.999 inches read 1' 0".
+    let step = if fraction {
+        1.0 / f64::from(1u32 << precision.min(6))
+    } else {
+        10f64.powi(-i32::from(precision.min(6)))
+    };
+    let a = (a / step).round() * step;
+    let feet = (a / 12.0 + 1e-9).floor();
+    let rest = (a - feet * 12.0).max(0.0);
+    let rest_text = if fraction {
+        fraction_text(rest, precision)
+    } else {
+        let decimals = precision.min(6) as usize;
+        format!("{rest:.decimals$}")
+    };
+    if sign == "-" && a == 0.0 {
+        return "0\"".to_string();
+    }
+    if feet >= 1.0 {
+        format!("{sign}{feet}' {rest_text}\"")
+    } else {
+        format!("{sign}{rest_text}\"")
+    }
 }
 
 /// What new angular dimensions take instead of the linear style's
@@ -289,6 +383,7 @@ impl Default for DimensionStyle {
             joined: false,
             corner_radius: 0.0,
             fractional: false,
+            feet_inches: false,
         }
     }
 }
@@ -604,6 +699,11 @@ impl Dimension {
                 } else {
                     Units::from_id(&s.units)
                 };
+                if s.feet_inches {
+                    // Feet and inches carry their own signs (#4056).
+                    let inches = Units::Inches.world_from_mm(self.value());
+                    return feet_inches_text(inches, s.fractional, s.precision);
+                }
                 let v = units.world_from_mm(self.value());
                 let unit = if s.show_units {
                     format!(" {}", units.short())
@@ -1091,7 +1191,52 @@ pub(crate) fn anchors_on(
     d: &Dimension,
     tol: f64,
 ) -> Vec<Anchor> {
+    anchors_on_with_edge_tol(layers, d, tol, tol)
+}
+
+fn collect_measurable_shapes<'a>(
+    s: &'a Shape,
+    parent: Affine,
+    out: &mut Vec<(&'a Shape, Affine)>,
+) {
+    if is_dimension(s) || !s.visible {
+        return;
+    }
+    match &s.kind {
+        ShapeKind::Group { children } => {
+            let next = parent * s.transform;
+            for c in children {
+                collect_measurable_shapes(c, next, out);
+            }
+        }
+        ShapeKind::ClipFrame { frame, contents } => {
+            let next = parent * s.transform;
+            collect_measurable_shapes(frame, next, out);
+            for c in contents {
+                collect_measurable_shapes(c, next, out);
+            }
+        }
+        _ => out.push((s, parent)),
+    }
+}
+
+fn anchors_on_with_edge_tol(
+    layers: &[&tracedraw_core::Layer],
+    d: &Dimension,
+    node_tol: f64,
+    edge_tol: f64,
+) -> Vec<Anchor> {
     use tracedraw_core::geometry::ParamCurveNearest;
+    let reach = node_tol.max(edge_tol);
+    let mut shapes = Vec::new();
+    for layer in layers {
+        if !layer.visible {
+            continue;
+        }
+        for s in &layer.shapes {
+            collect_measurable_shapes(s, Affine::IDENTITY, &mut shapes);
+        }
+    }
     let mut out = Vec::new();
     for i in 0..3u8 {
         let Some(p) = d.point(i) else {
@@ -1099,45 +1244,37 @@ pub(crate) fn anchors_on(
         };
         let mut node_best: Option<(Anchor, f64)> = None;
         let mut edge_best: Option<(Anchor, f64)> = None;
-        for layer in layers {
-            if !layer.visible {
+        for &(s, parent) in &shapes {
+            let path = parent * s.page_path();
+            if !path.bounding_box().inflate(reach, reach).contains(p) {
                 continue;
             }
-            for s in &layer.shapes {
-                if is_dimension(s) || !s.visible {
-                    continue;
+            for (node, q) in tracedraw_core::nodes::nodes(&path).into_iter().enumerate() {
+                let dist = (q.pos - p).hypot();
+                if dist <= node_tol && node_best.is_none_or(|b| dist < b.1) {
+                    let a = Anchor {
+                        point: i,
+                        shape: s.id,
+                        node,
+                        segment: None,
+                    };
+                    node_best = Some((a, dist));
                 }
-                let path = s.page_path();
-                if !path.bounding_box().inflate(tol, tol).contains(p) {
-                    continue;
-                }
-                for (node, q) in tracedraw_core::nodes::nodes(&path).into_iter().enumerate() {
-                    let dist = (q.pos - p).hypot();
-                    if dist <= tol && node_best.is_none_or(|b| dist < b.1) {
-                        let a = Anchor {
-                            point: i,
-                            shape: s.id,
-                            node,
-                            segment: None,
-                        };
-                        node_best = Some((a, dist));
-                    }
-                }
-                if node_best.is_some() {
-                    continue;
-                }
-                for (index, seg) in path.segments().enumerate() {
-                    let n = seg.nearest(p, 1e-6);
-                    let dist = n.distance_sq.sqrt();
-                    if dist <= tol && edge_best.is_none_or(|b| dist < b.1) {
-                        let a = Anchor {
-                            point: i,
-                            shape: s.id,
-                            node: 0,
-                            segment: Some((index, n.t)),
-                        };
-                        edge_best = Some((a, dist));
-                    }
+            }
+            if node_best.is_some() {
+                continue;
+            }
+            for (index, seg) in path.segments().enumerate() {
+                let n = seg.nearest(p, 1e-6);
+                let dist = n.distance_sq.sqrt();
+                if dist <= edge_tol && edge_best.is_none_or(|b| dist < b.1) {
+                    let a = Anchor {
+                        point: i,
+                        shape: s.id,
+                        node: 0,
+                        segment: Some((index, n.t)),
+                    };
+                    edge_best = Some((a, dist));
                 }
             }
         }
@@ -1275,8 +1412,9 @@ impl App {
     /// object on the page, or else on one of its segments: within 3
     /// pixels of it (see [`anchors_on`]).
     fn anchors_for(&self, d: &Dimension) -> Vec<Anchor> {
-        let tol = (3.0 / self.view.zoom as f64).max(1e-3);
-        anchors_on(&self.page_layers(), d, tol)
+        let node_tol = (3.0 / self.view.zoom.max(1e-6) as f64).max(1e-3);
+        let edge_tol = self.snap_tolerance().max(node_tol);
+        anchors_on_with_edge_tol(&self.page_layers(), d, node_tol, edge_tol)
     }
 
     /// `d` (dimension group `g`'s) with its anchored points on their nodes
@@ -1307,6 +1445,7 @@ impl App {
             let target = doc
                 .find_shape(a.shape)
                 .and_then(|s| a.place_on(s))
+                .map(|q| doc.parent_transform(a.shape).unwrap_or(Affine::IDENTITY) * q)
                 .map(|q| to_local * q);
             let (Some(target), Some(now)) = (target, d.point(a.point)) else {
                 continue;
@@ -1374,38 +1513,92 @@ impl App {
                 self.engine.new_shape_id(),
             ],
         };
-        let mut cmds = Vec::new();
-        let t = g.transform;
-        let d = if t != Affine::IDENTITY && t.determinant().abs() > 1e-12 {
-            // The group's transform goes into the points, the group back to
-            // none (in page space: about its parent).
-            let parent = self
-                .doc()
-                .parent_transform(g.id)
-                .unwrap_or(Affine::IDENTITY);
-            cmds.push(Command::TransformShapes {
-                shapes: vec![g.id],
-                transform: parent * t.inverse() * parent.inverse(),
-            });
-            d.transformed(t)
-        } else {
-            d.clone()
-        };
-        let d = d.noting_drawn(&self.text_font, self.units);
-        let children = d.shapes(ids, &self.text_font, self.units);
-        cmds.push(Command::SetShapeKind {
-            shape: g.id,
-            kind: ShapeKind::Group {
-                children: children.to_vec(),
-            },
-        });
-        cmds.push(Command::SetObjectData {
-            shape: g.id,
-            data: with_data(g.data.clone(), &d),
-        });
-        cmds
+        redraw_with(self.doc(), g, d, ids, &self.text_font, self.units)
     }
+}
 
+/// The settings of a dimension style that `after` changes from `before`,
+/// by the names the style is saved with.
+fn style_changes(
+    before: &DimensionStyle,
+    after: &DimensionStyle,
+) -> serde_json::Map<String, serde_json::Value> {
+    let (Ok(serde_json::Value::Object(b)), Ok(serde_json::Value::Object(a))) =
+        (serde_json::to_value(before), serde_json::to_value(after))
+    else {
+        return serde_json::Map::new();
+    };
+    a.into_iter().filter(|(k, v)| b.get(k) != Some(v)).collect()
+}
+
+/// `style` with the settings `changes` names (by the names the style is
+/// saved with) set as it gives them; an unknown name or a value of the
+/// wrong kind is an error.
+pub(crate) fn style_with(
+    style: &DimensionStyle,
+    changes: &serde_json::Map<String, serde_json::Value>,
+) -> Result<DimensionStyle, String> {
+    let serde_json::Value::Object(mut s) = serde_json::to_value(style).map_err(|e| e.to_string())?
+    else {
+        return Err("no style".into());
+    };
+    let known: Vec<String> = match serde_json::to_value(DimensionStyle {
+        text_background: Some(Fill::Solid(Color::BLACK)),
+        ..DimensionStyle::default()
+    }) {
+        Ok(serde_json::Value::Object(m)) => m.keys().cloned().collect(),
+        _ => Vec::new(),
+    };
+    for (k, v) in changes {
+        if !known.contains(k) {
+            return Err(format!("no dimension style setting {k:?}"));
+        }
+        s.insert(k.clone(), v.clone());
+    }
+    serde_json::from_value(serde_json::Value::Object(s)).map_err(|e| e.to_string())
+}
+
+/// The commands drawing the dimension group `g` again as `d` says, its
+/// parts taking `ids`; a script's dimension style goes the same way as
+/// the bar's (#4026).
+pub(crate) fn redraw_with(
+    doc: &tracedraw_core::Document,
+    g: &Shape,
+    d: &Dimension,
+    ids: [ShapeId; 3],
+    font: &str,
+    units: Units,
+) -> Vec<Command> {
+    let mut cmds = Vec::new();
+    let t = g.transform;
+    let d = if t != Affine::IDENTITY && t.determinant().abs() > 1e-12 {
+        // The group's transform goes into the points, the group back to
+        // none (in page space: about its parent).
+        let parent = doc.parent_transform(g.id).unwrap_or(Affine::IDENTITY);
+        cmds.push(Command::TransformShapes {
+            shapes: vec![g.id],
+            transform: parent * t.inverse() * parent.inverse(),
+        });
+        d.transformed(t)
+    } else {
+        d.clone()
+    };
+    let d = d.noting_drawn(font, units);
+    let children = d.shapes(ids, font, units);
+    cmds.push(Command::SetShapeKind {
+        shape: g.id,
+        kind: ShapeKind::Group {
+            children: children.to_vec(),
+        },
+    });
+    cmds.push(Command::SetObjectData {
+        shape: g.id,
+        data: with_data(g.data.clone(), &d),
+    });
+    cmds
+}
+
+impl App {
     /// The selected dimensions.
     pub fn selected_dimensions(&self) -> Vec<(ShapeId, Dimension)> {
         self.selection
@@ -1457,12 +1650,14 @@ impl App {
             f(&mut self.dimension_style);
         }
         let mut cmds = Vec::new();
+        let mut changed = serde_json::Map::new();
         for (id, mut d) in self.selected_dimensions() {
             let before = d.style.clone();
             f(&mut d.style);
             if d.style == before {
                 continue;
             }
+            changed.extend(style_changes(&before, &d.style));
             let Some(g) = self.doc().find_shape(id).cloned() else {
                 continue;
             };
@@ -1473,6 +1668,13 @@ impl App {
         }
         if let Err(e) = self.engine.run_batch("Dimension Style", &cmds) {
             self.status = e.to_string();
+            return;
+        }
+        // A macro being recorded sets the same on the dimensions selected
+        // when it plays back (#4026).
+        if !changed.is_empty() {
+            let style = serde_json::Value::Object(changed).to_string();
+            self.note_recorded_line(&format!("ActiveSelection.SetDimensionStyle({style});\n"));
         }
     }
 
@@ -1725,28 +1927,44 @@ impl App {
 
 impl App {
     /// The nearest segment of an object on the page within 6 pixels of
-    /// `p`: its two ends (page space).
-    pub fn segment_ends_at(&self, p: Point) -> Option<(Point, Point)> {
+    /// `p`: its two ends, the segment itself and the nearest point on it
+    /// (page space).
+    fn dimension_segment_at(
+        &self,
+        p: Point,
+    ) -> Option<(Point, Point, tracedraw_core::geometry::PathSeg, Point)> {
         use tracedraw_core::geometry::{ParamCurve, ParamCurveNearest};
-        let tol = 6.0 / self.view.zoom as f64;
-        let mut best: Option<(Point, Point, f64)> = None;
+        let tol = 6.0 / self.view.zoom.max(1e-6) as f64;
+        let mut shapes = Vec::new();
         for layer in self.page_layers() {
             if !layer.visible || layer.locked {
                 continue;
             }
             for s in &layer.shapes {
-                if !s.visible || !self.visual_bounds(s).inflate(tol, tol).contains(p) {
-                    continue;
-                }
-                for seg in s.page_path().segments() {
-                    let d = seg.nearest(p, 1e-6).distance_sq.sqrt();
-                    if d <= tol && best.is_none_or(|b| d < b.2) {
-                        best = Some((seg.start(), seg.end(), d));
-                    }
+                collect_measurable_shapes(s, Affine::IDENTITY, &mut shapes);
+            }
+        }
+        let mut best: Option<(Point, Point, tracedraw_core::geometry::PathSeg, Point, f64)> = None;
+        for (s, parent) in shapes {
+            let path = parent * s.page_path();
+            if !path.bounding_box().inflate(tol, tol).contains(p) {
+                continue;
+            }
+            for seg in path.segments() {
+                let near = seg.nearest(p, 1e-6);
+                let d = near.distance_sq.sqrt();
+                if d <= tol && best.is_none_or(|b| d < b.4) {
+                    best = Some((seg.start(), seg.end(), seg, seg.eval(near.t), d));
                 }
             }
         }
-        best.map(|(a, b, _)| (a, b))
+        best.map(|(a, b, seg, on, _)| (a, b, seg, on))
+    }
+
+    /// The nearest segment of an object on the page near `p`: its two ends
+    /// (page space).
+    pub fn segment_ends_at(&self, p: Point) -> Option<(Point, Point)> {
+        self.dimension_segment_at(p).map(|(a, b, _, _)| (a, b))
     }
 
     /// The two points a linear dimension tool measures between, from the
@@ -1850,7 +2068,20 @@ impl App {
     pub fn dimension_input(&mut self, response: &egui::Response, p: Point) {
         use crate::tools::Tool;
         use egui::PointerButton;
+        let raw = p;
         let p = self.snap_point(p);
+        if self.tool == Tool::SegmentDimension && self.dimension_points.is_empty() {
+            if let Some((_, _, seg, on)) = self
+                .dimension_segment_at(p)
+                .or_else(|| self.dimension_segment_at(raw))
+            {
+                self.snap_mark.set(Some(crate::snap_points::Target {
+                    point: on,
+                    mode: crate::snap_points::SnapMode::Edge,
+                    edge: Some(seg),
+                }));
+            }
+        }
         let ctrl = response
             .ctx
             .input(|i| i.modifiers.command || i.modifiers.ctrl);
@@ -1859,18 +2090,38 @@ impl App {
         if !angular {
             if response.drag_started_by(PointerButton::Primary) && self.dimension_points.is_empty()
             {
-                // Where the button went down, not where the drag was seen.
-                let origin = response
+                let raw_origin = response
                     .ctx
                     .input(|i| i.pointer.press_origin())
-                    .map(|o| self.snap_point(self.view.to_page(o)))
-                    .unwrap_or(p);
+                    .map(|o| self.view.to_page(o))
+                    .unwrap_or(raw);
+                let origin = self.snap_point(raw_origin);
+                if self.tool == Tool::SegmentDimension {
+                    if let Some((a, b)) = self
+                        .segment_ends_at(origin)
+                        .or_else(|| self.segment_ends_at(raw_origin))
+                    {
+                        self.dimension_points = vec![a, b];
+                        self.dimension_dragging = true;
+                        return;
+                    }
+                }
                 self.dimension_points.push(origin);
                 self.dimension_dragging = true;
                 return;
             }
             if response.drag_stopped() && self.dimension_dragging {
                 self.dimension_dragging = false;
+                if self.tool == Tool::SegmentDimension && self.dimension_points.len() == 2 {
+                    let (a, b) = (self.dimension_points[0], self.dimension_points[1]);
+                    let tol = 3.0 / self.view.zoom.max(1e-6) as f64;
+                    if (p - a).hypot() > tol && (p - b).hypot() > tol {
+                        self.dimension_points.clear();
+                        let (a, b) = self.measured_pair(a, b);
+                        self.create_dimension(a, b, p);
+                    }
+                    return;
+                }
                 let start = self.dimension_points.first().copied();
                 if start.is_some_and(|s| (p - s).hypot() > 1e-6) {
                     self.dimension_points.push(p);
@@ -1884,7 +2135,7 @@ impl App {
             return;
         }
         if self.tool == Tool::SegmentDimension && self.dimension_points.is_empty() {
-            if let Some((a, b)) = self.segment_ends_at(p) {
+            if let Some((a, b)) = self.segment_ends_at(p).or_else(|| self.segment_ends_at(raw)) {
                 self.dimension_points = vec![a, b];
                 return;
             }
@@ -3666,6 +3917,42 @@ mod tests {
             },
         );
         assert_eq!(ang.value_text(Units::Millimeters), "90.0\u{b0}");
+    }
+
+    /// Feet and inches (#4056): engineering with decimal inches,
+    /// architectural with fractional ones, whatever the units; inches
+    /// rounding up to 12 carry into the feet.
+    #[test]
+    fn feet_and_inches_label_lengths() {
+        assert_eq!(feet_inches_text(27.5, false, 1), "2' 3.5\"");
+        assert_eq!(feet_inches_text(27.5, true, 3), "2' 3 1/2\"");
+        assert_eq!(feet_inches_text(9.25, true, 2), "9 1/4\"");
+        assert_eq!(feet_inches_text(23.999, false, 2), "2' 0.00\"");
+        assert_eq!(feet_inches_text(36.0, true, 4), "3' 0\"");
+        assert_eq!(feet_inches_text(-14.0, false, 0), "-1' 2\"");
+        let mut style = DimensionStyle {
+            units: "mm".into(),
+            precision: 3,
+            ..Default::default()
+        };
+        style.set_notation(Notation::Architectural);
+        assert_eq!(style.notation(), Notation::Architectural);
+        let d = Dimension::new(
+            Measure::Linear {
+                a: Point::ZERO,
+                b: Point::new(25.4 * 27.5, 0.0),
+                at: Point::new(0.0, 5.0),
+            },
+            style.clone(),
+        );
+        assert_eq!(d.value_text(Units::Millimeters), "2' 3 1/2\"");
+        style.set_notation(Notation::Engineering);
+        style.precision = 1;
+        let d = Dimension { style, ..d };
+        assert_eq!(d.value_text(Units::Millimeters), "2' 3.5\"");
+        for n in Notation::ALL {
+            assert!(!n.sample(2).is_empty());
+        }
     }
 
     /// Options > Tools > Angular Dimension: new angular dimensions take

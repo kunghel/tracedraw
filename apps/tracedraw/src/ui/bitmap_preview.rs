@@ -97,6 +97,24 @@ fn shrink(img: RgbaImage, side: u32) -> (RgbaImage, f32) {
     (small, scale)
 }
 
+/// How the picture of an object with transform `t` is mirrored on the
+/// page, across (left to right) and up and down: its picture is made in
+/// the object's own space, scaled but neither turned nor mirrored. A
+/// mirror with a turn that is not a quarter turn reads as one across.
+pub fn page_flips(t: tracedraw_core::Affine) -> (bool, bool) {
+    let [a, b, c, d, _, _] = t.as_coeffs();
+    let det = a * d - b * c;
+    if !det.is_finite() || det.abs() < 1e-12 {
+        return (false, false);
+    }
+    let scale = a.abs().max(b.abs()).max(c.abs()).max(d.abs());
+    if b.abs() <= 1e-9 * scale && c.abs() <= 1e-9 * scale {
+        (a < 0.0, d < 0.0)
+    } else {
+        (det < 0.0, false)
+    }
+}
+
 /// A copy of the source at most `side` pixels across, made once per
 /// source and size.
 pub fn copy_of(app: &App, ctx: &egui::Context, src: &Source, side: u32) -> Option<Thumb> {
@@ -125,6 +143,11 @@ pub fn copy_of(app: &App, ctx: &egui::Context, src: &Source, side: u32) -> Optio
                 (*shape, key, stack.png.clone(), before)
             }
         };
+    let flips = app
+        .doc()
+        .find_shape(shape)
+        .map_or((false, false), |s| page_flips(s.transform));
+    let key = settings_key(&(key, flips));
     if let Some(t) = ctx.data(|d| d.get_temp::<Thumb>(cache)) {
         if t.shape == shape && t.key == key {
             return Some(t);
@@ -133,6 +156,14 @@ pub fn copy_of(app: &App, ctx: &egui::Context, src: &Source, side: u32) -> Optio
     let (mut small, scale) = shrink(crate::bitmap_fx::decode(&png)?, side);
     for e in before.iter().filter(|e| e.visible) {
         small = crate::fx::apply_effect(&small, &crate::fx::scaled(e, scale));
+    }
+    // Shown the way round it lies on the page: a mirrored object's
+    // picture is made unmirrored and was shown so in the preview (#3983).
+    if flips.0 {
+        image::imageops::flip_horizontal_in_place(&mut small);
+    }
+    if flips.1 {
+        image::imageops::flip_vertical_in_place(&mut small);
     }
     let tex = ctx.load_texture(
         "bitmap_preview_before",
@@ -184,4 +215,31 @@ pub fn settings_key(v: &impl std::fmt::Debug) -> u64 {
     let mut h = std::collections::hash_map::DefaultHasher::new();
     format!("{v:?}").hash(&mut h);
     h.finish()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::page_flips;
+    use tracedraw_core::Affine;
+
+    /// The effect dialogs show a mirrored object's picture mirrored, as it
+    /// lies on the page (#3983).
+    #[test]
+    fn previews_show_a_mirrored_object_the_way_round_it_lies() {
+        assert_eq!(page_flips(Affine::scale(2.0)), (false, false));
+        assert_eq!(
+            page_flips(Affine::scale_non_uniform(-1.0, 1.0)),
+            (true, false)
+        );
+        assert_eq!(
+            page_flips(Affine::scale_non_uniform(1.0, -3.0)),
+            (false, true)
+        );
+        assert_eq!(page_flips(Affine::rotate(0.5)), (false, false));
+        assert_eq!(
+            page_flips(Affine::rotate(0.5) * Affine::scale_non_uniform(-1.0, 1.0)),
+            (true, false)
+        );
+        assert_eq!(page_flips(Affine::scale(0.0)), (false, false));
+    }
 }

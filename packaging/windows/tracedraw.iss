@@ -40,6 +40,14 @@ ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 #endif
 PrivilegesRequiredOverridesAllowed=dialog
+; Close only TraceDraw's own programs that hold files to be replaced, not
+; Explorer, which loads the thumbnail handler (that file is moved aside
+; instead, see MoveAsideInUse below, #3816).
+CloseApplicationsFilter=*.exe
+; The setup always writes a log (Setup Log <date> #<n>.txt in the user's
+; Temp folder), also when an older TraceDraw starts it without /LOG: a
+; quiet update that rolled back left nothing to say why (#3816).
+SetupLogging=yes
 ChangesAssociations=yes
 ChangesEnvironment=yes
 ; The wizard runs in the system's language when Inno Setup has it, else
@@ -238,6 +246,7 @@ begin
       $1F: Result := 'tr';
       $05: Result := 'cs';
       $54: Result := 'lo';
+      $2A: Result := 'vi';
     else
       Result := '';
     end;
@@ -289,6 +298,7 @@ begin
   AddAppLanguage('tr', 'Türkçe');
   AddAppLanguage('cs', 'Čeština');
   AddAppLanguage('lo', 'ພາສາລາວ');
+  AddAppLanguage('vi', 'Tiếng Việt');
   SystemCode := AppLanguageForLangId(GetUILanguage);
   if SystemCode = '' then
     SystemCode := 'en';
@@ -312,6 +322,59 @@ begin
   if (LanguageCombo <> nil) and (LanguageCombo.ItemIndex >= 0) and
      (LanguageCombo.ItemIndex < LanguageCodes.Count) then
     Result := LanguageCodes[LanguageCombo.ItemIndex];
+end;
+
+// The thumbnail handler of the copy installed before is loaded by Explorer
+// whenever it shows .cdr or .tdraw pictures, and a file in use stopped a
+// quiet update with no word (Help > Updates runs this setup with
+// /SUPPRESSMSGBOXES, which answers Abort; restartreplace needs
+// administrative rights, which an install for the current user has not,
+// #3816). A loaded file can still be renamed, so it is moved aside before
+// the files go in; the copies moved aside are deleted at the end when
+// nothing holds them any more, else by TraceDraw at its next start.
+procedure MoveAsideInUse(Name: String);
+var
+  Path, Aside: String;
+  N: Integer;
+begin
+  Path := ExpandConstant('{app}\') + Name;
+  if not FileExists(Path) then
+    exit;
+  if DeleteFile(Path) then
+    exit;
+  N := 0;
+  repeat
+    N := N + 1;
+    Aside := Path + '.' + IntToStr(N) + '.old';
+  until (not FileExists(Aside)) or (N > 99);
+  if RenameFile(Path, Aside) then
+    Log('Moved ' + Path + ' aside to ' + Aside)
+  else
+    Log('Could not move ' + Path + ' aside');
+end;
+
+procedure DeleteMovedAside(Name: String);
+var
+  FindRec: TFindRec;
+begin
+  if FindFirst(ExpandConstant('{app}\') + Name + '.*.old', FindRec) then
+  begin
+    try
+      repeat
+        DeleteFile(ExpandConstant('{app}\') + FindRec.Name);
+      until not FindNext(FindRec);
+    finally
+      FindClose(FindRec);
+    end;
+  end;
+end;
+
+procedure CurStepChanged(CurStep: TSetupStep);
+begin
+  if CurStep = ssInstall then
+    MoveAsideInUse('tracedraw_thumbnailer.dll')
+  else if CurStep = ssPostInstall then
+    DeleteMovedAside('tracedraw_thumbnailer.dll');
 end;
 
 // Help > Updates > Install runs this setup with /relaunch=1: the new

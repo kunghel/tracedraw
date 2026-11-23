@@ -387,6 +387,11 @@ class Transparency {
 
 class __Geo {
   _b() { return __call('vg_bounds', { ids: this._ids() }); }
+  // The dimensions among these objects: their label's size in points,
+  // and any setting of their style by the name it is saved with (#4026).
+  get LabelSize() { const ids = this._ids(); const s = ids.length ? __call('dimension_style', { id: ids[0] }) : null; return s ? s.text_size : 0; }
+  set LabelSize(v) { this.SetDimensionStyle({ text_size: Number(v) }); }
+  SetDimensionStyle(style) { return __call('set_dimension_style', { ids: this._ids(), style: style }).count; }
   _rp(ref) { return __refPoint(this._b(), ref); }
   get PositionX() { return __un(this._rp()[0]); }
   get PositionY() { return __un(this._rp()[1]); }
@@ -1348,7 +1353,7 @@ class __Documents {
   [Symbol.iterator]() { return __iter([new Document()]); }
 }
 class __Window {
-  get ActiveView() { return { Zoom: 100, SetViewArea() { }, ToFitPage() { }, ToFitSelection() { } }; }
+  get ActiveView() { return new __View(); }
   Refresh() { }
   Activate() { }
 }
@@ -1386,6 +1391,12 @@ const Application = {
   // The layer new objects go on; there is no virtual layer apart (#2165).
   get ActiveVirtualLayer() { return new Document().ActiveLayer; },
   get ActiveWindow() { return new __Window(); },
+  // Zoom To Fit, Zoom To Page, Zoom To Selection and Copy Visible Area,
+  // as the program's own scripts call them (#4020).
+  ZoomToFit() { new __View().ToFitAllObjects(); },
+  ZoomToPage() { new __View().ToFitPage(); },
+  ZoomToSelection() { new __View().ToFitSelection(); },
+  CopyVisibleArea() { new __View().CopyVisibleArea(); },
   // The installed font families, by name (#2165).
   get FontList() { return __fontList(); },
   get Documents() { return new __Documents(); },
@@ -1490,9 +1501,12 @@ class __View {
   set Type(v) { __call('vg_view', { simulate_overprints: v === cdrEnhancedViewWithOverprints }); }
   SetViewPoint() { }
   SetViewArea() { }
-  ToFitPage() { }
-  ToFitSelection() { }
-  ToFitAllObjects() { }
+  // Zoom To Page, Zoom To Selection and Zoom To Fit (#4020).
+  ToFitPage() { __call('view_step', { step: 'fit_page' }); }
+  ToFitSelection() { __call('view_step', { step: 'fit_selection' }); }
+  ToFitAllObjects() { __call('view_step', { step: 'fit_all' }); }
+  // Edit > Copy Visible Area: the window's view on the clipboard.
+  CopyVisibleArea() { __call('view_step', { step: 'copy_visible_area' }); }
   Activate() { }
 }
 __def(__Window, 'ActiveView', function () { return new __View(); });

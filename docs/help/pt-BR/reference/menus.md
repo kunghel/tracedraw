@@ -99,6 +99,7 @@ próprios atalhos; veja
 | [[menu.view.navigator]] | [Desfazer, zoom e deslocamento](../get-started/undo-and-views.md#views) |
 | [[menu.view.proof_colors]] | [Gerenciamento de cores](../color/color-management.md#proof) |
 | [[menu.view.simulate_overprints]] | [Gerenciamento de cores](../color/color-management.md#proof) |
+| [[menu.view.separations]] | [Gerenciamento de cores](../color/color-management.md#proof) |
 | [[menu.view.rasterize_complex_effects]] | [Réguas, grades e linhas-guia](../pages-layout/guidelines-and-grid.md) |
 | [[menu.view.page]] | [Réguas, grades e linhas-guia](../pages-layout/guidelines-and-grid.md) |
 | [[menu.view.page_border]] | [Réguas, grades e linhas-guia](../pages-layout/guidelines-and-grid.md) |
@@ -226,6 +227,15 @@ próprios atalhos; veja
 | [[menu.object.front_minus_back]] | [Combinar formas: soldar, aparar e interseção](../lines-shapes/shaping.md) |
 | [[menu.object.back_minus_front]] | [Combinar formas: soldar, aparar e interseção](../lines-shapes/shaping.md) |
 | [[menu.object.boundary]] | [Combinar formas: soldar, aparar e interseção](../lines-shapes/shaping.md) |
+| [[menu.object.break_pieces]] | [Combinar formas: soldar, aparar e interseção](../lines-shapes/shaping.md) |
+| [[menu.object.merge_colors]] | [Combinar formas: soldar, aparar e interseção](../lines-shapes/shaping.md) |
+| [[menu.object.cut_to_top]] | [Combinar formas: soldar, aparar e interseção](../lines-shapes/shaping.md) |
+| [[menu.object.piece_outlines]] | [Combinar formas: soldar, aparar e interseção](../lines-shapes/shaping.md) |
+| [[menu.object.exclude]] | [Combinar formas: soldar, aparar e interseção](../lines-shapes/shaping.md) |
+| [[menu.object.combine_live]] | [Combinar formas: soldar, aparar e interseção](../lines-shapes/shaping.md) |
+| [[menu.object.cut_below]] | [Combinar formas: soldar, aparar e interseção](../lines-shapes/shaping.md) |
+| [[menu.object.cut_grid]] | [Combinar formas: soldar, aparar e interseção](../lines-shapes/shaping.md) |
+| [[menu.object.remove_strays]] | [Combinar formas: soldar, aparar e interseção](../lines-shapes/shaping.md) |
 | [[menu.object.shaping_docker]] | [Combinar formas: soldar, aparar e interseção](../lines-shapes/shaping.md) |
 | [[menu.object.combine]] | [Organizar objetos e camadas](../objects/objects-and-layers.md) |
 | [[menu.object.break_apart]] | [Organizar objetos e camadas](../objects/objects-and-layers.md) |

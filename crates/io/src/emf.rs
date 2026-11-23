@@ -68,6 +68,41 @@ pub fn install() {
     });
 }
 
+/// Pick a Windows GDI `(charset, Encoding)` that encodes every character of
+/// `spans` without loss; `None` when the text mixes scripts no single
+/// 8-bit/DBCS code page covers (it then exports to WMF as exact curves
+/// instead of turning letters into `?`).
+fn pick_wmf_charset(spans: &[TextSpan]) -> Option<(u8, &'static encoding_rs::Encoding)> {
+    use encoding_rs::*;
+    let text: String = spans.iter().map(|s| s.text.as_str()).collect();
+    if text.is_ascii() {
+        return Some((0, WINDOWS_1252));
+    }
+    const CANDIDATES: &[(u8, &Encoding)] = &[
+        (0, WINDOWS_1252),
+        (204, WINDOWS_1251),
+        (238, WINDOWS_1250),
+        (161, WINDOWS_1253),
+        (162, WINDOWS_1254),
+        (163, WINDOWS_1258),
+        (177, WINDOWS_1255),
+        (178, WINDOWS_1256),
+        (186, WINDOWS_1257),
+        (222, WINDOWS_874),
+        (134, GBK),
+        (128, SHIFT_JIS),
+        (136, BIG5),
+        (129, EUC_KR),
+    ];
+    for &(cs, enc) in CANDIDATES {
+        let (_, _, unmappable) = enc.encode(&text);
+        if !unmappable {
+            return Some((cs, enc));
+        }
+    }
+    None
+}
+
 /// Build a document with every imported object on one layer.
 pub fn to_document(imp: Imported, title: &str) -> tracedraw_core::Document {
     let mut doc = tracedraw_core::Document::new(title, imp.size);
@@ -149,6 +184,10 @@ struct Font {
     italic: bool,
     underline: bool,
     strikeout: bool,
+    /// Windows GDI `lfCharSet` (0 ANSI, 1 default, 128 Shift-JIS, 129 Hangul,
+    /// 134 GBK, 136 Big5, 161 Greek, 162 Turkish, 163 Vietnamese, 177 Hebrew,
+    /// 178 Arabic, 186 Baltic, 204 Russian, 222 Thai, 238 East Europe).
+    charset: u8,
     /// Tenths of a degree, counter-clockwise.
     escapement: f64,
 }
@@ -162,9 +201,77 @@ impl Default for Font {
             italic: false,
             underline: false,
             strikeout: false,
+            charset: 1,
             escapement: 0.0,
         }
     }
+}
+
+fn charset_encoding(charset: u8) -> Option<&'static encoding_rs::Encoding> {
+    use encoding_rs::*;
+    Some(match charset {
+        128 => SHIFT_JIS,
+        129 | 130 => EUC_KR,
+        134 => GBK,
+        136 => BIG5,
+        161 => WINDOWS_1253,
+        162 => WINDOWS_1254,
+        163 => WINDOWS_1258,
+        177 => WINDOWS_1255,
+        178 => WINDOWS_1256,
+        186 => WINDOWS_1257,
+        204 => WINDOWS_1251,
+        222 => WINDOWS_874,
+        238 => WINDOWS_1250,
+        _ => return None,
+    })
+}
+
+/// Heuristic for single-byte GDI strings marked `DEFAULT_CHARSET` (1) or
+/// `ANSI_CHARSET` (0) on Cyrillic systems: Cyrillic words are runs of
+/// `0xC0..=0xFF` (plus `0xA8`/`0xB8`) without ASCII Latin letters inside
+/// the same word, whereas Western CP1252 words mix ASCII letters with a
+/// few accented high bytes (`João`).
+fn looks_like_cp1251(bytes: &[u8]) -> bool {
+    let is_cyr_byte = |b: u8| b >= 0xC0 || b == 0xA8 || b == 0xB8;
+    let cp1252_hole = |b: u8| matches!(b, 0x81 | 0x8D | 0x8F | 0x90 | 0x9D);
+    if bytes.iter().any(|&b| cp1252_hole(b)) && bytes.iter().any(|&b| is_cyr_byte(b)) {
+        return true;
+    }
+    let mut pure_cyr_words = 0usize;
+    let mut mixed_words = 0usize;
+    for word in bytes.split(|&b| b.is_ascii_whitespace() || b.is_ascii_punctuation()) {
+        let cyr = word.iter().filter(|&&b| is_cyr_byte(b)).count();
+        if cyr == 0 {
+            continue;
+        }
+        let asc = word.iter().filter(|&&b| b.is_ascii_alphabetic()).count();
+        if asc > 0 {
+            mixed_words += 1;
+        } else if cyr >= 2 {
+            pure_cyr_words += 1;
+        }
+    }
+    pure_cyr_words > 0 && pure_cyr_words > mixed_words
+}
+
+/// Decode an 8-bit GDI string according to its `LOGFONT.lfCharSet`.
+fn decode_gdi_bytes(bytes: &[u8], charset: u8) -> String {
+    if charset == 2 {
+        return bytes.iter().map(|&b| b as char).collect();
+    }
+    if let Some(enc) = charset_encoding(charset) {
+        return enc.decode_without_bom_handling(bytes).0.into_owned();
+    }
+    if let Ok(s) = std::str::from_utf8(bytes) {
+        return s.to_string();
+    }
+    let enc = if looks_like_cp1251(bytes) {
+        encoding_rs::WINDOWS_1251
+    } else {
+        encoding_rs::WINDOWS_1252
+    };
+    enc.decode_without_bom_handling(bytes).0.into_owned()
 }
 
 #[derive(Clone, Debug)]
@@ -734,6 +841,57 @@ impl<'a> Player<'a> {
         s.fill = Fill::Solid(self.dc.text_color);
         s.stroke = None;
         self.emit(s);
+    }
+
+    /// Emit a run of raw glyph indices (`ETO_GLYPH_INDEX`): resolves back
+    /// to editable Unicode text when the font's `cmap` covers every glyph,
+    /// else emits exact vector outlines so shaped non-Latin runs never
+    /// turn into `.notdef` question marks.
+    fn glyph_run(&mut self, x: f64, y: f64, gids: &[u16], adv_logical: &[f64]) {
+        if gids.is_empty() || self.shapes.len() >= MAX_SHAPES {
+            return;
+        }
+        let f = self.dc.font.clone();
+        let scale = self.scale();
+        let em_mm = if f.height < 0.0 {
+            -f.height * scale
+        } else if f.height > 0.0 {
+            f.height * scale * 0.85
+        } else {
+            12.0 * scale
+        };
+        let adv_mm: Vec<f64> = adv_logical.iter().map(|d| d * scale).collect();
+        match tracedraw_core::document::text_outline::resolve_glyph_indices(
+            &tracedraw_core::document::text_outline::GlyphRunRequest {
+                family: &f.face,
+                bold: f.bold,
+                italic: f.italic,
+                em_mm,
+                gids,
+                advances_mm: &adv_mm,
+            },
+        ) {
+            Some(tracedraw_core::document::text_outline::ResolvedGlyphRun::Text(s)) => {
+                self.text(x, y, s);
+            }
+            Some(tracedraw_core::document::text_outline::ResolvedGlyphRun::Path(path)) => {
+                let origin = self.to_page(x, y);
+                let dy = match self.dc.text_align & 24 {
+                    24 => 0.0,
+                    8 => 0.2 * em_mm,
+                    _ => -0.8 * em_mm,
+                };
+                let rot = (f.escapement / 10.0).to_radians();
+                let mut s = self.new_shape(ShapeKind::Path { path, closed: true });
+                s.transform = Affine::translate(origin.to_vec2())
+                    * Affine::rotate(rot)
+                    * Affine::translate(Vec2::new(0.0, dy));
+                s.fill = Fill::Solid(self.dc.text_color);
+                s.stroke = None;
+                self.emit(s);
+            }
+            None => {}
+        }
     }
 
     /// A DIB (BITMAPINFOHEADER + pixels) placed in the logical rectangle.
@@ -1458,6 +1616,7 @@ impl Player<'_> {
                     italic: u8_at(r, 32) != 0,
                     underline: u8_at(r, 33) != 0,
                     strikeout: u8_at(r, 34) != 0,
+                    charset: u8_at(r, 35),
                     face: {
                         let f = utf16_at(r, 40, 32);
                         if f.is_empty() {
@@ -1474,14 +1633,40 @@ impl Player<'_> {
                 let (x, y) = (i32_at(r, 36) as f64, i32_at(r, 40) as f64);
                 let n = (u32_at(r, 44) as usize).min(100_000);
                 let off_s = u32_at(r, 48) as usize;
-                let text = if ty == 84 {
-                    utf16_at(r, off_s, n)
+                let opts = u32_at(r, 52);
+                let off_dx = u32_at(r, 72) as usize;
+                if opts & 0x0010 != 0 {
+                    // ETO_GLYPH_INDEX: 16-bit font glyph indices at `off_s`,
+                    // not UTF-16 code units.
+                    let gids: Vec<u16> = (0..n)
+                        .filter_map(|i| {
+                            let at = off_s.checked_add(i.checked_mul(2)?)?;
+                            (at + 2 <= r.len()).then(|| u16_at(r, at))
+                        })
+                        .collect();
+                    let dx_step = if opts & 0x2000 != 0 { 8usize } else { 4usize };
+                    let adv: Vec<f64> = if off_dx > 0 {
+                        (0..n)
+                            .filter_map(|i| {
+                                let at = off_dx.checked_add(i.checked_mul(dx_step)?)?;
+                                (at + 4 <= r.len()).then(|| i32_at(r, at) as f64)
+                            })
+                            .collect()
+                    } else {
+                        Vec::new()
+                    };
+                    self.glyph_run(x, y, &gids, &adv);
                 } else {
-                    r.get(off_s..off_s.saturating_add(n))
-                        .map(|s| s.iter().map(|b| *b as char).collect())
-                        .unwrap_or_default()
-                };
-                self.text(x, y, text);
+                    let text = if ty == 84 {
+                        utf16_at(r, off_s, n)
+                    } else {
+                        let charset = self.dc.font.charset;
+                        r.get(off_s..off_s.saturating_add(n))
+                            .map(|s| decode_gdi_bytes(s, charset))
+                            .unwrap_or_default()
+                    };
+                    self.text(x, y, text);
+                }
             }
             // Records with no effect on the geometry.
             1 | 13 | 15 | 16 | 20 | 21 | 23 | 26 | 28 | 29 | 31 | 32 | 41 | 48 | 49 | 50 | 51
@@ -1815,14 +2000,17 @@ impl Player<'_> {
             }
             0x02FB => {
                 // CREATEFONTINDIRECT: LOGFONT with 8-bit face name.
+                let charset = u8_at(r, p + 13);
                 let face: String = r
                     .get(p + 18..)
                     .map(|s| {
-                        s.iter()
+                        let raw: Vec<u8> = s
+                            .iter()
+                            .copied()
                             .take(32)
-                            .take_while(|b| **b != 0)
-                            .map(|b| *b as char)
-                            .collect()
+                            .take_while(|b| *b != 0)
+                            .collect();
+                        decode_gdi_bytes(&raw, charset)
                     })
                     .unwrap_or_default();
                 let font = Font {
@@ -1832,6 +2020,7 @@ impl Player<'_> {
                     italic: u8_at(r, p + 10) != 0,
                     underline: u8_at(r, p + 11) != 0,
                     strikeout: u8_at(r, p + 12) != 0,
+                    charset,
                     face: if face.is_empty() {
                         "Arial".into()
                     } else {
@@ -1902,9 +2091,10 @@ impl Player<'_> {
             0x0521 => {
                 // TEXTOUT: count, string, y, x.
                 let n = u16_at(r, p) as usize;
+                let charset = self.dc.font.charset;
                 let text: String = r
                     .get(p + 2..p + 2 + n)
-                    .map(|s| s.iter().map(|b| *b as char).collect())
+                    .map(|s| decode_gdi_bytes(s, charset))
                     .unwrap_or_default();
                 let o = p + 2 + n.div_ceil(2) * 2;
                 let (y, x) = (i16_at(r, o) as f64, i16_at(r, o + 2) as f64);
@@ -1919,11 +2109,29 @@ impl Player<'_> {
                 if opts & 0x6 != 0 {
                     o += 8;
                 }
-                let text: String = r
-                    .get(o..o + n)
-                    .map(|s| s.iter().map(|b| *b as char).collect())
-                    .unwrap_or_default();
-                self.text(x, y, text);
+                if opts & 0x0010 != 0 {
+                    let gids: Vec<u16> = (0..n)
+                        .filter_map(|i| {
+                            let at = o.checked_add(i.checked_mul(2)?)?;
+                            (at + 2 <= r.len()).then(|| u16_at(r, at))
+                        })
+                        .collect();
+                    let dx_at = o.saturating_add(n.saturating_mul(2));
+                    let adv: Vec<f64> = (0..n)
+                        .filter_map(|i| {
+                            let at = dx_at.checked_add(i.checked_mul(2)?)?;
+                            (at + 2 <= r.len()).then(|| i16_at(r, at) as f64)
+                        })
+                        .collect();
+                    self.glyph_run(x, y, &gids, &adv);
+                } else {
+                    let charset = self.dc.font.charset;
+                    let text: String = r
+                        .get(o..o + n)
+                        .map(|s| decode_gdi_bytes(s, charset))
+                        .unwrap_or_default();
+                    self.text(x, y, text);
+                }
             }
             0x0F43 | 0x0B41 | 0x0940 => {
                 // STRETCHDIB: rop(4) usage(2) srcH srcW srcY srcX dstH dstW dstY dstX, DIB.
@@ -2801,6 +3009,16 @@ impl EmfWriter<'_> {
         self.record(60, &[]);
     }
 
+    /// A path's box in logical units, left, top, right, bottom: the
+    /// bounds EMR_FILLPATH and EMR_STROKEPATH carry. Without them the
+    /// records are 8 bytes short and some readers drop the whole file.
+    fn bounds(&self, path: &BezPath) -> [i32; 4] {
+        let b = path.bounding_box();
+        let (x0, y0) = self.lg(Point::new(b.x0, b.y1));
+        let (x1, y1) = self.lg(Point::new(b.x1, b.y0));
+        [x0.min(x1), y0.min(y1), x0.max(x1), y0.max(y1)]
+    }
+
     fn bezier_to(&mut self, pts: &[Point; 3]) {
         let mut body = vec![0, 0, -1, -1, 3];
         for p in pts {
@@ -2830,7 +3048,8 @@ impl EmfWriter<'_> {
                 let b = self.brush(*c);
                 self.select(b);
                 self.path(path);
-                self.record(62, &[]);
+                let r = self.bounds(path);
+                self.record(62, &r);
                 self.delete(b);
             }
             Fill::Fountain(f) => self.fountain(path, f),
@@ -2839,14 +3058,16 @@ impl EmfWriter<'_> {
                 let b = self.brush(c);
                 self.select(b);
                 self.path(path);
-                self.record(62, &[]);
+                let r = self.bounds(path);
+                self.record(62, &r);
                 self.delete(b);
             }
         }
         if let Some(p) = pen {
             self.select(p);
             self.path(path);
-            self.record(64, &[]);
+            let r = self.bounds(path);
+            self.record(64, &r);
             self.select(0x8000_0008u32);
             self.delete(p);
         }
@@ -3212,6 +3433,56 @@ mod export_tests {
     use super::*;
     use tracedraw_core::{geometry::Rect, Document};
 
+    /// #3743: EMR_FILLPATH and EMR_STROKEPATH carry the path's bounds.
+    /// They were written 8 bytes long, without the bounds, and a word
+    /// processor showed the whole picture empty.
+    #[test]
+    fn fill_and_stroke_path_records_carry_their_bounds() {
+        let mut doc = Document::new("t", Size::new(100.0, 50.0));
+        let mut ids = doc.ids().clone();
+        let mut r = Shape::new(
+            ids.shape(),
+            ShapeKind::Rect {
+                rect: Rect::new(10.0, 20.0, 30.0, 40.0),
+                radius: 0.0,
+                corners: None,
+            },
+        );
+        r.fill = Fill::Solid(Color::rgb8(0, 0, 255));
+        r.stroke = Some(Stroke::new(Color::BLACK, 1.0));
+        doc.pages[0].layers[0].shapes.push(r);
+        doc.set_ids(ids);
+        let bytes = page_to_emf(&doc, 0);
+        let u32_at =
+            |o: usize| u32::from_le_bytes([bytes[o], bytes[o + 1], bytes[o + 2], bytes[o + 3]]);
+        let i32_at = |o: usize| u32_at(o) as i32;
+        let mut seen = Vec::new();
+        let mut o = 0;
+        while o + 8 <= bytes.len() {
+            let (ty, size) = (u32_at(o), u32_at(o + 4) as usize);
+            assert!(size >= 8 && o + size <= bytes.len(), "record {ty} at {o}");
+            if ty == 62 || ty == 64 {
+                assert_eq!(size, 24, "record {ty} without bounds");
+                let b = [
+                    i32_at(o + 8),
+                    i32_at(o + 12),
+                    i32_at(o + 16),
+                    i32_at(o + 20),
+                ];
+                // 10..30 mm across; 20..40 mm up, so 10..30 mm down a 50 mm page.
+                assert_eq!(b, [1000, 1000, 3000, 3000], "record {ty}");
+                seen.push(ty);
+            }
+            o += size;
+        }
+        assert_eq!(o, bytes.len());
+        assert_eq!(seen, [62, 64]);
+        // The file still reads back.
+        let mut ids2 = IdSource::default();
+        let imp = parse(&bytes, &mut ids2).expect("re-read");
+        assert!(!imp.shapes.is_empty());
+    }
+
     /// Only text a font record can show goes in as text: a paragraph in
     /// its frame went in as one long line, mirrored text upside down,
     /// and an outlined, unfilled or gradient-filled text lost its look.
@@ -3500,6 +3771,15 @@ mod export_tests {
 /// LOGFONT; bitmaps are 32-bit DIBs through STRETCHDIB. Live effects are
 /// expanded, clip frames are drawn unclipped (contents then frame).
 pub fn page_to_wmf(doc: &tracedraw_core::Document, page_index: usize) -> Vec<u8> {
+    page_to_wmf_with(doc, page_index, &WmfOptions::default())
+}
+
+/// [`page_to_wmf`] with the export's choices.
+pub fn page_to_wmf_with(
+    doc: &tracedraw_core::Document,
+    page_index: usize,
+    opts: &WmfOptions,
+) -> Vec<u8> {
     let doc = &*crate::for_export(doc, Some(page_index));
     let Some(page) = doc.pages.get(page_index) else {
         return Vec::new();
@@ -3512,6 +3792,7 @@ pub fn page_to_wmf(doc: &tracedraw_core::Document, page_index: usize) -> Vec<u8>
         max_record: 0,
         page_h: h,
         symbols: &doc.symbols,
+        solid_dashes: opts.solid_dashes,
     };
     // MM_ANISOTROPIC: the window below maps onto the frame of the
     // placeable header. In MM_TEXT programs such as Word took the twips
@@ -3558,6 +3839,42 @@ pub fn page_to_wmf(doc: &tracedraw_core::Document, page_index: usize) -> Vec<u8>
     out
 }
 
+/// The dashes of a dashed outline along `path` (page space) as open
+/// subpaths, to be drawn with a solid pen; None for a solid outline.
+/// The lengths are the pattern's multiples of the outline width (at
+/// least a hairline); dashes fitted to the corners stay fitted.
+fn wmf_dashes(path: &BezPath, s: &Stroke, scale: f64) -> Option<BezPath> {
+    let w = if s.scale_with_object {
+        s.width * scale
+    } else {
+        s.width
+    };
+    let w = if w.is_finite() {
+        w.max(Stroke::HAIRLINE)
+    } else {
+        Stroke::HAIRLINE
+    };
+    let mut dashes: Vec<f64> = s.dash.iter().map(|d| (d * w).max(0.0)).collect();
+    if dashes.is_empty()
+        || !dashes.iter().all(|d| d.is_finite())
+        || dashes.iter().sum::<f64>() <= 1e-9
+    {
+        return None;
+    }
+    if s.align_dashes {
+        return Some(tracedraw_core::shaping::aligned_dashes(path, &dashes));
+    }
+    if dashes.len() % 2 == 1 {
+        dashes = [dashes.clone(), dashes].concat();
+    }
+    // A dot (a dash of no length) is drawn by the pen's round cap; the
+    // flattened polyline needs two points, so it gets a tiny length.
+    for d in dashes.iter_mut().step_by(2) {
+        *d = d.max(1e-3);
+    }
+    Some(kurbo::dash(path.iter(), 0.0, &dashes).collect())
+}
+
 struct WmfWriter<'a> {
     recs: Vec<Vec<u8>>,
     /// Object slots in use; GDI gives a new object the lowest free slot.
@@ -3566,6 +3883,15 @@ struct WmfWriter<'a> {
     max_record: usize,
     page_h: f64,
     symbols: &'a [tracedraw_core::document::Symbol],
+    /// Dashed outlines go out as solid lines (#3819).
+    solid_dashes: bool,
+}
+
+/// Choices of the WMF export.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct WmfOptions {
+    /// Dashed and dotted outlines are written as solid lines (#3819).
+    pub solid_dashes: bool,
 }
 
 impl WmfWriter<'_> {
@@ -3640,12 +3966,19 @@ impl WmfWriter<'_> {
                 } else {
                     self.tw(w).max(1)
                 };
-                let style: i16 = match s.dash.len() {
-                    0 => 0,
-                    2 if s.dash[0] <= 1.5 => 2,
-                    2 => 1,
-                    4 => 3,
-                    _ => 4,
+                // A dashed outline is written as its dashes, each a line
+                // of its own with a solid pen (see `wmf_dashes`): a dashed
+                // pen style is drawn solid once the pen is wider than a
+                // pixel, and has no lengths of its own (#3741). The pen
+                // takes the outline's caps so each dash ends as drawn.
+                let style: i16 = if s.dash.is_empty() {
+                    0
+                } else {
+                    match s.cap {
+                        LineCap::Butt => 0x200,
+                        LineCap::Square => 0x100,
+                        LineCap::Round => 0,
+                    }
                 };
                 let [c0, c1] = Self::color_words(s.color);
                 self.rec(0x02FA, &[style, wt, wt, c0, c1]);
@@ -3740,6 +4073,22 @@ impl WmfWriter<'_> {
             self.delete(b);
         }
         if let Some(s) = stroke {
+            // Dashes written as one solid line when the export asks so.
+            let solid;
+            let s = if self.solid_dashes && !s.dash.is_empty() {
+                solid = Stroke {
+                    dash: Vec::new(),
+                    ..s.clone()
+                };
+                &solid
+            } else {
+                s
+            };
+            let dashed = wmf_dashes(path, s, scale);
+            let polys = match &dashed {
+                Some(d) => Self::polylines(d),
+                None => polys,
+            };
             let p = self.create_pen(Some(s), scale);
             self.select(p);
             for (pts, closed) in &polys {
@@ -3781,6 +4130,9 @@ impl WmfWriter<'_> {
             Fill::Fountain(f) => f.first_color(),
             _ => Color::BLACK,
         };
+        let Some((charset, enc)) = pick_wmf_charset(spans) else {
+            return;
+        };
         // LOGFONT: height, width, escapement, orientation, weight, italic,
         // underline, strikeout, charset, out/clip precision, quality,
         // pitch, face name (32 bytes).
@@ -3796,13 +4148,9 @@ impl WmfWriter<'_> {
         lf.push(first.italic as u8);
         lf.push(u8::from(first.underline.is_on()));
         lf.push(u8::from(first.strikethrough.is_on()));
-        lf.extend_from_slice(&[1, 0, 0, 0, 0]);
-        let mut face: Vec<u8> = first
-            .font_family
-            .chars()
-            .map(|ch| if ch.is_ascii() { ch as u8 } else { b'?' })
-            .take(31)
-            .collect();
+        lf.extend_from_slice(&[charset, 0, 0, 0, 0]);
+        let (face_cow, _, _) = enc.encode(&first.font_family);
+        let mut face: Vec<u8> = face_cow.iter().copied().take(31).collect();
         face.resize(32, 0);
         lf.extend_from_slice(&face);
         let f = self.alloc();
@@ -3824,16 +4172,8 @@ impl WmfWriter<'_> {
             }
             let local = Point::new(origin.x, origin.y - i as f64 * line_h / scale.max(1e-9));
             let (x, y) = self.pt(transform * local);
-            let bytes: Vec<u8> = line
-                .chars()
-                .map(|ch| {
-                    if (ch as u32) < 256 {
-                        ch as u32 as u8
-                    } else {
-                        b'?'
-                    }
-                })
-                .collect();
+            let (encoded, _, _) = enc.encode(line);
+            let bytes: Vec<u8> = encoded.into_owned();
             let mut body = Vec::new();
             body.extend_from_slice(&y.to_le_bytes());
             body.extend_from_slice(&x.to_le_bytes());
@@ -3940,7 +4280,7 @@ impl WmfWriter<'_> {
                 origin,
                 align,
                 ..
-            } if text_as_records(shape, transform) => {
+            } if text_as_records(shape, transform) && pick_wmf_charset(spans).is_some() => {
                 self.text(shape, transform, spans, *origin, *align)
             }
             ShapeKind::Bitmap { rect, png, .. } => {
@@ -3995,6 +4335,132 @@ impl WmfWriter<'_> {
 mod wmf_export_tests {
     use super::*;
     use tracedraw_core::{geometry::Rect, Document};
+
+    /// The records of a WMF body (after the two headers): function and
+    /// parameter words.
+    fn wmf_records(wmf: &[u8]) -> Vec<(u16, Vec<i16>)> {
+        let mut out = Vec::new();
+        let mut i = 40;
+        while i + 6 <= wmf.len() {
+            let words = u32::from_le_bytes([wmf[i], wmf[i + 1], wmf[i + 2], wmf[i + 3]]) as usize;
+            let func = u16::from_le_bytes([wmf[i + 4], wmf[i + 5]]);
+            let params = (0..words.saturating_sub(3))
+                .map(|k| i16::from_le_bytes([wmf[i + 6 + 2 * k], wmf[i + 7 + 2 * k]]))
+                .collect();
+            out.push((func, params));
+            if words < 3 {
+                break;
+            }
+            i += words * 2;
+        }
+        out
+    }
+
+    /// A dashed outline goes out as its dashes, each a line drawn with a
+    /// solid pen: a dashed pen style is drawn solid once the pen is
+    /// wider than a pixel, so placed in a document the line came out
+    /// continuous (#3741).
+    #[test]
+    fn a_dashed_outline_is_written_as_its_dashes() {
+        let mut doc = Document::new("t", Size::new(120.0, 50.0));
+        let mut ids = doc.ids().clone();
+        let mut path = tracedraw_core::geometry::BezPath::new();
+        path.move_to((10.0, 25.0));
+        path.line_to((110.0, 25.0));
+        let mut line = Shape::new(
+            ids.shape(),
+            ShapeKind::Path {
+                path,
+                closed: false,
+            },
+        );
+        let mut st = Stroke::new(Color::BLACK, 1.0);
+        st.cap = LineCap::Butt;
+        st.dash = vec![4.0, 2.0];
+        line.stroke = Some(st);
+        line.fill = Fill::None;
+        doc.pages[0].layers[0].shapes.push(line);
+        doc.set_ids(ids);
+        let recs = wmf_records(&page_to_wmf(&doc, 0));
+        let pens: Vec<&Vec<i16>> = recs
+            .iter()
+            .filter(|(f, _)| *f == 0x02FA)
+            .map(|(_, p)| p)
+            .collect();
+        assert_eq!(pens.len(), 1, "{pens:?}");
+        // Solid, flat ends, 1 mm wide (57 twips).
+        assert_eq!(pens[0][0], 0x200);
+        assert_eq!(pens[0][1], 57);
+        let mut lines: Vec<&Vec<i16>> = recs
+            .iter()
+            .filter(|(f, _)| *f == 0x0325)
+            .map(|(_, p)| p)
+            .collect();
+        lines.sort_by_key(|p| p[1]);
+        // 100 mm at 4 mm on and 2 mm off: 17 dashes.
+        assert_eq!(lines.len(), 17);
+        let tw = |mm: f64| (mm / 25.4 * 1440.0).round() as i16;
+        let first = lines[0];
+        assert_eq!((first[1], first[first.len() - 2]), (tw(10.0), tw(14.0)));
+        let second = lines[1];
+        assert_eq!(second[1], tw(16.0));
+    }
+
+    /// With Dashes as Solid Lines, the dashed outline goes out as one
+    /// line with a solid pen (#3819).
+    #[test]
+    fn dashes_can_be_written_as_solid_lines() {
+        let mut doc = Document::new("t", Size::new(120.0, 50.0));
+        let mut ids = doc.ids().clone();
+        let mut path = tracedraw_core::geometry::BezPath::new();
+        path.move_to((10.0, 25.0));
+        path.line_to((110.0, 25.0));
+        let mut line = Shape::new(
+            ids.shape(),
+            ShapeKind::Path {
+                path,
+                closed: false,
+            },
+        );
+        let mut st = Stroke::new(Color::BLACK, 1.0);
+        st.cap = LineCap::Butt;
+        st.dash = vec![4.0, 2.0];
+        line.stroke = Some(st);
+        line.fill = Fill::None;
+        doc.pages[0].layers[0].shapes.push(line);
+        doc.set_ids(ids);
+        let opts = WmfOptions { solid_dashes: true };
+        let recs = wmf_records(&page_to_wmf_with(&doc, 0, &opts));
+        let lines = recs.iter().filter(|(f, _)| *f == 0x0325).count();
+        assert_eq!(lines, 1);
+        let pen = recs.iter().find(|(f, _)| *f == 0x02FA).map(|(_, p)| p[0]);
+        assert_eq!(pen, Some(0), "a solid pen");
+    }
+
+    /// A solid outline stays one line with a solid pen.
+    #[test]
+    fn a_solid_outline_stays_one_line() {
+        let mut doc = Document::new("t", Size::new(120.0, 50.0));
+        let mut ids = doc.ids().clone();
+        let mut path = tracedraw_core::geometry::BezPath::new();
+        path.move_to((10.0, 25.0));
+        path.line_to((110.0, 25.0));
+        let mut line = Shape::new(
+            ids.shape(),
+            ShapeKind::Path {
+                path,
+                closed: false,
+            },
+        );
+        line.stroke = Some(Stroke::new(Color::BLACK, 1.0));
+        line.fill = Fill::None;
+        doc.pages[0].layers[0].shapes.push(line);
+        doc.set_ids(ids);
+        let recs = wmf_records(&page_to_wmf(&doc, 0));
+        assert_eq!(recs.iter().filter(|(f, _)| *f == 0x0325).count(), 1);
+        let pen = recs.iter().find(|(f, _)| *f == 0x02FA).map(|(_, p)| p[0]);
+        assert_eq!(pen, Some(0));
+    }
 
     /// The export maps its twips onto the frame (MM_ANISOTROPIC), so
     /// programs that place it (Word, PowerPoint) show the whole page
@@ -4217,6 +4683,54 @@ mod wmf_export_tests {
                 assert_eq!(pm.pixels()[1].blue(), 255);
             }
             k => panic!("{k:?}"),
+        }
+    }
+
+    #[test]
+    fn wmf_and_gdi_text_preserve_non_latin_scripts_without_question_marks() {
+        let samples = [
+            "Позиция: Бумага А4, чёрная",
+            "Zażółć gęślą jaźń",
+            "Příliš žluťoučký kůň",
+            "Καλημέρα κόσμε",
+            "İstanbul Boğazı",
+            "Đà Nă\u{0303}ng, Viê\u{0323}t Nam",
+            "שלום עולם",
+            "مرحبا بالعالم",
+            "สวัสดีชาวโลก",
+            "表格数据：纸张",
+            "日本語の表",
+            "한국어 표 데이터",
+        ];
+        for sample in samples {
+            let mut doc = Document::new("t", Size::new(120.0, 40.0));
+            let mut ids = doc.ids().clone();
+            let mut t = Shape::new(
+                ids.shape(),
+                ShapeKind::Text {
+                    spans: vec![TextSpan::new(sample, "Arial", 12.0)],
+                    origin: Point::new(10.0, 20.0),
+                    frame: None,
+                    align: TextAlign::Left,
+                    para: ParagraphStyle::default(),
+                    on_path: None,
+                },
+            );
+            t.fill = Fill::Solid(Color::BLACK);
+            t.stroke = None;
+            doc.pages[0].layers[0].shapes.push(t);
+            doc.set_ids(ids);
+            let wmf = page_to_wmf(&doc, 0);
+            let mut ids2 = IdSource::default();
+            let imp = parse(&wmf, &mut ids2).expect("wmf parses");
+            assert_eq!(imp.shapes.len(), 1, "{sample}");
+            match &imp.shapes[0].kind {
+                ShapeKind::Text { spans, .. } => {
+                    assert_eq!(spans[0].text, sample, "round-trip for {sample}");
+                    assert!(!spans[0].text.contains('?'));
+                }
+                other => panic!("expected text for {sample}, got {other:?}"),
+            }
         }
     }
 }

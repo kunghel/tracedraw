@@ -1345,12 +1345,63 @@ fn container_xml(doc: &Document, previews: &Previews) -> String {
 }
 
 /// `META-INF/metadata.xml`: the format and the version that wrote the
-/// file (`CoreVersion`, in hundreds) and the title.
+/// file (`CoreVersion`, in hundreds), the title and the document
+/// information (#3411) under the standard XMP properties: author
+/// (`dc:creator`), subject (`dc:description`), keywords (`dc:subject`),
+/// copyright (`dc:rights`), notes (`exif:UserComment`) and rating
+/// (`xmp:Rating`); empty fields are left out.
 fn metadata_xml(v: Ver, doc: &Document) -> String {
+    let md = &doc.metadata;
+    let alt = |tag: &str, value: &str| {
+        format!(
+            "            <{tag}>\n                <rdf:Alt>\n                    <rdf:li xml:lang=\"x-default\">{}</rdf:li>\n                </rdf:Alt>\n            </{tag}>\n",
+            xml_escape(value)
+        )
+    };
+    let list = |tag: &str, kind: &str, values: Vec<&str>| {
+        let mut x = format!("            <{tag}>\n                <rdf:{kind}>\n");
+        for v in values {
+            x.push_str(&format!(
+                "                    <rdf:li>{}</rdf:li>\n",
+                xml_escape(v)
+            ));
+        }
+        x.push_str(&format!("                </rdf:{kind}>\n            </{tag}>\n"));
+        x
+    };
+    let mut info = String::new();
+    let author = md.author.trim();
+    if !author.is_empty() {
+        info.push_str(&list("dc:creator", "Seq", vec![author]));
+    }
+    if !md.subject.trim().is_empty() {
+        info.push_str(&alt("dc:description", md.subject.trim()));
+    }
+    let keywords: Vec<&str> = md
+        .keywords
+        .split([',', ';'])
+        .map(str::trim)
+        .filter(|k| !k.is_empty())
+        .collect();
+    if !keywords.is_empty() {
+        info.push_str(&list("dc:subject", "Bag", keywords));
+    }
+    if !md.copyright.trim().is_empty() {
+        info.push_str(&alt("dc:rights", md.copyright.trim()));
+    }
+    if !md.notes.trim().is_empty() {
+        info.push_str(&alt("exif:UserComment", md.notes.trim()));
+    }
+    if md.rating > 0 {
+        info.push_str(&format!(
+            "            <xmp:Rating>{}</xmp:Rating>\n",
+            md.rating.min(5)
+        ));
+    }
     format!(
-        "<?xml version=\"1.0\" encoding=\"UTF-8\" ?>\n<x:xmpmeta xmlns:x=\"adobe:ns:meta/\">\n    <rdf:RDF xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\">\n        <rdf:Description rdf:about=\"\" xmlns:dc=\"http://purl.org/dc/elements/1.1/\" xmlns:cdr=\"{METADATA_NS}\">\n            <dc:format>{PACKAGE_MEDIA_TYPE}</dc:format>\n            <cdr:CoreVersion>{}</cdr:CoreVersion>\n            <dc:title>\n                <rdf:Alt>\n                    <rdf:li xml:lang=\"x-default\">{}</rdf:li>\n                </rdf:Alt>\n            </dc:title>\n        </rdf:Description>\n    </rdf:RDF>\n</x:xmpmeta>\n",
+        "<?xml version=\"1.0\" encoding=\"UTF-8\" ?>\n<x:xmpmeta xmlns:x=\"adobe:ns:meta/\">\n    <rdf:RDF xmlns:rdf=\"http://www.w3.org/1999/02/22-rdf-syntax-ns#\">\n        <rdf:Description rdf:about=\"\" xmlns:dc=\"http://purl.org/dc/elements/1.1/\" xmlns:xmp=\"http://ns.adobe.com/xap/1.0/\" xmlns:exif=\"http://ns.adobe.com/exif/1.0/\" xmlns:cdr=\"{METADATA_NS}\">\n            <dc:format>{PACKAGE_MEDIA_TYPE}</dc:format>\n            <cdr:CoreVersion>{}</cdr:CoreVersion>\n{}{info}        </rdf:Description>\n    </rdf:RDF>\n</x:xmpmeta>\n",
         u32::from(v.0) * 100,
-        xml_escape(&doc.title)
+        alt("dc:title", &doc.title)
     )
 }
 
@@ -1737,7 +1788,8 @@ fn pref() -> Vec<u8> {
 fn fountain_type(kind: FountainKind) -> u8 {
     match kind {
         FountainKind::Linear => 1,
-        FountainKind::Radial => 2,
+        // Colour points are written as a radial gradient (`to_plain`).
+        FountainKind::Radial | FountainKind::Points => 2,
         FountainKind::Conical => 3,
         // A shaped gradient is written as a square one (`Fountain::to_plain`).
         FountainKind::Square | FountainKind::Shaped => 4,
@@ -2963,11 +3015,111 @@ fn stlt(v: Ver, uses: StyleUses) -> Vec<u8> {
     t.done()
 }
 
+/// The ink bytes (C, M, Y, K for each pixel, rows from the top) a CMYK
+/// picture is written with: the inks it was read with when they still
+/// fit its pixels (`Shape::picture_inks`, #1659), else its pixels taken to
+/// CMYK through the colour engine (the drawing's profiles, or the press
+/// model), as Convert Colors took them (#3699).
+fn cmyk_inks(s: &Shape, png: &[u8]) -> Option<Vec<u8>> {
+    use tracedraw_core::picture_inks::PictureInk;
+    let pm = tiny_skia::Pixmap::decode_png(png).ok()?;
+    let (w, h) = (pm.width() as usize, pm.height() as usize);
+    let n = w * h;
+    let kept = s
+        .picture_inks
+        .as_ref()
+        .filter(|i| i.fits(png) && i.inks == (0..4).map(PictureInk::Process).collect::<Vec<_>>());
+    // The planes are one grey picture, the four one under the other.
+    if let Some(planes) = kept.and_then(|i| tiny_skia::Pixmap::decode_png(&i.png).ok()) {
+        if planes.width() as usize == w && planes.height() as usize == h * 4 {
+            let g = planes.pixels();
+            let mut out = vec![0u8; n * 4];
+            for (at, px) in out.chunks_exact_mut(4).enumerate() {
+                for (ch, v) in px.iter_mut().enumerate() {
+                    *v = g.get(ch * n + at).map(|p| p.red()).unwrap_or(0);
+                }
+            }
+            return Some(out);
+        }
+    }
+    let grid = cmyk_grid();
+    let mut out = Vec::with_capacity(n * 4);
+    for p in pm.pixels() {
+        let p = p.demultiply();
+        out.extend_from_slice(&grid.ink([p.red(), p.green(), p.blue()]));
+    }
+    Some(out)
+}
+
+/// Grid points per channel of [`CmykGrid`].
+const CMYK_GRID: usize = 17;
+
+/// RGB to CMYK through the colour engine, sampled on a grid of
+/// `CMYK_GRID` points per channel and read by trilinear interpolation, so
+/// a large photo takes milliseconds.
+struct CmykGrid(Vec<[f32; 4]>);
+
+fn cmyk_grid() -> CmykGrid {
+    let n = CMYK_GRID;
+    let step = 255.0 / (n - 1) as f32;
+    let mut g = Vec::with_capacity(n * n * n);
+    for r in 0..n {
+        for gr in 0..n {
+            for b in 0..n {
+                let c = Color::rgb8(
+                    (r as f32 * step).round() as u8,
+                    (gr as f32 * step).round() as u8,
+                    (b as f32 * step).round() as u8,
+                )
+                .convert_to("CMYK");
+                g.push(match c {
+                    Color::Cmyk { c, m, y, k } => [c, m, y, k],
+                    _ => [0.0, 0.0, 0.0, 1.0],
+                });
+            }
+        }
+    }
+    CmykGrid(g)
+}
+
+impl CmykGrid {
+    /// The ink bytes of an RGB pixel, 0 for no ink and 255 for full.
+    fn ink(&self, rgb: [u8; 3]) -> [u8; 4] {
+        let n = CMYK_GRID;
+        let step = 255.0 / (n - 1) as f32;
+        let pos = |v: u8| {
+            let x = v as f32 / step;
+            let i = (x.floor() as usize).min(n - 2);
+            (i, x - i as f32)
+        };
+        let (ri, rf) = pos(rgb[0]);
+        let (gi, gf) = pos(rgb[1]);
+        let (bi, bf) = pos(rgb[2]);
+        let at = |r: usize, g: usize, b: usize| {
+            self.0.get((r * n + g) * n + b).copied().unwrap_or([0.0; 4])
+        };
+        let mut out = [0u8; 4];
+        for (ch, o) in out.iter_mut().enumerate() {
+            let lerp = |a: f32, b: f32, t: f32| a + (b - a) * t;
+            let c = |r, g, b| at(r, g, b)[ch];
+            let x00 = lerp(c(ri, gi, bi), c(ri + 1, gi, bi), rf);
+            let x10 = lerp(c(ri, gi + 1, bi), c(ri + 1, gi + 1, bi), rf);
+            let x01 = lerp(c(ri, gi, bi + 1), c(ri + 1, gi, bi + 1), rf);
+            let x11 = lerp(c(ri, gi + 1, bi + 1), c(ri + 1, gi + 1, bi + 1), rf);
+            let v = lerp(lerp(x00, x10, gf), lerp(x01, x11, gf), bf);
+            *o = (v * 255.0).round().clamp(0.0, 255.0) as u8;
+        }
+        out
+    }
+}
+
 /// A picture written as a `bmp ` record: its bytes, the box size in mm
 /// (as bits) it was written at, and the record's id and pixel size.
 struct WrittenImage {
     png: SharedBytes,
     size_mm: (u64, u64),
+    /// Written as a CMYK image (colour model 3).
+    cmyk: bool,
     record: (u32, u32, u32),
 }
 
@@ -2980,13 +3132,30 @@ struct WrittenImage {
 /// 8 bits, stride, bytes, 64 at 62) and one byte per pixel, 255 opaque,
 /// rows bottom-up padded to 4 bytes.
 /// Returns the record and the image's width and height in pixels.
+#[cfg(test)]
 pub(crate) fn bmp_record(id: u32, png: &[u8], size_mm: (f64, f64)) -> Option<(Vec<u8>, u32, u32)> {
+    bmp_record_with(id, png, size_mm, None)
+}
+
+/// [`bmp_record`], or with `inks` (C, M, Y and K bytes for each pixel,
+/// rows from the top, 0 for no ink) a CMYK image: colour model 3, 32
+/// bits, the four ink bytes of each pixel in that order, as the reading
+/// table has the CMYK images of files (#3699). The transparency block is
+/// the same.
+pub(crate) fn bmp_record_with(
+    id: u32,
+    png: &[u8],
+    size_mm: (f64, f64),
+    inks: Option<&[u8]>,
+) -> Option<(Vec<u8>, u32, u32)> {
     let pm = tiny_skia::Pixmap::decode_png(png).ok()?;
     let (w, h) = (pm.width(), pm.height());
     if w == 0 || h == 0 {
         return None;
     }
-    let stride = (w as usize * 24).div_ceil(32) * 4;
+    let inks = inks.filter(|i| i.len() == w as usize * h as usize * 4);
+    let (model, bpp) = if inks.is_some() { (3, 32) } else { (1, 24) };
+    let stride = (w as usize * bpp as usize).div_ceil(32) * 4;
     let mut pixels = vec![0u8; stride * h as usize];
     let src = pm.pixels();
     let mask_stride = (w as usize).div_ceil(4) * 4;
@@ -3009,8 +3178,21 @@ pub(crate) fn bmp_record(id: u32, png: &[u8], size_mm: (f64, f64)) -> Option<(Ve
             if let Some(m) = mask.get_mut(mask_at + x) {
                 *m = p.alpha();
             }
-            if let Some(px) = pixels.get_mut(at + x * 3..at + x * 3 + 3) {
-                px.copy_from_slice(&[p.blue(), p.green(), p.red()]);
+            match inks {
+                Some(ink) => {
+                    let from = (row * w as usize + x) * 4;
+                    if let (Some(px), Some(i)) = (
+                        pixels.get_mut(at + x * 4..at + x * 4 + 4),
+                        ink.get(from..from + 4),
+                    ) {
+                        px.copy_from_slice(i);
+                    }
+                }
+                None => {
+                    if let Some(px) = pixels.get_mut(at + x * 3..at + x * 3 + 3) {
+                        px.copy_from_slice(&[p.blue(), p.green(), p.red()]);
+                    }
+                }
             }
         }
     }
@@ -3042,12 +3224,12 @@ pub(crate) fn bmp_record(id: u32, png: &[u8], size_mm: (f64, f64)) -> Option<(Ve
         .u32((image_len - 40) as u32)
         .u32(0)
         .u32((image_len - pixels.len() - 40) as u32);
-    b.u32(1)
+    b.u32(model)
         .u32(1)
         .u32(w)
         .u32(h)
         .u32(1)
-        .u32(24)
+        .u32(bpp)
         .u32(stride as u32)
         .u32(pixels.len() as u32);
     b.u32(0)
@@ -3503,7 +3685,7 @@ fn run_style_json(v: Ver, sp: &TextSpan, fill: Option<&Fill>, tech: &fonts::Face
     format!(
         r#"{{"character":{{{}"angle":"0","outline":{},"RTL":{},"latin":{},"h_shift":"0","v_shift":"0","farEast":{}}}}}"#,
         fill,
-        character_outline_json(v),
+        character_outline_json(v, sp.outline.as_ref()),
         font_json(v, Some(sp), 178, tech),
         font_json(v, Some(sp), 0, tech),
         font_json(v, Some(sp), 128, tech)
@@ -3518,15 +3700,43 @@ const BLACK_SPEC: &str = "CMYK,USER,0,0,0,100,100,00000000-0000-0000-0000-000000
 /// every text of the files of versions 19 and 22 to 27 the program's
 /// recent releases save holds it (#1698; its 2019 release leaves it out
 /// up to 21).
-fn character_outline_json(v: Ver) -> String {
+///
+/// A run with an outline of its own (`outline`, #4055) writes its
+/// width, colour, joins, ends, mitre limit and whether it is drawn
+/// behind the fill; one without writes width 0, which leaves the
+/// object's outline on its characters.
+fn character_outline_json(v: Ver, outline: Option<&Stroke>) -> String {
+    use tracedraw_core::{LineCap, LineJoin};
     let screen = "0,0,45000000,60,0";
     let variable = if v.0 >= 19 {
         r#""variableAttributes":"0|0","#
     } else {
         ""
     };
+    let own = outline.filter(|s| s.width.is_finite() && s.width > 0.0);
+    let flag = |on: bool| if on { "1" } else { "0" };
+    let (color, width, behind, scale, caps, join, mitre) = match own {
+        Some(s) => (
+            colour_spec(s.color),
+            units(s.width).max(1),
+            flag(s.behind_fill),
+            flag(s.scale_with_object),
+            match s.cap {
+                LineCap::Butt => 0,
+                LineCap::Round => 1,
+                LineCap::Square => 2,
+            },
+            match s.join {
+                LineJoin::Miter => 0,
+                LineJoin::Round => 1,
+                LineJoin::Bevel => 2,
+            },
+            Stroke::miter_angle_from_ratio(s.miter_ratio()).to_string(),
+        ),
+        None => (BLACK_SPEC.to_string(), 0, "0", "0", 0, 0, "5".to_string()),
+    };
     format!(
-        r#"{{"overprint":"0","angle":"0","aspect":"100","dashDotSpec":"0","behindFill":"0","miterLimit":"5","justification":"0","dashAdjust":"0","rightArrow":"|0","screenSpec":"{screen}","overlapArrow":"0","shareArrow":"0","dotLength":"0","scaleWithObject":"0","matrix":"1,0,0,0,1,0","color":"{BLACK_SPEC}","leftArrow":"|0","projectMatrix":"1,0,0,0,1,0","leftArrowAttributes":"0|0|0|0|0|0|0","endCaps":"0","rightArrowAttributes":"0|0|0|0|0|0|0","joinType":"0",{variable}"width":"0"}}"#
+        r#"{{"overprint":"0","angle":"0","aspect":"100","dashDotSpec":"0","behindFill":"{behind}","miterLimit":"{mitre}","justification":"0","dashAdjust":"0","rightArrow":"|0","screenSpec":"{screen}","overlapArrow":"0","shareArrow":"0","dotLength":"0","scaleWithObject":"{scale}","matrix":"1,0,0,0,1,0","color":"{color}","leftArrow":"|0","projectMatrix":"1,0,0,0,1,0","leftArrowAttributes":"0|0|0|0|0|0|0","endCaps":"{caps}","rightArrowAttributes":"0|0|0|0|0|0|0","joinType":"{join}",{variable}"width":"{width}"}}"#
     )
 }
 
@@ -3705,7 +3915,7 @@ fn full_text_style(
         ),
         tabs = tabs,
         fill = fill_json(&colour),
-        outline = character_outline_json(v),
+        outline = character_outline_json(v, sp.and_then(|s| s.outline.as_ref())),
         rtl = font_json(v, sp, 178, tech),
         latin = font_json(v, sp, 0, tech),
         far = font_json(v, sp, 128, tech),
@@ -3805,7 +4015,9 @@ fn frame_record_7(n: u16, f: Size) -> Vec<u8> {
 
 /// The settings of a paragraph frame (version 16+ `txsm` frame record):
 /// the columns, each one's width and the gap after it (the last one's 0,
-/// one column as wide as the frame in the files seen), equal columns,
+/// one column as wide as the frame in the files seen; columns apart by a
+/// bar, `"556846,127000|556846,0"`, as a version 27 file of two columns
+/// lists them, #3506), equal columns,
 /// left to right, the text from the top (`v_justify` 0, the one value
 /// seen; `writes_frame` lets other vertical placings go out as lines).
 fn frame_json(f: Size, para: &tracedraw_core::ParagraphStyle) -> String {
@@ -3820,7 +4032,7 @@ fn frame_json(f: Size, para: &tracedraw_core::ParagraphStyle) -> String {
         .collect();
     format!(
         r#"{{"frame":{{"columns":"{}","equalWidthColumns":"1","rtlColumns":"0","v_justify":"0"}}}}"#,
-        columns.join(",")
+        columns.join("|")
     )
 }
 
@@ -4265,22 +4477,34 @@ impl<'a> Writer<'a> {
     /// record, as files of the program that reads them share one image
     /// among its copies; writing it once per object made a 17 MB file
     /// with repeated pictures hundreds of MB (#2923).
-    fn bitmap_id(&mut self, png: &SharedBytes, size_mm: (f64, f64)) -> Option<(u32, u32, u32)> {
+    ///
+    /// A CMYK picture (`Shape::cmyk_bitmap`) is written as a CMYK image
+    /// with its inks (`cmyk_inks`), so it opens as CMYK; it went out as
+    /// RGB pixels and opened as RGB (#3699).
+    fn bitmap_id(
+        &mut self,
+        s: &Shape,
+        png: &SharedBytes,
+        size_mm: (f64, f64),
+    ) -> Option<(u32, u32, u32)> {
         let key = (size_mm.0.to_bits(), size_mm.1.to_bits());
+        let cmyk = s.cmyk_bitmap;
         if let Some(found) = self
             .bitmap_images
             .iter()
-            .find(|b| b.size_mm == key && b.png == *png)
+            .find(|b| b.size_mm == key && b.cmyk == cmyk && b.png == *png)
         {
             return Some(found.record);
         }
         let id = self.next_bitmap;
-        let (rec, w, h) = bmp_record(id, png, size_mm)?;
+        let inks = if cmyk { cmyk_inks(s, png) } else { None };
+        let (rec, w, h) = bmp_record_with(id, png, size_mm, inks.as_deref())?;
         self.next_bitmap += 1;
         self.bitmaps.push(rec);
         self.bitmap_images.push(WrittenImage {
             png: png.clone(),
             size_mm: key,
+            cmyk,
             record: (id, w, h),
         });
         Some((id, w, h))
@@ -5024,10 +5248,29 @@ impl<'a> Writer<'a> {
         body.extend(inner.nodes);
         self.clip_groups.push(list(b"grp ", body));
         self.clip_container = Some(number);
+        let usdn_before = self.next_usdn;
+        let kept_before = self.effects.len();
         let placed = self.object(&f, centre, depth);
         if self.clip_container.take().is_some() {
             // The frame became no object: the group would name nothing.
             self.clip_groups.pop();
+        } else if self.v.zip()
+            && self.drawing_effects == 0
+            && self.clip_depth == 0
+            && placed.nodes.len() == 1
+            && self.next_usdn > usdn_before
+            && crate::kept_effects::clip_contents_kept(contents)
+        {
+            // The contents carry no static id, so the package's member
+            // keeps the clip frame whole by the frame's (#3804); it holds
+            // what the frame itself kept.
+            self.effects.truncate(kept_before);
+            self.effects.push(crate::kept_effects::Written {
+                objects: vec![self.next_usdn - 1],
+                main: 0,
+                bounds: s.bounds(),
+                source: s.clone(),
+            });
         }
         placed
     }
@@ -5352,14 +5595,15 @@ impl<'a> Writer<'a> {
     /// A bitmap object: image rectangle, image id and crop path (the whole
     /// rectangle, or `crop` in the bitmap's local space).
     ///
-    /// From version 14 the record is laid out as the files of every
-    /// version seen (14, 18, 19 and 27) hold their bitmaps: the image's box starts
-    /// at the origin and spans its size, the object's transform placing it
-    /// on the page; so the shape's own `rect` offset moves into the
-    /// transform here and the crop path moves with it (#1226, #1268). No
-    /// file of versions 7 to 13 with a bitmap was at hand to check, so
-    /// those versions keep the box where the picture lies on the page,
-    /// the shape's transform and the number 0.
+    /// The record is laid out as the files of every version seen (14,
+    /// 18, 19 and 27) hold their bitmaps: the image's box starts at the
+    /// origin and spans its size, the object's transform placing it on
+    /// the page; so the shape's own `rect` offset moves into the
+    /// transform here and the crop path moves with it (#1226, #1268).
+    /// Versions 7 to 13 kept the box where the picture lay on the page
+    /// and the number 0 until #3696 and #3698: a version 13 file so
+    /// written opened without its cropped or converted pictures, while
+    /// the same drawing saved as version 15 showed them.
     fn bitmap_object(&mut self, s: &Shape, centre: Point, crop: Option<&BezPath>) -> Placed {
         let ShapeKind::Bitmap { rect, png, .. } = &s.kind else {
             return Placed {
@@ -5373,7 +5617,8 @@ impl<'a> Writer<'a> {
         // image's own (#1222). The resolution was taken from the size on
         // the page, so a scaled picture's box and image disagreed, and the
         // pixel size from the shape, which need not match its picture.
-        let Some((image, width_px, height_px)) = self.bitmap_id(png, (rect.width(), rect.height()))
+        let Some((image, width_px, height_px)) =
+            self.bitmap_id(s, png, (rect.width(), rect.height()))
         else {
             return Placed {
                 nodes: Vec::new(),
@@ -5387,16 +5632,11 @@ impl<'a> Writer<'a> {
             Some(p) => (s.transform * p.clone()).bounding_box(),
             None => (s.transform * rect.to_path(0.01)).bounding_box(),
         };
-        let from_origin = v.0 >= 14;
-        let (shift, local, number) = if from_origin {
-            (
-                Affine::translate((rect.x0, rect.y0)),
-                Rect::new(0.0, 0.0, rect.width(), rect.height()),
-                image,
-            )
-        } else {
-            (Affine::IDENTITY, *rect, 0)
-        };
+        let (shift, local, number) = (
+            Affine::translate((rect.x0, rect.y0)),
+            Rect::new(0.0, 0.0, rect.width(), rect.height()),
+            image,
+        );
         let transform = s.transform * shift;
         // As files of versions 7 to 27 hold it: the top-left and the
         // bottom-right corner, the image's own box the same way, 2 and
@@ -5406,8 +5646,8 @@ impl<'a> Writer<'a> {
         // then 0, 0, -1, 0, 0. The program that wrote the samples shows
         // no image when the pixel size is left at zero. Images get their
         // ids in order of first use and copies share them (#2923), so the
-        // number is the image id (from version 14; before it 0, as
-        // written before #1226).
+        // number is the image id, in every version (versions 7 to 13
+        // wrote 0 until #3696).
         let corners = |c: &mut Buf| {
             c.i32(units(local.x0))
                 .i32(units(local.y1))
@@ -5417,8 +5657,10 @@ impl<'a> Writer<'a> {
         let mut c = Buf::default();
         corners(&mut c);
         corners(&mut c);
+        // A CMYK image has 32 bits per pixel (#3699).
+        let bits = if s.cmyk_bitmap { 32 } else { 24 };
         c.u16(2)
-            .u16(24)
+            .u16(bits)
             .u32(width_px)
             .u32(height_px)
             .u32(number)
@@ -5757,6 +5999,7 @@ impl<'a> Writer<'a> {
         let [e @ Effect::Envelope {
             keep_lines: false,
             mapping: Mapping::Putty,
+            reference: None,
             ..
         }] = s.effects.as_slice()
         else {

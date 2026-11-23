@@ -73,6 +73,7 @@ et la page qui l'explique. Pour changer les touches des outils, voir
 | [[tool.common_shapes]] |  | [→](../lines-shapes/polygons-stars-spirals.md#common-shapes) |
 | [[tool.action_lines]] |  | [→](../lines-shapes/polygons-stars-spirals.md#action-lines) |
 | [[tool.graph_paper]] | <kbd>D</kbd> | [→](../lines-shapes/polygons-stars-spirals.md#graph-paper) |
+| [[tool.shape_generator]] |  | [→](../objects/shape-generator.md#tool) |
 
 ## Texte et tableaux {#text-tables}
 

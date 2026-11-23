@@ -43,7 +43,7 @@ selection as one object, type `cdrSelectionShape`, with `Shapes`),
 `ActiveSelectionRange`, `ActiveShape` (the first selected object),
 `ActiveVirtualLayer` (the active layer), `FontList` (the installed
 font families by name, from 1: `Count`, `Item`, For Each),
-`ActiveWindow` (`Refresh`, `ActiveView`, accepted without effect),
+`ActiveWindow` (`Refresh` accepted without effect; `ActiveView`, below),
 `Documents` (the active drawing only), `Version` "27.0", `VersionMajor`
 27, `VersionMinor`, `Name` "TraceDraw", `Visible`, `Optimization`,
 `EventsEnabled`, `Refresh`, `CreateColor(ColorString)` ("#RRGGBB",
@@ -275,6 +275,15 @@ Creatable with `New`.
 
 - **`ActiveWindow.ActiveView.Type`:** `cdrEnhancedViewWithOverprints` (5)
   turns View > Simulate Overprints on, another view type off.
+- **`ActiveWindow.ActiveView.ToFitAllObjects`, `ToFitPage`,
+  `ToFitSelection`:** View > Zoom To Fit, Zoom To Page and Zoom To
+  Selection; `ActiveView.CopyVisibleArea` (also `Application.CopyVisibleArea`)
+  puts what the window shows on the clipboard as a picture, as Edit >
+  Copy Visible Area does. They take effect once the objects the macro
+  made so far are in the drawing (#4020).
+- **`LabelSize`** of a shape, a range or `ActiveSelection`: the label size
+  of the dimensions among them, in points; `SetDimensionStyle` sets any
+  setting of their style by the name it is saved with (#4026).
 - **`Document.PDFSettings`:** `PublishRange` (`pdfWholeDocument` 0,
   `pdfCurrentPage` 1) chooses what `PublishToPDF` writes; `Load`, `Save`
   and `ShowDialog` of a named style succeed without changing anything, as
@@ -362,7 +371,7 @@ other libraries):
 | Status, BeginProgress, Progress, EndProgress | 22, 9, 14, 9 | W (shown in the status line when the run ends) |
 | BeginCommandGroup, EndCommandGroup, PreserveSelection, SaveSettings, RestoreSettings | 4, 4, 6, 3, 3 | W |
 | ColorContext, DefaultColorContext, ColorEngine | 6, 3, 4 | W (profile names in use) |
-| ActiveWindow, ActiveView, OriginX, OriginY | 4, 13, 3, 3 | W (the window's centre); view changes N |
+| ActiveWindow, ActiveView, OriginX, OriginY | 4, 13, 3, 3 | W (the window's centre; ToFitAllObjects, ToFitPage, ToFitSelection); other view changes N |
 | CorelScript, RedrawScreen | 5, 4 | N |
 | Finish | 3 | W (exports and imports) |
 | Paste, FrameWork, Close | 3, 3, 3 | E |
@@ -415,7 +424,9 @@ clip frame members).
 - Events.
 - Export of the selection or of a range of pages: export writes the
   active page, and PDF writes every page.
-- The view: `ActiveWindow.ActiveView` takes calls without effect.
+- The view: `ActiveWindow.ActiveView` zooms to fit the objects, the page
+  or the selection; `SetViewArea`, `SetViewPoint` and `Zoom` take calls
+  without effect.
 
 ### Checks (`scripting::vg::tests`)
 

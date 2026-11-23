@@ -34,7 +34,9 @@ cor, a largura, o estilo, os cantos, as pontas e as setas na seção
 - [[docker.outline_fill]]: o contorno pode ser pintado como um preenchimento:
   nenhum, cor uniforme, gradiente, padrão, textura ou malha. Veja
   [Preenchimentos](../color/fills.md). Linhas finíssimas e setas mantêm a cor
-  simples do contorno.
+  simples do contorno. Com um gradiente, [[docker.outline_fill_along]] faz ele
+  correr ao longo da linha, do início ao fim e em cada curva, em vez de
+  atravessar o desenho; esse contorno é desenhado contínuo, sem tracejado.
 - [[docker.caps]], as pontas das linhas abertas: [[docker.cap_butt]] (de
   início), [[docker.cap_round]] ou [[docker.cap_square]].
 - [[docker.corners]]: [[docker.join_miter]] (de início),
@@ -50,10 +52,9 @@ cor, a largura, o estilo, os cantos, as pontas e as setas na seção
   [[menu.object > menu.object.create > menu.object.create_arrowhead]].
 - O [[docker.nib_stretch]] (0,1 a 1) e o [[docker.nib_angle_lc]] fazem um
   contorno caligráfico: mais fino de um lado da ponta que do outro, como uma
-  caneta chata. No painel [[docker.properties]] eles ficam com o
-  [[docker.miter_limit]] sob o título [[docker.outline_advanced]], depois das
-  configurações comuns, fechado de início a não ser que um deles esteja
-  definido.
+  caneta chata. No painel [[docker.properties]] eles ficam sob o título
+  [[docker.outline_advanced]], depois das configurações comuns, fechado de
+  início a não ser que um deles esteja definido.
 - [[docker.behind_fill]] desenha o contorno por baixo do preenchimento, então
   só a metade externa aparece.
 - [[docker.scale_with_object]]: a largura cresce e diminui quando você
@@ -63,6 +64,8 @@ Para transformar um contorno em um objeto que pode ser preenchido, escolha
 [[menu.object > menu.object.convert_outline_to_object]] (<kbd>Ctrl+Shift+Q</kbd>).
 As configurações dos novos objetos são explicadas em
 [Estilos de objeto e padrões](../templates-styles/object-styles.md#document-defaults).
+
+![Um contorno com degradê ao longo da linha](../../img/lines-shapes-outlines-along-the-line.png)
 
 ## Cor do contorno {#outline-color}
 

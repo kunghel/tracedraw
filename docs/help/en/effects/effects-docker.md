@@ -51,6 +51,31 @@ look with one click: chrome, liquid metal, gold, liquid glass (which blurs
 what lies beneath it) and clear glass. Each picture shows the selected object
 wearing the look; one undo removes it. Your own saved presets come after them.
 
+## Halftone
+
+In the Layer effects list, **Halftone** turns the selected object, as it
+looks with its other effects (an inner shadow for a rounded tube look, a
+glow, an overlay), into a screen of dots, and stays live: change the object
+or its other effects and the dots follow.
+
+- **Dot**: round, square, diamond or line.
+- **Color mode**: RGB light makes red, green and blue light dots, as large
+  as each color channel, for a dotted look on a dark background; CMYK ink
+  prints cyan, magenta, yellow and black dots on white; One color draws dots
+  of the color beside it, as large as the darkness.
+- **Dot spacing**, **Dot scale** (at 100 % a full tone covers its cell),
+  **Softness** of the dot edges and **Angle** of the screen.
+- **Center X** and **Center Y** place a dot across the object's width and
+  height.
+- **Cut by the object's edge**: on, the dots end at the edge; off, whole
+  dots, smaller where the object covers less of them.
+
+An inner shadow in the Layer effects list also has **Spread**: it keeps
+the shadow solid over that share of its blur before it fades, for a
+deeper, rounder edge.
+
+![Halftone in CMYK ink, diamonds in one colour, and lines](../../img/effects-effects-docker-halftone.png)
+
 ## Other effect commands {#commands}
 
 - [[menu.effects > menu.effects.flatten]] turns the effects of the selected
@@ -67,3 +92,33 @@ wearing the look; one undo removes it. Your own saved presets come after them.
 - [[menu.object > menu.object.copy_effect]] copies an effect from another
   object, and [[menu.object.clone_effect]] makes a clone that follows it; see
   [Copying and cloning effects](copy-and-clone.md).
+
+## Hand-made looks and frames
+
+The layer effects at the top of the panel also hold these, each live and
+each changing as you edit the object:
+
+- [[effect.roughen]] redraws the outline with small random bumps. **Size**
+  sets how far they reach, **Detail** how many there are per 10 mm, and
+  **Smooth** makes them waves instead of points.
+- [[effect.jitter_nodes]] moves the nodes the curve already has, at random,
+  up to the distances you set; **Handles too** moves each handle on its own.
+- [[effect.scribble]] draws the fill as one loose zigzag line in the fill's
+  colour, at the angle, spacing and width you set. **Looseness** lets the
+  strokes run past or stop short of the edge. **Round turns** curves each
+  turn of the line, up to a wide loop like a pastel pencil's; **Past the
+  edge** runs every stroke that far beyond the edge (below zero, it stops
+  that far inside); **Spacing variation** and **Width variation** make the
+  gaps and the strokes uneven, as by hand. The outline stays.
+- [[effect.shape_frame]] replaces the outline with a rectangle, rounded
+  rectangle or ellipse round the object, with the margin you set. On a group
+  it makes one shape painted like the top object.
+- [[effect.trim_marks]] draws lines at the corners of the object, outside
+  it, for cutting it out after printing.
+- [[effect.feather]] fades the object out towards its edge over the radius
+  you set.
+
+**Variation** gives the random effects another pattern. The same value always
+draws the same result. Convert to Curves makes the outline effects permanent.
+
+![Rough edge, sketch fill, shape frame, trim marks and soft edge](../../img/effects-effects-docker-hand-made.png)

@@ -89,7 +89,10 @@ impl Canvas {
     fn triangle(&mut self, tex: &Textures, id: TextureId, v: [&Vertex; 3], clip: egui::Rect) {
         let (p0, p1, p2) = (v[0].pos, v[1].pos, v[2].pos);
         let area = (p1.x - p0.x) * (p2.y - p0.y) - (p2.x - p0.x) * (p1.y - p0.y);
-        if area.abs() < 1e-6 {
+        // A triangle with a point at NaN or infinity (the tessellator
+        // makes one now and then for a line of no length) draws nothing
+        // on a graphics card; here it would fill its whole clip with NaN.
+        if !area.is_finite() || area.abs() < 1e-6 {
             return;
         }
         let minx = p0.x.min(p1.x).min(p2.x).max(clip.min.x).max(0.0).floor() as i64;
@@ -218,4 +221,45 @@ pub(crate) fn rasterise(
         tex.0.remove(id);
     }
     canvas
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A triangle with a point at NaN leaves the canvas as it was, and a
+    /// sound one drawn after it still shows (the Help's canvas pictures
+    /// came out empty: an overlay's stray NaN point filled the drawing
+    /// window with NaN).
+    #[test]
+    fn a_triangle_at_nan_draws_nothing() {
+        let white = Color32::WHITE;
+        let vert = |x: f32, y: f32| Vertex {
+            pos: egui::pos2(x, y),
+            uv: egui::epaint::WHITE_UV,
+            color: white,
+        };
+        let mesh = |pts: [(f32, f32); 3]| {
+            let mut m = egui::epaint::Mesh::default();
+            for (x, y) in pts {
+                m.vertices.push(vert(x, y));
+            }
+            m.indices = vec![0, 1, 2];
+            egui::ClippedPrimitive {
+                clip_rect: egui::Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(20.0, 20.0)),
+                primitive: Primitive::Mesh(m),
+            }
+        };
+        let mut c = Canvas::new(20, 20);
+        c.paint(
+            &Textures::default(),
+            &[
+                mesh([(0.0, 0.0), (f32::NAN, 5.0), (10.0, 10.0)]),
+                mesh([(0.0, 0.0), (20.0, 0.0), (0.0, 20.0)]),
+            ],
+        );
+        assert!(c.px.iter().all(|p| p.iter().all(|v| v.is_finite())));
+        assert_eq!(c.px[2 * 20 + 2], [1.0; 4], "the sound triangle is drawn");
+        assert_eq!(c.px[19 * 20 + 19], [0.0; 4], "outside it nothing");
+    }
 }

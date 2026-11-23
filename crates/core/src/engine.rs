@@ -69,6 +69,9 @@ pub struct Engine {
     /// thread): counted here rather than copying the whole drawing for
     /// a counter, and written into it at its next change (#3440).
     ids_ahead: Option<crate::id::IdSource>,
+    /// Consecutive isolated edits of a single shape `(shape, base_rev, latest_rev)`,
+    /// so the canvas can keep the page texture from `base_rev` while typing (#3904).
+    single_shape_run: Option<(ShapeId, u64, u64)>,
     /// Buffers for measuring a step, kept between steps.
     measure: Measure,
 }
@@ -109,6 +112,63 @@ fn fresh_seed() -> u64 {
     h.finish()
 }
 
+/// When `cmd` only replaces the characters or span styles of an existing
+/// text shape that carries no content link and does not push paragraph text
+/// out of its way, keeping its origin, frame, path, baseline grid setting
+/// and computed flow, return that shape's id (#3902).
+fn isolated_text_shape(doc: &Document, cmd: &Command) -> Option<ShapeId> {
+    let Command::SetShapeKind {
+        shape,
+        kind:
+            crate::document::ShapeKind::Text {
+                origin: o2,
+                frame: f2,
+                para: p2,
+                on_path: op2,
+                ..
+            },
+    } = cmd
+    else {
+        return None;
+    };
+    let s = doc.find_shape(*shape)?;
+    if s.content_link.is_some() || s.wrap_text || doc.shape_or_ancestor_wraps_text(*shape) {
+        return None;
+    }
+    let crate::document::ShapeKind::Text {
+        origin: o1,
+        frame: f1,
+        para: p1,
+        on_path: op1,
+        ..
+    } = &s.kind
+    else {
+        return None;
+    };
+    (o1 == o2
+        && f1 == f2
+        && op1 == op2
+        && p1.baseline_grid_mm == p2.baseline_grid_mm
+        && p1.flow == p2.flow)
+        .then_some(*shape)
+}
+
+/// When `cmd` only alters the paint, opacity or hyperlink of a single
+/// existing shape, return that shape's id (#3904).
+fn single_shape_paint_or_link(doc: &Document, cmd: &Command) -> Option<ShapeId> {
+    let shapes = match cmd {
+        Command::SetFill { shapes, .. }
+        | Command::SetStroke { shapes, .. }
+        | Command::SetOpacity { shapes, .. }
+        | Command::SetLink { shapes, .. } => shapes,
+        _ => return None,
+    };
+    let [id] = shapes.as_slice() else {
+        return None;
+    };
+    doc.find_shape(*id).map(|_| *id)
+}
+
 impl Default for Engine {
     fn default() -> Self {
         Engine::new(Document::default())
@@ -133,6 +193,7 @@ impl Engine {
             groups: 0,
             undone_bytes: None,
             ids_ahead: None,
+            single_shape_run: None,
             measure: Measure::default(),
         };
         let uid_state = &mut e.uid_state;
@@ -180,6 +241,41 @@ impl Engine {
         self.revision
     }
 
+    /// True when every revision recorded since `since_revision` only changed
+    /// `shape` (or non-drawn document state such as the document palette),
+    /// leaving every other object on the page as it stood at `since_revision`
+    /// (#3904).
+    pub fn unchanged_except(&self, shape: ShapeId, since_revision: u64) -> bool {
+        self.revision == since_revision
+            || self.single_shape_run.is_some_and(|(id, base, now)| {
+                id == shape && base <= since_revision && now == self.revision
+            })
+    }
+
+    fn note_single_shape_edit(&mut self, shape: ShapeId, before_rev: u64) {
+        let base = match self.single_shape_run {
+            Some((id, base, prev)) if id == shape && prev == before_rev => base,
+            _ => before_rev,
+        };
+        self.single_shape_run = Some((shape, base, self.revision));
+    }
+
+    fn record_run_for(&mut self, cmd_shape: Option<ShapeId>, palette_only: bool, before_rev: u64) {
+        if let Some(id) = cmd_shape {
+            self.note_single_shape_edit(id, before_rev);
+        } else if palette_only {
+            if let Some((id, base, prev)) = self.single_shape_run {
+                if prev == before_rev {
+                    self.single_shape_run = Some((id, base, self.revision));
+                    return;
+                }
+            }
+            self.single_shape_run = None;
+        } else {
+            self.single_shape_run = None;
+        }
+    }
+
     pub fn is_dirty(&self) -> bool {
         self.revision != self.saved_revision
     }
@@ -207,6 +303,7 @@ impl Engine {
         // A preview of the drawing that went has nothing to go back to.
         self.preview = None;
         self.undone_bytes = None;
+        self.single_shape_run = None;
         self.revision += 1;
         self.saved_revision = self.revision;
         self.step_revision = u64::MAX;
@@ -225,6 +322,10 @@ impl Engine {
             // marker do not change for it.
             return cmd.apply(self.doc_mut());
         }
+        let before_rev = self.revision;
+        let isolated = isolated_text_shape(&self.doc, cmd);
+        let single = isolated.or_else(|| single_shape_paint_or_link(&self.doc, cmd));
+        let palette_only = matches!(cmd, Command::SetDocumentPalette { .. });
         let before = Arc::clone(&self.doc);
         if let Err(e) = cmd.apply(self.doc_mut()) {
             // A command that fails part-way leaves nothing behind (but
@@ -233,7 +334,9 @@ impl Engine {
             self.doc = before;
             return Err(e);
         }
-        self.settle_after(&before);
+        if isolated.is_none() {
+            self.settle_after(&before, cmd.leaves_text_alone());
+        }
         let id = self.next_step;
         self.next_step += 1;
         let bytes = self.bytes_of(&before);
@@ -244,18 +347,26 @@ impl Engine {
             bytes,
         });
         self.finish_step();
+        self.record_run_for(single, palette_only, before_rev);
         Ok(())
     }
 
     /// After a change from `before`: linked texts, new objects' ids and
-    /// text flow brought up to date.
-    fn settle_after(&mut self, before: &Document) {
+    /// text flow brought up to date. `text_untouched` (see
+    /// [`Command::leaves_text_alone`]) skips the two text passes: they
+    /// walk every shape, which a paint command on a heavy drawing does
+    /// not deserve.
+    fn settle_after(&mut self, before: &Document, text_untouched: bool) {
         self.doc_mut();
         let uid_state = &mut self.uid_state;
         let doc = Arc::make_mut(&mut self.doc);
-        doc.sync_linked_text(before);
+        if !text_untouched {
+            doc.sync_linked_text(before);
+        }
         doc.assign_uids(uid_state);
-        doc.refresh_text_flow();
+        if !text_untouched {
+            doc.refresh_text_flow();
+        }
     }
 
     fn finish_step(&mut self) {
@@ -275,7 +386,7 @@ impl Engine {
                 return Err(e);
             }
         }
-        self.settle_after(&before);
+        self.settle_after(&before, cmds.iter().all(Command::leaves_text_alone));
         let id = self.next_step;
         self.next_step += 1;
         let bytes = self.bytes_of(&before);
@@ -286,6 +397,7 @@ impl Engine {
             bytes,
         });
         self.finish_step();
+        self.single_shape_run = None;
         Ok(())
     }
 
@@ -303,6 +415,20 @@ impl Engine {
         if self.undo.is_empty() {
             return self.run(cmd);
         }
+        let before_rev = self.revision;
+        // Isolated text edits (typing characters or changing span styles on an
+        // unlinked, non-wrapping text object) cannot fail once the shape is
+        // found and need none of the full-document passes: mutate in place
+        // through Arc::make_mut so unshared drawings never clone (#3902).
+        if let Some(id) = isolated_text_shape(&self.doc, cmd) {
+            cmd.apply(self.doc_mut())?;
+            self.revision += 1;
+            self.step_revision = self.revision;
+            self.note_single_shape_edit(id, before_rev);
+            return Ok(());
+        }
+        let single = single_shape_paint_or_link(&self.doc, cmd);
+        let palette_only = matches!(cmd, Command::SetDocumentPalette { .. });
         // The step keeps the drawing from before it; the change joins it.
         let mut doc = Document::clone(&self.doc);
         if let Some(ids) = self.ids_ahead.clone() {
@@ -310,12 +436,17 @@ impl Engine {
         }
         cmd.apply(&mut doc)?;
         self.ids_ahead = None;
-        doc.sync_linked_text(&self.doc);
+        if !cmd.leaves_text_alone() {
+            doc.sync_linked_text(&self.doc);
+        }
         doc.assign_uids(&mut self.uid_state);
-        doc.refresh_text_flow();
+        if !cmd.leaves_text_alone() {
+            doc.refresh_text_flow();
+        }
         self.doc = Arc::new(doc);
         self.revision += 1;
         self.step_revision = self.revision;
+        self.record_run_for(single, palette_only, before_rev);
         Ok(())
     }
 
@@ -361,12 +492,15 @@ impl Engine {
             c.apply(&mut doc)?;
         }
         self.ids_ahead = None;
-        doc.sync_linked_text(&self.doc);
+        if !cmds.iter().all(Command::leaves_text_alone) {
+            doc.sync_linked_text(&self.doc);
+        }
         doc.assign_uids(&mut self.uid_state);
         self.doc = Arc::new(doc);
         self.clear_redo();
         self.revision += 1;
         self.step_revision = self.revision;
+        self.single_shape_run = None;
         Ok(())
     }
 
@@ -447,12 +581,14 @@ impl Engine {
             was.time_tracker = Default::default();
             was.saved_view = None;
         }
+        self.single_shape_run = None;
         self.revision += 1;
     }
 
     /// Mark the drawing changed without an undo step (an edit of state kept
     /// outside the history, which should still be saved).
     pub fn mark_changed(&mut self) {
+        self.single_shape_run = None;
         self.revision += 1;
     }
 
@@ -789,6 +925,74 @@ mod tests {
     use super::*;
     use crate::document::{Shape, ShapeKind};
     use crate::geometry::Rect;
+
+    /// A paint command (and a batch of paint commands) skips the text
+    /// passes: they walk every shape, and a fill cannot change their
+    /// result. A geometry command still pays for them.
+    #[test]
+    fn a_paint_command_skips_the_text_flow_walk() {
+        use crate::geometry::Affine;
+        use crate::style::Fill;
+        use crate::text_flow::refreshes_for_test;
+        let mut e = Engine::default();
+        let layer = e.document().pages[0].layers[0].id;
+        let id = e.new_shape_id();
+        e.run(&Command::AddShape {
+            layer,
+            shape: Shape::new(
+                id,
+                ShapeKind::Rect {
+                    rect: Rect::new(0.0, 0.0, 10.0, 10.0),
+                    radius: 0.0,
+                    corners: None,
+                },
+            ),
+        })
+        .unwrap();
+        refreshes_for_test(true);
+        e.run(&Command::SetFill {
+            shapes: vec![id],
+            fill: Fill::Solid(crate::Color::BLACK),
+        })
+        .unwrap();
+        assert_eq!(refreshes_for_test(true), 0, "a fill is no text change");
+        e.run_batch(
+            "Fill",
+            &[
+                Command::SetFill {
+                    shapes: vec![id],
+                    fill: Fill::None,
+                },
+                Command::SetStroke {
+                    shapes: vec![id],
+                    stroke: None,
+                },
+            ],
+        )
+        .unwrap();
+        assert_eq!(refreshes_for_test(true), 0, "a paint batch neither");
+        e.run(&Command::TransformShapes {
+            shapes: vec![id],
+            transform: Affine::translate((5.0, 0.0)),
+        })
+        .unwrap();
+        assert_eq!(refreshes_for_test(true), 1, "a move still refreshes");
+        e.run_batch(
+            "Fill and move",
+            &[
+                Command::SetFill {
+                    shapes: vec![id],
+                    fill: Fill::Solid(crate::Color::BLACK),
+                },
+                Command::TransformShapes {
+                    shapes: vec![id],
+                    transform: Affine::translate((5.0, 0.0)),
+                },
+            ],
+        )
+        .unwrap();
+        assert_eq!(refreshes_for_test(true), 1, "one mover refreshes a batch");
+    }
 
     /// #3440: the drawing a render takes is shared, not copied, and an
     /// edit, an undo and a redo leave it as it was taken.
@@ -1675,5 +1879,120 @@ mod tests {
         add(&mut e);
         e.keep_preview();
         assert!(e.redo_label().is_none());
+    }
+
+    /// #3902, #3904: amending an isolated text object mutates in place
+    /// without cloning unrelated curves on the page when the document is
+    /// unshared, tracks single-shape runs across characters, and still
+    /// propagates content links when present.
+    #[test]
+    fn isolated_text_amends_mutate_in_place_without_cloning_other_shapes() {
+        use crate::document::{spans_text, ParagraphStyle, TextAlign, TextSpan};
+        use crate::geometry::{rect_path, Point};
+        let mut e = Engine::default();
+        let layer = e.document().pages[0].layers[0].id;
+        let curve_id = e.new_shape_id();
+        let curve = Shape::new(
+            curve_id,
+            ShapeKind::Path {
+                path: rect_path(Rect::new(0.0, 0.0, 50.0, 50.0), 0.0),
+                closed: true,
+            },
+        );
+        e.run(&Command::AddShape {
+            layer,
+            shape: curve,
+        })
+        .unwrap();
+        let text_id = e.new_shape_id();
+        let make_kind = |s: &str| ShapeKind::Text {
+            spans: vec![TextSpan::new(s, "Sans", 12.0)],
+            origin: Point::new(10.0, 20.0),
+            frame: None,
+            align: TextAlign::Left,
+            para: ParagraphStyle::default(),
+            on_path: None,
+        };
+        e.run(&Command::AddShape {
+            layer,
+            shape: Shape::new(text_id, make_kind("")),
+        })
+        .unwrap();
+        let start_rev = e.revision();
+        assert!(e.unchanged_except(text_id, start_rev));
+
+        // First character creates the Edit Text step; subsequent characters
+        // amend it in place without cloning the bystander path's elements.
+        e.run_with_label(
+            &Command::SetShapeKind {
+                shape: text_id,
+                kind: make_kind("a"),
+            },
+            "Edit Text",
+        )
+        .unwrap();
+        let curve_ptr = |eng: &Engine| match &eng.document().find_shape(curve_id).unwrap().kind {
+            ShapeKind::Path { path, .. } => path.elements().as_ptr() as usize,
+            _ => panic!("expected path"),
+        };
+        let ptr_before = curve_ptr(&e);
+        for s in ["ab", "abc", "abcd"] {
+            e.amend(&Command::SetShapeKind {
+                shape: text_id,
+                kind: make_kind(s),
+            })
+            .unwrap();
+            assert_eq!(
+                curve_ptr(&e),
+                ptr_before,
+                "unshared amend should not clone bystander paths"
+            );
+            assert!(e.unchanged_except(text_id, start_rev));
+        }
+        // Editing another shape breaks the single-shape run.
+        assert!(!e.unchanged_except(curve_id, start_rev));
+        e.run(&Command::SetFill {
+            shapes: vec![curve_id],
+            fill: crate::Fill::Solid(crate::Color::rgb8(10, 20, 30)),
+        })
+        .unwrap();
+        assert!(!e.unchanged_except(text_id, start_rev));
+
+        // Undo the fill, then one Undo takes all four characters back.
+        e.undo().unwrap();
+        e.undo().unwrap();
+        let ShapeKind::Text { spans, .. } = &e.document().find_shape(text_id).unwrap().kind else {
+            panic!("expected text");
+        };
+        assert_eq!(spans_text(spans), "");
+
+        // Linked texts do not skip sync_linked_text.
+        let linked_id = e.new_shape_id();
+        let mut s2 = Shape::new(linked_id, make_kind(""));
+        s2.content_link = Some(7);
+        e.run(&Command::AddShape { layer, shape: s2 }).unwrap();
+        e.run(&Command::LinkTextContent {
+            shapes: vec![text_id, linked_id],
+        })
+        .unwrap();
+        e.run_with_label(
+            &Command::SetShapeKind {
+                shape: text_id,
+                kind: make_kind("x"),
+            },
+            "Edit Text",
+        )
+        .unwrap();
+        e.amend(&Command::SetShapeKind {
+            shape: text_id,
+            kind: make_kind("xy"),
+        })
+        .unwrap();
+        let ShapeKind::Text { spans: other, .. } =
+            &e.document().find_shape(linked_id).unwrap().kind
+        else {
+            panic!("expected linked text");
+        };
+        assert_eq!(spans_text(other), "xy");
     }
 }

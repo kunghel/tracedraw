@@ -39,7 +39,10 @@ with their « and » buttons, the wheel, or a finger dragged along them
 (#1997, `toolbars.md`, "Bars longer than the window"); the menu titles
 that do not fit go under » at the end of the menu bar; an open panel is
 a sheet over the whole room beside its tab strip instead of a column
-beside the drawing; the Welcome Screen's tabs wrap and Get Started puts
+beside the drawing, and a drawing opened or started closes the sheet so
+it shows in front (the panel's tab opens it again; before, a drawing
+opened from the browser on a phone stayed behind the Hints panel and
+seemed not to open, #3735); the Welcome Screen's tabs wrap and Get Started puts
 the recent drawings under its buttons, the page scrolling; a dialog
 larger than the screen is drawn at the screen's size and its body
 scrolls both ways. A tablet (600 dp and more) keeps its layout.
@@ -158,6 +161,7 @@ Workspace > Export Workspace... and Import Workspace...
 | Toolbars, toolbox and status bar | the built-in workspace it starts from, where the bars sit and whether they are locked, which bars show, the tool each toolbox group shows, hidden flyouts, the Outline flyout, what the status bar's first field shows |
 | Color palette options | No Color well, right mouse button, document palette, the palette shown, colours joining the document palette |
 | Appearance | interface size, desktop colour, page border |
+| Other preferences | every other option of Options and the defaults saved for new drawings: the colour mode of new drawings and colour management, document defaults (grid, rulers, guides, fill and outline of new objects), the New Document settings, units, nudge, tools, view, saving, printing, export and the rest (#3721). Never carried: what belongs to one computer or one session (recent files, folders, window size, graphics card and renderer, benchmarks, update checks, recent fonts and glyphs, installed fonts, accounts and AI keys, plugins, scripts and outside programs) and what the other parts carry |
 
 - The options page has a check box per part (remembered in
   `workspace_parts`); Export writes the parts checked, Import applies the
@@ -202,6 +206,10 @@ A file is never trusted:
   fall back to the default layout's; toolbox lists keep at most 256
   entries, and an overlong tool id counts as none.
 - An interface size outside 50 % to 400 % becomes 100 %.
+- Other preferences: names of this computer's own preferences are
+  dropped, and a file with more than 1024 is refused that part. A value
+  of the wrong shape keeps the preference as it is; the others still
+  come across. Names TraceDraw does not know are ignored.
 
 ## Checks
 
@@ -211,6 +219,13 @@ A file is never trusted:
 - Given a file exported with shortcuts and palette only, when it is
   imported with only shortcuts checked, then the bars and palette stay as
   they were.
+- Given new drawings in RGB, document defaults, units, nudge and undo
+  levels changed, recent files and a window size, when the workspace is
+  exported and imported into a fresh editor, then the colour mode,
+  document defaults, units, nudge and undo levels come across and the
+  recent files and window size do not; a hand-written value of the wrong
+  shape keeps the one there was
+  (`workspace_file::tests::a_workspace_carries_the_other_preferences`).
 - Given garbage, an empty file, another kind, version 0 or a part of the
   wrong shape, when it is imported, then nothing changes and the status
   bar says it is not a workspace file.

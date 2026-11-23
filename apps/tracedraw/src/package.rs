@@ -848,6 +848,15 @@ mod tests {
         assert_eq!(r2.pictures.len(), 2);
         assert!(tracedraw_text::fonts().installed_paths().contains(&font));
         assert!(folder.join("Pictures/logo.png").is_file());
+        // The fonts loaded from the package leave the shared font list
+        // with their folder, so no later test reaches a deleted file.
+        let fonts = tracedraw_text::fonts();
+        let gone: Vec<_> = fonts
+            .installed_paths()
+            .into_iter()
+            .filter(|p| p.starts_with(&dir))
+            .collect();
+        fonts.uninstall_paths(&gone);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

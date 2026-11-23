@@ -25,6 +25,10 @@ pub(crate) struct GlyphSource {
     cff_cids: HashMap<u16, u16>,
     /// Simple fonts: the character each code stands for.
     encoding: Option<[Option<char>; 256]>,
+    /// Simple fonts whose PDF dictionary names an encoding: the glyph
+    /// name its `Differences` give each code (`None`: the program's own
+    /// encoding applies).
+    names: Option<Vec<Option<String>>>,
 }
 
 #[derive(Default)]
@@ -63,6 +67,7 @@ impl GlyphSource {
         two_byte: bool,
         cid_to_gid: Option<Vec<u16>>,
         encoding: Option<[Option<char>; 256]>,
+        names: Option<Vec<Option<String>>>,
     ) -> Option<Self> {
         let mut cff_cids = HashMap::new();
         if cff {
@@ -84,6 +89,7 @@ impl GlyphSource {
             cid_to_gid,
             cff_cids,
             encoding,
+            names,
         })
     }
 
@@ -98,13 +104,25 @@ impl GlyphSource {
                 let cid = u16::try_from(code).ok()?;
                 ttf_parser::GlyphId(self.cff_cids.get(&cid).copied().unwrap_or(cid))
             } else {
-                let by_code = u8::try_from(code).ok().and_then(|c| t.glyph_index(c));
-                match by_code {
-                    Some(g) if g.0 != 0 => g,
-                    _ => {
-                        let c = self.char_of(code)?;
-                        t.glyph_index_by_name(glyph_name(c)?)?
-                    }
+                // The PDF's encoding names the glyph (its `Differences`,
+                // else the character of its base encoding); the program's
+                // own encoding serves a font that names none, and the
+                // codes neither way finds (#3810).
+                let by_name = || {
+                    self.glyph_names(code)
+                        .iter()
+                        .find_map(|n| t.glyph_index_by_name(n).filter(|g| g.0 != 0))
+                };
+                let by_code = || {
+                    u8::try_from(code)
+                        .ok()
+                        .and_then(|c| t.glyph_index(c))
+                        .filter(|g| g.0 != 0)
+                };
+                if self.names.is_some() {
+                    by_name().or_else(by_code)?
+                } else {
+                    by_code().or_else(by_name)?
                 }
             };
             t.outline(gid, &mut b).ok()?;
@@ -141,6 +159,23 @@ impl GlyphSource {
             .and_then(|t| t.get(code as usize).copied().flatten())
     }
 
+    /// The glyph names `code` may have in a simple font, likeliest
+    /// first: the one the PDF's `Differences` give it, then those of its
+    /// character.
+    fn glyph_names(&self, code: u32) -> Vec<String> {
+        let mut out = Vec::new();
+        let named = self
+            .names
+            .as_ref()
+            .and_then(|n| n.get(code as usize).cloned().flatten());
+        if let Some(n) = named {
+            out.push(n);
+        } else if let Some(c) = self.char_of(code) {
+            out = crate::pdf_import::char_glyph_names(c);
+        }
+        out
+    }
+
     /// A simple TrueType font's glyph for `code`.
     fn simple_glyph(&self, face: &ttf_parser::Face, code: u32) -> Option<ttf_parser::GlyphId> {
         use ttf_parser::PlatformId;
@@ -157,51 +192,14 @@ impl GlyphSource {
                 return Some(g);
             }
         }
-        let c = self.char_of(code)?;
-        face.glyph_index(c).filter(|g| g.0 != 0)
+        self.char_of(code)
+            .and_then(|c| face.glyph_index(c).filter(|g| g.0 != 0))
+            .or_else(|| {
+                // A glyph the encoding names with no character of its own
+                // (a small capital, an alternate): by its name.
+                self.glyph_names(code)
+                    .iter()
+                    .find_map(|n| face.glyph_index_by_name(n).filter(|g| g.0 != 0))
+            })
     }
-}
-
-/// The standard glyph name of a character, for fonts found by name: the
-/// ASCII letters and digits by their own names, a few common signs, else
-/// `uniXXXX`-style names are not tried.
-fn glyph_name(c: char) -> Option<&'static str> {
-    const NAMES: [(char, &str); 30] = [
-        (' ', "space"),
-        ('.', "period"),
-        (',', "comma"),
-        (':', "colon"),
-        (';', "semicolon"),
-        ('-', "hyphen"),
-        ('!', "exclam"),
-        ('?', "question"),
-        ('(', "parenleft"),
-        (')', "parenright"),
-        ('\'', "quotesingle"),
-        ('"', "quotedbl"),
-        ('/', "slash"),
-        ('&', "ampersand"),
-        ('@', "at"),
-        ('%', "percent"),
-        ('+', "plus"),
-        ('=', "equal"),
-        ('0', "zero"),
-        ('1', "one"),
-        ('2', "two"),
-        ('3', "three"),
-        ('4', "four"),
-        ('5', "five"),
-        ('6', "six"),
-        ('7', "seven"),
-        ('8', "eight"),
-        ('9', "nine"),
-        ('_', "underscore"),
-        ('#', "numbersign"),
-    ];
-    if let Some((_, n)) = NAMES.iter().find(|(k, _)| *k == c) {
-        return Some(n);
-    }
-    const LETTERS: &str = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
-    let i = LETTERS.find(c)?;
-    Some(&LETTERS[i..i + 1])
 }

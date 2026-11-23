@@ -87,6 +87,9 @@ letters and composition exactly, on white. The answer goes over the
 sketch and is traced into curves with the Clipart preset, as Create
 vectors does, named "AI-generated vector"; the sketch stays underneath.
 
+The Trace dialog offers the same request beside Clean up a pencil sketch
+(see trace-sketch.md, "With AI").
+
 ## Checks
 
 `ai_photo::tests`:

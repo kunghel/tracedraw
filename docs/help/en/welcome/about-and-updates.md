@@ -129,3 +129,19 @@ and [[menu.help.user_guide]] open its learning page, and
   report a problem.
 - [[menu.help > menu.help.message_settings]] opens the options where
   TraceDraw's messages are set.
+
+## When TraceDraw closes with an error {#problem-reports}
+
+When TraceDraw closes because of an error, it writes a report of what
+happened: the version, the system and where the error was. The report never
+holds the drawing's name or its contents.
+
+1. At its next start, a message says that TraceDraw closed with an error.
+2. Click **[[report.show]]** to read the report first.
+3. Click **[[report.send]]**: a new issue opens on GitHub with a summary
+   filled in, and the folder that holds the report opens beside it.
+4. Drag the report from the folder into the issue, add what you were doing,
+   and send it. Nothing is sent until you do.
+
+Click **[[report.not_now]]** to close the message. Each report is offered
+once.

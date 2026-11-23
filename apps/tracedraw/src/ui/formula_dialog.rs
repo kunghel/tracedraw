@@ -75,6 +75,11 @@ impl App {
                     kind: ShapeKind::Path { path, closed: true },
                 },
                 Command::SetObjectData { shape: id, data },
+                // Filled as text fills (#3793), also a formula made before.
+                Command::SetFillRule {
+                    shapes: vec![id],
+                    rule: tracedraw_core::shaping::FillRule::NonZero,
+                },
             ];
             if let Err(e) = self.engine.run_batch("Edit Formula", &cmds) {
                 self.status = e.to_string();
@@ -91,6 +96,10 @@ impl App {
         let mut shape = Shape::new(id, ShapeKind::Path { path, closed: true });
         shape.fill = Fill::Solid(tracedraw_core::Color::BLACK);
         shape.stroke = None;
+        // The letters' contours may overlap (a sign over a sign, a font
+        // drawn in overlapping strokes): filled as text fills, not with
+        // holes where they cross (#3793), as the preview draws it.
+        shape.fill_rule = tracedraw_core::shaping::FillRule::NonZero;
         shape.name = Some(tr("formula.object_name"));
         shape.data = data;
         if let Err(e) = self
@@ -275,6 +284,8 @@ mod tests {
         let s = app.doc().find_shape(id).expect("shape").clone();
         assert!(matches!(s.kind, ShapeKind::Path { closed: true, .. }));
         assert_eq!(s.fill, Fill::Solid(tracedraw_core::Color::BLACK));
+        // #3793: overlapping contours stay filled.
+        assert_eq!(s.fill_rule, tracedraw_core::shaping::FillRule::NonZero);
         assert_eq!(FormulaSpec::of_shape(&s), Some(st.spec.clone()));
         let before = s.bounds();
         // Painted red and moved: editing keeps both.

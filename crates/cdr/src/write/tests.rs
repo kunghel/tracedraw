@@ -3593,13 +3593,12 @@ fn bitmap_objects_carry_their_pixel_size() {
         );
         assert_eq!([i(32), i(36), i(40)], [24 << 16 | 2, 3, 2], "{v}");
         // The image's number among the bitmap objects' images (never 0 in
-        // files) and its id; then 0, 0, -1, 0, 0.
-        // Before version 14 the number stays 0 (no file of those
-        // versions with a bitmap was seen).
-        let number = if v >= 14 { 1 } else { 0 };
+        // files) and its id; then 0, 0, -1, 0, 0. In every version: a
+        // version 13 file with the number 0 opened without its pictures
+        // (#3696, #3698).
         assert_eq!(
             [i(44), i(48), i(52), i(56), i(60)],
-            [number, 1, 0, 0, -1],
+            [1, 1, 0, 0, -1],
             "{v}"
         );
         // The crop outline: the box as five points with a node byte each,
@@ -3772,14 +3771,10 @@ fn bitmap_boxes_start_at_the_origin_and_their_transform_places_them() {
     clipped.fill = Fill::None;
     clipped.stroke = None;
     for v in versions() {
-        // Before version 14 the box stays where the shape's rectangle is
-        // (no file of those versions with a bitmap was seen).
-        let (ox, oy) = if v >= 14 {
-            (0, 0)
-        } else {
-            (1_000_000, 500_000)
-        };
-        let want_box = [ox, oy + 200_000, ox + 400_000, oy];
+        // In every version: a version 13 file with the box where the
+        // shape's rectangle is opened without its cropped and converted
+        // pictures (#3696, #3698).
+        let want_box = [0, 200_000, 400_000, 0];
         let plain = document_to_cdr_version(&doc_with(vec![bm.clone()]), v);
         let b = bitmap_coords(&plain);
         let i = |at: usize| i32::from_le_bytes(b[at..at + 4].try_into().expect("4 bytes"));
@@ -3819,7 +3814,7 @@ fn bitmap_boxes_start_at_the_origin_and_their_transform_places_them() {
         for k in 0..n {
             let (x, y) = (i(count_at + 4 + k * 8), i(count_at + 8 + k * 8));
             assert!(
-                (ox - 1..=ox + 400_001).contains(&x) && (oy - 1..=oy + 200_001).contains(&y),
+                (-1..=400_001).contains(&x) && (-1..=200_001).contains(&y),
                 "{v}: point {k} at ({x}, {y}) outside the image box"
             );
         }
@@ -5689,6 +5684,57 @@ fn single_run_colours_round_trip() {
     }
 }
 
+/// A text whose letters have an outline of their own (orange, 0.5 mm)
+/// and one whose second run has one keep them through a version 16+
+/// save (#4055: the outline was written with width 0 and lost); a run
+/// without one leaves the object's outline on its letters.
+#[test]
+fn character_outlines_round_trip() {
+    use tracedraw_core::{LineJoin, Stroke};
+    let mut doc = doc_with(Vec::new());
+    let mut ids = doc.ids().clone();
+    let orange = Color::cmyk_pct(0.0, 60.0, 100.0, 0.0);
+    let mut rim = Stroke::new(orange, 0.5);
+    rim.join = LineJoin::Round;
+    let mut whole = TextSpan::new("Gh bdorln", "Arial", 40.0);
+    whole.outline = Some(rim.clone());
+    let plain = TextSpan::new("Plain ", "Arial", 24.0);
+    let mut rimmed = TextSpan::new("rimmed", "Arial", 24.0);
+    rimmed.outline = Some(rim.clone());
+    doc.pages[0].layers[0].shapes = vec![
+        text_shape(&mut ids, vec![whole], TextAlign::Left),
+        text_shape(&mut ids, vec![plain, rimmed], TextAlign::Left),
+    ];
+    doc.set_ids(ids);
+    let outline_at = |s: &Shape, i: usize| {
+        let ShapeKind::Text { spans, .. } = &s.kind else {
+            panic!("{:?}", s.kind);
+        };
+        let mut at = 0;
+        for sp in spans {
+            let n = sp.text.chars().count();
+            if i < at + n {
+                return sp.outline.clone();
+            }
+            at += n;
+        }
+        panic!("letter {i} past {spans:?}");
+    };
+    for v in versions().into_iter().filter(|v| *v >= 16) {
+        let (back, rep) =
+            crate::open_bytes(&document_to_cdr_version(&doc, v), "back").expect("reads back");
+        let read = &back.pages[0].layers[0].shapes;
+        assert_eq!(read.len(), 2, "{v}: {:?}", rep.warnings);
+        for (s, i) in [(&read[0], 0), (&read[0], 8), (&read[1], 8)] {
+            let got = outline_at(s, i).unwrap_or_else(|| panic!("{v}: letter {i} has no outline {:?}", s.kind));
+            assert!((got.width - 0.5).abs() < 1e-3, "{v}: {got:?}");
+            assert_eq!(got.color.to_rgb8(), orange.to_rgb8(), "{v}");
+            assert_eq!(got.join, LineJoin::Round, "{v}");
+        }
+        assert_eq!(outline_at(&read[1], 0), None, "{v}: the plain run");
+    }
+}
+
 /// A text of two colours in one line (two runs, each with a colour of
 /// its own) names its font in each run's style the way the paragraph's
 /// default style does, every member included (character set, technology,
@@ -5741,7 +5787,7 @@ fn runs_of_their_own_colour_name_their_font_as_the_paragraph_does() {
     let run = |v: u16, colour: &str| {
         format!(
             r#"{{"character":{{"fill":{{"type":"1","overprint":"0","secondaryColor":"CMYK,USER,0,0,0,0,100,00000000-0000-0000-0000-000000000000","primaryColor":"{colour}","screenSpec":"0,0,45000000,60,0"}},"angle":"0","outline":{},"RTL":{},"latin":{},"h_shift":"0","v_shift":"0","farEast":{}}}}}"#,
-            character_outline_json(Ver(v)),
+            character_outline_json(Ver(v), None),
             font(v, 178),
             font(v, 0),
             font(v, 128)
@@ -7967,7 +8013,7 @@ fn paragraph_columns_round_trip_from_version_16() {
                 ..ParagraphStyle::default()
             }
         ),
-        r#"{"frame":{"columns":"330000,40000,330000,0","equalWidthColumns":"1","rtlColumns":"0","v_justify":"0"}}"#
+        r#"{"frame":{"columns":"330000,40000|330000,0","equalWidthColumns":"1","rtlColumns":"0","v_justify":"0"}}"#
     );
 }
 
@@ -10472,4 +10518,160 @@ fn palette_inks_and_styles_open_again() {
     }
     let (back, _) = crate::open_bytes(&document_to_cdr_version(&doc, 13), "back").expect("reads");
     assert!(back.palette.is_empty() && back.object_styles.is_empty());
+}
+
+/// A picture in the CMYK colour mode (Convert Colors to CMYK, or a CMYK
+/// image read from a file) is written as a CMYK image, colour model 3 with
+/// 32 bits, so it opens as CMYK again; it went out as RGB pixels and
+/// opened in RGB (#3699). The inks it was read with are written as they
+/// are while they fit its pixels; without them its pixels are taken to
+/// CMYK, white to no ink.
+#[test]
+fn a_cmyk_picture_is_written_as_a_cmyk_image() {
+    let pixmap = |px: &[[u8; 3]], w: u32, h: u32| {
+        let mut pm = tiny_skia::Pixmap::new(w, h).expect("pixmap");
+        for (p, c) in pm.pixels_mut().iter_mut().zip(px) {
+            *p = tiny_skia::ColorU8::from_rgba(c[0], c[1], c[2], 255).premultiply();
+        }
+        pm.encode_png().expect("png")
+    };
+    // Cyan, then half black; the planes one under the other.
+    let png = pixmap(&[[0, 255, 255], [127, 127, 127]], 2, 1);
+    let want = [255u8, 0, 0, 0, 0, 0, 0, 128];
+    let grey: Vec<[u8; 3]> = want.iter().map(|&v| [v, v, v]).collect();
+    let planes = pixmap(&grey, 2, 4);
+    let picture = |inks: bool| {
+        let mut ids = tracedraw_core::id::IdSource::default();
+        let mut bm = Shape::new(
+            ids.shape(),
+            ShapeKind::Bitmap {
+                rect: Rect::new(0.0, 0.0, 20.0, 10.0),
+                width_px: 2,
+                height_px: 1,
+                png: png.clone().into(),
+                fx: None,
+            },
+        );
+        bm.fill = Fill::None;
+        bm.stroke = None;
+        bm.cmyk_bitmap = true;
+        if inks {
+            bm.picture_inks = Some(Box::new(tracedraw_core::picture_inks::PictureInks::cmyk(
+                &png,
+                planes.clone().into(),
+            )));
+        }
+        bm
+    };
+    for v in versions() {
+        let bytes = document_to_cdr_version(&doc_with(vec![picture(true)]), v);
+        let b = bitmap_coords(&bytes);
+        let i = |at: usize| i32::from_le_bytes(b[at..at + 4].try_into().expect("4 bytes"));
+        assert_eq!(i(32), 32 << 16 | 2, "{v}: 2 and 32 bits");
+        assert!(
+            crate::check::check_bytes(&bytes)
+                .expect("checks")
+                .is_empty(),
+            "{v}: {:?}",
+            crate::check::check_bytes(&bytes)
+        );
+        let (back, rep) = crate::open_bytes(&bytes, "back").expect("reads back");
+        let s = &back.pages[0].layers[0].shapes[0];
+        assert!(s.cmyk_bitmap, "{v}: {:?}", rep.warnings);
+        let inks = s.picture_inks.as_ref().expect("inks read");
+        let got: Vec<u8> = tiny_skia::Pixmap::decode_png(&inks.png)
+            .expect("planes")
+            .pixels()
+            .iter()
+            .map(|p| p.red())
+            .collect();
+        assert_eq!(got, want, "{v}");
+        // Without inks of its own the pixels are taken to CMYK.
+        let plain = document_to_cdr_version(&doc_with(vec![picture(false)]), v);
+        let (back, _) = crate::open_bytes(&plain, "back").expect("reads back");
+        let s = &back.pages[0].layers[0].shapes[0];
+        assert!(s.cmyk_bitmap, "{v}");
+        let inks = s.picture_inks.as_ref().expect("inks read");
+        let got: Vec<u8> = tiny_skia::Pixmap::decode_png(&inks.png)
+            .expect("planes")
+            .pixels()
+            .iter()
+            .map(|p| p.red())
+            .collect();
+        // Cyan is mostly cyan ink, grey has black in it.
+        assert!(got[0] > 128 && got[2] < 128 && got[4] < 128, "{v}: {got:?}");
+        assert!(got[7] > 32, "{v}: {got:?}");
+    }
+    // An RGB picture stays an RGB image of 24 bits.
+    let mut rgb = picture(false);
+    rgb.cmyk_bitmap = false;
+    let b = bitmap_coords(&document_to_cdr_version(&doc_with(vec![rgb]), 27));
+    assert_eq!(&b[32..36], &(24u32 << 16 | 2).to_le_bytes());
+}
+
+/// #3804: a graded transparency on an object inside a clip frame, placed
+/// by its nodes over half of it, opens as it was saved; the objects in a
+/// clip container carry no static id, so the package keeps the frame.
+#[test]
+fn a_clipped_object_s_graded_transparency_opens_as_saved() {
+    use tracedraw_core::live::{Effect, MergeMode};
+    use tracedraw_core::style::FountainHandles;
+    let mut doc = doc_with(Vec::new());
+    let mut ids = doc.ids().clone();
+    let rect = |ids: &mut tracedraw_core::id::IdSource, x0: f64, x1: f64| {
+        Shape::new(
+            ids.shape(),
+            ShapeKind::Rect {
+                rect: Rect::new(x0, 10.0, x1, 50.0),
+                radius: 0.0,
+                corners: None,
+            },
+        )
+    };
+    let mut inside = rect(&mut ids, 10.0, 90.0);
+    inside.fill = Fill::Solid(Color::rgb8(255, 0, 0));
+    let mut f = tracedraw_core::Fountain::two(
+        tracedraw_core::FountainKind::Linear,
+        Color::WHITE,
+        Color::BLACK,
+        90.0,
+    );
+    // From the middle to the top: the lower half stays opaque.
+    let handles = FountainHandles {
+        start: Point::new(0.0, 0.0),
+        end: Point::new(0.0, 1.0),
+        skew: Point::new(1.0, 0.0),
+    };
+    f.handles = Some(handles);
+    inside.effects.push(Effect::Transparency {
+        mask: Fill::Fountain(f),
+        merge: MergeMode::Normal,
+        target: 2,
+    });
+    let mut frame = rect(&mut ids, 20.0, 80.0);
+    frame.fill = Fill::None;
+    let pc = Shape::new(
+        ids.shape(),
+        ShapeKind::ClipFrame {
+            frame: Box::new(frame),
+            contents: vec![inside],
+        },
+    );
+    doc.pages[0].layers[0].shapes = vec![pc];
+    doc.set_ids(ids);
+    for v in [16u16, 21, 25] {
+        let bytes = document_to_cdr_version(&doc, v);
+        let (back, _) = crate::open_bytes(&bytes, "back").expect("reads back");
+        let ShapeKind::ClipFrame { contents, .. } = &back.pages[0].layers[0].shapes[0].kind else {
+            panic!("{v}: no clip frame");
+        };
+        let kept = contents[0].effects.iter().find_map(|e| match e {
+            Effect::Transparency {
+                mask: Fill::Fountain(f),
+                ..
+            } => f.handles,
+            _ => None,
+        });
+        assert_eq!(kept, Some(handles), "{v}");
+    }
 }

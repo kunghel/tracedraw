@@ -74,3 +74,13 @@ leggere le novità e trovare materiale didattico. Scegliete
   potete segnalare un problema.
 - [[menu.help > menu.help.message_settings]] apre le opzioni in cui si
   impostano i messaggi di TraceDraw.
+
+## Quando TraceDraw smette di rispondere {#problem-reports}
+
+Quando un passaggio di TraceDraw dura più di 10 secondi, salva un rapporto di ciò che stava facendo (versione, sistema, strumento, ultimo comando, dimensioni del disegno e fine del registro), mai il nome o il contenuto del disegno. Un messaggio lo propone quando TraceDraw torna a rispondere, o all'avvio successivo se è stato chiuso o si è chiuso per un errore.
+
+1. Fai clic su **[[report.show]]** per leggere il rapporto.
+2. Fai clic su **[[report.send]]**: si aprono una nuova segnalazione su GitHub con un riepilogo e la cartella del rapporto.
+3. Trascina il rapporto nella segnalazione, descrivi cosa stavi facendo e inviala. Prima non viene inviato nulla.
+
+**[[report.not_now]]** chiude il messaggio. Ogni rapporto viene proposto una sola volta.

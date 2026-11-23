@@ -864,6 +864,41 @@ fn settings_tab(app: &mut App, ui: &mut Ui, st: &mut TraceState) {
     });
     before_after::rule(ui);
     ui.label(tr("dialog.trace_image"));
+    // A pencil sketch made clean (no machine learning): off at first.
+    ui.add_enabled_ui(outline, |ui| {
+        ui.checkbox(
+            &mut st.settings.clean_sketch,
+            tr("dialog.trace_clean_sketch"),
+        )
+        .rich_tip(crate::ui::tips::keyed("dialog.trace_clean_sketch"));
+    });
+    // With AI turned on and a service that makes pictures, the sketch can
+    // be redrawn by the AI service from words instead, then traced (Sketch
+    // to Curves); hidden while AI is off.
+    if outline && st.settings.clean_sketch && app.ai_image_ready() {
+        ui.horizontal(|ui| {
+            ui.add(
+                egui::TextEdit::singleline(&mut app.ai_image.sketch.words)
+                    .hint_text(tr("aiphoto.sketch_words_hint"))
+                    .desired_width(220.0),
+            )
+            .rich_tip(crate::ui::tips::pair(
+                "dialog.trace_clean_sketch_ai",
+                "aiphoto.sketch_words_desc",
+            ));
+            if ui
+                .add_enabled(
+                    app.ai_photo_enabled(),
+                    egui::Button::new(tr("dialog.trace_clean_sketch_ai")),
+                )
+                .rich_tip(crate::ui::tips::keyed("dialog.trace_clean_sketch_ai"))
+                .clicked()
+            {
+                let words = app.ai_image.sketch.clone();
+                app.ai_sketch_to_curves(&words);
+            }
+        });
+    }
     let r = ui
         .checkbox(
             &mut st.settings.delete_original,

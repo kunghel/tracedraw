@@ -465,11 +465,62 @@ impl App {
             self.status = crate::i18n::tr("resample.save_failed");
             return;
         };
+        let format = st.format;
         crate::files::Dialog::new()
-            .add_filter(st.format.name(), st.format.exts())
-            .set_file_name(format!("picture.{}", st.format.exts()[0]))
-            .save_bytes(self, bytes);
+            .add_filter(format.name(), format.exts())
+            .set_file_name(format!("picture.{}", format.exts()[0]))
+            .save_file(self, move |app, path| {
+                // A name typed or picked from the dialog's suggestions
+                // with another extension ("540.jpg" with PDF chosen) kept
+                // it, so the file had the wrong type and would not open
+                // (#3711): it takes the chosen format's extension. The
+                // Android picker hands over a place of its own, kept.
+                let path = if cfg!(target_os = "android") {
+                    path
+                } else {
+                    path_for_format(&path, format, |p| p.exists())
+                };
+                app.status = match crate::files::write(&path, bytes) {
+                    Ok(()) => crate::i18n::trf(
+                        "status.exported",
+                        &[("path", &path.display().to_string())],
+                    ),
+                    Err(e) => e.to_string(),
+                };
+            });
     }
+}
+
+/// `path` with the extension of `format`: kept when it already has one
+/// of its extensions (any case), else the format's own put in place of
+/// the one it has (or added). A file already there under the new name,
+/// which the dialog never asked about, is left alone: " (2)", " (3)" and
+/// so on are added until the name is free.
+pub fn path_for_format(
+    path: &std::path::Path,
+    format: FileFormat,
+    exists: impl Fn(&std::path::Path) -> bool,
+) -> std::path::PathBuf {
+    let has = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| format.exts().iter().any(|x| x.eq_ignore_ascii_case(e)));
+    if has {
+        return path.to_path_buf();
+    }
+    let ext = format.exts()[0];
+    let fresh = path.with_extension(ext);
+    if !exists(&fresh) {
+        return fresh;
+    }
+    let stem = fresh
+        .file_stem()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    (2..)
+        .map(|n| fresh.with_file_name(format!("{stem} ({n}).{ext}")))
+        .find(|p| !exists(p))
+        .unwrap_or(fresh)
 }
 
 /// A file size as people read it: KB under a megabyte, else MB.
@@ -485,6 +536,36 @@ pub fn size_text(bytes: u64) -> String {
 mod tests {
     use super::*;
     use image::Rgba;
+
+    /// A saved file always has the chosen format's extension, even when
+    /// another was typed in the dialog, never taking the place of a file
+    /// already there (#3711).
+    #[test]
+    fn saved_files_take_the_chosen_formats_extension() {
+        use std::path::{Path, PathBuf};
+        let none = |_: &Path| false;
+        assert_eq!(
+            path_for_format(Path::new("/d/540.jpg"), FileFormat::Pdf, none),
+            PathBuf::from("/d/540.pdf")
+        );
+        assert_eq!(
+            path_for_format(Path::new("/d/540"), FileFormat::Png, none),
+            PathBuf::from("/d/540.png")
+        );
+        assert_eq!(
+            path_for_format(Path::new("/d/a.JPEG"), FileFormat::Jpeg, none),
+            PathBuf::from("/d/a.JPEG")
+        );
+        assert_eq!(
+            path_for_format(Path::new("/d/a.pdf"), FileFormat::Jpeg, none),
+            PathBuf::from("/d/a.jpg")
+        );
+        let taken = |p: &Path| p == Path::new("/d/540.pdf") || p == Path::new("/d/540 (2).pdf");
+        assert_eq!(
+            path_for_format(Path::new("/d/540.jpg"), FileFormat::Pdf, taken),
+            PathBuf::from("/d/540 (3).pdf")
+        );
+    }
 
     #[test]
     fn sizes_follow_pixels_percent_and_resolution() {

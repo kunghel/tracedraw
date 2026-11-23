@@ -963,6 +963,38 @@ impl App {
         }
     }
 
+    /// Where the text sits in the cells being edited, top to bottom
+    /// (#3859: Align within Frame did nothing in a table). One undo step.
+    pub fn set_cells_vertical_align(&mut self, v: tracedraw_core::VerticalAlign) {
+        let Some(e) = self.table_edit.clone() else {
+            return;
+        };
+        let Some(mut t) = self.table_of(e.shape) else {
+            return;
+        };
+        let mut changed = false;
+        for (r, c) in &e.cells {
+            if let Some(cell) = t.cell_index(*r, *c).and_then(|i| t.cells.get_mut(i)) {
+                if cell.valign != v {
+                    cell.valign = v;
+                    changed = true;
+                }
+            }
+        }
+        if changed {
+            self.set_table_as(e.shape, t, "Vertical Alignment");
+        }
+    }
+
+    /// Where the text sits in the active cell, top to bottom.
+    pub fn active_cell_vertical_align(&self) -> Option<tracedraw_core::VerticalAlign> {
+        let e = self.table_edit.as_ref()?;
+        let t = self.table_of(e.shape)?;
+        let (r, c) = e.cells.first().copied()?;
+        let i = t.cell_index(r, c)?;
+        t.cells.get(i).map(|cell| cell.valign)
+    }
+
     /// The active cell's text as a text object, for the Text docker.
     pub fn active_cell_text_shape(&self) -> Option<tracedraw_core::Shape> {
         self.table_edit.as_ref()?;
@@ -1485,5 +1517,47 @@ mod tests {
             .filter(|c| !c.text.is_empty())
             .all(|c| c.text.iter().all(|s| s.italic)));
         assert!(app.active_cell_text_shape().is_some());
+    }
+
+    /// #3859: the text of a table cell centres from top to bottom with
+    /// the vertical alignment of the text bar (Align within Frame); the
+    /// table draws it there, and it is kept in the file.
+    #[test]
+    fn cell_text_aligns_vertically() {
+        let (mut app, id) = app_with_table();
+        app.table_click(id, at(0, 0), false);
+        app.cell_insert("one");
+        let top = |app: &App| {
+            let s = app.doc().find_shape(id).expect("table");
+            s.expand(&[])
+                .into_iter()
+                .find(|s| matches!(s.kind, ShapeKind::Text { .. }))
+                .and_then(|s| match &s.kind {
+                    ShapeKind::Text { para, .. } => Some(para.vertical_align),
+                    _ => None,
+                })
+        };
+        assert_eq!(top(&app), Some(tracedraw_core::VerticalAlign::Top));
+        assert_eq!(
+            app.frame_text_vertical_align(),
+            Some(tracedraw_core::VerticalAlign::Top)
+        );
+        app.set_frame_text_vertical_align(tracedraw_core::VerticalAlign::Center);
+        let t = table(&app);
+        assert_eq!(
+            t.cells[t.cell_index(0, 0).unwrap()].valign,
+            tracedraw_core::VerticalAlign::Center
+        );
+        assert_eq!(top(&app), Some(tracedraw_core::VerticalAlign::Center));
+        assert_eq!(
+            app.frame_text_vertical_align(),
+            Some(tracedraw_core::VerticalAlign::Center)
+        );
+        let json = serde_json::to_string(&t).expect("json");
+        assert!(json.contains("\"valign\":\"center\""), "{json}");
+        let back: tracedraw_core::Table = serde_json::from_str(&json).expect("read");
+        assert_eq!(back, t);
+        app.undo();
+        assert_eq!(top(&app), Some(tracedraw_core::VerticalAlign::Top));
     }
 }

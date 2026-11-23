@@ -155,12 +155,26 @@ fn fit_frame(
 /// Every top-level and nested shape of the first page, bottom to top,
 /// with its page transform folded in.
 fn shapes_bottom_up(doc: &Document) -> Vec<Shape> {
-    fn walk(s: &Shape, above: tracedraw_core::geometry::Affine, out: &mut Vec<Shape>) {
+    fn walk(
+        s: &Shape,
+        above: tracedraw_core::geometry::Affine,
+        symbols: &[tracedraw_core::document::Symbol],
+        depth: usize,
+        out: &mut Vec<Shape>,
+    ) {
+        if depth > 8 {
+            return;
+        }
         let t = above * s.transform;
         match &s.kind {
             ShapeKind::Group { children } => {
                 for c in children {
-                    walk(c, t, out);
+                    walk(c, t, symbols, depth + 1, out);
+                }
+            }
+            ShapeKind::SymbolInstance { index } => {
+                if let Some(sym) = symbols.get(*index) {
+                    walk(&sym.shape, t, symbols, depth + 1, out);
                 }
             }
             ShapeKind::ClipFrame { .. } => {
@@ -179,7 +193,13 @@ fn shapes_bottom_up(doc: &Document) -> Vec<Shape> {
     if let Some(page) = doc.pages.first() {
         for l in page.layers.iter().filter(|l| l.visible) {
             for s in &l.shapes {
-                walk(s, tracedraw_core::geometry::Affine::IDENTITY, &mut out);
+                walk(
+                    s,
+                    tracedraw_core::geometry::Affine::IDENTITY,
+                    &doc.symbols,
+                    0,
+                    &mut out,
+                );
             }
         }
     }
@@ -380,6 +400,9 @@ pub fn colours_from_preview(doc: &mut Document, preview: &Preview) -> usize {
             }
         }
     }
+    for sym in &mut doc.symbols {
+        recolor_shape(&mut sym.shape, &recolor);
+    }
     found.len()
 }
 
@@ -560,5 +583,54 @@ mod tests {
         assert!(Preview::decode(b"").is_none());
         assert!(Preview::decode(b"\x89PNG broken").is_none());
         assert!(Preview::decode(b"BM").is_none());
+    }
+
+    #[test]
+    fn library_inks_in_symbols_take_their_colour_from_the_preview() {
+        let mut doc = Document::new("t", tracedraw_core::geometry::Size::new(100.0, 100.0));
+        doc.inks.push(ink_entry(0x22, 0x07db));
+        let mut def = Shape::new(
+            tracedraw_core::ShapeId(0),
+            ShapeKind::Rect {
+                rect: Rect::new(0.0, 0.0, 50.0, 100.0),
+                radius: 0.0,
+                corners: None,
+            },
+        );
+        def.fill = Fill::Solid(library_color(0x22, 0x07db, 100));
+        def.stroke = None;
+        doc.symbols.push(tracedraw_core::document::Symbol {
+            name: "Mark".into(),
+            shape: def,
+        });
+        let inst = Shape::new(
+            tracedraw_core::ShapeId(1),
+            ShapeKind::SymbolInstance { index: 0 },
+        );
+        doc.pages[0].layers[0].shapes.push(inst);
+        let mut rgba = Vec::new();
+        for _y in 0..10 {
+            for x in 0..10 {
+                let c = if x < 5 {
+                    [200, 40, 40, 255]
+                } else {
+                    [255, 255, 255, 255]
+                };
+                rgba.extend_from_slice(&c);
+            }
+        }
+        let preview = Preview {
+            width: 10,
+            height: 10,
+            rgba,
+            covers_drawing: false,
+            fitted: false,
+        };
+        assert_eq!(colours_from_preview(&mut doc, &preview), 1);
+        let Fill::Solid(c) = &doc.symbols[0].shape.fill else {
+            panic!("symbol fill");
+        };
+        let [r, g, b] = c.to_rgb8();
+        assert!(r > 170 && g < 80 && b < 80, "{r} {g} {b}");
     }
 }

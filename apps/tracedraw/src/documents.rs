@@ -64,6 +64,9 @@ pub struct DocSlot {
     pub pivots: crate::app::Pivots,
     /// The layer made active in the Objects docker.
     pub picked_layer: Option<tracedraw_core::LayerId>,
+    /// The layers picked with Ctrl or Shift in the Objects docker
+    /// (#3966), kept with the window as the pick is.
+    pub selected_layers: Vec<tracedraw_core::LayerId>,
     /// The drawing's rendered page, kept while another drawing is active
     /// (its window shows it when windows are tiled or cascaded).
     pub raster: crate::raster::Raster,
@@ -104,6 +107,7 @@ impl Default for DocSlot {
             units: Default::default(),
             pivots: Default::default(),
             picked_layer: None,
+            selected_layers: Vec::new(),
             raster: Default::default(),
             page_rasters: Default::default(),
             page_snapshot: None,
@@ -132,6 +136,7 @@ impl App {
         std::mem::swap(&mut self.page_views, &mut slot.page_views);
         std::mem::swap(&mut self.open_view_pending, &mut slot.open_view_pending);
         std::mem::swap(&mut self.picked_layer, &mut slot.picked_layer);
+        std::mem::swap(&mut self.selected_layers, &mut slot.selected_layers);
         std::mem::swap(self.raster.get_mut(), &mut slot.raster);
         std::mem::swap(self.page_rasters.get_mut(), &mut slot.page_rasters);
         std::mem::swap(&mut self.view_anchor, &mut slot.view_anchor);
@@ -203,6 +208,13 @@ impl App {
                 .filter(|id| doc.find_shape(*id).is_some())
                 .collect();
             self.selection = kept;
+        }
+        self.selected_layers.retain(|id| doc.layer(*id).is_ok());
+        if self
+            .picked_layer
+            .is_some_and(|id| doc.layer(id).is_err())
+        {
+            self.picked_layer = self.selected_layers.last().copied();
         }
     }
 
@@ -336,6 +348,7 @@ impl App {
         self.units = units;
         self.pivots = Default::default();
         self.picked_layer = None;
+        self.selected_layers.clear();
         *self.raster.get_mut() = Default::default();
         self.page_rasters.get_mut().clear();
         *self.page_snapshot.get_mut() = None;
@@ -343,6 +356,17 @@ impl App {
         self.docs.push(DocSlot::default());
         self.active_doc = self.docs.len() - 1;
         self.show_welcome = false;
+        // On a phone an open docker is a sheet over the whole room beside
+        // its tab strip, so a drawing opened or started behind it seemed
+        // not to open at all (#3735): the drawing comes in front, and the
+        // docker's tab opens the sheet again.
+        if crate::ui::phone::phone() {
+            for place in crate::app::DockerPlace::COLUMNS {
+                if self.docker_column(place).2 {
+                    self.set_docker_column(place, false, None);
+                }
+            }
+        }
         // The status bar's message was about the drawing before, such as
         // where it was saved (#1128); who opens a file says so after.
         self.status.clear();
@@ -504,6 +528,7 @@ impl App {
             selection: self.selection.clone(),
             fit_pending: self.fit_pending,
             picked_layer: self.picked_layer,
+            selected_layers: self.selected_layers.clone(),
             view_anchor: self.view_anchor,
             ..DocSlot::default()
         };
@@ -512,6 +537,35 @@ impl App {
         self.unpark(at);
         self.active_doc = at;
         self.show_welcome = false;
+    }
+
+    /// File > Revert: the drawing read again from [`App::revert_path`],
+    /// its changes since dropped, in the same tab: the reading came in a
+    /// tab of its own beside the changed drawing, which stayed open
+    /// (#3809). A drawing with another window open, or one read off the
+    /// interface's thread (a large `.tdraw`), keeps that way.
+    pub fn revert(&mut self) {
+        let Some(path) = self.revert_path() else {
+            return;
+        };
+        let before = self.docs.len();
+        let old = self.active_doc.min(before.saturating_sub(1));
+        let lone = before > 0 && self.twin(old).is_none();
+        // Read at once, so that it takes the changed drawing's tab (a
+        // large file of another format is otherwise read a frame later,
+        // after its notice shows).
+        self.open_noticed = Some(path.clone());
+        self.open_path_with_password(path, "");
+        self.open_noticed = None;
+        if !lone || self.docs.len() != before + 1 || self.active_doc != before {
+            return;
+        }
+        // The changed drawing, parked in its slot, goes; the one read
+        // again takes its place in the tabs.
+        self.docs.remove(old);
+        let fresh = self.docs.remove(before - 1);
+        self.docs.insert(old, fresh);
+        self.active_doc = old;
     }
 
     /// Close the active window without asking (the caller saved or the
@@ -554,6 +608,7 @@ impl App {
         self.missing_fonts.clear();
         self.pivots = Default::default();
         self.picked_layer = None;
+        self.selected_layers.clear();
         *self.raster.get_mut() = Default::default();
         self.page_rasters.get_mut().clear();
         *self.page_snapshot.get_mut() = None;
@@ -738,6 +793,137 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).expect("temp dir");
         d
+    }
+
+    /// Save from the menus, the toolbar and the keyboard writes a large
+    /// drawing off the interface's thread (#4011): the drawing stays
+    /// unsaved, with what is typed and clicked held back, until its file
+    /// is written, and is then saved as after any save. A drawing changed
+    /// meanwhile keeps its unsaved changes; a small one, and every other
+    /// save (the question on closing), is written at once.
+    #[test]
+    fn a_large_drawing_is_saved_off_the_interfaces_thread() {
+        let dir = temp_dir("saving-worker");
+        let mut app = App::headless();
+        assert!(!app.save_on_worker, "the tests save at once");
+        app.save_on_worker = true;
+        app.open_document(
+            tracedraw_core::Document::new("Big", Size::new(100.0, 100.0)),
+            None,
+        );
+        add_rect(&mut app);
+        // A small drawing: written at once.
+        let small = dir.join("small.tdraw");
+        app.save_to_showing_progress(small.clone());
+        assert!(app.saving.is_none() && !app.engine.is_dirty());
+        assert!(small.exists());
+        // A file already large is the sign of a large drawing.
+        let big = dir.join("big.tdraw");
+        std::fs::write(&big, vec![0u8; crate::saving::BACKGROUND_FROM as usize]).expect("file");
+        add_rect(&mut app);
+        // Any other save writes at once.
+        app.save_to(big.clone());
+        assert!(app.saving.is_none() && !app.engine.is_dirty());
+        std::fs::write(&big, vec![0u8; crate::saving::BACKGROUND_FROM as usize]).expect("file");
+        add_rect(&mut app);
+        app.save_showing_progress(false);
+        assert!(app.saving.is_some(), "being written");
+        assert!(app.engine.is_dirty(), "not saved until the file is written");
+        // What is typed, clicked or dropped meanwhile is left out.
+        let mut raw = egui::RawInput {
+            events: vec![
+                egui::Event::Text("x".into()),
+                egui::Event::PointerMoved(egui::pos2(3.0, 4.0)),
+                egui::Event::PointerButton {
+                    pos: egui::pos2(3.0, 4.0),
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: Default::default(),
+                },
+            ],
+            ..Default::default()
+        };
+        crate::saving::hold_input(&mut raw);
+        assert_eq!(raw.events.len(), 1);
+        let t = web_time::Instant::now();
+        while app.poll_saving() {
+            assert!(t.elapsed() < std::time::Duration::from_secs(30));
+            std::thread::sleep(std::time::Duration::from_millis(2));
+        }
+        assert!(app.saving.is_none() && !app.engine.is_dirty());
+        assert_eq!(app.file.as_deref(), Some(big.as_path()));
+        let bytes = std::fs::read(&big).expect("file");
+        assert_eq!(&bytes[..2], &[0x1f, 0x8b], "the packed drawing");
+        assert!(app.status.contains("big.tdraw"));
+        // Changed while its file was written: the file holds the drawing
+        // as it was, and the drawing keeps its unsaved change.
+        std::fs::write(&big, vec![0u8; crate::saving::BACKGROUND_FROM as usize]).expect("file");
+        app.save_showing_progress(false);
+        assert!(app.saving.is_some());
+        add_rect(&mut app);
+        app.wait_for_saving();
+        assert!(app.saving.is_none());
+        assert!(app.engine.is_dirty(), "changed since its copy was taken");
+        // Saved again while one is being written: the first ends first.
+        std::fs::write(&big, vec![0u8; crate::saving::BACKGROUND_FROM as usize]).expect("file");
+        app.save_showing_progress(false);
+        app.save_to(big.clone());
+        assert!(app.saving.is_none() && !app.engine.is_dirty());
+        assert_eq!(&std::fs::read(&big).expect("file")[..2], &[0x1f, 0x8b]);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A large file of another format says it is being opened before it
+    /// is read (the reading stops the window): the notice is on screen
+    /// for a frame first, then the file opens; several open one after
+    /// the other, each with its notice; Revert reads at once, into the
+    /// same tab. A small file opens at once.
+    #[test]
+    fn a_large_file_of_another_format_says_it_is_opening_first() {
+        let dir = temp_dir("open-notice");
+        let mut app = App::headless();
+        app.save_on_worker = true;
+        let svg = |name: &str, pad: usize| {
+            let path = dir.join(name);
+            let text = format!(
+                "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"100\" height=\"100\"><!--{}--><rect x=\"10\" y=\"10\" width=\"30\" height=\"20\"/></svg>",
+                " ".repeat(pad)
+            );
+            std::fs::write(&path, text).expect("file");
+            path
+        };
+        let base = app.docs.len();
+        let small = svg("small.svg", 0);
+        app.open_path(small);
+        assert!(app.open_notice.is_none());
+        assert_eq!(app.docs.len(), base + 1, "opened at once");
+        let big = crate::opening::BACKGROUND_FROM as usize;
+        let (one, two) = (svg("one.svg", big), svg("two.svg", big));
+        app.open_path(one.clone());
+        app.open_path(two.clone());
+        assert_eq!(app.docs.len(), base + 1, "not read yet");
+        assert_eq!(app.open_notice.as_ref().map(|n| n.0.clone()), Some(one.clone()));
+        assert!(app.status.contains("one.svg"), "{}", app.status);
+        // Its notice is drawn, then it is read; the next one's shows.
+        assert!(app.poll_open_notice() && app.poll_open_notice());
+        assert_eq!(app.docs.len(), base + 1);
+        assert!(app.poll_open_notice(), "the second waits its turn");
+        assert_eq!(app.docs.len(), base + 2);
+        assert_eq!(app.open_notice.as_ref().map(|n| n.0.clone()), Some(two));
+        assert!(app.poll_open_notice() && app.poll_open_notice());
+        assert!(!app.poll_open_notice());
+        assert_eq!(app.docs.len(), base + 3);
+        assert!(app.open_notice.is_none());
+        assert_eq!(app.doc().pages[0].layers[0].shapes.len(), 1);
+        // Revert reads the file at once, into the same tab.
+        app.switch_document(base + 1);
+        add_rect(&mut app);
+        assert_eq!(app.revert_path(), Some(crate::files::canonical(&one)));
+        app.revert();
+        assert!(app.open_notice.is_none());
+        assert_eq!(app.docs.len(), base + 3);
+        assert_eq!(app.doc().pages[0].layers[0].shapes.len(), 1);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// Open drawings keep their files (#2130): the file of every open
@@ -1375,5 +1561,70 @@ mod tests {
         let a = app.next_untitled_name();
         let b = app.next_untitled_name();
         assert_ne!(a, b);
+    }
+
+    /// On a phone a drawing opened or started comes in front of the
+    /// docker sheet that covered the room (#3735); elsewhere the dockers
+    /// stay open beside it.
+    #[test]
+    fn a_drawing_opened_on_a_phone_comes_in_front_of_the_docker_sheet() {
+        use crate::app::DockerPlace;
+        for phone in [false, true] {
+            let mut app = App::headless();
+            app.set_docker_column(DockerPlace::Right, true, None);
+            assert!(app.docker_column(DockerPlace::Right).2);
+            crate::ui::phone::set_phone(phone);
+            app.open_document(
+                tracedraw_core::Document::new("Art", Size::new(100.0, 100.0)),
+                None,
+            );
+            crate::ui::phone::set_phone(false);
+            assert_eq!(app.docker_column(DockerPlace::Right).2, !phone, "phone {phone}");
+        }
+    }
+
+    /// #3809: File > Revert reads a `.cdr` again too (it opens with no
+    /// file of its own, so Revert stayed greyed out), and the drawing read
+    /// again takes the changed one's place in its tab instead of opening
+    /// beside it.
+    #[test]
+    fn revert_reads_a_cdr_again_in_its_own_tab() {
+        let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../crates/cdr/tests/fixtures/gaussian-blur.cdr");
+        let dir = std::env::temp_dir().join(format!("td_revert_{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("drawing.cdr");
+        std::fs::copy(&fixture, &path).expect("copy");
+        let mut app = App::headless();
+        app.open_path_with_password(path.clone(), "");
+        assert!(app.file.is_none(), "a .cdr has no file of its own: Save asks where");
+        assert_eq!(app.revert_path(), Some(crate::files::canonical(&path)));
+        let count = |app: &App| {
+            app.doc()
+                .pages
+                .iter()
+                .flat_map(|p| &p.layers)
+                .map(|l| l.shapes.len())
+                .sum::<usize>()
+        };
+        let (tabs, shapes, version) = (app.docs.len(), count(&app), app.cdr_version);
+        assert!(version.is_some());
+        app.new_shape(tracedraw_core::ShapeKind::Rect {
+            rect: tracedraw_core::geometry::Rect::new(0.0, 0.0, 10.0, 10.0),
+            radius: 0.0,
+            corners: None,
+        })
+        .expect("rect");
+        assert!(app.engine.is_dirty());
+        assert_eq!(count(&app), shapes + 1);
+        let active = app.active_doc;
+        app.revert();
+        assert_eq!(app.docs.len(), tabs, "no second tab");
+        assert_eq!(app.active_doc, active);
+        assert_eq!(count(&app), shapes);
+        assert!(!app.engine.is_dirty());
+        assert_eq!(app.cdr_version, version);
+        assert_eq!(app.revert_path(), Some(crate::files::canonical(&path)));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

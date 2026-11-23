@@ -58,11 +58,15 @@ pub fn dialog_topic(d: &Dialog, options: OptionsPage) -> &'static str {
         Dialog::PageSpacing { .. } => "pages-layout/multipage-view#page-spacing",
         Dialog::OutlineOffset { .. } => "lines-shapes/shaping#outline-offset",
         Dialog::GatherPages { .. } => "pages-layout/pages",
+        Dialog::ArrangeGrid { .. } | Dialog::FillWithCopies { .. } => {
+            "objects/align-distribute#grid"
+        }
         Dialog::MultipagePages { .. } => "pages-layout/multipage-view#choose-pages",
         Dialog::InsertPage { .. } => "pages-layout/pages#insert-page",
         Dialog::DeletePage { .. } => "pages-layout/pages#delete-page",
         Dialog::DuplicatePage { .. } => "pages-layout/pages#duplicate-page",
         Dialog::PageSize { .. } => "pages-layout/pages#page-size",
+        Dialog::ObjectSize { .. } => "objects/transforming#transformations-docker",
         Dialog::Options => options_topic(options),
         Dialog::PageNumberSettings => "pages-layout/pages#page-numbers",
         Dialog::LineStyle(_) | Dialog::OutlinePen(_) | Dialog::ArrowheadEditor(_) => {
@@ -71,12 +75,17 @@ pub fn dialog_topic(d: &Dialog, options: OptionsPage) -> &'static str {
         Dialog::EditFill(_) => "color/fills#edit-fill",
         Dialog::TableCount(_) => "objects/tables",
         Dialog::OldCdrVersion { .. } => "get-started/open-and-save#save-as",
-        Dialog::RenameLayer { .. } | Dialog::LayerProperties(_) | Dialog::RenameObject { .. } => {
+        Dialog::RenameLayer { .. }
+        | Dialog::LayerProperties(_)
+        | Dialog::RenameObject { .. }
+        | Dialog::RenameGuide { .. } => {
             "objects/objects-and-layers#rename"
         }
         Dialog::DocumentProperties(_) => "pages-layout/document-properties",
         Dialog::ConfirmClose => "get-started/open-and-save#closing",
         Dialog::ConfirmResetSettings => "customize/reset-settings",
+        #[cfg(not(target_arch = "wasm32"))]
+        Dialog::ProblemReport(_) => "welcome/about-and-updates#problem-reports",
         Dialog::Recover(_) => "get-started/open-and-save#recovery",
         Dialog::Updates => "welcome/about-and-updates#updates",
         Dialog::UpdatePolicy => "welcome/about-and-updates#automatic-check",
@@ -96,6 +105,8 @@ pub fn dialog_topic(d: &Dialog, options: OptionsPage) -> &'static str {
         Dialog::PasteSpecial(_) => "objects/paste-special",
         Dialog::Barcode(_) => "objects/barcodes",
         Dialog::Formula(_) => "objects/formulas",
+        Dialog::TransformEach(_) => "objects/transforming#transform-each",
+        Dialog::Flare(_) => "objects/light-flare",
         Dialog::ConvertToBitmap(_) => "bitmaps/convert-to-bitmap",
         Dialog::PictureCaptions(_) => "bitmaps/picture-captions",
         Dialog::AiTurn(_) | Dialog::AiSketch(_) | Dialog::AiRemove(_) => "bitmaps/ai-photo",
@@ -218,6 +229,14 @@ pub fn docker_topic(t: DockerTab) -> &'static str {
         DockerTab::Scripts => "customize/scripts",
         DockerTab::Macros => "customize/scripts#macros",
         DockerTab::PrintMerge => "printing/print-merge#docker",
+        DockerTab::PixelLayers
+        | DockerTab::PixelSelection
+        | DockerTab::PixelRetouch
+        | DockerTab::PixelDistort
+        | DockerTab::PixelEffects
+        | DockerTab::PixelImage
+        | DockerTab::PixelHistogram
+        | DockerTab::PixelHints => "bitmaps/resample-and-straighten#other",
         DockerTab::Palettes => "color/palettes",
         DockerTab::Lens => "effects/lens",
         DockerTab::Blend => "effects/blend",
@@ -279,6 +298,7 @@ pub fn tool_topic(t: Tool) -> &'static str {
         Tool::Bezier => "lines-shapes/lines#bezier",
         Tool::Pen => "lines-shapes/lines#pen",
         Tool::BSpline => "lines-shapes/lines#b-spline",
+        Tool::CurvaturePen => "lines-shapes/lines#curvature-pen",
         Tool::Polyline => "lines-shapes/lines#polyline",
         Tool::ThreePointCurve => "lines-shapes/lines#three-point-curve",
         Tool::BrushStrokes => "lines-shapes/artistic-media#brush-strokes",
@@ -296,6 +316,7 @@ pub fn tool_topic(t: Tool) -> &'static str {
         Tool::ActionLines => "lines-shapes/polygons-stars-spirals#action-lines",
         Tool::Balloon => "lines-shapes/polygons-stars-spirals#speech-balloons",
         Tool::GraphPaper => "lines-shapes/polygons-stars-spirals#graph-paper",
+        Tool::ShapeGenerator => "objects/shape-generator#tool",
         Tool::Text => "text/adding-text",
         Tool::Table => "objects/tables",
         Tool::ParallelDimension => "lines-shapes/dimensions#parallel",

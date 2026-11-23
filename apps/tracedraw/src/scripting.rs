@@ -54,6 +54,9 @@ struct HostInner {
     status: Option<String>,
     /// View > Simulate Overprints as a macro set it (`ActiveView.Type`).
     simulate_overprints: Option<bool>,
+    /// The view steps a script asked for (#4020), taken once its objects
+    /// are in the drawing.
+    view_steps: Vec<crate::view_steps::ViewStep>,
     /// What a macro's `Copy` or `Cut` took, for its `Paste`: the macro's
     /// own, not the system clipboard, which macros do not reach.
     clip: Vec<Shape>,
@@ -197,6 +200,12 @@ class Shape {
   // A dimension's kind, value (mm or degrees), label and points; null
   // for other objects.
   get Dimension() { try { return __call('dimension_info', {id:this.id}); } catch (e) { return null; } }
+  // A dimension's style: the settings named as a style is saved
+  // (text_size in points, font, precision...), as the Dimension bar
+  // sets them; LabelSize is the label's size in points (#4026).
+  SetDimensionStyle(style) { return __call('set_dimension_style', {ids:[this.id], style:style}).count; }
+  get LabelSize() { const s = __call('dimension_style', {id:this.id}); return s ? s.text_size : null; }
+  set LabelSize(v) { this.SetDimensionStyle({text_size:Number(v)}); }
   get Children() { return __call('shape_children', {id:this.id}).children.map(c => Object.assign(new Shape(c.id), {IsText:c.is_text, ChildType:c.type, Box:c.bbox})); }
   CreateSymbol(name) { return __call('create_symbol', {ids:[this.id], name:name||''}); }
   // Every group that draws the same as this one (text aside) becomes an
@@ -279,6 +288,9 @@ class ShapeRange {
   DistributeSpacingHorizontally() { this.Distribute('spacing_h'); }
   DistributeSpacingVertically() { this.Distribute('spacing_v'); }
   CreateSelection() { __call('select', {ids:this.ids, add:false}); }
+  // The dimensions among these objects take the style's settings (#4026).
+  SetDimensionStyle(style) { return __call('set_dimension_style', {ids:this.ids, style:style}).count; }
+  set LabelSize(v) { this.SetDimensionStyle({text_size:Number(v)}); }
   CreateSymbol(name) { return __call('create_symbol', {ids:this.ids, name:name||''}); }
   ReplaceText(needle, replacement, options) {
     const o = options || {};
@@ -400,6 +412,10 @@ const Application = {
   get Version() { return __call('version', {}).version; },
   get Name() { return 'TraceDraw'; },
   CreateColor: Color,
+  ZoomToFit() { __call('view_step', {step:'fit_all'}); },
+  ZoomToPage() { __call('view_step', {step:'fit_page'}); },
+  ZoomToSelection() { __call('view_step', {step:'fit_selection'}); },
+  CopyVisibleArea() { __call('view_step', {step:'copy_visible_area'}); },
 };
 // The active document, page and layer are read when a script uses them, not
 // bound once: a script that activates another page would otherwise go on
@@ -457,6 +473,7 @@ fn host_for(app: &App, trust: Trust) -> HostInner {
         view: vg::AppView::of(app),
         status: None,
         simulate_overprints: None,
+        view_steps: Vec::new(),
         clip: Vec::new(),
         dims: DimSettings {
             style: app.dimension_style.clone(),
@@ -609,7 +626,11 @@ fn run_host(
     if let Some(on) = inner.simulate_overprints {
         app.simulate_overprints = on;
     }
+    let views = inner.view_steps;
     apply(app, inner.commands, inner.selection, inner.page, label);
+    for step in views {
+        app.run_view_step(step);
+    }
     Ok((output, changes))
 }
 
@@ -797,6 +818,7 @@ fn blank_host(doc: Document, trust: Trust) -> HostInner {
         view: vg::AppView::default(),
         status: None,
         simulate_overprints: None,
+        view_steps: Vec::new(),
         clip: Vec::new(),
         dims: DimSettings::default(),
     }
@@ -1331,6 +1353,15 @@ impl HostInner {
         }
         Ok(match method {
             "version" => json!({"version": env!("CARGO_PKG_VERSION")}),
+            // Zoom To Fit, Zoom To Page, Zoom To Selection and Copy
+            // Visible Area (#4020).
+            "view_step" => {
+                let name = a.get("step").and_then(|v| v.as_str()).unwrap_or("");
+                let step = crate::view_steps::ViewStep::from_name(name)
+                    .ok_or_else(|| format!("no view step {name:?}"))?;
+                self.view_steps.push(step);
+                json!({})
+            }
             "log" => {
                 self.output.push(
                     a.get("text")
@@ -2719,9 +2750,21 @@ fn text_style_script(id: u64, spans: &[TextSpan]) -> Option<String> {
 }
 
 /// Turn recorded commands into a script the user can edit and replay.
+#[cfg(test)]
 pub fn commands_to_script(cmds: &[Command]) -> String {
+    commands_and_views_to_script(cmds, &[])
+}
+
+/// Turn recorded commands and the lines recorded among them for other
+/// steps (each after the number of commands before it: Zoom To Fit #4020,
+/// a dimension style #4026) into a script.
+pub fn commands_and_views_to_script(cmds: &[Command], views: &[(usize, String)]) -> String {
     let mut out = String::from("// Recorded macro\nconst doc = Application.ActiveDocument;\nconst layer = doc.ActiveLayer;\n");
-    for c in cmds {
+    let mut views = views.iter().peekable();
+    for (i, c) in cmds.iter().enumerate() {
+        while let Some((_, line)) = views.next_if(|(at, _)| *at <= i) {
+            out.push_str(line);
+        }
         match c {
             Command::AddShape { shape, .. } => {
                 // A dimension records as one, kept live (#2348).
@@ -2832,6 +2875,9 @@ pub fn commands_to_script(cmds: &[Command]) -> String {
             },
             other => out.push_str(&format!("// {}\n", other.label())),
         }
+    }
+    for (_, line) in views {
+        out.push_str(line);
     }
     out
 }

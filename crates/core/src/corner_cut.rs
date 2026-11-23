@@ -9,7 +9,8 @@
 //! to both sides (#2223).
 
 use crate::geometry::{
-    BezPath, CubicBez, Line, ParamCurve, ParamCurveArclen, PathEl, PathSeg, Point, Vec2,
+    BezPath, CubicBez, Line, ParamCurve, ParamCurveArclen, ParamCurveNearest, PathEl, PathSeg,
+    Point, Vec2,
 };
 
 /// How a corner is cut.
@@ -1689,6 +1690,114 @@ pub fn fillets(path: &BezPath) -> Vec<Fillet> {
         .collect()
 }
 
+/// `edit` applied to `path` with its rounded corners kept round (#3265):
+/// a node edit (`edit` gets a path and the nodes it acts on, element
+/// indices as the Shape tool counts them) is made on the curve with its
+/// rounded corners taken back to their sharp corners, and each of those
+/// corners is rounded again afterwards with the radius it had, so a
+/// rounded corner beside a moved node stays a rounded corner, tangent to
+/// its sides where they now run, and keeps its widget. A rounded corner
+/// whose arc nodes are all among `nodes` moves as its sharp corner; one
+/// with only some of them among `nodes` is left as curve, as before. A
+/// corner whose sides no longer take its radius gets the largest radius
+/// it takes.
+pub fn edit_keeping_fillets(
+    path: &BezPath,
+    nodes: &[usize],
+    edit: impl Fn(&BezPath, &[usize]) -> BezPath,
+) -> BezPath {
+    let keep = |f: &Fillet| {
+        let chosen = f.nodes.iter().filter(|n| nodes.contains(n)).count();
+        chosen == 0 || chosen == f.nodes.len()
+    };
+    keeping_fillets(path, keep, |sharp, map| {
+        let mut moved: Vec<usize> = nodes
+            .iter()
+            .filter_map(|n| map.get(*n).copied().flatten())
+            .collect();
+        moved.sort_unstable();
+        moved.dedup();
+        Some(edit(sharp, &moved))
+    })
+    .unwrap_or_else(|| edit(path, nodes))
+}
+
+/// A segment bend with the rounded corners kept round (#3265), as
+/// [`edit_keeping_fillets`] keeps them for node edits: `edit` gets the
+/// curve with its rounded corners taken back to their sharp corners, the
+/// segment (the element ending it) and the parameter on it of the point
+/// grabbed at `t` on segment `index` of `path`, and how the nodes of
+/// `path` are numbered there. A side of a rounded corner runs on to the
+/// sharp corner there, so the point keeps its place and its parameter
+/// changes. Bending the arc of a rounded corner leaves that corner to the
+/// bend, as before.
+pub fn bend_keeping_fillets(
+    path: &BezPath,
+    index: usize,
+    t: f64,
+    edit: impl Fn(&BezPath, usize, f64, &[Option<usize>]) -> BezPath,
+) -> BezPath {
+    let normal = crate::nodes::normalize(path);
+    let grabbed = normal.get_seg(index).map(|s| s.eval(t.clamp(0.0, 1.0)));
+    let keep = |f: &Fillet| !f.nodes.iter().skip(1).any(|n| *n == index);
+    keeping_fillets(path, keep, |sharp, map| {
+        let at = map.get(index).copied().flatten()?;
+        let seg = sharp.get_seg(at)?;
+        let t2 = seg.nearest(grabbed?, 1e-9).t;
+        Some(edit(sharp, at, t2, map))
+    })
+    .unwrap_or_else(|| {
+        let same: Vec<Option<usize>> = (0..normal.elements().len()).map(Some).collect();
+        edit(path, index, t, &same)
+    })
+}
+
+/// `edit` made on `path` with the rounded corners `keep` accepts taken
+/// back to their sharp corners ([`unround`], which gives `edit` the new
+/// node numbers), each of them rounded again afterwards with the radius
+/// it had, or the largest its sides now take. `None` when there is no
+/// such corner or `edit` gives none.
+fn keeping_fillets(
+    path: &BezPath,
+    keep: impl Fn(&Fillet) -> bool,
+    edit: impl FnOnce(&BezPath, &[Option<usize>]) -> Option<BezPath>,
+) -> Option<BezPath> {
+    let found = fillets(path);
+    let kept: Vec<usize> = found
+        .iter()
+        .enumerate()
+        .filter(|(_, f)| keep(f))
+        .map(|(i, _)| i)
+        .collect();
+    if kept.is_empty() {
+        return None;
+    }
+    let (sharp, map) = unround(path, Some(&kept));
+    // The sharp corners to round again and their radii, last node first
+    // so rounding one leaves the earlier ones where they are.
+    let mut again: Vec<(usize, f64)> = kept
+        .iter()
+        .filter_map(|&i| {
+            let f = &found[i];
+            let at = map.get(*f.nodes.first()?).copied().flatten()?;
+            Some((at, f.radius))
+        })
+        .collect();
+    again.sort_by_key(|b| std::cmp::Reverse(b.0));
+    let mut out = edit(&sharp, &map)?;
+    for (at, r) in again {
+        // The corner may have gone (its sides now in line).
+        let Some(fits) = max_fillet(&out, Some(&[at])) else {
+            continue;
+        };
+        let r = r.min(fits);
+        if r > 1e-9 {
+            out = cut_corners(&out, CornerCut::Fillet(r), Some(&[at])).0;
+        }
+    }
+    Some(out)
+}
+
 /// `path` with the rounded corners `which` (positions in
 /// [`fillets`]`(path)`; every one without it) taken back off: their sides
 /// run on to the sharp corner again. Also returns, for each element index
@@ -2021,6 +2130,143 @@ mod tests {
         let (p, n) = cut_corners(&BezPath::new(), CornerCut::Fillet(1.0), None);
         assert_eq!(n, 0);
         assert!(p.elements().is_empty());
+    }
+
+    /// A node moved beside rounded corners (#3265): the corners stay
+    /// round, with their radii, tangent to the sides where they now run;
+    /// a moved corner (all its arc nodes) moves its sharp corner; a
+    /// radius the sides no longer take is cut down.
+    #[test]
+    fn rounded_corners_stay_round_when_nodes_move() {
+        let sq = square();
+        let (round, _) = cut_corners(&sq, CornerCut::Fillet(2.0), None);
+        let found = fillets(&round);
+        assert_eq!(found.len(), 4);
+        // A node of no arc: there is none on a rounded square, so take a
+        // square with an extra node in the middle of its bottom side.
+        let mut sq5 = BezPath::new();
+        sq5.move_to((0.0, 0.0));
+        sq5.line_to((5.0, 0.0));
+        sq5.line_to((10.0, 0.0));
+        sq5.line_to((10.0, 10.0));
+        sq5.line_to((0.0, 10.0));
+        sq5.close_path();
+        let (round5, _) = cut_corners(&sq5, CornerCut::Fillet(2.0), None);
+        assert_eq!(fillets(&round5).len(), 4);
+        let mid = crate::nodes::nodes(&round5)
+            .into_iter()
+            .find(|n| (n.pos - Point::new(5.0, 0.0)).hypot() < 1e-9)
+            .expect("the middle node")
+            .index;
+        // Pull the middle node down: the bottom corners now meet slanted
+        // sides, and stay rounded with radius 2.
+        let d = Vec2::new(0.0, -3.0);
+        let plain = crate::nodes::move_node(&round5, mid, d);
+        let kept = edit_keeping_fillets(&round5, &[mid], |p, n| {
+            assert_eq!(n.len(), 1);
+            crate::nodes::move_node(p, n[0], d)
+        });
+        let after = fillets(&kept);
+        assert_eq!(after.len(), 4, "{after:?}");
+        assert!(
+            after.iter().all(|f| (f.radius - 2.0).abs() < 1e-6),
+            "{after:?}"
+        );
+        assert!(
+            fillets(&plain).len() < 4,
+            "moved as before, two arcs lose their sides"
+        );
+        // The middle node went where it was pulled.
+        assert!(crate::nodes::nodes(&kept)
+            .iter()
+            .any(|n| (n.pos - Point::new(5.0, -3.0)).hypot() < 1e-9));
+        // Every node of one arc moved: its sharp corner moves with them.
+        let f = &found[0];
+        let moved = edit_keeping_fillets(&round, &f.nodes, |p, n| {
+            assert_eq!(n.len(), 1, "the arc's nodes are its sharp corner");
+            crate::nodes::move_node(p, n[0], Vec2::new(-1.0, -1.0))
+        });
+        let after = fillets(&moved);
+        assert_eq!(after.len(), 4);
+        let c = f.corner + Vec2::new(-1.0, -1.0);
+        assert!(
+            after.iter().any(|g| (g.corner - c).hypot() < 1e-6),
+            "{after:?}"
+        );
+        // Some of an arc's nodes: that arc is left to the edit.
+        let one = edit_keeping_fillets(&round, &f.nodes[..1], |p, n| {
+            crate::nodes::move_node(p, n[0], Vec2::new(0.5, 0.0))
+        });
+        let plain = crate::nodes::move_node(&round, f.nodes[0], Vec2::new(0.5, 0.0));
+        let pts = |p: &BezPath| -> Vec<Point> {
+            p.elements()
+                .iter()
+                .flat_map(|e| match *e {
+                    PathEl::MoveTo(a) | PathEl::LineTo(a) => vec![a],
+                    PathEl::QuadTo(a, b) => vec![a, b],
+                    PathEl::CurveTo(a, b, c) => vec![a, b, c],
+                    PathEl::ClosePath => vec![],
+                })
+                .collect()
+        };
+        assert_eq!(one.elements().len(), plain.elements().len());
+        for (a, b) in pts(&one).iter().zip(pts(&plain)) {
+            assert!((*a - b).hypot() < 1e-9, "{one:?}\n{plain:?}");
+        }
+        // A side made too short for its radius: the largest that fits.
+        let big = cut_corners(&sq5, CornerCut::Fillet(4.0), None).0;
+        let mid = crate::nodes::nodes(&big)
+            .into_iter()
+            .find(|n| (n.pos - Point::new(5.0, 0.0)).hypot() < 1e-9)
+            .expect("middle")
+            .index;
+        let squeezed = edit_keeping_fillets(&big, &[mid], |p, n| {
+            crate::nodes::move_node(p, n[0], Vec2::new(4.0, 0.0))
+        });
+        let r: Vec<f64> = fillets(&squeezed).iter().map(|f| f.radius).collect();
+        assert_eq!(r.len(), 4, "{r:?}");
+        assert!(r.iter().any(|r| *r < 4.0 - 1e-6), "{r:?}");
+    }
+
+    /// A side of a rounded corner bent (#3265): the corner stays round
+    /// with its radius, the grabbed point follows the pointer; bending
+    /// the arc itself leaves that corner to the bend.
+    #[test]
+    fn rounded_corners_stay_round_when_a_side_bends() {
+        let (round, _) = cut_corners(&square(), CornerCut::Fillet(2.0), None);
+        let found = fillets(&round);
+        assert_eq!(found.len(), 4);
+        // The bottom side: the line from (2, 0) to (8, 0).
+        let side = (1..round.elements().len())
+            .find(|i| {
+                matches!(round.elements()[*i], PathEl::LineTo(p) if (p - Point::new(8.0, 0.0)).hypot() < 1e-9)
+            })
+            .expect("bottom side");
+        let d = Vec2::new(0.0, -2.0);
+        let bent = bend_keeping_fillets(&round, side, 0.5, |p, i, t, _| {
+            crate::nodes::bend_segment(p, i, t, d)
+        });
+        let after = fillets(&bent);
+        assert_eq!(after.len(), 4, "{after:?}");
+        assert!(
+            after.iter().all(|f| (f.radius - 2.0).abs() < 1e-3),
+            "{after:?}"
+        );
+        // The grabbed point, the middle of the side at (5, 0), is at (5, -2).
+        let near = (1..bent.elements().len())
+            .filter_map(|i| bent.get_seg(i))
+            .map(|s| {
+                (s.eval(s.nearest(Point::new(5.0, -2.0), 1e-9).t) - Point::new(5.0, -2.0)).hypot()
+            })
+            .fold(f64::INFINITY, f64::min);
+        assert!(near < 1e-6, "{near}");
+        // An arc's own segment: that corner is the bend's.
+        let arc_seg = found[0].nodes[1];
+        let plain = crate::nodes::bend_segment(&round, arc_seg, 0.5, d);
+        let kept = bend_keeping_fillets(&round, arc_seg, 0.5, |p, i, t, _| {
+            crate::nodes::bend_segment(p, i, t, d)
+        });
+        assert_eq!(fillets(&kept).len(), fillets(&plain).len());
     }
 
     /// A filleted square's rounded corners are found again, with the

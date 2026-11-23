@@ -71,6 +71,7 @@
 
 - [[docker.fill_pattern]] 填充重复一个图块：双色、矢量图样或位图。请参阅 [图样填充](patterns.md)。
 - [[docker.fill_texture]] 填充是生成的自然外观纹理：[[texture.clouds]]、[[texture.marble]]、[[texture.noise]] 或 [[texture.wood]]，可设置其颜色和比例。
+- [[texture.holographic]] 和 [[texture.holo_glitter]] 给出固定的全息箔效果：彩虹色在深色和浅色区域（颜色 A 和 B）之间流动，闪粉带有闪亮的颗粒。不随视角变化；PDF 和 SVG 以图像形式保存。
 
 ## 一个对象上的多个填充 {#several-fills}
 

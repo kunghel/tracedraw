@@ -63,9 +63,20 @@ acceleration above and the color acceleration below.
 - Drag an end square to move its object, so the blend changes direction. Drop
   it on another object to make that object the new start or end, with the
   blend's settings.
+- Drag the round handle in the middle of the line (a blend without a path) to
+  bend the line into a curve: the steps follow it, and Spacing and Rotate all
+  objects work along it as along a path. Drop the handle back on the straight
+  line, or click **Straighten** in the panel, to make it straight again.
+
+When both ends are groups (a sun of many colored strokes, say), tick **Blend
+object by object** in the panel: each object of one group blends into the
+matching object of the other in its own colors, instead of each group
+blending as one shape.
 
 The object acceleration moves the steps toward one end also when the blend
 follows no path. A bitmap effect on the start object keeps the blend drawn.
+
+![A blend made with the Blend tool, bent into a curve by its round handle](../../img/effects-blend-bend.png)
 
 ## Blending along a path {#path}
 

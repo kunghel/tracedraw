@@ -55,6 +55,31 @@ com um clique: cromado, metal líquido, ouro, vidro líquido (que desfoca o que
 está por baixo) e vidro transparente. Cada imagem mostra o objeto selecionado
 com o visual; um desfazer o remove. As suas predefinições salvas vêm depois.
 
+## Meio-tom
+
+Na lista Efeitos de camada, **Meio-tom** transforma o objeto selecionado,
+como ele fica com os outros efeitos (uma sombra interna para o visual de
+tubo arredondado, um brilho, uma sobreposição), numa trama de pontos, e
+continua ao vivo: mude o objeto ou os outros efeitos e os pontos acompanham.
+
+- **Ponto**: redondo, quadrado, losango ou linha.
+- **Modo de cor**: Luz RGB faz pontos de luz vermelha, verde e azul, do
+  tamanho de cada canal de cor, para um visual pontilhado sobre fundo
+  escuro; Tinta CMYK imprime pontos ciano, magenta, amarelo e preto sobre
+  branco; Uma cor desenha pontos da cor ao lado, do tamanho da escuridão.
+- **Espaço entre pontos**, **Escala do ponto** (em 100 % um tom cheio cobre
+  a célula), **Suavidade** das bordas dos pontos e **Ângulo** da trama.
+- **Centro X** e **Centro Y** posicionam um ponto na largura e na altura do
+  objeto.
+- **Cortar pela borda do objeto**: ligado, os pontos terminam na borda;
+  desligado, pontos inteiros, menores onde o objeto os cobre menos.
+
+Uma sombra interna na lista Efeitos de camada também tem **Espalhamento**:
+mantém a sombra sólida nessa parte do desfoque antes de ela sumir, para
+uma borda mais funda e arredondada.
+
+![Meio-tom em tinta CMYK, losangos numa cor e linhas](../../img/effects-effects-docker-halftone.png)
+
 ## Outros comandos de efeito {#commands}
 
 - [[menu.effects > menu.effects.flatten]] transforma os efeitos dos objetos
@@ -70,3 +95,35 @@ com o visual; um desfazer o remove. As suas predefinições salvas vêm depois.
 - [[menu.object > menu.object.copy_effect]] copia um efeito de outro objeto, e
   [[menu.object.clone_effect]] faz um clone que o acompanha; veja
   [Copiar e clonar efeitos](copy-and-clone.md).
+
+## Aparência feita à mão e molduras
+
+Os efeitos de camada no alto do painel também têm estes, todos ao vivo e
+atualizados enquanto você edita o objeto:
+
+- [[effect.roughen]] redesenha o contorno com pequenas ondulações
+  aleatórias. **Tamanho** define até onde elas vão, **Detalhe** quantas são
+  a cada 10 mm, e **Suave** as transforma em ondas em vez de pontas.
+- [[effect.jitter_nodes]] move os nós que a curva já tem, ao acaso, até as
+  distâncias que você definir; **Alças também** move cada alça sozinha.
+- [[effect.scribble]] desenha o preenchimento como uma linha em zigue-zague
+  solta, na cor do preenchimento, com o ângulo, o espaçamento e a largura
+  que você definir. **Folga** deixa os traços passarem da borda ou pararem
+  antes. **Voltas arredondadas** curva cada volta da linha, até um laço
+  largo como o de um lápis pastel; **Passar da borda** leva cada traço até
+  essa distância além da borda (abaixo de zero, para antes, do lado de
+  dentro); **Variação do espaçamento** e **Variação da espessura** deixam os
+  intervalos e os traços desiguais, como à mão. O contorno continua.
+- [[effect.shape_frame]] troca o contorno por um retângulo, retângulo
+  arredondado ou elipse em volta do objeto, com a margem que você definir.
+  Num grupo, faz uma só forma pintada como o objeto de cima.
+- [[effect.trim_marks]] desenha linhas nos cantos do objeto, do lado de
+  fora, para recortá-lo depois de impresso.
+- [[effect.feather]] faz o objeto sumir aos poucos em direção à borda, ao
+  longo do raio que você definir.
+
+**Variação** dá outro padrão aos efeitos aleatórios. O mesmo valor sempre
+desenha o mesmo resultado. Converter em curvas torna os efeitos de contorno
+definitivos.
+
+![Borda áspera, preenchimento de rabisco, moldura, marcas de corte e borda suave](../../img/effects-effects-docker-hand-made.png)

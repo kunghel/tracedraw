@@ -49,6 +49,8 @@ area in any copy.
 Click Finish on the bar, or choose [[menu.object.symmetry_finish]]
 (<kbd>Alt+Shift+E</kbd>), to stop editing.
 
+![A rotational symmetry of six copies turned round the centre](../../img/objects-symmetry-rotational.png)
+
 ## Removing or keeping the copies {#remove}
 
 - [[menu.object.symmetry_remove]] (<kbd>Alt+Shift+S</kbd>) removes the

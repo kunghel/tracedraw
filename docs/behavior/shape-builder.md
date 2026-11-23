@@ -64,3 +64,14 @@ While the tool is in use the objects it works on are edged in grey with
 a white halo, apart from the selection colour of the parts, so the
 objects taking part show
 (`shape_builder::tests::keep_originals_cancel_and_accept`).
+
+## Use Guidelines (#3558)
+
+Off by default. With **Use guidelines** ticked on the property bar, the
+guidelines the page shows (its own and the master page's, those not
+hidden) cut the objects too: a part is kept to the side of each
+guideline that the pointer is on, and the pointer on a guideline finds no
+part. A merge or a removal cuts the objects along the guidelines; the
+guidelines themselves are not changed
+(`shape_builder::tests::lines_cut_a_square_into_parts`,
+`shape_builder::tests::use_guidelines_cuts_the_objects_at_the_guidelines`).

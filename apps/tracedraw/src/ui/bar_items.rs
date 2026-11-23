@@ -20,6 +20,9 @@ pub enum ItemBar {
     Custom(u8),
     /// The commands put on the toolbox, after its tools (#3211).
     Toolbox,
+    /// The standard bar of the image editing mode (Bitmaps > Edit
+    /// Inside): its own buttons, moved and chosen as the others'.
+    Image,
 }
 
 /// A separator between buttons.
@@ -90,6 +93,7 @@ impl ItemBar {
             ItemBar::Zoom => "zoom",
             ItemBar::Custom(n) => crate::ui::bars::Bar::Custom(n).id(),
             ItemBar::Toolbox => "toolbox",
+            ItemBar::Image => "image_standard",
         }
     }
 
@@ -98,6 +102,7 @@ impl ItemBar {
         match self {
             ItemBar::Standard => &STANDARD,
             ItemBar::Zoom => &ZOOM,
+            ItemBar::Image => &crate::ui::pixel_mode::IMAGE_BAR,
             // Made empty: the user drags its buttons onto it. The
             // toolbox's tools are its own; it starts with no commands.
             ItemBar::Custom(_) | ItemBar::Toolbox => &[],
@@ -198,11 +203,17 @@ pub struct Slot {
     pub vertical: bool,
 }
 
+/// The Customization pages of the options are open: a click on a bar's
+/// button picks it in the Commands page's list (#3890).
+pub fn customization_open(app: &App) -> bool {
+    matches!(app.dialog, crate::ui::dialogs::Dialog::Options)
+        && app.options_page.set() == crate::ui::options::OptionsSet::Customization
+}
+
 /// Buttons can be moved now: the Customization pages of the options are
 /// open, or Alt is held.
 pub fn customizing(app: &App, ctx: &egui::Context) -> bool {
-    let options = matches!(app.dialog, crate::ui::dialogs::Dialog::Options)
-        && app.options_page.set() == crate::ui::options::OptionsSet::Customization;
+    let options = customization_open(app);
     // Alt held from the toolbar (#1499) is no Alt held on the keyboard:
     // the bars would take its own button's tap as the start of a move.
     let alt = ctx.input(|i| i.modifiers.alt) && !crate::touch_modifiers::alt_from_toolbar(app);
@@ -253,6 +264,9 @@ pub fn draw_bar(app: &mut App, ui: &mut Ui, bar: ItemBar, draw: fn(&mut App, &mu
                     item: id.to_string(),
                     from: Some((bar, i)),
                 });
+            }
+            if resp.clicked() && customization_open(app) {
+                crate::ui::options::pick_bar_item(app, id);
             }
         }
         rects.push(rect);

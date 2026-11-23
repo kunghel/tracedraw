@@ -966,6 +966,31 @@ pub fn add_node(path: &BezPath, index: usize, t: f64) -> BezPath {
     BezPath::from_vec(out)
 }
 
+/// A node added in the middle of every segment of `path` (each curve
+/// split where it stays the same shape, each straight segment halved,
+/// closing segments too); segments of no length are left alone.
+pub fn add_node_every_segment(path: &BezPath) -> BezPath {
+    let mut out = normalize(path);
+    // The last first: a node added moves those after it on.
+    let mut i = out.elements().len();
+    while i > 1 {
+        i -= 1;
+        let els = out.elements();
+        let el = els[i];
+        let end = match el {
+            PathEl::LineTo(p) | PathEl::CurveTo(_, _, p) => p,
+            PathEl::QuadTo(_, p) => p,
+            PathEl::ClosePath => subpath_start(els, i),
+            PathEl::MoveTo(_) => continue,
+        };
+        if (end - prev_point(els, i)).hypot() < 1e-9 && !matches!(el, PathEl::CurveTo(..)) {
+            continue;
+        }
+        out = add_node(&out, i, 0.5);
+    }
+    out
+}
+
 /// Bend the segment ending at element `index` so that its point at
 /// parameter `t` moves by `d`, its end nodes staying put: a straight
 /// segment (or a closing one) becomes a curve first; both control points
@@ -2441,6 +2466,37 @@ fn subpath_start(els: &[PathEl], index: usize) -> Point {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn every_segment_gets_a_node_in_its_middle() {
+        // An open curve: a straight segment and a curve.
+        let mut p = BezPath::new();
+        p.move_to((0.0, 0.0));
+        p.line_to((10.0, 0.0));
+        p.curve_to((10.0, 10.0), (20.0, 10.0), (20.0, 0.0));
+        let q = add_node_every_segment(&p);
+        assert_eq!(q.elements().len(), 5);
+        assert_eq!(q.elements()[1], PathEl::LineTo(Point::new(5.0, 0.0)));
+        // The curve keeps its shape: the split lands on its middle.
+        let PathEl::CurveTo(_, _, mid) = q.elements()[3] else {
+            panic!("{q:?}");
+        };
+        assert!((mid - Point::new(15.0, 7.5)).hypot() < 1e-9);
+        // A closed triangle: three sides, the closing one too, give six.
+        let mut t = BezPath::new();
+        t.move_to((0.0, 0.0));
+        t.line_to((10.0, 0.0));
+        t.line_to((0.0, 10.0));
+        t.close_path();
+        let q = add_node_every_segment(&t);
+        let nodes = q
+            .elements()
+            .iter()
+            .filter(|e| !matches!(e, PathEl::ClosePath))
+            .count();
+        assert_eq!(nodes, 6, "{q:?}");
+        assert!(matches!(q.elements().last(), Some(PathEl::ClosePath)));
+    }
 
     /// Bulge (#3335): a square's four sides bowed by 1 make a circle
     /// through its corners whichever way the square runs, outward; -1

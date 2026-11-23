@@ -29,6 +29,17 @@ use tracedraw_render::{
 /// rendered anew instead of showing the last render moved into place.
 pub const SETTLE_SECONDS: f64 = 0.12;
 
+/// The shortest wait, seconds, after the last step of a zoom before a
+/// render still running for an earlier zoom is asked to give up: a few
+/// frames, enough to tell a wheel that has stopped from one that goes on.
+pub const ZOOM_SETTLE_MIN: f64 = 0.04;
+
+/// How much longer than the gap between the last two steps of a zoom the
+/// wait grows: notches a beat apart wait the shortest wait, slower turns
+/// wait long enough that the render in flight still lands between the
+/// notches.
+pub const ZOOM_SETTLE_PACE: f64 = 1.5;
+
 /// With Light zoom (Options > Tools > Zoom/Pan): how long the view rests
 /// after a zoom before the drawing is drawn anew for it, seconds. Long
 /// enough for the notches of one turn of the wheel to make one render.
@@ -230,15 +241,64 @@ fn program_turns() -> &'static Turns {
     }
 }
 
+/// A picture kept of a zoom the view has left (#3894).
+struct Level {
+    key: Key,
+    texture: TextureHandle,
+    page_rect: tracedraw_core::geometry::Rect,
+}
+
+/// At most this many pictures of earlier zooms are kept (#3894)...
+const MAX_LEVELS: usize = 6;
+/// ...and at most this many bytes of them (a 1600 x 1000 canvas is
+/// 6.4 MB a picture).
+const MAX_LEVEL_BYTES: usize = 96 << 20;
+
+/// Which of the pictures (their zoom and the part of the page they show,
+/// page mm) to show for a view at `zoom` showing `visible`: among those
+/// that cover all of it, the nearest in zoom; `None` when none does
+/// (#3894).
+fn nearest_level(
+    pictures: &[(f32, tracedraw_core::geometry::Rect)],
+    zoom: f32,
+    visible: tracedraw_core::geometry::Rect,
+) -> Option<usize> {
+    let covers = |r: &tracedraw_core::geometry::Rect| {
+        let slack = 1e-6 * (visible.width() + visible.height()).max(1.0);
+        r.x0 <= visible.x0 + slack
+            && r.y0 <= visible.y0 + slack
+            && r.x1 >= visible.x1 - slack
+            && r.y1 >= visible.y1 - slack
+    };
+    pictures
+        .iter()
+        .enumerate()
+        .filter(|(_, (z, r))| *z > 0.0 && zoom > 0.0 && covers(r))
+        .min_by(|a, b| {
+            let d = |z: f32| (z / zoom).ln().abs();
+            d(a.1 .0).total_cmp(&d(b.1 .0))
+        })
+        .map(|(i, _)| i)
+}
+
 #[derive(Default)]
 pub struct Raster {
     texture: Option<TextureHandle>,
     key: Option<Key>,
     /// The part of the page the texture shows, page mm.
     page_rect: Option<tracedraw_core::geometry::Rect>,
+    /// The pictures of the zooms the view showed last, of the drawing as
+    /// it stands (#3894): a zoom shows the nearest of them while its own
+    /// is drawn, sharper than the last picture scaled, and coming back to
+    /// one of them shows it at once.
+    levels: Vec<Level>,
     /// While the view moves: the view last asked for and when (egui
     /// time) it will be rendered if it stays.
     settle: Option<(Key, f64)>,
+    /// When (egui time) the view last stepped to a new zoom while a
+    /// render ran: the wait before a render in flight for an earlier
+    /// zoom is asked to give up follows the pace of these steps.
+    zoom_step: Option<f64>,
     /// Proofed colours on a grid of screen colours (View > Proof Colors),
     /// made when first needed and dropped with the texture (the colour
     /// settings changed).
@@ -264,6 +324,11 @@ pub struct Raster {
     /// is drawn anew once, when the view has rested
     /// [`LIGHT_SETTLE_SECONDS`], instead of at every step of the zoom.
     pub light_zoom: bool,
+    /// The view the wheel's glide lands at, set by the canvas every
+    /// frame while the glide goes: the picture is drawn for it while the
+    /// view is still on its way, and the glide puts the view at it when
+    /// it ends, so the picture fits the landing exactly.
+    pub zoom_target: Option<View>,
     /// The drawing as given, shared, for a render on its own thread to
     /// take instead of a copy of its own (no threads in the browser).
     #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
@@ -279,6 +344,15 @@ pub struct Raster {
     /// window's thread (a copy of a large drawing takes a frame's time).
     #[cfg(not(target_arch = "wasm32"))]
     kept: Option<(u64, std::sync::Arc<Document>)>,
+    /// While a fill (or an outline colour) is dragged in a colour picker,
+    /// the part of the page the drag can change (page mm: the selection's
+    /// boxes, widened by its outlines and shadows; set by the canvas every
+    /// frame, `None` otherwise): only it is rendered anew at every move of
+    /// the pointer, into the picture already shown, instead of the whole
+    /// page being drawn again for each move (#3559). The Pixels view, a
+    /// drag preview, a focus and the pages beside the current one never
+    /// take this path.
+    pub live_region: Option<tracedraw_core::geometry::Rect>,
     /// Renders started so far, on this thread or another.
     renders: u64,
     /// Since when (egui time) the picture has been the one asked for,
@@ -411,7 +485,9 @@ struct Key {
     /// still needs a new render when the view stays put.
     offset: egui::Vec2,
     size: (u32, u32),
-    preview: Option<(Vec<ShapeId>, [f64; 6])>,
+    /// The dragged objects as a set: the order the selection was made in
+    /// must not invalidate the picture, and the render asks membership.
+    preview: Option<(std::collections::HashSet<ShapeId>, [f64; 6])>,
     wireframe: bool,
     simulate_overprints: bool,
     complex_effects: bool,
@@ -477,12 +553,75 @@ pub fn pixel_window(view: &View, rect: Rect, dpi: f64, ppp: f32) -> Option<Pixel
 }
 
 impl Raster {
+    /// One move of a fill (or an outline colour) dragged in a colour
+    /// picker: the selection's part of the page (`region`, page mm)
+    /// rendered anew into the picture shown, which the next moves render
+    /// into again. `None` when the render failed: the caller then
+    /// renders the whole page as usual.
+    #[allow(clippy::too_many_arguments)]
+    fn live_frame(
+        &mut self,
+        doc: &Document,
+        page: PageId,
+        region: tracedraw_core::geometry::Rect,
+        key: &Key,
+        vt: ViewTransform,
+        screen: Rect,
+    ) -> Option<(TextureId, Rect)> {
+        let (w, h) = key.size;
+        let Some((x0, y0, rw, rh, sub)) = sub_view(vt, w, h, region) else {
+            // The objects lie off the canvas: the picture shown already
+            // is the page as it stands.
+            self.key = Some(key.clone());
+            return Some((self.texture.as_ref()?.id(), screen));
+        };
+        let opts = RenderOptions {
+            width: rw,
+            height: rh,
+            view: sub,
+            preview: None,
+            wireframe: key.wireframe,
+            simulate_overprints: key.simulate_overprints,
+            complex_effects: key.complex_effects,
+            anti_alias: true,
+            draft: true,
+            focus: None,
+        };
+        let lut = key.proof.then(|| {
+            self.proof
+                .get_or_insert_with(|| std::sync::Arc::new(ProofLut::new()))
+                .clone()
+        });
+        let t = web_time::Instant::now();
+        let pixmap = render_page(doc, page, &opts)?;
+        let image = to_image(&pixmap, lut.as_deref());
+        self.last_seconds = t.elapsed().as_secs_f64();
+        self.renders += 1;
+        let texture = self.texture.as_mut()?;
+        texture.set_partial([x0 as usize, y0 as usize], image, TextureOptions::LINEAR);
+        self.key = Some(key.clone());
+        self.settle = None;
+        Some((texture.id(), screen))
+    }
+
+    /// The colour drag is over: forget the key of the picture shown, and
+    /// keep the picture itself, so the next frame renders the whole page
+    /// once. The live region covers only what the fast path can prove
+    /// the colour changes; a corner of a mitered join, a faint shadow
+    /// tail or anything rarer the bounds miss can reach a little past
+    /// it, and this draws it as the page stands (#3559).
+    pub fn end_live_colour_drag(&mut self) {
+        self.key = None;
+    }
+
     /// Drop the cached texture so the next frame re-renders (and the
     /// proofed colours, which the colour settings decide).
     pub fn invalidate(&mut self) {
         self.key = None;
+        self.levels.clear();
         self.proof = None;
         self.settle = None;
+        self.zoom_step = None;
         // A render under way is for what no longer holds.
         #[cfg(not(target_arch = "wasm32"))]
         {
@@ -531,6 +670,50 @@ impl Raster {
         self.key.as_ref().map(|k| k.zoom)
     }
 
+    /// The drawing revision of the picture currently held in `texture`.
+    pub fn shown_revision(&self) -> Option<u64> {
+        self.texture.as_ref()?;
+        self.key.as_ref().map(|k| k.revision)
+    }
+
+    /// True when `texture` already holds an up-to-date plain render of `page`
+    /// at `revision` for `(view, rect, ppp, complex_effects)` with no job in
+    /// flight, so [`Raster::texture`] will return it without reading `doc`.
+    pub fn has_exact_plain_picture(
+        &self,
+        revision: u64,
+        page: PageId,
+        view: &View,
+        rect: Rect,
+        ppp: f32,
+        complex_effects: bool,
+    ) -> bool {
+        if self.texture.is_none() {
+            return false;
+        }
+        #[cfg(not(target_arch = "wasm32"))]
+        if self.job.is_some() {
+            return false;
+        }
+        let w = (rect.width() * ppp).round().max(1.0) as u32;
+        let h = (rect.height() * ppp).round().max(1.0) as u32;
+        let want = Key {
+            revision,
+            page,
+            zoom: view.zoom,
+            offset: view.origin - rect.min,
+            size: (w, h),
+            preview: None,
+            wireframe: false,
+            simulate_overprints: false,
+            complex_effects,
+            proof: false,
+            focus: None,
+            pixels: None,
+        };
+        self.key.as_ref() == Some(&want)
+    }
+
     #[allow(clippy::too_many_arguments)]
     pub fn texture(
         &mut self,
@@ -549,7 +732,18 @@ impl Raster {
         pixel_dpi: Option<f64>,
     ) -> Option<(TextureId, Rect)> {
         let ppp = ctx.pixels_per_point();
-        let window = pixel_dpi.and_then(|dpi| pixel_window(view, rect, dpi, ppp));
+        // The picture is drawn for the view the wheel's glide lands at,
+        // not for the view on its way to it: one render a turn, not one
+        // for a zoom the glide has already passed. The Pixels view is
+        // drawn at one render pixel per document pixel, and where it is
+        // drawn is the view; no aim there.
+        let zoom_target = self.zoom_target.take();
+        let key_view = if pixel_dpi.is_some() {
+            *view
+        } else {
+            zoom_target.unwrap_or(*view)
+        };
+        let window = pixel_dpi.and_then(|dpi| pixel_window(&key_view, rect, dpi, ppp));
         let (w, h) = match window {
             Some(win) => (win.w, win.h),
             None => (
@@ -561,10 +755,12 @@ impl Raster {
         let key = Key {
             revision,
             page,
-            zoom: view.zoom,
-            offset: view.origin - rect.min,
+            zoom: key_view.zoom,
+            offset: key_view.origin - rect.min,
             size: (w, h),
-            preview: preview.as_ref().map(|(s, t)| (s.clone(), t.as_coeffs())),
+            preview: preview
+                .as_ref()
+                .map(|(s, t)| (s.iter().copied().collect(), t.as_coeffs())),
             wireframe,
             simulate_overprints,
             complex_effects,
@@ -576,6 +772,54 @@ impl Raster {
                 .zip(pixel_dpi)
                 .map(|(win, dpi)| ((dpi * 1000.0).round() as u64, win.ix0, win.iy1)),
         };
+        let vt = match (window, pixel_dpi) {
+            // One render pixel per document pixel, the window's top-left
+            // one at the corner.
+            (Some(win), Some(dpi)) => ViewTransform {
+                zoom: dpi / 25.4,
+                origin_x: -(win.ix0 as f64),
+                origin_y: win.iy1 as f64,
+                stretch_y: 1.0,
+            },
+            _ => ViewTransform {
+                zoom: (key_view.zoom * ppp) as f64,
+                origin_x: ((key_view.origin.x - rect.min.x) * ppp) as f64,
+                origin_y: ((key_view.origin.y - rect.min.y) * ppp) as f64,
+                stretch_y: 1.0,
+            },
+        };
+        // A fill or an outline colour dragged in a colour picker changes
+        // only the selection's look: the part of the page it covers is
+        // rendered anew into the picture shown, the rest of which still
+        // is the page as it stands (each move only takes the move before
+        // back and colours the same objects again, #3559). Skipped while
+        // the picture shown is of another view or drawing state: the
+        // usual render brings it up to date first.
+        let live = self.live_region.filter(|r| {
+            window.is_none()
+                && key.preview.is_none()
+                && key.focus.is_none()
+                && !self.follows_zoom
+                && !self.defer
+                && r.is_finite()
+                && self.texture.is_some()
+                && self
+                    .key
+                    .as_ref()
+                    .is_some_and(|k| k.same_but_revision(&key))
+        });
+        if let Some(region) = live {
+            // A render of the whole page still on its thread is of a
+            // state the drag has left behind: its picture would paint
+            // over the region rendered here.
+            #[cfg(not(target_arch = "wasm32"))]
+            if let Some(job) = self.job.take() {
+                job.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+            }
+            if let Some(out) = self.live_frame(doc, page, region, &key, vt, screen) {
+                return Some(out);
+            }
+        }
         // Rested only while the picture stays the one asked for.
         #[cfg(not(target_arch = "wasm32"))]
         let rested = self.rested.take();
@@ -584,40 +828,111 @@ impl Raster {
         // last picture shows, moved into place.
         #[cfg(not(target_arch = "wasm32"))]
         if self.poll_job(ctx) {
-            // A render for a zoom the view has already left: nobody will
-            // see its picture, and the one for this zoom would wait for
-            // all of it, so a large drawing stayed blurry for two whole
-            // renders after each zoom step (#2522). It gives up at its
-            // next object; the scaled picture shows meanwhile.
-            if let Some(job) = &self.job {
-                if job.key != key
+            let now = ctx.input(|i| i.time);
+            // The view keeps zooming, a step every few frames: the running
+            // render keeps its turn and is not given up, or every render
+            // would give up before any of them is done, and the one for
+            // the zoom the wheel stopped at would start over from nothing.
+            // Each step re-arms the wait, so a wheel that goes on never
+            // rests it.
+            let stale_zoom = self.job.as_ref().is_some_and(|job| {
+                job.key != key
                     && job.key.same_but_view(&key, self.follows_zoom)
                     && self.zooms_at_once(&job.key, &key)
-                {
+            });
+            // A render for an earlier revision of the main canvas is
+            // obsolete too (#3903): letting it run to completion wastes
+            // CPU while holding both the render turn and the old document
+            // snapshot.
+            if let Some(job) = &self.job {
+                if !self.follows_zoom && job.key.revision != key.revision {
                     job.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
                 }
+            }
+            if stale_zoom {
+                let due = match &self.settle {
+                    Some((k, due)) if *k == key => *due,
+                    _ => {
+                        // The wait follows the wheel's own pace, the way
+                        // the glide's length does: notches a beat apart
+                        // wait a few frames, so a wheel that has stopped
+                        // is told from one that goes on soon; slower
+                        // turns wait longer, and the render in flight
+                        // lands between the notches all the same.
+                        let gap = self.zoom_step.take().map_or(0.0, |t| (now - t).max(0.0));
+                        self.zoom_step = Some(now);
+                        now + (gap * ZOOM_SETTLE_PACE).clamp(ZOOM_SETTLE_MIN, SETTLE_SECONDS)
+                    }
+                };
+                if now < due {
+                    self.settle = Some((key, due));
+                    ctx.request_repaint_after(std::time::Duration::from_secs_f64(due - now));
+                } else {
+                    // The view has settled: a render for a zoom it has
+                    // already left. Nobody will see its picture, and the
+                    // one for this zoom would wait for all of it, so a
+                    // large drawing stayed blurry for two whole renders
+                    // after each zoom step (#2522). It gives up at its
+                    // next object; the scaled picture shows meanwhile, and
+                    // the settled zoom's render starts when it has.
+                    self.zoom_step = None;
+                    if let Some(job) = &self.job {
+                        job.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+                    }
+                }
+                return self.shown_meanwhile(view, screen);
             }
             let running_for_this = self.job.as_ref().is_some_and(|j| j.key == key);
             if running_for_this || window.is_none() {
                 return self.shown_meanwhile(view, screen);
             }
         }
+        // Back at a zoom the view showed: its kept picture at once, no
+        // render (#3894).
+        if window.is_none()
+            && !self.follows_zoom
+            && self.key.as_ref() != Some(&key)
+            && self.back_to_level(&key)
+        {
+            #[cfg(not(target_arch = "wasm32"))]
+            if let Some(job) = self.job.take() {
+                job.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+            }
+        }
         if self.key.as_ref() == Some(&key) {
             if let Some(t) = &self.texture {
                 self.settle = None;
+                self.zoom_step = None;
                 #[cfg(not(target_arch = "wasm32"))]
                 {
                     self.rested = rested.or_else(|| Some(ctx.input(|i| i.time)));
                 }
-                return Some((t.id(), screen));
+                // The picture of the view the glide lands at, shown while
+                // the view is still on its way to it: placed by the view
+                // the canvas shows, filling the window exactly once the
+                // view has landed on it.
+                let carried = zoom_target.is_some()
+                    && (key_view.zoom != view.zoom || key_view.origin != view.origin);
+                let at = if carried {
+                    self.page_rect.map_or(screen, |r| view.rect_to_screen(r))
+                } else {
+                    screen
+                };
+                return Some((t.id(), at));
             }
         }
         // The view moved (pan, scroll, zoom) and nothing else changed:
         // show the last render moved into place until the view rests. A
         // pan shows the old picture as sharp as it was; a zoom scales it,
         // blurry, so the main canvas renders the new zoom at once on a
-        // thread (one render at a time: one still running for an earlier
-        // step is waited for above, then the latest zoom goes next).
+        // thread. One render at a time: one still running for an earlier
+        // step of the zoom keeps its turn (waited for above); once the
+        // turn is free, the zoom the view is at goes next, without
+        // waiting for the wheel to rest (with the turn idle, the wait
+        // would only keep the next picture from ever coming); and a
+        // render running when the wheel has stopped, for a zoom the view
+        // has left, is asked to give up (above), the settled zoom going
+        // next.
         let mut zoom_now = false;
         if window.is_none() {
             if let (Some(old), Some(t), Some(page_rect)) =
@@ -656,22 +971,7 @@ impl Raster {
             return Some((t.id(), view.rect_to_screen(page_rect)));
         }
         self.settle = None;
-        let vt = match (window, pixel_dpi) {
-            // One render pixel per document pixel, the window's top-left
-            // one at the corner.
-            (Some(win), Some(dpi)) => ViewTransform {
-                zoom: dpi / 25.4,
-                origin_x: -(win.ix0 as f64),
-                origin_y: win.iy1 as f64,
-                stretch_y: 1.0,
-            },
-            _ => ViewTransform {
-                zoom: (view.zoom * ppp) as f64,
-                origin_x: ((view.origin.x - rect.min.x) * ppp) as f64,
-                origin_y: ((view.origin.y - rect.min.y) * ppp) as f64,
-                stretch_y: 1.0,
-            },
-        };
+        self.zoom_step = None;
         let opts = RenderOptions {
             width: w,
             height: h,
@@ -750,8 +1050,16 @@ impl Raster {
             let gives_up = cancel.clone();
             // The main canvas's picture comes a band at a time, the middle
             // of the window first, laid over the last one as it comes
-            // (#2389); the pages beside it come whole.
-            let (bands_tx, bands) = if self.follows_zoom {
+            // (#2389); the pages beside it come whole. Only over a picture
+            // of the same drawing (the view moved): over one from before a
+            // change, the bands showed two drawings at once, cut along the
+            // bands' edges, so a shadow being dragged flickered in pieces
+            // as each step of the drag came (#3562).
+            let same_drawing = self
+                .key
+                .as_ref()
+                .is_some_and(|old| old.same_but_view(&key, true));
+            let (bands_tx, bands) = if self.follows_zoom || !same_drawing {
                 (None, None)
             } else {
                 let (t, r) = std::sync::mpsc::channel();
@@ -800,12 +1108,7 @@ impl Raster {
         let pixmap = render_page(doc, page, &opts)?;
         let image = to_image(&pixmap, lut.as_deref());
         self.last_seconds = t.elapsed().as_secs_f64();
-        match &mut self.texture {
-            Some(t) => t.set(image, filter),
-            None => self.texture = Some(ctx.load_texture("page", image, filter)),
-        }
-        self.key = Some(key);
-        self.page_rect = page_rect;
+        self.take_picture(ctx, image, filter, key, page_rect);
         self.texture.as_ref().map(|t| (t.id(), screen))
     }
 
@@ -1071,10 +1374,115 @@ impl Raster {
     #[cfg(not(target_arch = "wasm32"))]
     fn shown_meanwhile(&self, view: &View, screen: Rect) -> Option<(TextureId, Rect)> {
         let t = self.texture.as_ref()?;
+        // A kept picture of a zoom nearer the view's, covering what the
+        // window shows, is sharper than the last one scaled (#3894).
+        if let (Some(cur), Some(cur_rect)) = (self.key.as_ref(), self.page_rect) {
+            if !self.levels.is_empty() && !self.follows_zoom {
+                let a = view.to_page(screen.left_top());
+                let b = view.to_page(screen.right_bottom());
+                let visible = tracedraw_core::geometry::Rect::new(
+                    a.x.min(b.x),
+                    a.y.min(b.y),
+                    a.x.max(b.x),
+                    a.y.max(b.y),
+                );
+                let mut pictures = vec![(cur.zoom, cur_rect)];
+                pictures.extend(self.levels.iter().map(|l| (l.key.zoom, l.page_rect)));
+                if let Some(i) = nearest_level(&pictures, view.zoom, visible).filter(|i| *i > 0) {
+                    let l = &self.levels[i - 1];
+                    return Some((l.texture.id(), view.rect_to_screen(l.page_rect)));
+                }
+            }
+        }
         Some((
             t.id(),
             self.page_rect.map_or(screen, |r| view.rect_to_screen(r)),
         ))
+    }
+
+    /// Take `image`, the picture of `key`: the picture it replaces is
+    /// kept as a level when it is of another zoom of the drawing as it
+    /// stands, and levels of anything else go (#3894).
+    fn take_picture(
+        &mut self,
+        ctx: &Context,
+        image: ColorImage,
+        filter: TextureOptions,
+        key: Key,
+        page_rect: Option<tracedraw_core::geometry::Rect>,
+    ) {
+        let keep = cfg!(not(target_arch = "wasm32"))
+            && !self.follows_zoom
+            && page_rect.is_some()
+            && self
+                .key
+                .as_ref()
+                .is_some_and(|old| old.zoom != key.zoom && old.same_but_view(&key, false));
+        if keep && self.texture.is_some() {
+            let old = self.texture.take().expect("texture");
+            if let (Some(k), Some(r)) = (self.key.take(), self.page_rect) {
+                self.levels.push(Level {
+                    key: k,
+                    texture: old,
+                    page_rect: r,
+                });
+            }
+            self.texture = Some(ctx.load_texture("page", image, filter));
+        } else if let Some(t) = &mut self.texture {
+            t.set(image, filter);
+        } else {
+            self.texture = Some(ctx.load_texture("page", image, filter));
+        }
+        self.levels
+            .retain(|l| l.key.zoom != key.zoom && l.key.same_but_view(&key, false));
+        // The oldest go first, past the count or the bytes.
+        let bytes = |l: &Level| {
+            let [w, h] = l.texture.size();
+            w * h * 4
+        };
+        while self.levels.len() > MAX_LEVELS
+            || self.levels.iter().map(bytes).sum::<usize>() > MAX_LEVEL_BYTES
+        {
+            self.levels.remove(0);
+        }
+        self.key = Some(key);
+        self.page_rect = page_rect;
+    }
+
+    /// Let go of the pictures kept of other zooms, as when the view has
+    /// shown no other (tests of the wait for a new picture).
+    #[cfg(test)]
+    pub fn forget_kept_zooms(&mut self) {
+        self.levels.clear();
+    }
+
+    /// A kept picture of exactly the view asked for (the view came back
+    /// to a zoom it showed): made the picture shown, the one it replaces
+    /// kept in its place (#3894). True when there was one.
+    fn back_to_level(&mut self, key: &Key) -> bool {
+        let same = |k: &Key| {
+            k.same_but_view(key, false)
+                && (k.zoom / key.zoom - 1.0).abs() < 1e-6
+                && (k.offset - key.offset).length() < 0.01
+        };
+        let Some(i) = self.levels.iter().position(|l| same(&l.key)) else {
+            return false;
+        };
+        let level = self.levels.remove(i);
+        if let (Some(t), Some(k), Some(r)) = (self.texture.take(), self.key.take(), self.page_rect)
+        {
+            if k.same_but_view(key, false) {
+                self.levels.push(Level {
+                    key: k,
+                    texture: t,
+                    page_rect: r,
+                });
+            }
+        }
+        self.texture = Some(level.texture);
+        self.page_rect = Some(level.page_rect);
+        self.key = Some(key.clone());
+        true
     }
 
     /// A render on its thread: its picture taken when ready (`true` when
@@ -1090,12 +1498,7 @@ impl Raster {
                 let job = self.job.take().expect("job");
                 if let Some((image, seconds)) = result {
                     self.last_seconds = seconds;
-                    match &mut self.texture {
-                        Some(t) => t.set(image, job.filter),
-                        None => self.texture = Some(ctx.load_texture("page", image, job.filter)),
-                    }
-                    self.key = Some(job.key);
-                    self.page_rect = job.page_rect;
+                    self.take_picture(ctx, image, job.filter, job.key, job.page_rect);
                 }
                 false
             }
@@ -1166,6 +1569,66 @@ fn band_rects(at: Rect, h: u32, rows: &[(u32, u32)]) -> Vec<Rect> {
         .into_iter()
         .map(|(a, b)| Rect::from_min_max(egui::pos2(at.left(), y(a)), egui::pos2(at.right(), y(b))))
         .collect()
+}
+
+/// The pixels of a `w` by `h` picture rendered with `vt` that the page
+/// rectangle `region` (page mm) covers, widened to whole pixels: their
+/// place in the picture, their size, and the view that renders exactly
+/// them. `None` when the region lies off the picture.
+fn sub_view(
+    vt: ViewTransform,
+    w: u32,
+    h: u32,
+    region: tracedraw_core::geometry::Rect,
+) -> Option<(u32, u32, u32, u32, ViewTransform)> {
+    // The picture's y runs down, the page's up.
+    let (x0, x1) = (
+        (vt.zoom * region.x0 + vt.origin_x).floor().clamp(0.0, w as f64),
+        (vt.zoom * region.x1 + vt.origin_x).ceil().clamp(0.0, w as f64),
+    );
+    let (y0, y1) = (
+        (vt.origin_y - vt.zoom * region.y1)
+            .floor()
+            .clamp(0.0, h as f64),
+        (vt.origin_y - vt.zoom * region.y0)
+            .ceil()
+            .clamp(0.0, h as f64),
+    );
+    let (x0, x1, y0, y1) = (x0 as u32, x1 as u32, y0 as u32, y1 as u32);
+    (x1 > x0 && y1 > y0).then(|| {
+        (
+            x0,
+            y0,
+            x1 - x0,
+            y1 - y0,
+            ViewTransform {
+                zoom: vt.zoom,
+                origin_x: vt.origin_x - x0 as f64,
+                origin_y: vt.origin_y - y0 as f64,
+                stretch_y: vt.stretch_y,
+            },
+        )
+    })
+}
+
+impl Key {
+    /// True when `other` asks for the same page shown the same way, only
+    /// the drawing's revision moved on: the steps a colour dragged in a
+    /// picker makes and takes back leave the picture's every pixel but
+    /// the selection's part as it is (#3559).
+    fn same_but_revision(&self, other: &Key) -> bool {
+        self.page == other.page
+            && self.zoom == other.zoom
+            && self.offset == other.offset
+            && self.size == other.size
+            && self.preview == other.preview
+            && self.wireframe == other.wireframe
+            && self.simulate_overprints == other.simulate_overprints
+            && self.complex_effects == other.complex_effects
+            && self.proof == other.proof
+            && self.focus == other.focus
+            && self.pixels == other.pixels
+    }
 }
 
 impl Key {
@@ -1412,6 +1875,177 @@ mod tests {
             delay <= KEEP_FOR_CURRENT,
             "no repaint asked for: waits {delay:?}"
         );
+    }
+
+    /// The region a colour drag renders: exactly the pixels of the whole
+    /// page's picture the region covers, whole pixels at its edge
+    /// (#3559).
+    #[test]
+    fn a_live_region_render_matches_the_full_pages_pixels() {
+        use tracedraw_core::document::ShapeKind;
+        use tracedraw_core::{Color, Fill, Shape};
+        let mut doc = Document::new("t", Size::new(100.0, 50.0));
+        let page = doc.pages[0].id;
+        let layer = doc.pages[0].layers[0].id;
+        let mut a = Shape::new(
+            ShapeId(1),
+            ShapeKind::Path {
+                path: tracedraw_core::geometry::rect_path(
+                    tracedraw_core::geometry::Rect::new(5.0, 3.0, 40.0, 30.0),
+                    0.0,
+                ),
+                closed: true,
+            },
+        );
+        a.fill = Fill::Solid(Color::rgb8(200, 30, 30));
+        a.stroke = None;
+        let mut b = Shape::new(
+            ShapeId(2),
+            ShapeKind::Path {
+                path: tracedraw_core::geometry::rect_path(
+                    tracedraw_core::geometry::Rect::new(30.0, 20.0, 60.0, 45.0),
+                    0.0,
+                ),
+                closed: true,
+            },
+        );
+        b.fill = Fill::Solid(Color::rgb8(30, 30, 200));
+        b.stroke = None;
+        doc.layer_mut(layer).unwrap().shapes.extend([a, b]);
+        let vt = ViewTransform {
+            zoom: 3.7,
+            origin_x: 11.0,
+            origin_y: 190.0,
+            stretch_y: 1.0,
+        };
+        let opts = |width, height, view| RenderOptions {
+            width,
+            height,
+            view,
+            preview: None,
+            wireframe: false,
+            simulate_overprints: false,
+            complex_effects: false,
+            anti_alias: true,
+            draft: true,
+            focus: None,
+        };
+        let full = render_page(&doc, page, &opts(320, 200, vt)).expect("rendered");
+        // A region part of it covered by a shape, part of it bare page.
+        let region = tracedraw_core::geometry::Rect::new(5.2, 3.1, 45.7, 33.9);
+        let (x0, y0, w, h, sub) = sub_view(vt, 320, 200, region).expect("on the page");
+        let part = render_page(&doc, page, &opts(w, h, sub)).expect("rendered");
+        assert_eq!(part.width(), w);
+        assert_eq!(part.height(), h);
+        for y in 0..h {
+            for x in 0..w {
+                let want = full.pixels()[(y0 + y) as usize * 320 + (x0 + x) as usize];
+                let got = part.pixels()[(y * w + x) as usize];
+                assert_eq!(got, want, "pixel ({x}, {y})");
+            }
+        }
+        // Off the picture: nothing to render.
+        let off = tracedraw_core::geometry::Rect::new(1000.0, 1000.0, 1010.0, 1010.0);
+        assert!(sub_view(vt, 320, 200, off).is_none());
+    }
+
+    /// A colour dragged in a picker: every move renders only the
+    /// selection's part of the page, into the picture shown, on the
+    /// window's thread, without waiting for the view to rest or a render
+    /// on a thread of its own (#3559).
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn a_colour_dragged_in_a_picker_renders_only_the_selections_part() {
+        use tracedraw_core::document::ShapeKind;
+        use tracedraw_core::{Color, Fill, Shape};
+        static TURNS: Turns = Turns::new();
+        let ctx = Context::default();
+        let mut doc = Document::new("t", Size::new(100.0, 50.0));
+        let page = doc.pages[0].id;
+        let layer = doc.pages[0].layers[0].id;
+        let mut a = Shape::new(
+            ShapeId(1),
+            ShapeKind::Path {
+                path: tracedraw_core::geometry::rect_path(
+                    tracedraw_core::geometry::Rect::new(10.0, 10.0, 40.0, 30.0),
+                    0.0,
+                ),
+                closed: true,
+            },
+        );
+        a.fill = Fill::Solid(Color::rgb8(200, 30, 30));
+        a.stroke = None;
+        doc.layer_mut(layer).unwrap().shapes.push(a);
+        let rect = Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(320.0, 200.0));
+        let view = View {
+            zoom: 4.0,
+            origin: egui::pos2(10.0, 190.0),
+        };
+        let mut raster = Raster {
+            turns: Some(&TURNS),
+            ..Default::default()
+        };
+        let pass = |raster: &mut Raster, doc: &Document, revision: u64| {
+            let mut out = None;
+            let mut full = ctx.run_ui(egui::RawInput::default(), |ui| {
+                out = raster.texture(
+                    ui.ctx(),
+                    doc,
+                    page,
+                    &view,
+                    rect,
+                    None,
+                    revision,
+                    false,
+                    false,
+                    false,
+                    false,
+                    None,
+                    None,
+                );
+            });
+            full.textures_delta.clear();
+            out.expect("texture")
+        };
+        let (first, _) = pass(&mut raster, &doc, 1);
+        assert_eq!(raster.render_count(), 1);
+        // The drag's moves: each colours the shape again and renders only
+        // the shape's part of the page.
+        raster.live_region = Some(tracedraw_core::geometry::Rect::new(5.0, 5.0, 45.0, 35.0));
+        for (revision, c) in [(2, (30, 200, 30)), (3, (30, 30, 200))] {
+            doc.layer_mut(layer).unwrap().shapes[0].fill =
+                Fill::Solid(Color::rgb8(c.0, c.1, c.2));
+            let (tex, at) = pass(&mut raster, &doc, revision);
+            assert_eq!(tex, first, "the picture shown, rendered into");
+            assert_eq!(at, rect);
+            assert!(raster.job.is_none(), "no render on a thread of its own");
+            assert!(raster.settle.is_none(), "no waiting for the view to rest");
+            assert_eq!(
+                raster.key.as_ref().map(|k| k.revision),
+                Some(revision),
+                "the picture is of the drawing as it stands"
+            );
+        }
+        assert_eq!(raster.render_count(), 3, "one render a move");
+        // A move whose objects lie off the canvas renders nothing.
+        raster.live_region =
+            Some(tracedraw_core::geometry::Rect::new(1000.0, 1000.0, 1010.0, 1010.0));
+        pass(&mut raster, &doc, 4);
+        assert_eq!(raster.render_count(), 3);
+        assert_eq!(raster.key.as_ref().map(|k| k.revision), Some(4));
+        // The drag over: the raster alone takes the picture as it is;
+        // the canvas then calls end_live_colour_drag, and the next frame
+        // renders the whole page once, so nothing the fast path could
+        // have missed (a corner of a mitered join, a faint shadow tail)
+        // stays stale (#3559).
+        raster.live_region = None;
+        let (tex, _) = pass(&mut raster, &doc, 4);
+        assert_eq!(tex, first);
+        assert_eq!(raster.render_count(), 4 - 1);
+        raster.end_live_colour_drag();
+        let (_, _) = pass(&mut raster, &doc, 4);
+        assert_eq!(raster.render_count(), 4, "one whole-page render at the end");
+        assert_eq!(raster.key.as_ref().map(|k| k.revision), Some(4));
     }
 
     #[test]
@@ -1673,6 +2307,76 @@ mod tests {
         assert!(raster.last_seconds < 1.0, "its time measured");
     }
 
+    /// #3562: a change to the drawing is not laid over the last picture
+    /// a band at a time: the bands showed the drawing before and after
+    /// the change at once, cut along their edges (a shadow being dragged
+    /// flickered in pieces). A view that moved still comes in bands.
+    #[test]
+    fn a_change_comes_whole_and_a_moved_view_in_bands() {
+        static TURNS: Turns = Turns::new();
+        let ctx = Context::default();
+        let doc = Document::new("t", Size::new(100.0, 50.0));
+        let page = doc.pages[0].id;
+        let rect = Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(320.0, 200.0));
+        let mut raster = Raster {
+            turns: Some(&TURNS),
+            threaded: true,
+            ..Default::default()
+        };
+        let mut pass = |raster: &mut Raster, revision: u64, zoom: f32, time: f64| {
+            let view = View {
+                zoom,
+                origin: egui::pos2(0.0, 400.0),
+            };
+            let input = egui::RawInput {
+                time: Some(time),
+                ..Default::default()
+            };
+            let mut full = ctx.run_ui(input, |ui| {
+                raster.texture(
+                    ui.ctx(),
+                    &doc,
+                    page,
+                    &view,
+                    rect,
+                    None,
+                    revision,
+                    false,
+                    false,
+                    false,
+                    false,
+                    None,
+                    None,
+                );
+            });
+            full.textures_delta.clear();
+        };
+        let wait = |raster: &mut Raster, pass: &mut dyn FnMut(&mut Raster)| {
+            for _ in 0..500 {
+                if raster.job.is_none() {
+                    return;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(5));
+                pass(raster);
+            }
+            panic!("the render ends");
+        };
+        pass(&mut raster, 1, 40.0, 0.0);
+        pass(&mut raster, 2, 40.0, 0.1);
+        let job = raster.job.as_ref().expect("on its thread");
+        assert!(job.bands.is_none(), "a change comes whole");
+        wait(&mut raster, &mut |r| pass(r, 2, 40.0, 0.2));
+        // The same drawing at another zoom, once the view rests.
+        let mut t = 1.0;
+        while raster.job.is_none() && t < 100.0 {
+            pass(&mut raster, 2, 60.0, t);
+            t += 1.0;
+        }
+        let job = raster.job.as_ref().expect("the new zoom on its thread");
+        assert!(job.bands.is_some(), "a moved view comes in bands");
+        wait(&mut raster, &mut |r| pass(r, 2, 60.0, 200.0));
+    }
+
     /// #3440: every picture after the first is drawn on its thread, as
     /// the program does: a change shows the last picture meanwhile, and
     /// once the changes stop the picture is of the latest one, never of
@@ -1908,12 +2612,77 @@ mod tests {
         assert!(!raster.has_backdrop(2));
     }
 
+    /// The picture to show for a zoom (#3894): among the kept ones that
+    /// cover what the window shows, the nearest in zoom.
+    #[test]
+    fn the_nearest_covering_level_is_shown() {
+        use tracedraw_core::geometry::Rect as R;
+        let visible = R::new(10.0, 10.0, 50.0, 40.0);
+        let pictures = [
+            (1.0, R::new(0.0, 0.0, 100.0, 100.0)),
+            (2.0, R::new(5.0, 5.0, 60.0, 45.0)),
+            (3.9, R::new(20.0, 20.0, 30.0, 30.0)),
+        ];
+        // 3.9 is nearest to 4 but shows too little; 2 covers it all.
+        assert_eq!(nearest_level(&pictures, 4.0, visible), Some(1));
+        assert_eq!(nearest_level(&pictures, 1.2, visible), Some(0));
+        assert_eq!(nearest_level(&pictures[2..], 4.0, visible), None);
+    }
+
+    /// Zoomed out and back (#3894): the picture of the first zoom is kept
+    /// while the second is drawn, and coming back shows it at once, with
+    /// no render; a change of the drawing drops what was kept.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn coming_back_to_a_zoom_shows_its_kept_picture_at_once() {
+        static TURNS: Turns = Turns::new();
+        let ctx = Context::default();
+        let doc = Document::new("t", Size::new(100.0, 50.0));
+        let rect = Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(320.0, 200.0));
+        let mut raster = Raster {
+            turns: Some(&TURNS),
+            ..Default::default()
+        };
+        let mut view = View::default();
+        let mut t = 0.0;
+        let mut until = |raster: &mut Raster, view: &View, zoom: f32| {
+            for _ in 0..400 {
+                t += 0.05;
+                pass(&ctx, raster, &doc, view, rect, t);
+                if raster.picture_zoom() == Some(zoom) && raster.job.is_none() {
+                    return;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            }
+            panic!("no picture at zoom {zoom}");
+        };
+        let first = view.zoom;
+        until(&mut raster, &view, first);
+        let at = egui::pos2(160.0, 100.0);
+        view.zoom_at(at, 0.5);
+        let out = view.zoom;
+        until(&mut raster, &view, out);
+        assert_eq!(raster.levels.len(), 1, "the first zoom's picture is kept");
+        let renders = raster.render_count();
+        view.zoom_at(at, 2.0);
+        let (tex, _) = pass(&ctx, &mut raster, &doc, &view, rect, 100.0);
+        assert_eq!(raster.render_count(), renders, "no render to come back");
+        assert_eq!(raster.picture_zoom(), Some(first));
+        assert_eq!(Some(tex), raster.texture.as_ref().map(|t| t.id()));
+        assert_eq!(raster.levels.len(), 1, "the zoomed-out picture kept in turn");
+        raster.invalidate();
+        assert!(raster.levels.is_empty());
+    }
+
     /// A burst of zoom steps while a render runs: no render is started
-    /// for each step. The running one, for a zoom the view has left, gives
-    /// up (its picture would only be shown scaled again, and the latest
-    /// zoom's render waited for all of it, #2522), and the next render
-    /// starts as soon as it has for the latest zoom only, covering only
-    /// the canvas, the part of the page on screen.
+    /// for a step, and the running one is not given up while the wheel
+    /// goes on: it keeps its turn, the last picture shows scaled, and the
+    /// steps wait for the view to settle. Once it has, the render, for a
+    /// zoom the view has left, gives up (its picture would only be shown
+    /// scaled again, and the latest zoom's render waited for all of it,
+    /// #2522), and the next render starts as soon as it has, for the
+    /// latest zoom only, covering only the canvas, the part of the page
+    /// on screen.
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn the_latest_zoom_wins_without_restarting_renders() {
@@ -1953,13 +2722,29 @@ mod tests {
             assert_eq!(raster.render_count(), renders + 1, "restarted");
             assert_eq!(raster.job.as_ref().map(|j| j.key.zoom), Some(first_step));
             assert!(
-                raster
+                !raster
                     .job
                     .as_ref()
                     .is_some_and(|j| j.cancel.load(std::sync::atomic::Ordering::Relaxed)),
-                "the first step's render told to give up"
+                "the running render is not given up while the wheel goes on"
             );
+            assert!(raster.settle.is_some(), "the steps wait to settle");
         }
+        // The wheel stops: once the view has settled, the render, for a
+        // zoom the view has left, is told to give up.
+        let mut told = false;
+        for i in 0..400 {
+            pass(&ctx, &mut raster, &doc, &view, rect, 0.4 + 0.001 * i as f64);
+            told = raster
+                .job
+                .as_ref()
+                .is_some_and(|j| j.cancel.load(std::sync::atomic::Ordering::Relaxed));
+            if told {
+                break;
+            }
+        }
+        assert!(told, "never told to give up");
+        assert_eq!(raster.render_count(), renders + 1);
         let before = raster.picture_zoom();
         drop(held);
         // It gave up, and the latest zoom's render started at once.
@@ -2009,6 +2794,165 @@ mod tests {
         ] {
             assert!((a - b).abs() < 1e-3, "{shown:?} {want:?}");
         }
+    }
+
+    /// A render slower than the wheel: while the wheel goes on, the steps
+    /// are skipped (the last picture shows scaled) and the running render
+    /// is not given up; when it is done, for a zoom the view has already
+    /// left, its picture shows scaled and the next render starts at once,
+    /// for the zoom the view is at, the turn not left idle; and when the
+    /// wheel has stopped, one render draws the zoom it stopped at.
+    #[test]
+    fn a_zoom_burst_skips_steps_until_the_view_settles() {
+        static TURNS: Turns = Turns::new();
+        let ctx = Context::default();
+        let doc = Document::new("t", Size::new(100.0, 50.0));
+        let rect = Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(320.0, 200.0));
+        let hold = std::sync::Arc::new(std::sync::Mutex::new(()));
+        let mut raster = Raster {
+            turns: Some(&TURNS),
+            hold: Some(hold.clone()),
+            ..Default::default()
+        };
+        let mut view = View::default();
+        let at = egui::pos2(160.0, 100.0);
+        pass(&ctx, &mut raster, &doc, &view, rect, 0.0);
+        let renders = raster.render_count();
+        // The first step starts a render, held on its thread.
+        let held = hold.lock().expect("lock");
+        view.zoom_at(at, 1.15);
+        let first_step = view.zoom;
+        let (first_tex, _) = pass(&ctx, &mut raster, &doc, &view, rect, 0.01);
+        assert_eq!(raster.render_count(), renders + 1);
+        // The next step: skipped, the running render keeps its turn.
+        view.zoom_at(at, 1.15);
+        let (tex, screen) = pass(&ctx, &mut raster, &doc, &view, rect, 0.03);
+        assert_eq!(tex, first_tex, "the last picture, scaled");
+        assert!(screen.width() > rect.width());
+        assert_eq!(raster.render_count(), renders + 1, "no render for the step");
+        assert_eq!(raster.job.as_ref().map(|j| j.key.zoom), Some(first_step));
+        assert!(
+            !raster
+                .job
+                .as_ref()
+                .is_some_and(|j| j.cancel.load(std::sync::atomic::Ordering::Relaxed)),
+            "not given up while the wheel goes on"
+        );
+        assert!(raster.settle.is_some(), "the steps wait to settle");
+        // It is done, for a zoom the view has already left: its picture
+        // shows scaled, and the next render starts at once, for the zoom
+        // the view is at, the turn not left idle till the wheel rests.
+        drop(held);
+        let mut shown = None;
+        let mut relayed = false;
+        for i in 0..25 {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+            pass(&ctx, &mut raster, &doc, &view, rect, 0.04 + 0.001 * i as f64);
+            shown = raster.picture_zoom();
+            if raster.render_count() > renders + 1 {
+                relayed = true;
+                break;
+            }
+        }
+        assert!(relayed, "the free turn was left idle");
+        assert_eq!(shown, Some(first_step), "the done render never showed");
+        assert_eq!(
+            raster.job.as_ref().map(|j| j.key.zoom),
+            Some(view.zoom),
+            "the zoom the view is at goes next"
+        );
+        assert_eq!(raster.settle, None, "no wait once the turn is free");
+        // The wheel has stopped: that render draws the zoom it stopped at.
+        for i in 0..400 {
+            if raster.picture_zoom() == Some(view.zoom) {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+            pass(&ctx, &mut raster, &doc, &view, rect, 0.2 + 0.001 * i as f64);
+        }
+        assert_eq!(raster.picture_zoom(), Some(view.zoom));
+        assert_eq!(
+            raster.render_count(),
+            renders + 2,
+            "two renders for the two steps"
+        );
+    }
+
+    /// While the wheel's glide is on its way, the canvas asks for the
+    /// picture of the view the glide lands at (Raster::zoom_target): the
+    /// picture is that zoom, drawn at once, and while it draws (and
+    /// after) it is placed by the view the canvas shows, the one still on
+    /// its way; when the view lands on the aim, the picture fits it
+    /// exactly and nothing is rendered for the bits the frames'
+    /// multiplying was off by.
+    #[test]
+    fn the_picture_of_a_glide_is_drawn_for_the_view_it_lands_at() {
+        static TURNS: Turns = Turns::new();
+        let ctx = Context::default();
+        let doc = Document::new("t", Size::new(100.0, 50.0));
+        let rect = Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(320.0, 200.0));
+        let mut raster = Raster {
+            turns: Some(&TURNS),
+            ..Default::default()
+        };
+        let view = View::default();
+        pass(&ctx, &mut raster, &doc, &view, rect, 0.0);
+        let renders = raster.render_count();
+        let at = egui::pos2(160.0, 100.0);
+        // The glide's aim, a zoom 1.15 ahead about the canvas middle, and
+        // the view a step into the glide.
+        let mut aim = view;
+        aim.zoom_at(at, 1.15);
+        let mut on_the_way = view;
+        on_the_way.zoom_at(at, 1.04);
+        raster.zoom_target = Some(aim);
+        pass(&ctx, &mut raster, &doc, &on_the_way, rect, 0.01);
+        assert_eq!(raster.render_count(), renders + 1, "rendered at once");
+        assert_eq!(
+            raster.job.as_ref().map(|j| j.key.zoom),
+            Some(aim.zoom),
+            "the render on its way is for the aim"
+        );
+        // It comes a picture of the aim, placed by the view on its way:
+        // the aim zooms in, so the part of the page it covers takes less
+        // than the canvas so far.
+        let mut landed = false;
+        for i in 0..400 {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+            raster.zoom_target = Some(aim);
+            let (_, screen) = pass(
+                &ctx,
+                &mut raster,
+                &doc,
+                &on_the_way,
+                rect,
+                0.02 + 0.001 * i as f64,
+            );
+            if raster.picture_zoom() == Some(aim.zoom) {
+                assert!(
+                    screen.width() < rect.width(),
+                    "placed by the view on its way: {screen:?}"
+                );
+                landed = true;
+                break;
+            }
+        }
+        assert!(landed, "the aim was never rendered");
+        // The view lands on the aim, the aim dropped: the picture fits it
+        // exactly, and no render is started for the difference.
+        let rendered = raster.render_count();
+        raster.zoom_target = None;
+        for i in 0..400 {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+            let (_, screen) =
+                pass(&ctx, &mut raster, &doc, &aim, rect, 0.3 + 0.001 * i as f64);
+            if raster.job.is_none() {
+                assert_eq!(screen, rect, "the picture of the landed view");
+                break;
+            }
+        }
+        assert_eq!(raster.picture_zoom(), Some(aim.zoom));
+        assert_eq!(raster.render_count(), rendered, "a render for the bits");
     }
 
     /// A page beside the current one in the Multipage View is rendered
@@ -2249,5 +3193,103 @@ mod tests {
             &mut found,
         );
         assert!(found.is_empty(), "use web_time: {found:?}");
+    }
+
+    /// #3903: when the drawing's revision moves on while a render job for an
+    /// earlier revision is still running on its thread, the obsolete job is
+    /// told to give up instead of running to completion and uploading an
+    /// outdated picture, and the latest revision renders right after.
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn a_newer_revision_cancels_a_stale_render_in_flight() {
+        use tracedraw_core::document::ShapeKind;
+        use tracedraw_core::{Color, Fill, Shape};
+        static TURNS: Turns = Turns::new();
+        let ctx = Context::default();
+        let mut doc = Document::new("t", Size::new(100.0, 50.0));
+        let page = doc.pages[0].id;
+        let layer = doc.pages[0].layers[0].id;
+        let mut box_shape = Shape::new(
+            ShapeId(1),
+            ShapeKind::Rect {
+                rect: tracedraw_core::geometry::Rect::new(10.0, 10.0, 40.0, 30.0),
+                radius: 0.0,
+                corners: None,
+            },
+        );
+        box_shape.fill = Fill::Solid(Color::rgb8(200, 40, 40));
+        doc.layer_mut(layer).unwrap().shapes.push(box_shape);
+        let rect = Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(320.0, 200.0));
+        let view = View::default();
+        let hold = std::sync::Arc::new(std::sync::Mutex::new(()));
+        let mut raster = Raster {
+            turns: Some(&TURNS),
+            threaded: true,
+            hold: Some(hold.clone()),
+            ..Default::default()
+        };
+        let mut frame = |raster: &mut Raster, revision: u64| {
+            let mut full = ctx.run_ui(egui::RawInput::default(), |ui| {
+                raster.texture(
+                    ui.ctx(),
+                    &doc,
+                    page,
+                    &view,
+                    rect,
+                    None,
+                    revision,
+                    false,
+                    false,
+                    false,
+                    false,
+                    None,
+                    None,
+                );
+            });
+            full.textures_delta.clear();
+        };
+        frame(&mut raster, 1);
+        assert_eq!(raster.shown_revision(), Some(1));
+        let renders = raster.render_count();
+
+        let held = hold.lock().expect("lock");
+        frame(&mut raster, 2);
+        assert_eq!(raster.render_count(), renders + 1);
+        assert!(!raster
+            .job
+            .as_ref()
+            .expect("job 2")
+            .cancel
+            .load(std::sync::atomic::Ordering::Relaxed));
+        for rev in 3..=5 {
+            frame(&mut raster, rev);
+            assert_eq!(raster.render_count(), renders + 1);
+            assert!(
+                raster
+                    .job
+                    .as_ref()
+                    .expect("still job 2")
+                    .cancel
+                    .load(std::sync::atomic::Ordering::Relaxed),
+                "revision {rev} should cancel stale job 2"
+            );
+        }
+        drop(held);
+        let mut settled = false;
+        for _ in 0..400 {
+            std::thread::sleep(std::time::Duration::from_millis(5));
+            frame(&mut raster, 5);
+            assert_ne!(
+                raster.shown_revision(),
+                Some(2),
+                "cancelled revision 2 must not overwrite the shown picture"
+            );
+            if raster.shown_revision() == Some(5) && raster.job.is_none() {
+                settled = true;
+                break;
+            }
+        }
+        assert!(settled, "revision 5 rendered once job 2 aborted");
+        assert_eq!(raster.render_count(), renders + 2);
     }
 }

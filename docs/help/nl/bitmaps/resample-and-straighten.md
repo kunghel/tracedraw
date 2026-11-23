@@ -65,7 +65,7 @@ bitmap.
   [[tool.crop]]; een hoek van een bitmap slepen met het gereedschap
   [[tool.shape]] snijdt hem ook bij.
 - [[menu.bitmaps.edit_bitmap]] opent de bitmap in een ander programma.
-- [[menu.bitmaps.edit_inside]] (or a double click on the picture with the Pick tool) edits its pixels in place, inside TraceDraw: selections, brush, soft eraser, clone, heal, blur, content fill, red eye, layers with opacity and merge modes, and any bitmap effect inside the selection only. Enter finishes, as one undo step.
+- [[menu.bitmaps.edit_inside]] (or a double click on the picture with the Pick tool) edits its pixels in place, inside TraceDraw: selections, brush, soft eraser, clone, heal, blur, content fill, red eye, layers with opacity, merge modes and masks, quick mask, stretch and warp, restore, tint and replace colour brushes, pixel shapes, liquify, Smart Resize, adjustment layers, a histogram, a remove brush, a brush and a stamp that follow the surface of the photo, and any bitmap effect inside the selection only. Enter finishes, as one undo step.
 - [[menu.bitmaps.remove_background]] maakt de achtergrond van een foto
   transparant.
 - [[menu.bitmaps.remove_background_local]]: [Achtergrond verwijderen](remove-background.md).

@@ -134,6 +134,62 @@ impl HostInner {
                 json!({"id": group.raw(), "value": info["value"], "text": info["text"]})
             }
             "dimension_info" => self.dimension_info(ShapeId(id_arg(a, "id")?))?,
+            // A dimension's style, as `set_dimension_style` names it; null
+            // for an object that is not a dimension.
+            "dimension_style" => {
+                let s = self.shape(id_arg(a, "id")?)?;
+                match Dimension::of(&s) {
+                    Some(d) => serde_json::to_value(&d.style).map_err(|e| e.to_string())?,
+                    None => Value::Null,
+                }
+            }
+            // The style of the dimensions among `ids` (objects that are
+            // not dimensions are left alone): the settings `style` names,
+            // by the names a style is saved with (`text_size` in points,
+            // `font`, `precision`...), as the Dimension bar sets them
+            // (#4026). Answers how many dimensions changed.
+            "set_dimension_style" => {
+                let changes = a
+                    .get("style")
+                    .and_then(|v| v.as_object())
+                    .ok_or("missing style")?
+                    .clone();
+                let ids: Vec<u64> = a
+                    .get("ids")
+                    .and_then(|v| v.as_array())
+                    .map(|v| v.iter().filter_map(|x| x.as_u64()).collect())
+                    .unwrap_or_default();
+                // A setting the style does not have is an error even
+                // where no dimension is given.
+                crate::dimensions::style_with(&Default::default(), &changes)?;
+                let mut count = 0;
+                for raw in ids {
+                    let s = self.shape(raw)?;
+                    let Some(mut d) = Dimension::of(&s) else {
+                        continue;
+                    };
+                    d.style = crate::dimensions::style_with(&d.style, &changes)?;
+                    let parts = match &s.kind {
+                        tracedraw_core::ShapeKind::Group { children } if children.len() == 3 => {
+                            [children[0].id, children[1].id, children[2].id]
+                        }
+                        _ => [self.new_id(), self.new_id(), self.new_id()],
+                    };
+                    let cmds = crate::dimensions::redraw_with(
+                        &self.doc,
+                        &s,
+                        &d,
+                        parts,
+                        &self.dims.font,
+                        self.dims.units,
+                    );
+                    for c in cmds {
+                        self.run(c)?;
+                    }
+                    count += 1;
+                }
+                json!({ "count": count })
+            }
             "symbols" => {
                 let list: Vec<Value> = self
                     .doc

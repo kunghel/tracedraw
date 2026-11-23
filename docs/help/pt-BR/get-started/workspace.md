@@ -99,6 +99,11 @@ mouse sobre ela. Cada painel tem botões de recolher e fechar na
 barra de título. A página [Painéis](../reference/dockers.md) lista todos os
 painéis.
 
+Um painel também pode flutuar ou ter uma janela própria: clique com o botão
+direito no título ou na guia e marque Janela própria. Essa janela pode ir
+para outro monitor e guarda o lugar e o tamanho; desmarque Janela própria
+para trazer o painel de volta à janela principal.
+
 ## A janela de desenho {#drawing-window}
 
 A página fica sobre a área de trabalho ao redor, onde você também pode deixar

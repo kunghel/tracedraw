@@ -385,6 +385,7 @@ impl App {
         if !change.pairs.is_empty() {
             cmds.push(Command::ReplaceColors {
                 pairs: change.pairs,
+                shapes: Vec::new(),
             });
         }
         let _ = self.engine.run_batch("Color Styles", &cmds);

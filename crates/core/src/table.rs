@@ -4,7 +4,7 @@
 //! testing those lines. The app turns each edit into one `SetShapeKind`
 //! command, so all of it undoes as one step.
 
-use crate::document::{Table, TableCell, TextAlign};
+use crate::document::{Table, TableCell, TextAlign, VerticalAlign};
 use crate::geometry::{BezPath, Point, Rect};
 use crate::style::Stroke;
 use serde::{Deserialize, Serialize};
@@ -200,7 +200,14 @@ pub fn blank_cell(row: u32, col: u32) -> TableCell {
         fill: None,
         align: TextAlign::Left,
         borders: CellBorders::default(),
+        valign: VerticalAlign::Top,
     }
+}
+
+/// Whether a cell's text sits at its top, as cells were before they
+/// could align it otherwise (not written to files).
+pub fn is_top(v: &VerticalAlign) -> bool {
+    *v == VerticalAlign::Top
 }
 
 impl Table {

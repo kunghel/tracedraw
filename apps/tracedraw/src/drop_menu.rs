@@ -6,7 +6,7 @@
 //! clip frame), or Cancel. Ctrl keeps the drag horizontal or vertical;
 //! Esc cancels it. Let go over another object with Shift held, that
 //! object takes the outline of the selection without the menu, with Alt
-//! the fill and with Ctrl fill and outline, as in CorelDRAW. A move with
+//! the fill and with Ctrl fill and outline. A move with
 //! the left button let go over another object with Alt held copies the
 //! fill there without a menu, with Alt+Shift the outline
 //! (`App::copy_style_onto`, discussion #2066).
@@ -545,7 +545,7 @@ mod tests {
 
     /// Discussion #2066: a right-button drag let go over another object
     /// with Shift held copies the outline there without the menu, with
-    /// Alt the fill and with Ctrl both, as in CorelDRAW; without keys the
+    /// Alt the fill and with Ctrl both; without keys the
     /// menu opens.
     #[test]
     fn right_drop_with_shift_alt_or_ctrl_copies_without_the_menu() {

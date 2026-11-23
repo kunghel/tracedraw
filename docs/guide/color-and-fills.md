@@ -115,7 +115,10 @@ for a gradient, the kind, colours, angle and edge pad. See
   **Object > Create > Vector Pattern Fill**. It becomes the default fill
   for new objects; apply it to a selection from the Properties panel
   (**Fill > Pattern**). See [the vector pattern notes](../behavior/vector-pattern-fill.md).
-- **Texture** fills are generated: clouds, marble, noise and wood.
+- **Texture** fills are generated: clouds, marble, noise and wood, and
+  two fixed holographic foil looks, **Holographic** and **Holo glitter**
+  (rainbow colours between dark and light patches, the same on screen,
+  in print and in PDF and SVG exports, where they go in as a picture).
 
 ### Mesh fill
 

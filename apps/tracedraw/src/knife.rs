@@ -423,6 +423,7 @@ impl App {
                     f.node_types.clear();
                     f.spline = None;
                     f.spline_fixed.clear();
+                    f.common_shape = None;
                     f
                 };
                 let mut it = pieces.into_iter();

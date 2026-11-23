@@ -121,6 +121,9 @@ bulunur. Bir ağın satırlarını ve sütunlarını değiştirmek renklerini ko
 - [[docker.fill_texture]] dolgusu üretilmiş, doğal görünümlü bir dokudur:
   renkleri ve ölçeğiyle birlikte [[texture.clouds]], [[texture.marble]],
   [[texture.noise]] veya [[texture.wood]].
+- [[texture.holographic]] ve [[texture.holo_glitter]] sabit bir holografik folyo görünümü verir: koyu ve açık
+  alanlar (A ve B renkleri) arasında gökkuşağı renkleri, simli olan parlak
+  tanelerle. Bakış açısıyla değişmez; PDF ve SVG onu resim olarak taşır.
 
 ## Bir nesnede birden çok dolgu {#several-fills}
 

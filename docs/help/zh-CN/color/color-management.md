@@ -38,3 +38,5 @@ CMYK 配置文件随绘图一起保存，从版本 16 起也保存到 `.cdr` 文
 [[menu.view > menu.view.proof_colors]]，或状态栏右端的校样按钮，按印刷效果显示绘图：CMYK 油墨无法印刷的颜色看起来更暗淡。[[docker.color]] 面板也会对这类颜色发出警告。
 
 未加载配置文件时，TraceDraw 使用其自身的铜版纸印刷油墨模型转换颜色。
+
+[[menu.view > menu.view.separations]] 按一种油墨的印刷效果、以该油墨的颜色显示页面：选择青、品红、黄、黑或绘图中的专色，只显示该油墨印刷的部分。您可以照常继续绘制和编辑，绘图本身不会改变。[[menu.view.separations_composite]] 重新显示所有油墨。

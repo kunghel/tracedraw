@@ -442,7 +442,10 @@ impl App {
         }
         let pairs = made_spot(&self.doc().palette, &d.colors);
         if self.objects_use_any(&pairs) {
-            cmds.push(Command::ReplaceColors { pairs });
+            cmds.push(Command::ReplaceColors {
+                pairs,
+                shapes: Vec::new(),
+            });
         }
         if !cmds.is_empty() {
             if let Err(e) = self.engine.run_batch("Document Palette", &cmds) {
@@ -481,6 +484,7 @@ impl App {
         }
         let cmds = [tracedraw_core::Command::ReplaceColors {
             pairs: pairs.to_vec(),
+            shapes: Vec::new(),
         }];
         if let Err(e) = self.engine.run_batch("Spot Color", &cmds) {
             self.status = e.to_string();

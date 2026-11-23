@@ -290,7 +290,12 @@ default preset guideline colour, and presets added in the preset colour:
   upper left quarter).
 - User defined: margins (top, bottom, left, right), columns (number,
   distance between, set between the margins when those are on), grid
-  (rows, columns).
+  (rows, columns), and bleed (off; top, bottom, left, right, 3 mm each):
+  lines that far outside the page edges (#3916). Margins and bleed each
+  have Mirror: no mirror, top to bottom (the bottom takes the top's
+  value), left to right (the right takes the left's), or all four sides
+  (all take the top's); the fields that follow are greyed
+  (`ui::layout_options::tests::user_defined_bleed_guides_stand_outside_the_page_and_mirror`).
 
 A preset line already present is not added twice.
 

@@ -38,8 +38,13 @@ preenchimento do painel [[docker.properties]]:
 
 - O tipo: [[fill.linear]] (ao longo de uma linha), [[fill.radial]] (do centro
   para fora), [[fill.conical]] (em volta do centro), [[fill.square]] (em
-  quadrados crescentes) ou [[fill.shaped]] (seguindo o contorno do objeto, da
-  borda para dentro).
+  quadrados crescentes), [[fill.shaped]] (seguindo o contorno do objeto, da
+  borda para dentro) ou **Pontos de cor** (cada cor num ponto próprio em
+  qualquer lugar do objeto, misturando-se com as outras ao redor). Com a
+  ferramenta Preenchimento interativo ou Forma os pontos de cor aparecem no
+  objeto: arraste um para movê-lo, clique num e depois numa cor da paleta
+  para trocar a cor, clique duas vezes dentro do objeto para adicionar um e
+  pressione Delete para remover o escolhido (dois sempre ficam).
 - [[docker.gradient_presets]]: gradientes prontos para começar.
 - As **paradas**: as cores e onde ficam no gradiente, de 2 a 64. Selecione uma
   parada para mudar a cor ou a posição; [[docker.add_stop]] e
@@ -55,6 +60,8 @@ preenchimento do painel [[docker.properties]]:
 - [[docker.invert_colours]]: as cores correm na ordem inversa.
 
 Uma faixa abaixo do tipo mostra toda a sequência de cores como será desenhada.
+
+![Um degradê de pontos de cor com os quatro pontos no canvas](../../img/color-fills-color-points.png)
 
 ## A caixa de diálogo Editar preenchimento {#edit-fill}
 
@@ -176,6 +183,12 @@ mistura, ou desfaça para voltar.
 - Um preenchimento [[docker.fill_texture]] é uma textura gerada, de aparência
   natural: [[texture.clouds]], [[texture.marble]], [[texture.noise]] ou
   [[texture.wood]], com cores e escala.
+- [[texture.holographic]] e [[texture.holo_glitter]] dão um visual fixo de foil holográfico: cores do arco-íris
+  correndo entre manchas escuras e claras (cores A e B), o glitter com
+  grãos brilhantes. Não muda com o ângulo de visão; PDF e SVG levam como
+  imagem.
+
+![As texturas Holográfico e Brilho holográfico](../../img/color-fills-holographic.png)
 
 ## Vários preenchimentos em um objeto {#several-fills}
 
@@ -188,6 +201,12 @@ removê-lo. A seção de contorno pode acrescentar contornos extras da mesma for
 As setas ao lado de cada preenchimento ou contorno extra pintam-no uma posição
 antes ou depois; o segundo troca de lugar com o primeiro, então qualquer um
 pode ir para baixo ou para cima.
+
+Sob cada preenchimento extra, Crescer, Mover e Desfocar dão a ele uma
+aparência própria: a área crescida (ou encolhida, abaixo de zero), movida e
+desfocada, enquanto o objeto e os outros preenchimentos ficam como estão. Um
+preenchimento menor de outra cor, movido e um pouco desfocado, faz um brilho
+suave, por exemplo.
 
 Os preenchimentos também podem ser pintados em contornos; veja
 [Definir contornos](../lines-shapes/outlines.md#outline-pen).

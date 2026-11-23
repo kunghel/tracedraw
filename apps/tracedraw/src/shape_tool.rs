@@ -55,6 +55,7 @@ pub(crate) fn frame_only(s: &tracedraw_core::Shape) -> bool {
             e,
             tracedraw_core::live::Effect::Envelope { .. }
                 | tracedraw_core::live::Effect::Perspective { .. }
+                | tracedraw_core::live::Effect::MeshEnvelope { .. }
         )
     })
 }
@@ -158,8 +159,9 @@ impl App {
         let s = self.doc().find_shape(id)?;
         let parent = self.doc().parent_transform(id)?;
         match &s.kind {
-            // A B-spline shows its control points, not its nodes.
-            ShapeKind::Path { .. } if s.spline.is_some() => None,
+            // A B-spline shows its control points, not its nodes, and a
+            // common shape its handles (#4045).
+            ShapeKind::Path { .. } if s.spline.is_some() || shows_handles(s) => None,
             ShapeKind::Path { path, closed } => Some((path.clone(), *closed, parent * s.transform)),
             _ => None,
         }
@@ -338,17 +340,28 @@ impl App {
         }
     }
 
-    fn set_path(&mut self, id: ShapeId, path: BezPath, closed: bool, label: &'static str) {
-        if self.engine.undo_label() == Some(label) {
-            let _ = self.engine.undo();
-        }
-        let _ = self.engine.run_with_label(
-            &Command::SetShapeKind {
-                shape: id,
-                kind: ShapeKind::Path { path, closed },
-            },
-            label,
-        );
+    /// Give curve `id` the path `path`: the first step of a drag is a new
+    /// undo step named `label`, later steps of the same drag join it.
+    /// Only the drag's own step is joined: an earlier step of the same
+    /// name, another curve's handle drag among them, stays as it was
+    /// (#3689).
+    fn set_path(
+        &mut self,
+        id: ShapeId,
+        path: BezPath,
+        closed: bool,
+        label: &'static str,
+        begun: bool,
+    ) {
+        let cmd = Command::SetShapeKind {
+            shape: id,
+            kind: ShapeKind::Path { path, closed },
+        };
+        let _ = if begun {
+            self.engine.amend(&cmd)
+        } else {
+            self.engine.run_with_label(&cmd, label)
+        };
     }
 
     fn set_path_new_step(&mut self, id: ShapeId, path: BezPath, closed: bool) {
@@ -478,6 +491,79 @@ impl App {
             }
         }
         best.map(|b| b.0)
+    }
+
+    /// A step of dragging a rectangle, ellipse, polygon or B-spline node,
+    /// or a common shape's handle (#4045): the object drawn again from
+    /// where the drag began, one undo step for the whole drag. The Shape
+    /// tool and the Common Shapes tool drag them alike.
+    pub(crate) fn kind_node_drag_step(&mut self, p: Point, mods: Modifiers) {
+        let Drag::KindNode {
+            shape,
+            node,
+            start,
+            single,
+            chosen,
+            begun,
+            mut turn,
+        } = self.drag.clone()
+        else {
+            return;
+        };
+        // Ctrl as it is held now, not only at the press: one
+        // corner of a rectangle, an ellipse's angle in steps of
+        // the constrain angle, a star's points keeping their
+        // turn, from the first drag on (#1325, #1331, #1340).
+        let ctrl = mods.ctrl || mods.command;
+        let q = self.snap_point_excluding(p, &[shape]);
+        let step = self.settings.constrain_angle;
+        let cmd = match node {
+            crate::kind_nodes::KindNode::Spline { index } => {
+                let chosen: Vec<usize> = self
+                    .node_selection
+                    .iter()
+                    .filter(|(id, _)| *id == shape)
+                    .map(|(_, i)| *i)
+                    .collect();
+                if chosen.contains(&index) {
+                    crate::kind_nodes::spline_moved_many(&start, &chosen, index, q)
+                } else {
+                    crate::kind_nodes::spline_moved(&start, index, q)
+                }
+                .map(|points| Command::SetSpline {
+                    shape,
+                    points,
+                    fixed: None,
+                })
+            }
+            crate::kind_nodes::KindNode::Adjust { index } => {
+                crate::common_shapes::adjust_command(&start, index, q)
+            }
+            _ => crate::kind_nodes::drag_constrained(
+                &start, node, q, ctrl, chosen, &mut turn, step,
+            )
+            .map(|kind| Command::SetShapeKind { shape, kind }),
+        };
+        // One undo step for the whole drag, begun by the first step that
+        // changes something (a step that changed nothing must not fold
+        // the drag into the step before it).
+        let ran = match cmd {
+            Some(cmd) if begun => self.engine.amend(&cmd).is_ok(),
+            Some(cmd) => self
+                .engine
+                .run_with_label(&cmd, crate::kind_nodes::label_for(&start, Some(node)))
+                .is_ok(),
+            None => false,
+        };
+        self.drag = Drag::KindNode {
+            shape,
+            node,
+            start,
+            single,
+            chosen,
+            begun: begun || ran,
+            turn,
+        };
     }
 
     pub fn shape_tool_input(&mut self, response: &Response, p: Point, mods: Modifiers) {
@@ -919,7 +1005,28 @@ impl App {
                     // without a drag chooses it for the arrow keys
                     // (#2819, #3041, #3042).
                     self.chosen_handle = None;
-                    if let Some((path, closed, t)) = self.path_of(shape) {
+                    // Alt held: the node is dragged by its handle, the
+                    // handle keeping its place about it (#3719).
+                    let by_handle = mods.alt
+                        && self.path_of(shape).is_some_and(|(path, closed, t)| {
+                            let Some(n) = nodes::nodes(&path).into_iter().find(|n| n.index == index)
+                            else {
+                                return false;
+                            };
+                            let tip = match which {
+                                nodes::Which::In => n.ctrl_in,
+                                nodes::Which::Out => n.ctrl_out,
+                            };
+                            let Some(tip) = tip else { return false };
+                            let q = t.inverse() * self.snap_point_excluding(p, &[shape]);
+                            let np = nodes::move_node(&path, index, q - tip);
+                            let begun = self.node_drag_shown.is_some();
+                            self.note_node_drag_step(begun);
+                            self.set_path(shape, np, closed, "Edit Handle", begun);
+                            true
+                        });
+                    let plain = if by_handle { None } else { self.path_of(shape) };
+                    if let Some((path, closed, t)) = plain {
                         // The handle snaps like a node does; Ctrl or Shift
                         // keeps it to the constrain angle about its node,
                         // on the page, and a smooth node's other handle
@@ -937,8 +1044,11 @@ impl App {
                         let lp = t.inverse() * q;
                         let ty = self.node_type_of(shape, index);
                         let np = nodes::move_handle(&path, index, which, lp, ty);
-                        self.note_node_drag_step(self.node_drag_shown.is_some());
-                        self.set_path(shape, np, closed, "Edit Handle");
+                        // The press cleared the page's kept picture: it is
+                        // there from the drag's first step on.
+                        let begun = self.node_drag_shown.is_some();
+                        self.note_node_drag_step(begun);
+                        self.set_path(shape, np, closed, "Edit Handle", begun);
                     }
                 }
                 Drag::NodeMarquee { start, .. } => {
@@ -964,7 +1074,26 @@ impl App {
                                 Ok((_, s)) => s.node_types.clone(),
                                 Err(_) => Default::default(),
                             };
-                            let bent = nodes::bend_segment_with(&path, index, t, d, &chosen);
+                            // Rounded corners beside the segment stay
+                            // round (#3265).
+                            let bent = if self.keeps_rounded_corners()(&path) {
+                                tracedraw_core::corner_cut::bend_keeping_fillets(
+                                    &path,
+                                    index,
+                                    t,
+                                    |p, i, t, map| {
+                                        let chosen = chosen
+                                            .iter()
+                                            .filter_map(|(k, v)| {
+                                                Some((map.get(*k).copied().flatten()?, *v))
+                                            })
+                                            .collect();
+                                        nodes::bend_segment_with(p, i, t, d, &chosen)
+                                    },
+                                )
+                            } else {
+                                nodes::bend_segment_with(&path, index, t, d, &chosen)
+                            };
                             let cmd = Command::SetShapeKind {
                                 shape,
                                 kind: ShapeKind::Path { path: bent, closed },
@@ -987,67 +1116,7 @@ impl App {
                         begun: true,
                     };
                 }
-                Drag::KindNode {
-                    shape,
-                    node,
-                    start,
-                    single,
-                    chosen,
-                    begun,
-                    mut turn,
-                } => {
-                    // Ctrl as it is held now, not only at the press: one
-                    // corner of a rectangle, an ellipse's angle in steps of
-                    // the constrain angle, a star's points keeping their
-                    // turn, from the first drag on (#1325, #1331, #1340).
-                    let ctrl = mods.ctrl || mods.command;
-                    let q = self.snap_point_excluding(p, &[shape]);
-                    let step = self.settings.constrain_angle;
-                    let cmd = match node {
-                        crate::kind_nodes::KindNode::Spline { index } => {
-                            let chosen: Vec<usize> = self
-                                .node_selection
-                                .iter()
-                                .filter(|(id, _)| *id == shape)
-                                .map(|(_, i)| *i)
-                                .collect();
-                            if chosen.contains(&index) {
-                                crate::kind_nodes::spline_moved_many(&start, &chosen, index, q)
-                            } else {
-                                crate::kind_nodes::spline_moved(&start, index, q)
-                            }
-                            .map(|points| Command::SetSpline {
-                                shape,
-                                points,
-                                fixed: None,
-                            })
-                        }
-                        _ => crate::kind_nodes::drag_constrained(
-                            &start, node, q, ctrl, chosen, &mut turn, step,
-                        )
-                        .map(|kind| Command::SetShapeKind { shape, kind }),
-                    };
-                    if let Some(cmd) = cmd {
-                        // One undo step for the whole drag.
-                        let _ = if begun {
-                            self.engine.amend(&cmd)
-                        } else {
-                            self.engine.run_with_label(
-                                &cmd,
-                                crate::kind_nodes::label_for(&start, Some(node)),
-                            )
-                        };
-                    }
-                    self.drag = Drag::KindNode {
-                        shape,
-                        node,
-                        start,
-                        single,
-                        chosen,
-                        begun: true,
-                        turn,
-                    };
-                }
+                Drag::KindNode { .. } => self.kind_node_drag_step(p, mods),
                 _ => {}
             }
         }
@@ -1386,6 +1455,34 @@ impl App {
             let _ = self.engine.run_batch("Reduce Nodes", &cmds);
         }
         self.choose_nodes_at(&spots);
+    }
+
+    /// Object > Nodes > Add Node to Every Segment: a node in the middle of
+    /// every segment of the selected curves (their shape unchanged), with
+    /// any tool; one undo step. Run again, it halves the segments again.
+    pub fn add_node_every_segment(&mut self) {
+        let mut cmds = Vec::new();
+        for id in self.selection.clone() {
+            let Some((path, closed, _)) = self.path_of(id) else {
+                continue;
+            };
+            let more = nodes::add_node_every_segment(&path);
+            if more.elements().len() > path.elements().len() {
+                cmds.push(Command::SetShapeKind {
+                    shape: id,
+                    kind: ShapeKind::Path { path: more, closed },
+                });
+            }
+        }
+        if !cmds.is_empty() {
+            let _ = self.engine.run_batch("Add Node to Every Segment", &cmds);
+            self.node_selection.clear();
+        }
+    }
+
+    /// Whether Add Node to Every Segment has a curve to work on.
+    pub fn can_add_node_every_segment(&self) -> bool {
+        self.selection.iter().any(|id| self.path_of(*id).is_some())
     }
 
     /// Align Nodes: move the selected nodes onto a common horizontal and/or vertical.
@@ -1992,7 +2089,7 @@ impl App {
     }
 
     /// After a node edit, choose the nodes now sitting at `spots`, so the
-    /// result stays chosen as in CorelDRAW (#2358): the joined node after
+    /// result stays chosen (#2358): the joined node after
     /// Join, both ends after Break, the nodes left after Reduce Nodes.
     pub(crate) fn choose_nodes_at(&mut self, spots: &[(ShapeId, Point)]) {
         let mut sel = Vec::new();
@@ -2609,7 +2706,14 @@ fn erase_frame(
     f.node_types.clear();
     f.spline = None;
     f.spline_fixed.clear();
+    f.common_shape = None;
     Erased::Into(Box::new(f))
+}
+
+/// Whether the curve `s` shows a common shape's handles instead of its
+/// nodes (#4045).
+pub(crate) fn shows_handles(s: &Shape) -> bool {
+    s.common_shape.is_some() && crate::common_shapes::live(s).is_some()
 }
 
 #[cfg(test)]
@@ -3363,5 +3467,51 @@ mod soft_eraser_tests {
         assert!((nib.amount(0.0) - 1.0).abs() < 1e-9);
         assert!((nib.amount(5.0) - 0.5).abs() < 1e-9);
         assert_eq!(nib.amount(10.0), 0.0);
+    }
+}
+
+#[cfg(test)]
+mod every_segment_tests {
+    use crate::app::App;
+    use tracedraw_core::geometry::{BezPath, Rect};
+    use tracedraw_core::ShapeKind;
+
+    /// Object > Nodes > Add Node to Every Segment, with the Pick tool: a
+    /// node in the middle of each segment of the selected curve, one undo
+    /// step; a rectangle (not a curve) leaves the command off.
+    #[test]
+    fn every_segment_of_the_selected_curves_gets_a_node() {
+        let mut app = App::headless();
+        let r = app
+            .new_shape(ShapeKind::Rect {
+                rect: Rect::new(0.0, 0.0, 10.0, 10.0),
+                radius: 0.0,
+                corners: None,
+            })
+            .expect("rect");
+        app.select(vec![r]);
+        assert!(!app.can_add_node_every_segment());
+        let mut p = BezPath::new();
+        p.move_to((0.0, 0.0));
+        p.line_to((10.0, 0.0));
+        p.line_to((10.0, 10.0));
+        let id = app
+            .new_shape(ShapeKind::Path {
+                path: p,
+                closed: false,
+            })
+            .expect("curve");
+        app.select(vec![id]);
+        assert!(app.can_add_node_every_segment());
+        let len = |app: &App| match &app.doc().find_shape(id).expect("curve").kind {
+            ShapeKind::Path { path, .. } => path.elements().len(),
+            _ => 0,
+        };
+        app.add_node_every_segment();
+        assert_eq!(len(&app), 5);
+        app.add_node_every_segment();
+        assert_eq!(len(&app), 9);
+        app.undo();
+        assert_eq!(len(&app), 5);
     }
 }

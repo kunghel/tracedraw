@@ -56,10 +56,14 @@ pub enum GenKind {
     Maze,
     SpaceCurve,
     SliceGrid,
+    Growth,
+    LayerWaves,
+    Blobs,
+    SoftGradient,
 }
 
 impl GenKind {
-    pub const ALL: [GenKind; 20] = [
+    pub const ALL: [GenKind; 24] = [
         GenKind::DotGrid,
         GenKind::Truchet,
         GenKind::Tessellation,
@@ -80,6 +84,10 @@ impl GenKind {
         GenKind::Maze,
         GenKind::SpaceCurve,
         GenKind::SliceGrid,
+        GenKind::Growth,
+        GenKind::LayerWaves,
+        GenKind::Blobs,
+        GenKind::SoftGradient,
     ];
     pub fn key(self) -> &'static str {
         match self {
@@ -103,6 +111,10 @@ impl GenKind {
             GenKind::Maze => "shapegen.kind_maze",
             GenKind::SpaceCurve => "shapegen.kind_space_curve",
             GenKind::SliceGrid => "shapegen.kind_slice",
+            GenKind::Growth => "shapegen.kind_growth",
+            GenKind::LayerWaves => "shapegen.kind_layer_waves",
+            GenKind::Blobs => "shapegen.kind_blobs",
+            GenKind::SoftGradient => "shapegen.kind_soft_gradient",
         }
     }
     /// Whether the generator works from the panel's picked selection (an
@@ -117,6 +129,7 @@ impl GenKind {
                 | GenKind::Contour
                 | GenKind::Maze
                 | GenKind::SpaceCurve
+                | GenKind::Growth
         )
     }
     /// Whether it reads the picked picture's tones.
@@ -526,6 +539,61 @@ pub struct ShapeGenSettings {
     pub slice_gap: f64,
     /// Leave the selection in place.
     pub slice_keep: bool,
+
+    // Differential growth.
+    pub growth_start: crate::shape_gen_growth::GrowthStart,
+    /// Circles for the several-circles start, 1 to 50.
+    pub growth_seed_count: u32,
+    /// The starting circle's or line's size, % of the box.
+    pub growth_size: f64,
+    /// Edge length between points, mm.
+    pub growth_spacing: f64,
+    /// How far points push each other, in edge lengths.
+    pub growth_repel: f64,
+    /// Pull toward the neighbours' middle, 0 to 1.
+    pub growth_align: f64,
+    /// Random splits per step.
+    pub growth_rate: u32,
+    /// Steps grown; the live run sets it.
+    pub growth_steps: u32,
+    /// The point limit.
+    pub growth_max_nodes: u32,
+
+    // Deform and split (any generator).
+    /// Pins: anchor (share of Width and Height) and pull (share of the
+    /// longer side).
+    pub warp_pins: Vec<[f64; 4]>,
+    /// How far a pin's pull reaches, % of the longer side.
+    pub warp_reach: f64,
+    pub split_mode: crate::shape_gen_warp::SplitMode,
+    /// The picked outline, centred on the origin, mm.
+    pub split_shape: Option<BezPath>,
+    /// Where the picked outline's middle is on the page.
+    pub split_center: Option<[f64; 2]>,
+    /// The lines inside: colour and width (0 keeps the line width), mm.
+    pub split_color: [u8; 3],
+    pub split_width: f64,
+
+    // Backgrounds (layered waves, blobs, soft gradient).
+    /// The palette, 1 to 6 colours.
+    pub bg_colors: Vec<[u8; 3]>,
+    /// Layered waves: bands, how high the waves go (% of Height), waves
+    /// across, sine waves added per band, and the side they rise from.
+    pub bg_layers: u32,
+    pub bg_amplitude: f64,
+    pub bg_frequency: f64,
+    pub bg_complexity: u32,
+    pub bg_side: crate::shape_gen_bg::WaveSide,
+    /// Blobs: how many, points round each, how much they vary (%) and
+    /// their size (% of the box's shorter side).
+    pub bg_blob_count: u32,
+    pub bg_blob_points: u32,
+    pub bg_randomness: f64,
+    pub bg_blob_size: f64,
+    /// Soft gradient: mesh cells per side and how far inner nodes wander
+    /// (% of a cell).
+    pub bg_mesh_size: u32,
+    pub bg_jitter: f64,
 }
 
 impl Default for ShapeGenSettings {
@@ -671,6 +739,34 @@ impl Default for ShapeGenSettings {
             slice_waves: 1.0,
             slice_gap: 0.0,
             slice_keep: false,
+            growth_start: crate::shape_gen_growth::GrowthStart::Circle,
+            growth_seed_count: 5,
+            growth_size: 20.0,
+            growth_spacing: 1.5,
+            growth_repel: 2.5,
+            growth_align: 0.4,
+            growth_rate: 3,
+            growth_steps: 200,
+            growth_max_nodes: 3000,
+            warp_pins: Vec::new(),
+            warp_reach: 20.0,
+            split_mode: crate::shape_gen_warp::SplitMode::Off,
+            split_shape: None,
+            split_center: None,
+            split_color: [255, 205, 220],
+            split_width: 0.0,
+            bg_colors: crate::shape_gen_bg::default_palette(),
+            bg_layers: 5,
+            bg_amplitude: 10.0,
+            bg_frequency: 1.0,
+            bg_complexity: 3,
+            bg_side: crate::shape_gen_bg::WaveSide::Bottom,
+            bg_blob_count: 1,
+            bg_blob_points: 7,
+            bg_randomness: 35.0,
+            bg_blob_size: 80.0,
+            bg_mesh_size: 3,
+            bg_jitter: 40.0,
         }
     }
 }
@@ -688,6 +784,13 @@ pub enum Paint {
     /// A halftone screen's ink (0 cyan, 1 magenta, 2 yellow, 3 black):
     /// filled with it, each ink grouped on its own.
     Ink(u8),
+    /// Lines inside the split shape: the second colour and width.
+    Accent,
+    /// Filled with the colour this share (0 to 255) along
+    /// [`Generated::palette`], no outline.
+    Tone(u8),
+    /// Filled with [`Generated::mesh`], no outline.
+    Mesh,
 }
 
 #[derive(Debug, Clone)]
@@ -709,6 +812,10 @@ pub struct Generated {
     pub frame: Option<Rect>,
     /// Voronoi sites, for editing them in the panel.
     pub sites: Vec<Point>,
+    /// The palette [`Paint::Tone`] picks from.
+    pub palette: Vec<[u8; 3]>,
+    /// The mesh fill of [`Paint::Mesh`] curves, in the drawing's space.
+    pub mesh: Option<tracedraw_core::Mesh>,
 }
 
 impl Generated {
@@ -901,6 +1008,43 @@ impl ShapeGenSettings {
         s.slice_dy = clampf(s.slice_dy, -1000.0, 1000.0, 0.0);
         s.slice_waves = clampf(s.slice_waves, 0.1, 50.0, d.slice_waves);
         s.slice_gap = clampf(s.slice_gap, 0.0, 1000.0, 0.0);
+        s.growth_seed_count = s.growth_seed_count.clamp(1, 50);
+        s.growth_size = clampf(s.growth_size, 5.0, 100.0, d.growth_size);
+        let step = (side / 400.0).max(0.05);
+        s.growth_spacing = clampf(s.growth_spacing, step, 50.0, d.growth_spacing).max(step);
+        s.growth_repel = clampf(s.growth_repel, 1.0, 5.0, d.growth_repel);
+        s.growth_align = clampf(s.growth_align, 0.0, 1.0, d.growth_align);
+        s.growth_rate = s.growth_rate.min(100);
+        s.growth_steps = s.growth_steps.min(crate::shape_gen_growth::MAX_STEPS);
+        s.growth_max_nodes = s.growth_max_nodes.clamp(100, 20_000);
+        s.warp_pins.retain(|p| p.iter().all(|v| v.is_finite()));
+        s.warp_pins.truncate(crate::shape_gen_warp::MAX_PINS);
+        for p in &mut s.warp_pins {
+            p[0] = p[0].clamp(-1.0, 2.0);
+            p[1] = p[1].clamp(-1.0, 2.0);
+            p[2] = p[2].clamp(-2.0, 2.0);
+            p[3] = p[3].clamp(-2.0, 2.0);
+        }
+        s.warp_reach = clampf(s.warp_reach, 1.0, 100.0, d.warp_reach);
+        s.split_width = clampf(s.split_width, 0.0, 50.0, 0.0);
+        s.bg_colors.truncate(crate::shape_gen_bg::MAX_COLORS);
+        if s.bg_colors.is_empty() {
+            s.bg_colors = d.bg_colors.clone();
+        }
+        s.bg_layers = s.bg_layers.clamp(1, 40);
+        s.bg_amplitude = clampf(s.bg_amplitude, 0.0, 100.0, d.bg_amplitude);
+        s.bg_frequency = clampf(s.bg_frequency, 0.1, 20.0, d.bg_frequency);
+        s.bg_complexity = s.bg_complexity.clamp(1, 6);
+        s.bg_blob_count = s.bg_blob_count.clamp(1, 200);
+        s.bg_blob_points = s.bg_blob_points.clamp(3, 24);
+        s.bg_randomness = clampf(s.bg_randomness, 0.0, 90.0, d.bg_randomness);
+        s.bg_blob_size = clampf(s.bg_blob_size, 1.0, 300.0, d.bg_blob_size);
+        s.bg_mesh_size = s.bg_mesh_size.clamp(1, 8);
+        s.bg_jitter = clampf(s.bg_jitter, 0.0, 100.0, d.bg_jitter);
+        s.split_shape = s
+            .split_shape
+            .take()
+            .filter(|p| !p.elements().is_empty() && p.elements().len() < 2_000_000);
         s
     }
 }
@@ -930,7 +1074,12 @@ pub fn generate(settings: &ShapeGenSettings) -> Generated {
         GenKind::Maze => crate::shape_gen_fill::maze(&s, &mut out),
         GenKind::SpaceCurve => crate::shape_gen_fill::space_curve(&s, &mut out),
         GenKind::SliceGrid => crate::shape_gen_slice::slice_grid(&s, &mut out),
+        GenKind::Growth => crate::shape_gen_growth::growth(&s, &mut out),
+        GenKind::LayerWaves => crate::shape_gen_bg::waves(&s, &mut out),
+        GenKind::Blobs => crate::shape_gen_bg::blobs(&s, &mut out),
+        GenKind::SoftGradient => crate::shape_gen_bg::soft_gradient(&s, &mut out),
     }
+    crate::shape_gen_warp::post(&s, &mut out);
     out
 }
 
@@ -2143,6 +2292,17 @@ impl crate::app::App {
         let shift = Affine::translate(center - anchor.center());
         let color = self.shape_gen_color();
         let line = self.shape_gen_line_stroke(s);
+        let accent = {
+            let [r, g, b] = s.split_color;
+            let mut st = line.clone();
+            st.color = tracedraw_core::Color::rgb8(r, g, b);
+            if s.split_width > 0.0 {
+                st.width = s.split_width;
+            }
+            st
+        };
+        let palette = g.palette.clone();
+        let mesh = g.mesh.as_ref().map(|m| m.transformed(shift));
         let mut children: Vec<Shape> = Vec::new();
         let make = |app: &mut Self, path: BezPath, closed: bool, paint: Paint| {
             let id = app.engine.new_shape_id();
@@ -2164,6 +2324,22 @@ impl crate::app::App {
                 }
                 Paint::Ink(k) => {
                     shape.fill = Fill::Solid(crate::shape_gen_cells::ink_color(k));
+                    shape.stroke = None;
+                }
+                Paint::Accent => {
+                    shape.fill = Fill::None;
+                    shape.stroke = Some(accent.clone());
+                }
+                Paint::Tone(t) => {
+                    let [r, g, b] = crate::shape_gen_bg::palette_color(&palette, t as f64 / 255.0);
+                    shape.fill = Fill::Solid(tracedraw_core::Color::rgb8(r, g, b));
+                    shape.stroke = None;
+                }
+                Paint::Mesh => {
+                    shape.fill = match &mesh {
+                        Some(m) => Fill::Mesh(m.clone()),
+                        None => Fill::Solid(color),
+                    };
                     shape.stroke = None;
                 }
             }
@@ -2254,9 +2430,18 @@ impl crate::app::App {
     /// (one undo step), selected.
     pub fn shape_gen_create(&mut self) -> Option<tracedraw_core::ShapeId> {
         let s = self.shape_gen.sanitized();
-        let g = generate(&s);
-        let center = match s.source_center {
-            Some(c) if s.kind.uses_source() => Point::new(c[0], c[1]),
+        let g = self
+            .shape_gen_growth_cached(&s)
+            .unwrap_or_else(|| generate(&s));
+        let split = s.split_center.filter(|_| {
+            s.split_mode != crate::shape_gen_warp::SplitMode::Off
+                && s.split_shape.is_some()
+                && crate::shape_gen_warp::applies(s.kind)
+        });
+        let center = match (s.source_center, split) {
+            (Some(c), _) if s.kind.uses_source() => Point::new(c[0], c[1]),
+            // Split by a shape: the drawing centred on it.
+            (_, Some(c)) => Point::new(c[0], c[1]),
             _ => self.shape_gen_place(),
         };
         self.shape_gen_add(&s, &g, center, None, "Shape Generator")
@@ -2271,11 +2456,13 @@ impl crate::app::App {
             Some(c) if s.kind.uses_source() => Point::new(c[0], c[1]),
             _ => self.selection_bounds()?.center(),
         };
-        let g = generate(&s);
+        let g = self
+            .shape_gen_growth_cached(&s)
+            .unwrap_or_else(|| generate(&s));
         self.shape_gen_add(&s, &g, center, Some(old), "Shape Generator")
     }
 
-    fn shape_gen_add(
+    pub(crate) fn shape_gen_add(
         &mut self,
         s: &ShapeGenSettings,
         g: &Generated,
@@ -2321,18 +2508,14 @@ impl crate::app::App {
         Some(gid)
     }
 
-    /// Use Selection: the selection becomes the panel's source. Its box
-    /// sets Width and Height and where Create puts the result, its closed
-    /// curves (welded, holes kept) the outline Voronoi fills and marks
-    /// stay in, and for stippling and halftone it is drawn to a picture
-    /// whose tones size the marks. False with nothing selected.
-    pub fn shape_gen_use_selection(&mut self) -> bool {
+    /// The selection's box and its closed outlines welded into one
+    /// (holes kept; text as its letters), in page space; None with
+    /// nothing selected or a flat selection.
+    pub(crate) fn shape_gen_selection_outline(&self) -> Option<(Rect, Option<BezPath>)> {
         use tracedraw_core::{Shape, ShapeKind};
-        let Some(bounds) = self.selection_bounds() else {
-            return false;
-        };
+        let bounds = self.selection_bounds()?;
         if bounds.width() <= 1e-6 || bounds.height() <= 1e-6 {
-            return false;
+            return None;
         }
         fn walk(shape: &Shape, t: Affine, out: &mut Vec<BezPath>) {
             match &shape.kind {
@@ -2353,10 +2536,8 @@ impl crate::app::App {
         for shape in self.selected_shapes() {
             walk(&shape, Affine::IDENTITY, &mut paths);
         }
-        let to_box = Affine::translate(Vec2::new(-bounds.x0, -bounds.y0));
         let mut outline: Option<BezPath> = None;
         for p in paths {
-            let p = to_box * p;
             outline = Some(match outline {
                 None => tracedraw_core::shaping::overlay(
                     &p,
@@ -2368,11 +2549,25 @@ impl crate::app::App {
                 }
             });
         }
+        Some((bounds, outline.filter(|o| !o.elements().is_empty())))
+    }
+
+    /// Use Selection: the selection becomes the panel's source. Its box
+    /// sets Width and Height and where Create puts the result, its closed
+    /// curves (welded, holes kept) the outline Voronoi fills and marks
+    /// stay in, and for stippling and halftone it is drawn to a picture
+    /// whose tones size the marks. False with nothing selected.
+    pub fn shape_gen_use_selection(&mut self) -> bool {
+        let Some((bounds, outline)) = self.shape_gen_selection_outline() else {
+            return false;
+        };
+        let to_box = Affine::translate(Vec2::new(-bounds.x0, -bounds.y0));
+        let outline = outline.map(|o| to_box * o);
         let s = &mut self.shape_gen;
         s.width = bounds.width();
         s.height = bounds.height();
         s.source_center = Some([bounds.center().x, bounds.center().y]);
-        s.boundary = outline.filter(|o| !o.elements().is_empty());
+        s.boundary = outline;
         s.vor_points.clear();
         s.tone = None;
         if self.shape_gen.kind.uses_tone() {

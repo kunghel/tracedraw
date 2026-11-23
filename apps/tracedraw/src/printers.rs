@@ -248,10 +248,30 @@ pub fn starting_printer(remembered: Option<&str>, printers: &[Printer]) -> Optio
 /// The program and arguments that open `printer`'s own settings (the
 /// Print dialog's Properties button): on Windows the printer's printing
 /// preferences, on macOS the system's Printers & Scanners settings, on
-/// Linux and other CUPS systems the printer's page of the CUPS web
-/// interface in the browser.
+/// Linux and other CUPS systems the printer's own settings window (its
+/// driver's options) when the desktop has the printer settings tool,
+/// else the printer's page of the CUPS web interface in the browser.
 #[cfg_attr(target_arch = "wasm32", allow(dead_code))]
 pub fn properties_command(printer: &str) -> (String, Vec<String>) {
+    properties_command_with(printer, settings_tool_installed())
+}
+
+/// The desktop's printer settings tool, which opens one printer's
+/// properties with the options of its driver.
+const SETTINGS_TOOL: &str = "system-config-printer";
+
+/// Whether [`SETTINGS_TOOL`] is on the PATH (never on Windows or macOS).
+fn settings_tool_installed() -> bool {
+    if cfg!(any(target_os = "windows", target_os = "macos")) {
+        return false;
+    }
+    std::env::var_os("PATH").is_some_and(|paths| {
+        std::env::split_paths(&paths).any(|d| d.join(SETTINGS_TOOL).is_file())
+    })
+}
+
+/// [`properties_command`], told whether the settings tool is installed.
+fn properties_command_with(printer: &str, settings_tool: bool) -> (String, Vec<String>) {
     if cfg!(target_os = "windows") {
         (
             "rundll32.exe".into(),
@@ -266,6 +286,11 @@ pub fn properties_command(printer: &str) -> (String, Vec<String>) {
         (
             "open".into(),
             vec!["x-apple.systempreferences:com.apple.Print-Scan-Settings.extension".into()],
+        )
+    } else if settings_tool {
+        (
+            SETTINGS_TOOL.into(),
+            vec!["--configure-printer".into(), printer.into()],
         )
     } else {
         let mut url = String::from("http://localhost:631/printers/");
@@ -292,7 +317,28 @@ pub fn open_properties(printer: &str) -> Result<(), String> {
         const CREATE_NO_WINDOW: u32 = 0x0800_0000;
         c.creation_flags(CREATE_NO_WINDOW);
     }
-    c.spawn().map(|_| ()).map_err(|e| format!("{program}: {e}"))
+    let mut child = c.spawn().map_err(|e| format!("{program}: {e}"))?;
+    // The desktop's settings tool that fails or gives up at once (a
+    // printer it does not know by that name, a tool that cannot start on
+    // this desktop) leaves the printer's page of CUPS in the browser instead
+    // of nothing (#3849).
+    if program == SETTINGS_TOOL {
+        let printer = printer.to_string();
+        let start = web_time::Instant::now();
+        std::thread::spawn(move || {
+            let status = child.wait();
+            // A window the user looked at stays open for more than a
+            // moment; a tool that ends within it showed nothing.
+            let quick = start.elapsed() < std::time::Duration::from_secs(3);
+            if status.is_ok_and(|status| !status.success()) || quick {
+                let (program, args) = properties_command_with(&printer, false);
+                if let Err(e) = std::process::Command::new(&program).args(&args).spawn() {
+                    log::warn!("{program}: {e}");
+                }
+            }
+        });
+    }
+    Ok(())
 }
 
 #[cfg(target_arch = "wasm32")]
@@ -390,15 +436,6 @@ pub struct Tile {
     pub height: f64,
 }
 
-/// A sheet for a Windows printer: its size in mm and the pictures of its
-/// parts that are not blank.
-#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
-pub struct Sheet {
-    pub width: f64,
-    pub height: f64,
-    pub tiles: Vec<Tile>,
-}
-
 /// A tile written to disk for the print script: its file and place in mm.
 #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
 pub struct TileFile {
@@ -453,6 +490,7 @@ pub fn windows_print_script(
     format!(
         r#"$ErrorActionPreference = 'Stop'
 Add-Type -AssemblyName System.Drawing
+try {{ Add-Type -Namespace TraceDrawPrint -Name Gdi -MemberDefinition '[DllImport("gdi32.dll")] public static extern int GetDeviceCaps(IntPtr hdc, int index);' }} catch {{ }}
 $sheets = New-Object System.Collections.ArrayList
 {list}$doc = New-Object System.Drawing.Printing.PrintDocument
 $doc.PrinterSettings.PrinterName = {printer}
@@ -479,6 +517,28 @@ $doc.add_QueryPageSettings({{
 $doc.add_PrintPage({{
     param($sender, $e)
     $g = $e.Graphics
+    # The page the driver drew on must be the paper asked for: when its
+    # size at the resolution it says differs from the paper by more than
+    # 2% on an axis (a resolution other than the one printed at, or
+    # another paper scaled onto this one), a millimetre drawn is not a
+    # millimetre on paper and a square comes out stretched (#3697), so
+    # the page is scaled back to the paper.
+    $sx = 1.0; $sy = 1.0
+    $paper = $e.PageSettings.Bounds
+    try {{
+        $hdc = $g.GetHdc()
+        try {{
+            $pw = [TraceDrawPrint.Gdi]::GetDeviceCaps($hdc, 110)
+            $ph = [TraceDrawPrint.Gdi]::GetDeviceCaps($hdc, 111)
+            $lx = [TraceDrawPrint.Gdi]::GetDeviceCaps($hdc, 88)
+            $ly = [TraceDrawPrint.Gdi]::GetDeviceCaps($hdc, 90)
+        }} finally {{ $g.ReleaseHdc($hdc) }}
+        $fx = ($pw / $g.DpiX) / ($paper.Width / 100.0)
+        $fy = ($ph / $g.DpiY) / ($paper.Height / 100.0)
+        [Console]::Out.WriteLine('page ' + $pw + ' x ' + $ph + ' px at ' + $g.DpiX + ' x ' + $g.DpiY + ' dpi (device ' + $lx + ' x ' + $ly + '), paper ' + $paper.Width + ' x ' + $paper.Height)
+        if ($fx -gt 0 -and [Math]::Abs($fx - 1) -ge 0.02) {{ $sx = $fx }}
+        if ($fy -gt 0 -and [Math]::Abs($fy - 1) -ge 0.02) {{ $sy = $fy }}
+    }} catch {{ }}
     $g.PageUnit = [System.Drawing.GraphicsUnit]::Millimeter
     if ([Math]::Abs($g.DpiX - {dpi}) -lt 1 -and [Math]::Abs($g.DpiY - {dpi}) -lt 1) {{
         $g.InterpolationMode = [System.Drawing.Drawing2D.InterpolationMode]::NearestNeighbor
@@ -488,7 +548,12 @@ $doc.add_PrintPage({{
     $g.PixelOffsetMode = [System.Drawing.Drawing2D.PixelOffsetMode]::Half
     $attr = New-Object System.Drawing.Imaging.ImageAttributes
     $attr.SetWrapMode([System.Drawing.Drawing2D.WrapMode]::TileFlipXY)
-    $mx = $e.PageSettings.HardMarginX * 0.254; $my = $e.PageSettings.HardMarginY * 0.254
+    if ($sx -ne 1.0 -or $sy -ne 1.0) {{
+        $g.ScaleTransform([single]$sx, [single]$sy)
+        [Console]::Out.WriteLine('page scaled ' + $sx + ' x ' + $sy + ' to the paper')
+    }}
+    $hx = $e.PageSettings.HardMarginX * 0.254; $hy = $e.PageSettings.HardMarginY * 0.254
+    $mx = $hx / $sx; $my = $hy / $sy
     foreach ($tile in $sheets[$state.i].tiles) {{
         $img = [System.Drawing.Image]::FromFile($tile[0])
         $x = [single]($tile[1] - $mx); $y = [single]($tile[2] - $my)
@@ -502,6 +567,7 @@ $doc.add_PrintPage({{
     }}
     $attr.Dispose()
     $state.i++
+    [Console]::Out.WriteLine('sheet ' + $state.i)
     $e.HasMorePages = $state.i -lt $sheets.Count
 }})
 $doc.Print()
@@ -515,57 +581,231 @@ $doc.Print()
     )
 }
 
-/// Print `sheets` (their tiles drawn at `dpi`) on the Windows printer
-/// `printer` through [`windows_print_script`]. Ok when Windows took the
-/// job, Err with what went wrong.
+/// What a print on its way to a printer has done so far, for the status
+/// bar: the sheets drawn, then the sheets the printer's queue took.
+#[derive(Debug, Default)]
+pub struct PrintProgress {
+    /// 0 nothing to say yet, 1 drawing the sheets, 2 sending them.
+    stage: std::sync::atomic::AtomicU32,
+    done: std::sync::atomic::AtomicU32,
+    total: std::sync::atomic::AtomicU32,
+}
+
+impl PrintProgress {
+    pub const DRAWING: u32 = 1;
+    pub const SENDING: u32 = 2;
+
+    /// A new stage of `total` sheets starts, none done.
+    pub fn start(&self, stage: u32, total: usize) {
+        use std::sync::atomic::Ordering::Relaxed;
+        self.done.store(0, Relaxed);
+        self.total.store(total.min(u32::MAX as usize) as u32, Relaxed);
+        self.stage.store(stage, Relaxed);
+    }
+
+    /// One more sheet of the stage is done.
+    pub fn one_more(&self) {
+        self.done.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// `n` sheets of the stage are done.
+    pub fn set_done(&self, n: usize) {
+        self.done.store(
+            n.min(u32::MAX as usize) as u32,
+            std::sync::atomic::Ordering::Relaxed,
+        );
+    }
+
+    /// Nothing is on its way any more.
+    pub fn clear(&self) {
+        self.stage.store(0, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// The stage, the sheets done in it (never more than all of them) and
+    /// how many there are; `None` with nothing to say.
+    pub fn get(&self) -> Option<(u32, u32, u32)> {
+        use std::sync::atomic::Ordering::Relaxed;
+        let (stage, total) = (self.stage.load(Relaxed), self.total.load(Relaxed));
+        (stage != 0 && total > 0).then(|| (stage, self.done.load(Relaxed).min(total), total))
+    }
+}
+
+/// The number of the sheet a line of the print script's output says the
+/// queue took ("sheet 12"), `None` for its other lines.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+pub fn sheet_sent(line: &str) -> Option<usize> {
+    line.trim().strip_prefix("sheet ")?.trim().parse().ok()
+}
+
+/// Print `sheets` (each its width and height in mm and its tiles, files
+/// drawn at `dpi`) on the Windows printer `printer` through
+/// [`windows_print_script`], `progress` told of each sheet the queue
+/// takes. The files are removed afterwards. Ok when Windows took the job,
+/// Err with what went wrong.
 #[cfg(target_os = "windows")]
+#[allow(clippy::too_many_arguments)]
 pub fn print_sheets_windows(
     printer: &str,
-    sheets: &[Sheet],
+    dir: &std::path::Path,
+    sheets: &[(f64, f64, Vec<TileFile>)],
     dpi: f64,
     copies: u32,
     collate: bool,
     title: &str,
+    progress: &PrintProgress,
 ) -> Result<String, String> {
-    let dir = std::env::temp_dir().join("tracedraw-print");
-    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    let mut files = Vec::with_capacity(sheets.len());
-    let mut written = Vec::new();
-    for (k, sheet) in sheets.iter().enumerate() {
-        let mut tiles = Vec::with_capacity(sheet.tiles.len());
-        for (n, t) in sheet.tiles.iter().enumerate() {
-            let path = dir.join(format!("sheet-{}-{}.png", k + 1, n + 1));
-            std::fs::write(&path, &t.png).map_err(|e| e.to_string())?;
-            written.push(path.clone());
-            tiles.push(TileFile {
-                path,
-                x: t.x,
-                y: t.y,
-                width: t.width,
-                height: t.height,
-            });
-        }
-        files.push((sheet.width, sheet.height, tiles));
-    }
     let script = dir.join("print.ps1");
     // With its byte order mark PowerShell reads the script as UTF-8, so
     // printer and file names in any script survive.
     let mut bytes = vec![0xef, 0xbb, 0xbf];
     bytes.extend_from_slice(
-        windows_print_script(printer, &files, dpi, copies, collate, title).as_bytes(),
+        windows_print_script(printer, sheets, dpi, copies, collate, title).as_bytes(),
     );
-    std::fs::write(&script, bytes).map_err(|e| e.to_string())?;
-    let result = run_print_script(&script, PRINT_TIMEOUT);
-    for path in &written {
-        let _ = std::fs::remove_file(path);
+    let result = std::fs::write(&script, bytes)
+        .map_err(|e| e.to_string())
+        .and_then(|()| {
+            progress.start(PrintProgress::SENDING, sheets.len());
+            let mut c = powershell();
+            c.arg("-File").arg(&script);
+            run_watched(c, PRINT_IDLE, |line| {
+                if let Some(n) = sheet_sent(line) {
+                    progress.set_done(n);
+                }
+            })
+        });
+    for (_, _, tiles) in sheets {
+        for t in tiles {
+            let _ = std::fs::remove_file(&t.path);
+        }
     }
     // What happened goes in the log, so a print that did not come out
     // can be told apart from one that Windows took (#614).
     match &result {
-        Ok(said) => log::info!("print on {printer}: {said}"),
+        Ok(said) => log::info!("print on {printer}: {}", last_lines(said, 6)),
         Err(e) => log::warn!("print on {printer} failed: {e}"),
     }
     result.map(|_| String::new())
+}
+
+/// The last `n` lines of `text` (a print of thousands of sheets says a
+/// line for each: the log keeps how it ended).
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+fn last_lines(text: &str, n: usize) -> String {
+    let lines: Vec<&str> = text.lines().collect();
+    lines[lines.len().saturating_sub(n)..].join(" | ")
+}
+
+/// What the raw PostScript script says on stderr when the printer's
+/// driver is not a PostScript one; the sheets then go as pictures.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+pub const NOT_POSTSCRIPT: &str = "TRACEDRAW-NOT-POSTSCRIPT";
+
+/// The PowerShell script that sends the PostScript file `file` as it is
+/// (the spooler's RAW data type) to the Windows printer `printer`, under
+/// `title` in the queue, when its driver is a PostScript one: the
+/// colours keep the CMYK values written, where pictures of the sheets
+/// went in RGB and the driver turned them into other CMYK values
+/// (#4052). A printer whose driver is not PostScript is left alone: the
+/// script says [`NOT_POSTSCRIPT`] and exits with 3.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+pub fn windows_raw_print_script(printer: &str, file: &Path, title: &str) -> String {
+    let printer = ps_quote(printer);
+    let file = ps_quote(&file.display().to_string());
+    let title = ps_quote(title);
+    format!(
+        r#"$ErrorActionPreference = 'Stop'
+$p = {printer}
+$driver = (Get-Printer -Name $p).DriverName
+$dll = (Get-PrinterDriver -Name $driver).DriverPath
+if ("$dll" -notmatch 'PSCRIPT') {{
+  [Console]::Error.WriteLine('{NOT_POSTSCRIPT} ' + $driver)
+  exit 3
+}}
+Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+public static class TraceDrawRaw {{
+  [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+  public class DocInfo {{ public string Name; public string Output; public string Datatype; }}
+  [DllImport("winspool.drv", CharSet = CharSet.Unicode, SetLastError = true)]
+  static extern bool OpenPrinter(string name, out IntPtr h, IntPtr defaults);
+  [DllImport("winspool.drv", SetLastError = true)]
+  static extern bool ClosePrinter(IntPtr h);
+  [DllImport("winspool.drv", CharSet = CharSet.Unicode, SetLastError = true)]
+  static extern int StartDocPrinter(IntPtr h, int level, [In] DocInfo info);
+  [DllImport("winspool.drv", SetLastError = true)]
+  static extern bool EndDocPrinter(IntPtr h);
+  [DllImport("winspool.drv", SetLastError = true)]
+  static extern bool StartPagePrinter(IntPtr h);
+  [DllImport("winspool.drv", SetLastError = true)]
+  static extern bool EndPagePrinter(IntPtr h);
+  [DllImport("winspool.drv", SetLastError = true)]
+  static extern bool WritePrinter(IntPtr h, byte[] data, int count, out int written);
+  public static string Send(string printer, string file, string title) {{
+    byte[] data = System.IO.File.ReadAllBytes(file);
+    IntPtr h;
+    if (!OpenPrinter(printer, out h, IntPtr.Zero)) {{
+      throw new Exception("OpenPrinter: " + Marshal.GetLastWin32Error());
+    }}
+    try {{
+      DocInfo info = new DocInfo();
+      info.Name = title;
+      info.Datatype = "RAW";
+      if (StartDocPrinter(h, 1, info) == 0) {{
+        throw new Exception("StartDocPrinter: " + Marshal.GetLastWin32Error());
+      }}
+      StartPagePrinter(h);
+      int written;
+      bool ok = WritePrinter(h, data, data.Length, out written);
+      EndPagePrinter(h);
+      EndDocPrinter(h);
+      if (!ok || written != data.Length) {{
+        throw new Exception("WritePrinter: " + Marshal.GetLastWin32Error());
+      }}
+      return "sent " + written + " bytes of PostScript";
+    }} finally {{
+      ClosePrinter(h);
+    }}
+  }}
+}}
+'@
+Write-Output ([TraceDrawRaw]::Send($p, {file}, {title}))
+"#
+    )
+}
+
+/// Send the PostScript `ps` to the Windows printer `printer` through
+/// [`windows_raw_print_script`]. `Ok(true)` when Windows took the job,
+/// `Ok(false)` when the printer's driver is not a PostScript one (nothing
+/// was sent), Err with what went wrong.
+#[cfg(target_os = "windows")]
+pub fn print_postscript_windows(printer: &str, ps: &[u8], title: &str) -> Result<bool, String> {
+    let dir = std::env::temp_dir().join("tracedraw-print");
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let file = dir.join("print.ps");
+    std::fs::write(&file, ps).map_err(|e| e.to_string())?;
+    let script = dir.join("print-ps.ps1");
+    let mut bytes = vec![0xef, 0xbb, 0xbf];
+    bytes.extend_from_slice(windows_raw_print_script(printer, &file, title).as_bytes());
+    std::fs::write(&script, bytes).map_err(|e| e.to_string())?;
+    let mut c = powershell();
+    c.arg("-File").arg(&script);
+    let result = run_watched(c, PRINT_IDLE, |_| {});
+    let _ = std::fs::remove_file(&file);
+    match result {
+        Ok(said) => {
+            log::info!("PostScript print on {printer}: {said}");
+            Ok(true)
+        }
+        Err(e) if e.contains(NOT_POSTSCRIPT) => {
+            log::info!("{printer} is not a PostScript printer ({e}); sending pictures");
+            Ok(false)
+        }
+        Err(e) => {
+            log::warn!("PostScript print on {printer} failed: {e}");
+            Err(e)
+        }
+    }
 }
 
 /// The PowerShell lines that say the resolution of the printer `printer`:
@@ -898,55 +1138,101 @@ impl MarginsCache {
     }
 }
 
-/// How long the print script may run before it is taken as hung.
-#[cfg(target_os = "windows")]
-const PRINT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
+/// How long the print script may stay silent before it is taken as
+/// hung. It says a line for every sheet the queue takes, so a job of
+/// thousands of sheets may run as long as it needs (a limit on the whole
+/// job ended a print of 2000 sheets after five minutes).
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+const PRINT_IDLE: std::time::Duration = std::time::Duration::from_secs(300);
 
-/// Run the print script, stopping it when it runs longer than `limit`;
-/// Ok with what it said when it ended well, Err with its error.
-#[cfg(target_os = "windows")]
-fn run_print_script(
-    script: &std::path::Path,
-    limit: std::time::Duration,
+/// Run `command`, giving each line it says to `said` as it comes, and
+/// stop it when it says nothing for longer than `idle`; Ok with all it
+/// said when it ended well, Err with its error. What it says is read
+/// while it runs: left unread until the end, a job saying more than the
+/// pipe holds (a line for each of hundreds of sheets) waited for ever to
+/// say the next line and never ended.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+#[cfg(not(target_arch = "wasm32"))]
+fn run_watched(
+    mut command: std::process::Command,
+    idle: std::time::Duration,
+    mut said: impl FnMut(&str),
 ) -> Result<String, String> {
-    use std::io::Read as _;
-    let mut child = powershell()
-        .arg("-File")
-        .arg(script)
+    use std::io::{BufRead as _, Read as _};
+    let name = command.get_program().to_string_lossy().to_string();
+    let mut child = command
+        .stdin(std::process::Stdio::null())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::piped())
         .spawn()
-        .map_err(|e| format!("powershell: {e}"))?;
-    let start = web_time::Instant::now();
+        .map_err(|e| format!("{name}: {e}"))?;
+    let (tx, rx) = std::sync::mpsc::channel::<String>();
+    let out_reader = child.stdout.take().map(|o| {
+        std::thread::spawn(move || {
+            for line in std::io::BufReader::new(o).split(b'\n') {
+                let Ok(line) = line else { break };
+                if tx.send(String::from_utf8_lossy(&line).trim_end().to_string()).is_err() {
+                    break;
+                }
+            }
+        })
+    });
+    let err_reader = child.stderr.take().map(|mut e| {
+        std::thread::spawn(move || {
+            let mut bytes = Vec::new();
+            let _ = e.read_to_end(&mut bytes);
+            String::from_utf8_lossy(&bytes).to_string()
+        })
+    });
+    let mut out = String::new();
+    let mut take = |line: String, out: &mut String| {
+        said(&line);
+        out.push_str(&line);
+        out.push('\n');
+    };
+    let mut last = web_time::Instant::now();
     let status = loop {
+        match rx.recv_timeout(std::time::Duration::from_millis(100)) {
+            Ok(line) => {
+                take(line, &mut out);
+                last = web_time::Instant::now();
+                continue;
+            }
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {}
+            // It closed its output: only its end is waited for.
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+        }
         match child.try_wait() {
             Ok(Some(s)) => break s,
-            Ok(None) if start.elapsed() > limit => {
+            Ok(None) if last.elapsed() > idle => {
                 let _ = child.kill();
                 let _ = child.wait();
                 return Err(format!(
-                    "the printer did not take the job within {} s",
-                    limit.as_secs()
+                    "the printer took nothing more of the job for {} s",
+                    idle.as_secs()
                 ));
             }
-            Ok(None) => std::thread::sleep(std::time::Duration::from_millis(100)),
-            Err(e) => return Err(format!("powershell: {e}")),
+            Ok(None) => {}
+            Err(e) => return Err(format!("{name}: {e}")),
         }
     };
-    let mut out = String::new();
-    let mut err = String::new();
-    if let Some(mut o) = child.stdout.take() {
-        let _ = o.read_to_string(&mut out);
+    if let Some(r) = out_reader {
+        let _ = r.join();
     }
-    if let Some(mut e) = child.stderr.take() {
-        let _ = e.read_to_string(&mut err);
+    while let Ok(line) = rx.try_recv() {
+        take(line, &mut out);
     }
+    let err = err_reader
+        .and_then(|r| r.join().ok())
+        .unwrap_or_default();
     if status.success() {
         Ok(out.trim().to_string())
     } else {
         let err = err.trim().to_string();
         Err(if err.is_empty() {
-            format!("powershell: {status}")
+            format!("{name}: {status}")
         } else {
             err
         })
@@ -1034,6 +1320,26 @@ mod tests {
         }
     }
 
+    /// PostScript goes to a PostScript printer as it is, the RAW data
+    /// type, so its CMYK values reach the driver (#4052); another
+    /// printer is left alone with a word the program knows.
+    #[test]
+    fn postscript_goes_raw_to_postscript_printers_only() {
+        let s = windows_raw_print_script("Office 'PDF'", Path::new("C:\\Temp\\print.ps"), "Poster");
+        assert!(s.contains("$p = 'Office ''PDF'''"), "{s}");
+        assert!(s.contains("-notmatch 'PSCRIPT'"));
+        assert!(s.contains(NOT_POSTSCRIPT));
+        assert!(s.contains("exit 3"));
+        assert!(s.contains("info.Datatype = \"RAW\";"));
+        assert!(s.contains("WritePrinter(h, data, data.Length, out written)"));
+        assert!(
+            s.contains("[TraceDrawRaw]::Send($p, 'C:\\Temp\\print.ps', 'Poster')"),
+            "{s}"
+        );
+        // The here-string's closing mark starts its line.
+        assert!(s.contains("\n'@\n"));
+    }
+
     /// The Windows print script names the printer, the copies and the
     /// sheets with their tiles, quoting what it is given.
     #[test]
@@ -1113,6 +1419,49 @@ mod tests {
         ));
         assert!(!s.contains("Rectangle]::Round"), "{s}");
         assert!(s.contains("sheet(s) at 1200 dpi"), "{s}");
+    }
+
+    /// A page the driver draws at another size than its paper, as when
+    /// it says another resolution than it prints at, is scaled back to
+    /// the paper, so a 100 mm square prints at 100 mm and not stretched
+    /// (#3697); the unprintable edge is taken off in paper millimetres.
+    #[test]
+    fn windows_pages_are_scaled_back_to_their_paper() {
+        let sheets = [(210.0, 297.0, vec![tile("a.png", 1.0, 2.0, 3.0, 4.0)])];
+        let s = windows_print_script("P", &sheets, 600.0, 1, false, "");
+        assert!(
+            s.contains("public static extern int GetDeviceCaps(IntPtr hdc, int index);"),
+            "{s}"
+        );
+        assert!(s.contains("$paper = $e.PageSettings.Bounds"), "{s}");
+        // PHYSICALWIDTH and PHYSICALHEIGHT, the page the driver draws on.
+        assert!(
+            s.contains("$pw = [TraceDrawPrint.Gdi]::GetDeviceCaps($hdc, 110)"),
+            "{s}"
+        );
+        assert!(
+            s.contains("$ph = [TraceDrawPrint.Gdi]::GetDeviceCaps($hdc, 111)"),
+            "{s}"
+        );
+        assert!(s.contains("$g.ReleaseHdc($hdc)"), "{s}");
+        assert!(
+            s.contains("$fx = ($pw / $g.DpiX) / ($paper.Width / 100.0)"),
+            "{s}"
+        );
+        assert!(
+            s.contains("$fy = ($ph / $g.DpiY) / ($paper.Height / 100.0)"),
+            "{s}"
+        );
+        assert!(s.contains("[Math]::Abs($fx - 1) -ge 0.02"), "{s}");
+        assert!(
+            s.contains("$g.ScaleTransform([single]$sx, [single]$sy)"),
+            "{s}"
+        );
+        assert!(s.contains("$mx = $hx / $sx; $my = $hy / $sy"), "{s}");
+        // Scaled before any tile is drawn.
+        let scale = s.find("ScaleTransform").expect("scale");
+        let draw = s.find("$g.DrawImage").expect("draw");
+        assert!(scale < draw);
     }
 
     /// The printer's resolution: its current setting, else the finest it
@@ -1209,10 +1558,20 @@ mod tests {
 
     /// Properties opens the printer's own settings: its printing
     /// preferences on Windows, Printers & Scanners on macOS, its CUPS web
-    /// page elsewhere (#614).
+    /// page elsewhere (#614), or the printer's own settings window with
+    /// its driver's options when the desktop has the tool (#3764).
     #[test]
     fn properties_open_the_printers_own_settings() {
-        let (program, args) = properties_command("Office HP/2");
+        if !cfg!(any(target_os = "windows", target_os = "macos")) {
+            assert_eq!(
+                properties_command_with("Office HP/2", true),
+                (
+                    "system-config-printer".to_string(),
+                    vec!["--configure-printer".to_string(), "Office HP/2".to_string()]
+                )
+            );
+        }
+        let (program, args) = properties_command_with("Office HP/2", false);
         if cfg!(target_os = "windows") {
             assert_eq!(program, "rundll32.exe");
             assert_eq!(
@@ -1325,5 +1684,81 @@ mod tests {
             (m.bottom, m.top, m.left, m.right)
         );
         assert_eq!(m.for_sheet(210.0, 297.0), m);
+    }
+
+    /// A print of hundreds of sheets says a line for each: what it says
+    /// is read while it runs, each line told as it comes. Left unread
+    /// until it ended, it waited for ever for room to say the next line
+    /// and the print was given up as hung.
+    #[cfg(unix)]
+    #[test]
+    fn a_job_that_says_much_is_read_while_it_runs() {
+        let mut c = std::process::Command::new("sh");
+        c.args(["-c", "i=0; while [ $i -lt 20000 ]; do i=$((i+1)); echo \"sheet $i\"; done; echo done"]);
+        let progress = PrintProgress::default();
+        progress.start(PrintProgress::SENDING, 20000);
+        let mut lines = 0;
+        let said = run_watched(c, std::time::Duration::from_secs(20), |l| {
+            lines += 1;
+            if let Some(n) = sheet_sent(l) {
+                progress.set_done(n);
+            }
+        })
+        .expect("ran to its end");
+        assert_eq!(lines, 20001);
+        assert!(said.ends_with("sheet 20000\ndone"), "{}", last_lines(&said, 2));
+        assert_eq!(progress.get(), Some((PrintProgress::SENDING, 20000, 20000)));
+        assert_eq!(last_lines(&said, 2), "sheet 20000 | done");
+    }
+
+    /// The limit is on how long the job says nothing, not on the whole
+    /// job: one that keeps sending sheets runs past it, a silent one is
+    /// stopped, and one that fails gives its error.
+    #[cfg(unix)]
+    #[test]
+    fn only_a_job_gone_silent_is_stopped() {
+        let sh = |script: &str| {
+            let mut c = std::process::Command::new("sh");
+            c.args(["-c", script]);
+            c
+        };
+        // The gaps between the sheets are a tenth of the limit, so that a
+        // machine busy with other tests never makes one look like silence.
+        let idle = std::time::Duration::from_secs(3);
+        let start = web_time::Instant::now();
+        let said = run_watched(
+            sh("for i in 1 2 3 4 5 6 7 8 9 10 11 12; do echo sheet $i; sleep 0.3; done"),
+            idle,
+            |_| {},
+        )
+        .expect("longer than the limit, never silent that long");
+        assert!(start.elapsed() > idle);
+        assert!(said.ends_with("sheet 12"));
+        let start = web_time::Instant::now();
+        let err = run_watched(sh("echo sheet 1; sleep 30"), idle, |_| {}).unwrap_err();
+        assert!(err.contains("took nothing more"), "{err}");
+        assert!(start.elapsed() < std::time::Duration::from_secs(20));
+        let err = run_watched(sh("echo no such printer >&2; exit 2"), idle, |_| {}).unwrap_err();
+        assert_eq!(err, "no such printer");
+    }
+
+    /// The script says each sheet the queue took, and the progress never
+    /// shows more sheets than there are.
+    #[test]
+    fn the_print_script_says_each_sheet_sent() {
+        let s = windows_print_script("P", &[(210.0, 297.0, Vec::new())], 600.0, 1, false, "");
+        assert!(s.contains("[Console]::Out.WriteLine('sheet ' + $state.i)"));
+        assert_eq!(sheet_sent("sheet 12\r"), Some(12));
+        assert_eq!(sheet_sent("sent 12 sheet(s) at 600 dpi to 'P'"), None);
+        assert_eq!(sheet_sent("page 4960 x 7016 px"), None);
+        let p = PrintProgress::default();
+        assert_eq!(p.get(), None);
+        p.start(PrintProgress::DRAWING, 3);
+        p.one_more();
+        assert_eq!(p.get(), Some((PrintProgress::DRAWING, 1, 3)));
+        p.set_done(7);
+        assert_eq!(p.get(), Some((PrintProgress::DRAWING, 3, 3)));
+        p.clear();
+        assert_eq!(p.get(), None);
     }
 }

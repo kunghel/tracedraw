@@ -10,7 +10,11 @@
 //! the new start or end (#965). See docs/behavior/blend.md.
 
 use crate::app::App;
-use tracedraw_core::{geometry::Point, live::Effect, ShapeId};
+use tracedraw_core::{
+    geometry::{Point, Vec2},
+    live::Effect,
+    ShapeId,
+};
 
 /// Which blend control a drag holds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -27,6 +31,9 @@ pub enum BlendHandle {
     /// drag moves the start and the end objects together, so the whole
     /// blend moves.
     Line,
+    /// The round handle in the middle of the line: a drag bends the way
+    /// the steps take into a curve through it (a blend without a path).
+    Bend,
 }
 
 /// A drag of the start or end square: the object it moves, where the
@@ -48,6 +55,8 @@ const MOVE_LABEL: &str = "Move";
 
 /// How far from a slider a press still takes it, screen pixels.
 const HANDLE_PX: f32 = 7.0;
+/// How far from the bend handle a press still takes it, screen pixels.
+const BEND_PX: f32 = 4.5;
 /// How far the sliders sit off the line, screen pixels.
 pub const SLIDER_OFFSET_PX: f32 = 6.0;
 
@@ -89,9 +98,48 @@ pub struct BlendControls {
     pub end: Point,
     pub accel_objects: f64,
     pub accel_colors: f64,
+    /// The bend of a blend without a path (see `BlendOptions::bend`);
+    /// `None` straight.
+    pub bend: Option<Vec2>,
+    /// The blend has no path, so its line can bend.
+    pub can_bend: bool,
 }
 
+/// How near the straight line a dropped bend handle straightens it,
+/// screen pixels.
+const STRAIGHT_PX: f64 = 4.0;
+
 impl BlendControls {
+    /// The point `f` of the way along the line (along the curve when
+    /// bent, by the curve's own measure).
+    pub fn point_at(&self, f: f64) -> Point {
+        match self.bend {
+            Some(v) => {
+                let c = self.start.midpoint(self.end) + v * 2.0;
+                let u = 1.0 - f;
+                Point::new(
+                    u * u * self.start.x + 2.0 * u * f * c.x + f * f * self.end.x,
+                    u * u * self.start.y + 2.0 * u * f * c.y + f * f * self.end.y,
+                )
+            }
+            None => self.start + (self.end - self.start) * f,
+        }
+    }
+
+    /// The line as points on the page: two when straight, the curve
+    /// sampled when bent.
+    pub fn line_points(&self) -> Vec<Point> {
+        match self.bend {
+            Some(_) => (0..=32).map(|i| self.point_at(i as f64 / 32.0)).collect(),
+            None => vec![self.start, self.end],
+        }
+    }
+
+    /// Where the bend handle sits: the middle of the line.
+    pub fn bend_point(&self) -> Point {
+        self.point_at(0.5)
+    }
+
     /// The point on the line where the slider of `h` sits.
     pub fn slider_point(&self, h: BlendHandle) -> Point {
         let a = match h {
@@ -99,13 +147,24 @@ impl BlendControls {
             BlendHandle::Colors => self.accel_colors,
             BlendHandle::Start => return self.start,
             BlendHandle::End => return self.end,
-            BlendHandle::Line => return self.start + (self.end - self.start) * 0.5,
+            BlendHandle::Line | BlendHandle::Bend => return self.bend_point(),
         };
-        self.start + (self.end - self.start) * slider_fraction(a)
+        self.point_at(slider_fraction(a))
     }
 
     /// How far along the line `p` lies (0 at the start, 1 at the end).
     pub fn fraction_at(&self, p: Point) -> f64 {
+        if self.bend.is_some() {
+            // The nearest of the curve's points.
+            return (0..=200)
+                .map(|i| i as f64 / 200.0)
+                .min_by(|x, y| {
+                    (self.point_at(*x) - p)
+                        .hypot2()
+                        .total_cmp(&(self.point_at(*y) - p).hypot2())
+                })
+                .unwrap_or(0.5);
+        }
         let d = self.end - self.start;
         let len2 = d.hypot2();
         if len2 < 1e-12 {
@@ -140,18 +199,23 @@ impl App {
             end,
             accel_objects,
             accel_colors,
+            path,
+            options,
             ..
         } = e
         else {
             return None;
         };
         let start = self.doc().shape_on_page(id)?.bounds().center();
+        let can_bend = path.is_none();
         Some(BlendControls {
             shape: id,
             start,
             end: end.bounds().center(),
             accel_objects,
             accel_colors,
+            bend: options.bend.filter(|_| can_bend),
+            can_bend,
         })
     }
 
@@ -171,6 +235,11 @@ impl App {
         }
         if (b - a).length() < 2.0 * HANDLE_PX {
             return None;
+        }
+        // The bend handle, on the line itself, before the sliders beside
+        // it.
+        if c.can_bend && (view.to_screen(c.bend_point()) - at).length() <= BEND_PX {
+            return Some(BlendHandle::Bend);
         }
         let n = screen_normal(a, b) * SLIDER_OFFSET_PX;
         // The object slider wins where the two overlap.
@@ -193,8 +262,12 @@ impl App {
                 }
             ))
         );
-        (movable && crate::effect_line::near_segment(c.start, c.end, p, self.line_pick_tol()))
-            .then_some(BlendHandle::Line)
+        let tol = self.line_pick_tol();
+        let near = c
+            .line_points()
+            .windows(2)
+            .any(|w| crate::effect_line::near_segment(w[0], w[1], p, tol));
+        (movable && near).then_some(BlendHandle::Line)
     }
 
     /// The object of the start or end square under `p` (page space): the
@@ -232,6 +305,7 @@ impl App {
             BlendHandle::Colors => (link, true),
             BlendHandle::Start | BlendHandle::End => return self.drag_blend_end(p, false),
             BlendHandle::Line => return self.drag_blend_end(p, ctrl),
+            BlendHandle::Bend => return self.drag_blend_bend(&c, p),
         };
         if objects {
             self.blend_accel_objects = a;
@@ -301,6 +375,34 @@ impl App {
             });
         }
         true
+    }
+
+    /// The bend handle dragged to `p`: the line bends through it, one
+    /// undo step for the drag; let go near the straight line, it is
+    /// straight again.
+    fn drag_blend_bend(&mut self, c: &BlendControls, p: Point) {
+        let mid = c.start.midpoint(c.end);
+        let d = c.end - c.start;
+        let len = d.hypot();
+        // How far `p` lies off the straight line, on the page.
+        let off = if len > 1e-9 {
+            ((p - c.start).cross(d) / len).abs()
+        } else {
+            (p - mid).hypot()
+        };
+        let bend = (off * self.view.zoom as f64 > STRAIGHT_PX).then(|| p - mid);
+        self.change_blends("Blend", |e| {
+            let mut e = e.clone();
+            if let Effect::Blend {
+                path: None,
+                options,
+                ..
+            } = &mut e
+            {
+                options.bend = bend;
+            }
+            Some(e)
+        });
     }
 
     /// The start or end square dragged to `p`: its object moves with it,
@@ -472,6 +574,8 @@ mod tests {
             end: Point::new(100.0, 0.0),
             accel_objects: 0.0,
             accel_colors: 0.0,
+            bend: None,
+            can_bend: true,
         };
         assert!((c.fraction_at(Point::new(25.0, 40.0)) - 0.25).abs() < 1e-9);
         assert_eq!(c.fraction_at(Point::new(-10.0, 0.0)), 0.0);

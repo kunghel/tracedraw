@@ -49,6 +49,8 @@ clique na área em qualquer cópia.
 Clique em Concluir na barra, ou escolha [[menu.object.symmetry_finish]]
 (<kbd>Alt+Shift+E</kbd>), para parar de editar.
 
+![Uma simetria rotacional de seis cópias giradas em volta do centro](../../img/objects-symmetry-rotational.png)
+
 ## Remover ou manter as cópias {#remove}
 
 - [[menu.object.symmetry_remove]] (<kbd>Alt+Shift+S</kbd>) remove a simetria;

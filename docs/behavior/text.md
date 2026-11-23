@@ -16,7 +16,7 @@ baseline point; paragraph text: a frame with wrapping. Shortcut F8.
 | Hyphenation | off; when on, at least 2 letters before and 3 after a break, from a compact pattern set (a vowel and consonant rule for words it leaves whole); digraphs (ch, ck, gh, ph, sh, th, wh, qu) stay together; words with a capital letter (names, acronyms) are never broken. Options > Text > Paragraph Text > Hyphenation patterns picks a hyphenation dictionary instead (`hyph_*.dic`, found where the spelling dictionaries are, see `writing-tools.md`): its first line names the character set; `LEFTHYPHENMIN` and `RIGHTHYPHENMIN` set the minimums (else 2 and 3); `%` and `#` lines are comments; `NEXTLEVEL` starts a second level of patterns, a word breaking where either level allows; patterns with a replacement (`/`) are left out. With a dictionary a capital first letter no longer stops a break (nouns in some languages); other capitals still do. A dictionary that is gone at start-up leaves the built-in patterns and a status message (`hyphen::tests::pattern_files`, `spell::tests::real_hyphenation_files`, ignored, over English, Brazilian Portuguese, German and Italian files: hy-phen-ation, com-pu-ta-dor, Haus-tür, Schiff-fahrt, in-for-ma-zione). Punctuation before or after a word (a comma at a line's end, quotation marks) is left aside and the letters between break; an apostrophe inside a word (' or ’) is kept for the patterns, and without a pattern file only the part after the last apostrophe breaks (#255, `hyphen::tests::punctuation_round_a_word_and_apostrophes_inside_it`). Text > Use Hyphenation turns hyphenation on or off for the selected texts (off when they all have it); while a text is edited it is the setting of the paragraphs at the caret, its check following them; with no text selected it is the setting new text takes (`writing_tools::tests::use_hyphenation_acts_on_the_selected_text`). Typing keeps a text's own hyphenation; it took the setting for new text, so editing a text turned its hyphenation on or off (#470, `writing_tools::tests::editing_a_text_keeps_its_hyphenation`) |
 | Chinese and Japanese line breaks | text written without spaces breaks between any two characters when one of them is Chinese or Japanese (ideographs, kana, full-width forms and their punctuation), except before a character that may not start a line (，。、；：？！ and their half-width forms, closing brackets and quotes such as ）」』】”’, iteration marks, ー and small kana) and after one that may not end a line (opening brackets and quotes such as （「『【“‘, and ￥ ＄ £ before a sum); the character before goes down to the next line with it. Latin text keeps breaking at spaces and hyphenation points (#847, `tests::cjk_punctuation_never_starts_a_line`) |
 | Columns | 1, gutter 5 mm, equal widths, left to right. With Equal column width off (Text > Columns) each column has a width and the gap after it as typed (mm); the frame's width is shared in those proportions, so resizing the frame scales them. Right to left (horizontal text) fills the right-hand column first (#2192, `document::tests::column_boxes_share_the_frame`, `tests::uneven_columns_take_their_own_widths_and_order`) |
-| Bullets | off; indent 5 mm, bullet "*" from the paragraph font. Style: the symbol, or numbers 1, 2, 3 / a, b, c / A, B, C / i, ii, iii / I, II, III with a prefix (none) and suffix (".") and a start (1); a run of numbered paragraphs counts on, a paragraph without bullets or with a symbol ends it. Own font (off: the paragraph's first letter's), size 100 %, baseline shift 0, text frame to bullet 0 (the bullet sits that far past the left indent, the text a further indent past it), hanging indent on (off: the lines after the first start at the left indent, under the bullet) (#1443, `document::tests::bullet_numbers_count_runs_of_paragraphs`, `tests::numbered_bullets_count_the_paragraphs`) |
+| Bullets | off; indent 5 mm, bullet "*" from the paragraph font. Style: the symbol, or numbers 1, 2, 3 / a, b, c / A, B, C / i, ii, iii / I, II, III with a prefix (none) and suffix (".") and a start (1); a run of numbered paragraphs counts on, a paragraph without bullets or with a symbol ends it. Own font (off: the paragraph's first letter's), size 100 %, baseline shift 0, text frame to bullet 0 (the bullet sits that far past the left indent, the text a further indent past it), hanging indent on (off: the lines after the first start at the left indent, under the bullet) (#1443, `document::tests::bullet_numbers_count_runs_of_paragraphs`, `tests::numbered_bullets_count_the_paragraphs`). Own colour, bold and italic (off: the first letter's); a bullet of its own colour is drawn as a part of its own (#3682, `document::tests::bullets_of_their_own_colour_are_a_part_of_their_own`). List level 1 (up to 21), each level set in 6.35 mm and counting on its own, starting again under each paragraph of the level above; Restart starts a number again within a run, Continue goes on from the last number of its level after paragraphs without bullets; Text > Increase List Level and Decrease List Level move the bulleted paragraphs, a number taking the next of 1, a, i and a symbol the next of the plain bullets (#3685, `document::tests::list_levels_number_on_their_own`, `pick_drag_tests::list_level_menu_items_move_bulleted_paragraphs`) |
 | Drop cap | off; 3 lines. The paragraph's first letter is scaled so it sits on the baseline of the last line it spans and its top meets the top of the first line's letters; the lines beside it are narrowed by its width plus 1 mm, so they wrap and justify inside the column. A paragraph shorter than its drop cap leaves the letter beside the next paragraph's first lines, which are narrowed the same way; a next paragraph with a drop cap of its own starts below the letter |
 | Tabs | none of the paragraph's own: a left stop every 12.7 mm (half an inch) from the frame's left edge, Options > Text > Paragraph Text > Default tab spacing (see Tab stops below) |
 | Text on path | distance 0, offset 0, orientation "rotate letters" |
@@ -335,6 +335,7 @@ concatenated spans; the layout's line boxes give its place on the page.
 | Mixed directions (an Arabic or Hebrew word in English text, or the other way round) | the Unicode bidirectional algorithm gives each character its level, the first strong letter setting the direction; it is worked out for each run of one formatting between tabs and line ends, so a direction change across differently formatted characters keeps them in text order. Each run of one level is shaped its own way; lines break in text order and each line shows its runs in display order: Arabic typed after "Asasa " reads right to left, joined, to the right of it, and a paragraph too narrow for "Hi مرحبا بك" keeps "Hi مرحبا" on the first line; digits inside right-to-left text read left to right (#628, `tracedraw_text::tests::mixed_text_is_cut_into_runs_of_one_direction`, `tracedraw_text::tests::lines_are_seen_in_bidi_order`, `tracedraw_text::tests::mixed_directions_lay_each_run_its_own_way`, `tracedraw_text::tests::mixed_paragraph_text_breaks_in_text_order`, `pick_drag_tests::right_to_left_typed_after_english_runs_right_to_left`) |
 | A text begun in Hebrew or Arabic | its first letters typed (or pasted) into an empty text that is left aligned or not aligned, the default, align it to the right: artistic text grows to the left of the click and paragraph text starts at the frame's right edge, as right-to-left text is read. A text whose first letter is Latin (digits and spaces do not count) keeps its alignment, and an alignment chosen later stays (discussion #2122, `text_editing::tests::a_text_begun_in_hebrew_runs_from_the_right`) |
 | Text direction (discussion #2670) | the Text docker's Paragraph section has Direction, Left to right (the default) or Right to left, for the paragraphs acted on. Right to left runs the bidirectional algorithm with a right-to-left base: each line starts at the right, Latin words and digits keep their order inside their run, a full stop or other neutral character at a run's end goes to the right-to-left side (the left), and a right-to-left word after Latin ones goes to their left. The left and right indents change sides and the first line's indent goes to the right. Turning text right to left aligns left-aligned (or not aligned) text right, and turning it back aligns right-aligned text left. Saved as `direction: right_to_left` in the paragraph's style; older files read as left to right (`tracedraw_text::tests::a_right_to_left_paragraph_runs_from_the_right`, `document::tests::text_direction_defaults_to_left_to_right_and_round_trips`). Full justify sets a right-to-left paragraph's last line from the right edge (set right to left, or right to left by its first strong letter, Hebrew or Arabic); it was set from the left like a left-to-right one's (#3216, `tracedraw_text::tests::a_justified_right_to_left_paragraph_ends_at_the_right`) |
+| Kashida (#3827) | the Text docker's Paragraph section has Kashida (Off, the default; Low; Medium; High), shown for a right-to-left paragraph or text with Arabic-script letters. In a justified line of Arabic, Persian or other Arabic-script text it stretches the joins between connected letters with the face's kashida (U+0640) drawn widened, instead of only widening the spaces: each word stretches one join, the best place by the usual preference (after a typed kashida, after the seen and sad letters, before a final heh or hah, before a final alef, lam, kaf or gaf, before a final reh, waw, ain, qaf or feh, before a final yeh, then any other join), the last of equal places. A join is only between a letter that connects forward and one that connects back (the Unicode joining types): never after alef, dal, reh, waw or hamza, never between lam and the alef after it, never at a line's end. Low gives the joins about a third of the line's room, at most half an em each; Medium about two thirds, at most an em; High all of it, at most two and a half ems; what they do not take widens the spaces, and a line without spaces gives them all. A face without a kashida glyph stretches nothing. The line breaks do not change. Writers that keep text as text get each kashida as a glyph widened by its transform, with no characters, so copied text has none. Saved as `kashida` in the paragraph's style; older files read as Off (`tracedraw_text::tests::a_justified_line_stretches_the_best_join_of_each_word`, `tracedraw_text::tests::justified_arabic_stretches_joins_with_kashida`, `tracedraw_text::kashida::tests`) |
 | Right-to-left text (Arabic, Hebrew) | the caret before a letter is at its right end and the end of the text at its left; a selection shades the letters it holds, all of them after Ctrl+A, where it used to shade only the first letter (#629, `tracedraw_text::tests::right_to_left_carets_run_from_the_right`, `pick_drag_tests::select_all_in_right_to_left_text_highlights_all_of_it`); character backgrounds and a callout's box cover such text too, mixed directions included (`callouts::tests::text_boxes_and_backgrounds_cover_mixed_direction_text`) |
 | Ctrl+B / I / U | toggle bold, italic, underline on the selection, or on the whole text without one |
 | Ctrl+C / X / V, Edit > Cut / Copy / Paste / Delete, the toolbar's buttons, the right-click menu | act on the characters of the text being edited, never on the object (#1377): Copy keeps the selected characters with their formatting (font, size, colours, outline, every character setting) for a paste into a text here and puts their plain text on the system clipboard for other programs (line breaks as the system's line end); Paste puts them back with their formatting while the clipboard still holds that text, also into another text (characters showing their text's own fill or outline get it as theirs where the texts differ), and pastes text copied elsewhere as it is, in the style at the caret. Objects copied with Edit > Copy (SVG on the system clipboard) paste their text with its formatting, never the SVG markup; Cut and Paste are one undo step each. Copied characters are the last copy (they replace objects copied before) and, pasted with the Pick tool, make an artistic text of them with their formatting and their text's fill and outline (`text_editing::tests::copied_characters_pasted_outside_a_text_keep_their_colours`). The right-click menu while editing has Undo, Cut, Copy, Paste, Delete, Select All (and Insert Placeholder Text in a paragraph frame) and Properties. On the desktop the clipboard is read when Paste is chosen from a menu; in the browser a menu's Paste has only the characters copied here, Ctrl+V the clipboard's text; on Android the system clipboard is read first (#1378, `text_editing::tests::copied_characters_keep_their_colours_when_pasted`, `text_editing::tests::copied_objects_paste_their_text_not_their_markup`) |
@@ -901,6 +902,18 @@ every text holds the whole text.
     style change as the Text docker's indent fields). A click on a
     marker adds no stop
     (`pick_drag_tests::the_tab_ruler_drags_the_left_and_right_indents`).
+  - First-line and hanging indent (#3911): the first line's indent has
+    a triangle of its own hanging from the outer edge at the left indent
+    plus the first-line indent, and the left indent's triangle sits
+    below it, pointing up at it. A press in the outer quarter takes the
+    first line's, in the quarter below it the left indent's. Dragging
+    the first line's sets the first-line indent (counted from the left
+    indent; left of it is a hanging indent), the first line staying
+    between the frame's left edge and 1 mm short of the right indent.
+    Dragging the left one moves every line, the first line keeping its
+    place from it. The text flows while it moves and each drag is one
+    undo step
+    (`pick_drag_tests::the_tab_ruler_drags_the_first_line_indent`).
 - `.cdr` (#1852, see `docs/cdr-format.md`): opening reads each
   paragraph's stops, from the style table's tab entries (versions 7 to
   15) or the `tabs` member of the paragraph style string (16 on); the
@@ -1195,7 +1208,15 @@ alternates (`salt`), Swash (`swsh`); then Superscript and Subscript.
   spacing change (in percent) is added to each paragraph's, and each
   paragraph's line spacing is multiplied by the same factor. One undo
   step per drag.
-- Text fitted to a path shows no character nodes.
+- Text fitted to a path has a node at each letter too, where it stands
+  along the path (#3252): chosen as above, and dragging one moves the
+  chosen letters along the path and away from it as the path runs at
+  the first of them (the move becomes their offsets: the horizontal
+  offset carries a letter that far along the path, turned with it,
+  instead of off to the side). It keeps the horizontal spacing arrow
+  only (#193)
+  (`text_nodes::tests::text_on_a_path_has_character_nodes_that_move_along_it`,
+  `tracedraw_text`: `tests::a_character_moved_sideways_on_a_path_moves_along_it`).
 
 ## Placeholder text
 
@@ -1772,3 +1793,56 @@ in each chosen font, one under the other, on white cards.
 - A font that is not installed shows in its stand-in, and says which.
 - A click on a sample gives the selected text that font (or makes it the
   text font when nothing is selected); the text font is ticked.
+
+## Curve Text
+
+With artistic text selected, the text property bar shows a Curve Text
+button after the alignment list (its picture is the current curve, an
+arch while straight). Its list: Straight, Circle, Arch, Bowl, Wave. A
+curve makes the text text on a path of its own (`TextOnPath::preset`
+names it; no path object), centred, its middle kept where the text's box
+middle was, one undo step "Curve Text" (`text_curve.rs`):
+
+- Circle: a whole circle of circumference `w / 0.85` (`w` the straight
+  text's width), from the top clockwise, the text centred over the top,
+  letters outward.
+- Arch / Bowl: a third of a circle, `1.15 w` long, over the top of a
+  circle below / along the bottom of one above.
+- Wave: two sine waves `1.05 w` long, half the letter size high.
+
+Straight drops a Curve Text curve (a path of the text's own from Fit
+Text to Path stays). Distance and mirrors of an earlier curve are kept.
+
+A circle text let go after a move with its circle's middle within half
+the radius of a round object's middle (an ellipse, or a closed shape
+whose box is square within 10 % and covers pi/4 of it within 0.05; the
+topmost under it) takes that centre, its circle `r - 1.15 size` round
+(`size` the letter size), so the letter tops run just inside the edge;
+undo step "Fit Text to Shape" after the move's
+(`text_curve::tests::circle_text_fits_a_round_object_it_is_dropped_on`).
+
+## Type block
+
+The text panel's frame settings, under the vertical alignment row: Type
+block (`ParagraphStyle::type_block`, off at first, a setting of the whole
+frame as Fit Text to Frame is). On, paragraph text is laid out by
+`FontSystem::type_block` (text crate) before its lines are broken:
+
+- Words are the runs between spaces; a line break or paragraph break
+  always breaks. Each word's natural width is measured in its own fonts.
+- For 49 target widths from the widest word to the longest paragraph,
+  each paragraph is broken greedily into lines nearest the target; a line
+  scaled to the frame's width stands `1.3 size w / natural` high. The line
+  sets are ranked: those whose estimated height fits the frame first,
+  then the nearest to its height.
+- For the best sets in turn (at most 8), each line's characters are
+  scaled so that its width as laid out is 99 % of the frame's width, the
+  space before each line but a paragraph's first becomes a line break
+  (one character for another, so carets and selections keep their
+  places), and the block is laid out with forced justification, no
+  indents, no space between paragraphs; the first that does not overflow
+  is drawn. None fits: the best set scaled down by 8 % at a time.
+- Laid out anew on every change of the frame or the text.
+
+Test: `tracedraw_text::tests::a_type_block_fills_the_frame_width_line_by_line`.
+

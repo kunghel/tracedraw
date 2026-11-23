@@ -75,3 +75,13 @@ nieuws.
   kunt melden.
 - [[menu.help > menu.help.message_settings]] opent de opties waarin de
   meldingen van TraceDraw worden ingesteld.
+
+## Als TraceDraw niet meer reageert {#problem-reports}
+
+Als een stap van TraceDraw langer dan 10 seconden duurt, bewaart het een rapport van wat het deed (versie, systeem, gereedschap, laatste opdracht, grootte van de tekening en het einde van het logboek), nooit de naam of inhoud van de tekening. Een melding biedt het aan als TraceDraw weer reageert, of bij de volgende start als het moest worden afgesloten of door een fout stopte.
+
+1. Klik op **[[report.show]]** om het rapport te lezen.
+2. Klik op **[[report.send]]**: een nieuwe GitHub-issue met een samenvatting en de map van het rapport gaan open.
+3. Sleep het rapport in de issue, vertel wat je deed en verstuur het. Eerder wordt er niets verstuurd.
+
+**[[report.not_now]]** sluit de melding. Elk rapport wordt één keer aangeboden.

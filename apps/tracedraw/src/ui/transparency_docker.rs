@@ -484,6 +484,10 @@ fn fountain_icon(k: FountainKind) -> (&'static str, fn(f32, f32) -> f32) {
                 1.0 - (0.45 - d) / 0.45
             }
         }),
+        // Not offered for a transparency (see `fountain`).
+        FountainKind::Points => ("f_radial", |u, v| {
+            (((u - 0.5).powi(2) + (v - 0.5).powi(2)).sqrt() * 2.0).clamp(0.0, 1.0)
+        }),
     }
 }
 
@@ -844,7 +848,11 @@ fn fountain(ui: &mut Ui, set: &mut TransparencySettings, mixed: &[F], field: &mu
     let kind_shown = !mixed.contains(&F::MaskKind);
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 2.0;
-        for k in FountainKind::ALL {
+        // Colour points are a fill of their own, not a transparency.
+        for k in FountainKind::ALL
+            .into_iter()
+            .filter(|k| *k != FountainKind::Points)
+        {
             let (name, g) = fountain_icon(k);
             let tex = icon_texture(ui, name, g);
             if icon_button(ui, &tex, kind_shown && f.kind == k)
@@ -1149,6 +1157,8 @@ fn texture(ui: &mut Ui, set: &mut TransparencySettings, field: &mut Option<F>) {
         TextureKind::Marble => "texture.marble",
         TextureKind::Noise => "texture.noise",
         TextureKind::Wood => "texture.wood",
+        TextureKind::Holographic => "texture.holographic",
+        TextureKind::HoloGlitter => "texture.holo_glitter",
     };
     crate::ui::keynav::ComboBox::from_id_salt("transparency_docker_texture")
         .selected_text(tr(key(t.kind)))

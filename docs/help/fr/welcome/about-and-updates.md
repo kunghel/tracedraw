@@ -78,3 +78,13 @@ de lire les nouvelles et de trouver des ressources d'apprentissage. Choisissez
   pouvez signaler un problème.
 - [[menu.help > menu.help.message_settings]] ouvre les options où se règlent
   les messages de TraceDraw.
+
+## Quand TraceDraw ne répond plus {#problem-reports}
+
+Quand une étape de TraceDraw dure plus de 10 secondes, il enregistre un rapport de ce qu'il faisait (version, système, outil, dernière commande, taille du dessin et fin de son journal), jamais le nom ni le contenu du dessin. Un message le propose quand TraceDraw répond de nouveau, ou au démarrage suivant s'il a dû être fermé ou s'est fermé sur une erreur.
+
+1. Cliquez sur **[[report.show]]** pour lire le rapport.
+2. Cliquez sur **[[report.send]]** : un nouveau ticket GitHub s'ouvre avec un résumé, ainsi que le dossier du rapport.
+3. Glissez le rapport dans le ticket, dites ce que vous faisiez et envoyez-le. Rien n'est envoyé avant.
+
+**[[report.not_now]]** ferme le message. Chaque rapport n'est proposé qu'une fois.

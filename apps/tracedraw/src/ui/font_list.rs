@@ -251,8 +251,12 @@ pub fn render_text(
         .copied()
         .unwrap_or(0.0)
         .max(layout.bounds.x1);
+    // Ink left of the pen's start (a vowel sign drawn before the letter
+    // it follows in a legacy font, #3906) widens the picture to the left
+    // instead of being cut off.
+    let left = (-layout.bounds.x0).max(0.0);
     let pad = 1.0;
-    let w = ((advance.max(0.0) * scale).ceil() + 2.0 * pad).clamp(1.0, 2048.0) as u32;
+    let w = (((advance.max(0.0) + left) * scale).ceil() + 2.0 * pad).clamp(1.0, 2048.0) as u32;
     let h = (((ascent + descent) * scale).ceil() + 2.0 * pad).clamp(1.0, 1024.0) as u32;
     let path = tracedraw_render::to_sk_path(&layout.path)?;
     let mut pixmap = tiny_skia::Pixmap::new(w, h)?;
@@ -265,7 +269,7 @@ pub fn render_text(
         0.0,
         0.0,
         -(scale as f32),
-        pad as f32,
+        (pad + left * scale) as f32,
         baseline,
     );
     pixmap.fill_path(&path, &paint, tiny_skia::FillRule::Winding, t, None);

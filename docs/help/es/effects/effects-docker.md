@@ -38,3 +38,18 @@ propia herramienta o panel.
 - [[menu.object > menu.object.copy_effect]] copia un efecto de otro objeto, y
   [[menu.object.clone_effect]] crea un clon que lo sigue; vea
   [Copiar y clonar efectos](copy-and-clone.md).
+
+## Aspecto hecho a mano y marcos
+
+Los efectos de capa arriba del panel también incluyen estos, todos en vivo:
+
+- [[effect.roughen]] vuelve a dibujar el contorno con pequeñas ondas al azar.
+- [[effect.jitter_nodes]] mueve al azar los nodos de la curva.
+- [[effect.scribble]] dibuja el relleno como una línea en zigzag suelta, del
+  color del relleno; el contorno se mantiene.
+- [[effect.shape_frame]] cambia el contorno por un rectángulo, un rectángulo
+  redondeado o una elipse alrededor del objeto.
+- [[effect.trim_marks]] dibuja líneas en las esquinas del objeto, por fuera.
+- [[effect.feather]] desvanece el objeto hacia su borde.
+
+**Variación** da otro patrón a los efectos al azar.

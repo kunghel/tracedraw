@@ -1662,7 +1662,32 @@ impl PageWriter<'_> {
         use tracedraw_core::geometry::Shape as _;
         let (drawn, scale) = crate::svg::drawn_stroke(s, transform);
         self.stroke_state(&drawn);
-        if let Some(brush) = &s.painterly {
+        let along = if s.painterly.is_none()
+            && tracedraw_core::shaping::outline_band(&shape.page_path(), s, scale).is_none()
+        {
+            tracedraw_core::shaping::along_slices(&shape.page_path(), s, drawn.width)
+        } else {
+            None
+        };
+        if let Some(pieces) = along {
+            // A gradient along the line: each piece filled in its colour.
+            for (piece, color, alpha) in pieces {
+                self.content.push_str("q\n");
+                if self.pdf.allow_alpha && alpha < 1.0 {
+                    let a = f64::from(alpha.max(0.0));
+                    let name = format!("GS{}", self.gstates.len());
+                    let id = self
+                        .pdf
+                        .add_str(format!("<< /Type /ExtGState /CA {} /ca {} >>", f(a), f(a)));
+                    self.gstates.push((name.clone(), id));
+                    let _ = writeln!(self.content, "/{name} gs");
+                }
+                let op = self.color_op(color, true);
+                let _ = writeln!(self.content, "{op}");
+                self.path_ops(&(parent * piece));
+                self.content.push_str("f\nQ\n");
+            }
+        } else if let Some(brush) = &s.painterly {
             // Painterly brush: the marks, one filled path per opacity.
             for (alpha, marks) in tracedraw_core::painterly::marks_by_opacity_along(
                 &shape.page_path(),
@@ -2389,13 +2414,29 @@ fn needs_flattening(s: &Shape) -> bool {
 /// Replace every object that needs flattening by a raster of everything
 /// drawn up to and including it, cropped to its bounds, so the composite
 /// is kept without transparency in the file.
-fn flatten_page(doc: &Document, page: &tracedraw_core::document::Page, dpi: f64) -> Vec<Shape> {
+///
+/// A group that is not see-through itself is opened, so only the objects
+/// in it that need flattening turn into pictures, not the whole group
+/// (#3929). With `inks` (PDF/X-1a) the picture also keeps the process
+/// inks the objects blend to, so it prints in the drawing's own CMYK
+/// colours instead of inks made again from screen colours, which came
+/// out duller and put a rich black on the black plate alone (#3942,
+/// #3929).
+fn flatten_page(
+    doc: &Document,
+    page: &tracedraw_core::document::Page,
+    dpi: f64,
+    inks: bool,
+) -> Vec<Shape> {
     let layers = doc.layers_drawn_for_page(page.id).unwrap_or_default();
-    let ordered: Vec<Shape> = layers
+    let mut ordered: Vec<Shape> = Vec::new();
+    for s in layers
         .iter()
         .filter(|l| l.visible && l.printable)
-        .flat_map(|l| l.shapes.iter().cloned())
-        .collect();
+        .flat_map(|l| l.shapes.iter())
+    {
+        open_for_flattening(s.clone(), &mut ordered);
+    }
     let mut out: Vec<Shape> = Vec::with_capacity(ordered.len());
     let page_rect = page.rect();
     for (i, s) in ordered.iter().enumerate() {
@@ -2441,6 +2482,11 @@ fn flatten_page(doc: &Document, page: &tracedraw_core::document::Page, dpi: f64)
             out.push(s.clone());
             continue;
         };
+        let planes = if inks {
+            ink_planes(&tmp, &ordered[..=i], b, dpi, rect)
+        } else {
+            None
+        };
         let mut raster = Shape::new(
             s.id,
             ShapeKind::Bitmap {
@@ -2459,9 +2505,179 @@ fn flatten_page(doc: &Document, page: &tracedraw_core::document::Page, dpi: f64)
         raster.fill = Fill::None;
         raster.stroke = None;
         raster.name = s.name.clone();
+        if let (Some(planes), ShapeKind::Bitmap { png, .. }) = (planes, &raster.kind) {
+            raster.cmyk_bitmap = true;
+            raster.picture_inks = Some(Box::new(tracedraw_core::picture_inks::PictureInks::cmyk(
+                png,
+                planes.into(),
+            )));
+        }
         out.push(raster);
     }
     out
+}
+
+/// The transparency masks of `orig` put back on `mapped`, its copy with
+/// other colours: a mask's greys are how see-through the object is, not
+/// a colour to print.
+fn keep_masks(orig: &Shape, mapped: &mut Shape) {
+    mapped.opacity_mask = orig.opacity_mask;
+    for (e, o) in mapped.effects.iter_mut().zip(&orig.effects) {
+        if let (
+            tracedraw_core::live::Effect::Transparency { mask, .. },
+            tracedraw_core::live::Effect::Transparency { mask: m0, .. },
+        ) = (e, o)
+        {
+            *mask = m0.clone();
+        }
+    }
+    match (&mut mapped.kind, &orig.kind) {
+        (ShapeKind::Group { children }, ShapeKind::Group { children: c0 }) => {
+            for (c, o) in children.iter_mut().zip(c0) {
+                keep_masks(o, c);
+            }
+        }
+        (
+            ShapeKind::ClipFrame { frame, contents },
+            ShapeKind::ClipFrame {
+                frame: f0,
+                contents: k0,
+            },
+        ) => {
+            keep_masks(f0, frame);
+            for (c, o) in contents.iter_mut().zip(k0) {
+                keep_masks(o, c);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// `s` into `out` for flattening: a group with no transparency, shadow,
+/// mask or effect of its own that holds objects needing flattening as
+/// its objects one by one, placed as the group placed them.
+fn open_for_flattening(s: Shape, out: &mut Vec<Shape>) {
+    let plain = s.opacity >= 1.0
+        && s.opacity_mask.is_none()
+        && s.shadow.is_none()
+        && s.effects.is_empty()
+        && s.visible;
+    match s.kind {
+        ShapeKind::Group { children } if plain && children.iter().any(needs_flattening) => {
+            for mut c in children {
+                c.absorb(s.transform);
+                open_for_flattening(c, out);
+            }
+        }
+        kind => out.push(Shape { kind, ..s }),
+    }
+}
+
+/// Whether the process inks of `shapes` can be drawn one ink at a time
+/// as grey: only flat colours, fountains and meshes blended normally,
+/// no pictures, patterns, lenses or merge modes, whose look does not
+/// follow from each ink alone.
+fn inks_draw_alone(shapes: &[Shape]) -> bool {
+    fn ok(s: &Shape) -> bool {
+        if !matches!(
+            s.fill,
+            Fill::None | Fill::Solid(_) | Fill::Fountain(_) | Fill::Mesh(_)
+        ) {
+            return false;
+        }
+        if s.effects.iter().any(|e| match e {
+            tracedraw_core::live::Effect::Transparency { merge, .. } => {
+                *merge != tracedraw_core::live::MergeMode::Normal
+            }
+            _ => true,
+        }) {
+            return false;
+        }
+        match &s.kind {
+            ShapeKind::Bitmap { .. } => false,
+            ShapeKind::Group { children } => children.iter().all(ok),
+            ShapeKind::ClipFrame { frame, contents } => ok(frame) && contents.iter().all(ok),
+            _ => true,
+        }
+    }
+    shapes.iter().all(ok)
+}
+
+/// The C, M, Y and K planes of the part `rect` (in pixels at `dpi`, the
+/// page box `b` in mm) of `tmp`'s page, which holds `shapes`: each ink
+/// drawn alone as grey, so normal blending of the objects mixes each ink
+/// as it mixes the screen colours. One 8-bit grey PNG, the four planes
+/// one under the other, 255 full ink; `None` when the objects' inks do
+/// not draw alone.
+fn ink_planes(
+    tmp: &Document,
+    shapes: &[Shape],
+    b: tracedraw_core::geometry::Rect,
+    dpi: f64,
+    rect: tiny_skia::IntRect,
+) -> Option<Vec<u8>> {
+    let near: Vec<&Shape> = shapes
+        .iter()
+        .filter(|s| {
+            let r = s.bounds();
+            r.x1 >= b.x0 && r.x0 <= b.x1 && r.y1 >= b.y0 && r.y0 <= b.y1
+        })
+        .collect();
+    if !inks_draw_alone(&near.into_iter().cloned().collect::<Vec<_>>()) {
+        return None;
+    }
+    if tmp.pages[0].background.is_some() {
+        return None;
+    }
+    let ink_of = |c: Color| -> [f32; 4] {
+        match c {
+            Color::Cmyk { c, m, y, k } => [c, m, y, k],
+            Color::Registration => [1.0; 4],
+            Color::Gray { v } => [0.0, 0.0, 0.0, 1.0 - v.clamp(0.0, 1.0)],
+            Color::Spot {
+                tint, c, m, y, k, ..
+            } => [c * tint, m * tint, y * tint, k * tint],
+            other => match other.convert_to("CMYK") {
+                Color::Cmyk { c, m, y, k } => [c, m, y, k],
+                _ => [0.0, 0.0, 0.0, 1.0],
+            },
+        }
+    };
+    let (w, h) = (rect.width(), rect.height());
+    let n = (w as usize) * (h as usize);
+    let mut planes = vec![0u8; n * 4];
+    for ink in 0..4 {
+        let mut one = tmp.clone();
+        for (s, orig) in one.pages[0].layers[0]
+            .shapes
+            .iter_mut()
+            .zip(&tmp.pages[0].layers[0].shapes)
+        {
+            tracedraw_core::color_convert::map_shape_colors(s, &|c| Color::Gray {
+                v: 1.0 - ink_of(c)[ink].clamp(0.0, 1.0),
+            });
+            keep_masks(orig, s);
+        }
+        let pid = one.pages[0].id;
+        let pm = tracedraw_render::render_page_image(&one, pid, dpi)?;
+        let crop = pm.clone_rect(rect)?;
+        if crop.width() != w || crop.height() != h {
+            return None;
+        }
+        for (i, p) in crop.pixels().iter().enumerate() {
+            // Over white paper: no ink where nothing is drawn.
+            let c = p.demultiply();
+            let a = c.alpha() as u32;
+            let grey = (c.red() as u32 * a + 255 * (255 - a)) / 255;
+            planes[ink * n + i] = 255 - grey as u8;
+        }
+    }
+    let img = image::GrayImage::from_raw(w, h * 4, planes)?;
+    let mut out = std::io::Cursor::new(Vec::new());
+    image::DynamicImage::ImageLuma8(img)
+        .write_to(&mut out, image::ImageFormat::Png)
+        .ok()?;
+    Some(out.into_inner())
 }
 
 /// The resolution opacity masks are drawn at in PDF output.
@@ -2622,7 +2838,7 @@ pub fn document_to_pdf_report(doc: &Document, opts: &PdfOptions) -> (Vec<u8>, Pd
         }
         page_link_areas.push(areas);
         let flat = if std_.flatten() {
-            Some(flatten_page(doc, page, flatten_dpi))
+            Some(flatten_page(doc, page, flatten_dpi, std_ == PdfStandard::X1a))
         } else {
             None
         };
@@ -2881,9 +3097,13 @@ pub fn document_to_pdf_report(doc: &Document, opts: &PdfOptions) -> (Vec<u8>, Pd
             let id = pdf.stream(&format!("/N {n}"), icc);
             format!(" /DestOutputProfile {id} 0 R")
         });
+        // A press the ICC registry names goes by its registered name, the
+        // condition as given (a profile's name, say) staying beside it
+        // (#3829).
+        let identifier = registered_condition(&condition).unwrap_or(&condition);
         let intent = pdf.add_str(format!(
             "<< /Type /OutputIntent /S /GTS_PDFX /OutputConditionIdentifier {} /OutputCondition {} /RegistryName (http://www.color.org) /Info {}{} >>",
-            pdf_text_any(&condition),
+            pdf_text_any(identifier),
             pdf_text_any(&condition),
             pdf_text_any(&condition),
             profile_ref.unwrap_or_default()
@@ -2947,6 +3167,52 @@ fn output_profile<'a>(opts: &'a PdfOptions, doc: &'a Document) -> Option<&'a [u8
             .map(|p| p.data.as_slice())
             .filter(|icc| icc_channels(icc) == 4)
     })
+}
+
+/// The name the ICC characterization data registry gives the printing
+/// condition `name` stands for: a registered name itself, or the name of
+/// a well-known CMYK profile made for one ("U.S. Web Coated (SWOP) v2"
+/// is "CGATS TR 001", "Coated FOGRA39 (ISO 12647-2:2004)" and "ISO Coated
+/// v2" are "FOGRA39"). `None` for others: they go by their own name,
+/// with their profile embedded (#3829).
+pub fn registered_condition(name: &str) -> Option<&'static str> {
+    const FOGRA: [&str; 12] = [
+        "FOGRA27", "FOGRA28", "FOGRA29", "FOGRA30", "FOGRA39", "FOGRA40", "FOGRA45", "FOGRA47",
+        "FOGRA51", "FOGRA52", "FOGRA53", "FOGRA54",
+    ];
+    let n = name.trim().to_ascii_uppercase();
+    let compact: String = n.chars().filter(|c| c.is_ascii_alphanumeric()).collect();
+    for f in FOGRA {
+        if compact.contains(f) {
+            return Some(f);
+        }
+    }
+    for id in [
+        "CGATS TR 001",
+        "CGATS TR 002",
+        "CGATS TR 003",
+        "CGATS TR 005",
+        "CGATS TR 006",
+    ] {
+        if compact.contains(&id.replace(' ', "")) {
+            return Some(id);
+        }
+    }
+    let by_profile: [(&str, &str); 9] = [
+        ("ISOCOATEDV2", "FOGRA39"),
+        ("PSOCOATEDV3", "FOGRA51"),
+        ("PSOUNCOATEDV3", "FOGRA52"),
+        ("SWOP2006COATED3", "CGATS TR 003"),
+        ("SWOP2006COATED5", "CGATS TR 005"),
+        ("GRACOL2006", "CGATS TR 006"),
+        ("WEBCOATEDSWOPV2", "CGATS TR 001"),
+        ("JAPANCOLOR2001COATED", "JC200103"),
+        ("JC200103", "JC200103"),
+    ];
+    by_profile
+        .iter()
+        .find(|(k, _)| compact.contains(k))
+        .map(|(_, id)| *id)
 }
 
 /// The output condition an embedded profile stands for: its description,
@@ -4306,6 +4572,85 @@ mod tests {
         assert!(!page_content(&document_to_pdf(&doc)).contains("/Im0 Do"));
     }
 
+    /// Flattened for PDF/X-1a, a see-through object over a rich black
+    /// keeps the inks the two blend to: the black is not put on the
+    /// black plate alone and the colours are not made again from the
+    /// screen (#3942, #3929). The opaque object grouped with it stays a
+    /// vector object.
+    #[test]
+    fn x1a_flattening_keeps_the_drawing_s_inks() {
+        let mut doc = Document::default();
+        let layer = doc.pages[0].layers[0].id;
+        let rect = |doc: &mut Document, r: Rect, c: Color, opacity: f64| {
+            let id = doc.ids_mut().shape();
+            let mut s = Shape::new(
+                id,
+                ShapeKind::Rect {
+                    rect: r,
+                    radius: 0.0,
+                    corners: None,
+                },
+            );
+            s.fill = Fill::Solid(c);
+            s.opacity = opacity;
+            s
+        };
+        let black = rect(
+            &mut doc,
+            Rect::new(10.0, 10.0, 60.0, 60.0),
+            Color::Cmyk {
+                c: 0.6,
+                m: 0.4,
+                y: 0.4,
+                k: 1.0,
+            },
+            1.0,
+        );
+        let magenta = rect(
+            &mut doc,
+            Rect::new(20.0, 20.0, 40.0, 40.0),
+            Color::Cmyk {
+                c: 0.0,
+                m: 1.0,
+                y: 0.0,
+                k: 0.0,
+            },
+            0.5,
+        );
+        let gid = doc.ids_mut().shape();
+        let group = Shape::new(
+            gid,
+            ShapeKind::Group {
+                children: vec![black, magenta],
+            },
+        );
+        doc.layer_mut(layer).unwrap().shapes.push(group);
+        let page = doc.pages[0].clone();
+        let out = flatten_page(&doc, &page, 72.0, true);
+        assert!(
+            out.iter().any(|s| matches!(s.kind, ShapeKind::Rect { .. })),
+            "the black stays a vector object: {out:?}"
+        );
+        let raster = out
+            .iter()
+            .find(|s| matches!(s.kind, ShapeKind::Bitmap { .. }))
+            .expect("the flattened picture");
+        let inks = raster.picture_inks.as_deref().expect("its inks");
+        let planes = image::load_from_memory(&inks.png).expect("png").to_luma8();
+        let (w, h) = (planes.width(), planes.height() / 4);
+        let at = |ink: u32| planes.get_pixel(w / 2, ink * h + h / 2)[0] as f64 / 255.0;
+        for (ink, want) in [(0, 0.3), (1, 0.7), (2, 0.2), (3, 0.5)] {
+            assert!(
+                (at(ink) - want).abs() < 0.02,
+                "ink {ink}: {} not {want}",
+                at(ink)
+            );
+        }
+        // Without inks (other standards) the picture has none.
+        let out = flatten_page(&doc, &page, 72.0, false);
+        assert!(out.iter().all(|s| s.picture_inks.is_none()));
+    }
+
     /// PDF/X-1a keeps no transparency: the shadow is flattened into the
     /// page picture with its object, over the shadow's area too.
     #[test]
@@ -4757,6 +5102,46 @@ mod pdfx_tests {
         );
         assert!(text.contains("/OutputConditionIdentifier (FOGRA39)"));
         assert!(text.contains("/DestOutputProfile"));
+    }
+
+    /// #3829: a condition named by its profile ("U.S. Web Coated (SWOP)
+    /// v2", the drawing's) goes by the name the ICC registry gives that
+    /// press, the profile's name kept as the condition; a registered name
+    /// is its own identifier, and an unknown one goes by its own name.
+    #[test]
+    fn a_well_known_profile_goes_by_its_registered_condition() {
+        assert_eq!(registered_condition("U.S. Web Coated (SWOP) v2"), Some("CGATS TR 001"));
+        assert_eq!(
+            registered_condition("Coated FOGRA39 (ISO 12647-2:2004)"),
+            Some("FOGRA39")
+        );
+        assert_eq!(registered_condition("ISO Coated v2 (ECI)"), Some("FOGRA39"));
+        assert_eq!(registered_condition("PSO Coated v3"), Some("FOGRA51"));
+        assert_eq!(registered_condition("Japan Color 2001 Coated"), Some("JC200103"));
+        assert_eq!(registered_condition("GRACoL2006_Coated1v2"), Some("CGATS TR 006"));
+        assert_eq!(registered_condition("cgats tr 001"), Some("CGATS TR 001"));
+        assert_eq!(registered_condition("FOGRA39"), Some("FOGRA39"));
+        assert_eq!(registered_condition("Generic CMYK (open)"), None);
+        let doc = doc_with_transparent_rect();
+        let text = pdfx(
+            &doc,
+            PdfOptions {
+                standard: PdfStandard::X1a,
+                output_condition: "U.S. Web Coated (SWOP) v2".into(),
+                ..Default::default()
+            },
+        );
+        assert!(text.contains("/OutputConditionIdentifier (CGATS TR 001)"), "{text}");
+        assert!(text.contains("/OutputCondition (U.S. Web Coated \\(SWOP\\) v2)"), "{text}");
+        let text = pdfx(
+            &doc,
+            PdfOptions {
+                standard: PdfStandard::X1a,
+                output_condition: "House press".into(),
+                ..Default::default()
+            },
+        );
+        assert!(text.contains("/OutputConditionIdentifier (House press)"));
     }
 
     #[test]

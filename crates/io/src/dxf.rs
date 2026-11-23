@@ -1217,6 +1217,8 @@ struct Writer<'a> {
     layer: String,
     /// The drawing unit's size in mm (1 for millimetres, #3583).
     unit: f64,
+    /// How outlines' curves are written (#4012).
+    curves: DxfCurves,
 }
 
 impl Writer<'_> {
@@ -1390,6 +1392,66 @@ impl Writer<'_> {
         }
     }
 
+    /// An LWPOLYLINE whose vertices carry the bulge of the arc to the
+    /// next one (0 for a straight segment).
+    fn bulge_polyline(&mut self, pts: &[(Point, f64)], closed: bool, color: Color, width_mm: f64) {
+        self.entity_header_lw("LWPOLYLINE", color, "AcDbPolyline", width_mm);
+        self.pair(90, &pts.len().to_string());
+        self.pair(70, if closed { "1" } else { "0" });
+        if width_mm > 0.0 {
+            self.pair(43, &fmt(width_mm / self.unit));
+        }
+        for (p, bulge) in pts {
+            self.pair(10, &fmt(p.x));
+            self.pair(20, &fmt(p.y));
+            if bulge.abs() > 1e-9 {
+                self.pair(42, &fmt(*bulge));
+            }
+        }
+    }
+
+    /// A cubic SPLINE through the Bézier segments of one subpath: their
+    /// nodes and handles are its control points, each node a knot of
+    /// multiplicity three, so the spline is the very same curve.
+    fn spline(&mut self, sub: &CubicSubpath, color: Color, width_mm: f64) {
+        let n = sub.segments.len();
+        if n == 0 {
+            return;
+        }
+        self.entity_header_lw("SPLINE", color, "AcDbSpline", width_mm);
+        self.pair(210, "0");
+        self.pair(220, "0");
+        self.pair(230, "1");
+        // Planar; a closed subpath's ends meet at its first node.
+        self.pair(70, "8");
+        self.pair(71, "3");
+        self.pair(72, &(3 * n + 5).to_string());
+        self.pair(73, &(3 * n + 1).to_string());
+        self.pair(74, "0");
+        self.pair(42, "0.0000001");
+        self.pair(43, "0.0000001");
+        for _ in 0..4 {
+            self.pair(40, "0");
+        }
+        for i in 1..n {
+            for _ in 0..3 {
+                self.pair(40, &i.to_string());
+            }
+        }
+        for _ in 0..4 {
+            self.pair(40, &n.to_string());
+        }
+        let mut controls = vec![sub.segments[0][0]];
+        for seg in &sub.segments {
+            controls.extend_from_slice(&seg[1..]);
+        }
+        for p in controls {
+            self.pair(10, &fmt(p.x));
+            self.pair(20, &fmt(p.y));
+            self.pair(30, "0");
+        }
+    }
+
     fn hatch(&mut self, polys: &[(Vec<Point>, bool)], color: Color) {
         if polys.is_empty() {
             return;
@@ -1554,8 +1616,23 @@ impl Writer<'_> {
                 s.width
             };
             let w = if w <= Stroke::HAIRLINE + 1e-9 { 0.0 } else { w };
-            for (pts, closed) in &polys {
-                self.lwpolyline(pts, *closed, s.color, w);
+            match self.curves {
+                DxfCurves::Lines => {
+                    for (pts, closed) in &polys {
+                        self.lwpolyline(pts, *closed, s.color, w);
+                    }
+                }
+                DxfCurves::Arcs => {
+                    // Arcs within a hundredth of a millimetre.
+                    for (pts, closed) in arc_polylines(&path, 0.01 / self.unit) {
+                        self.bulge_polyline(&pts, closed, s.color, w);
+                    }
+                }
+                DxfCurves::Splines => {
+                    for sub in cubic_subpaths(&path) {
+                        self.spline(&sub, s.color, w);
+                    }
+                }
             }
         }
     }
@@ -1666,6 +1743,306 @@ fn decode_unicode_escapes(s: &str) -> String {
     out
 }
 
+/// One subpath as cubic Bézier segments (straight and quadratic ones
+/// raised to cubics), and whether it was closed.
+#[derive(Debug, Clone, PartialEq)]
+struct CubicSubpath {
+    segments: Vec<[Point; 4]>,
+    closed: bool,
+}
+
+/// The subpaths of `path` as cubic segments (#4012). A closed subpath
+/// gets its closing line as a segment.
+fn cubic_subpaths(path: &BezPath) -> Vec<CubicSubpath> {
+    let mut out = Vec::new();
+    let mut cur = CubicSubpath {
+        segments: Vec::new(),
+        closed: false,
+    };
+    let (mut start, mut at) = (Point::ZERO, Point::ZERO);
+    let line = |a: Point, b: Point| [a, a.lerp(b, 1.0 / 3.0), a.lerp(b, 2.0 / 3.0), b];
+    let flush = |cur: &mut CubicSubpath, out: &mut Vec<CubicSubpath>| {
+        if !cur.segments.is_empty() {
+            out.push(std::mem::replace(
+                cur,
+                CubicSubpath {
+                    segments: Vec::new(),
+                    closed: false,
+                },
+            ));
+        }
+    };
+    for el in path.elements() {
+        match *el {
+            PathEl::MoveTo(p) => {
+                flush(&mut cur, &mut out);
+                start = p;
+                at = p;
+            }
+            PathEl::LineTo(p) => {
+                cur.segments.push(line(at, p));
+                at = p;
+            }
+            PathEl::QuadTo(c, p) => {
+                cur.segments.push([
+                    at,
+                    at + (c - at) * (2.0 / 3.0),
+                    p + (c - p) * (2.0 / 3.0),
+                    p,
+                ]);
+                at = p;
+            }
+            PathEl::CurveTo(a, b, p) => {
+                cur.segments.push([at, a, b, p]);
+                at = p;
+            }
+            PathEl::ClosePath => {
+                if (at - start).hypot() > 1e-9 {
+                    cur.segments.push(line(at, start));
+                }
+                cur.closed = true;
+                flush(&mut cur, &mut out);
+                at = start;
+            }
+        }
+    }
+    flush(&mut cur, &mut out);
+    out
+}
+
+/// The point at `t` of cubic `c`.
+fn cubic_at(c: &[Point; 4], t: f64) -> Point {
+    let u = 1.0 - t;
+    let v = c[0].to_vec2() * (u * u * u)
+        + c[1].to_vec2() * (3.0 * u * u * t)
+        + c[2].to_vec2() * (3.0 * u * t * t)
+        + c[3].to_vec2() * (t * t * t);
+    v.to_point()
+}
+
+/// Cubic `c` split at its middle.
+fn split_cubic(c: &[Point; 4]) -> ([Point; 4], [Point; 4]) {
+    split_cubic_at(c, 0.5)
+}
+
+/// Cubic `c` split at parameter `t`.
+fn split_cubic_at(c: &[Point; 4], t: f64) -> ([Point; 4], [Point; 4]) {
+    let m = |a: Point, b: Point| a.lerp(b, t);
+    let (ab, bc, cd) = (m(c[0], c[1]), m(c[1], c[2]), m(c[2], c[3]));
+    let (abc, bcd) = (m(ab, bc), m(bc, cd));
+    let mid = m(abc, bcd);
+    ([c[0], ab, abc, mid], [mid, bcd, cd, c[3]])
+}
+
+/// The parameters inside (0, 1) where cubic `c` changes the way it
+/// bends: an arc can only bend one way, so a biarc fits each piece
+/// between them far better than the whole S.
+fn cubic_inflections(c: &[Point; 4]) -> Vec<f64> {
+    let a = c[1] - c[0];
+    let b = c[2] - c[1] - a;
+    let d = (c[3] - c[2]) - (c[2] - c[1]) * 2.0 + a;
+    // B'(t) / 3 = a + 2bt + dt^2; B'(t) x B''(t) = 0 is a quadratic.
+    let (qa, qb, qc) = (b.cross(d), a.cross(d), a.cross(b));
+    let mut ts = Vec::new();
+    if qa.abs() < 1e-12 {
+        if qb.abs() > 1e-12 {
+            ts.push(-qc / qb);
+        }
+    } else {
+        let disc = qb * qb - 4.0 * qa * qc;
+        if disc >= 0.0 {
+            let r = disc.sqrt();
+            ts.push((-qb - r) / (2.0 * qa));
+            ts.push((-qb + r) / (2.0 * qa));
+        }
+    }
+    ts.retain(|t| *t > 1e-6 && *t < 1.0 - 1e-6);
+    ts.sort_by(f64::total_cmp);
+    ts.dedup_by(|x, y| (*x - *y).abs() < 1e-9);
+    ts
+}
+
+/// Cubic `c` cut at its inflections.
+fn split_at_inflections(c: &[Point; 4]) -> Vec<[Point; 4]> {
+    let mut out = Vec::new();
+    let mut rest = *c;
+    let mut done = 0.0;
+    for t in cubic_inflections(c) {
+        let (a, b) = split_cubic_at(&rest, (t - done) / (1.0 - done));
+        out.push(a);
+        rest = b;
+        done = t;
+    }
+    out.push(rest);
+    out
+}
+
+/// The bulge of the arc from `a` to `b` that leaves `a` along the unit
+/// tangent `t`: the tangent of a quarter of its included angle, positive
+/// counter-clockwise.
+fn bulge_from_tangent(a: Point, b: Point, t: Vec2) -> f64 {
+    let ch = b - a;
+    let half = t.cross(ch).atan2(t.dot(ch));
+    (half / 2.0).tan()
+}
+
+/// The distance from `p` to the arc (or segment, bulge 0) from `a` to
+/// `b` with bulge `bulge`.
+fn distance_to_bulge_arc(p: Point, a: Point, b: Point, bulge: f64) -> f64 {
+    let ch = b - a;
+    let len = ch.hypot();
+    if len < 1e-12 {
+        return (p - a).hypot();
+    }
+    if bulge.abs() < 1e-9 {
+        let t = ((p - a).dot(ch) / (len * len)).clamp(0.0, 1.0);
+        return (p - (a + ch * t)).hypot();
+    }
+    // The centre: on the chord's perpendicular, at the sagitta's distance.
+    let theta = 4.0 * bulge.atan();
+    let r = len / (2.0 * (theta / 2.0).sin()).abs();
+    let normal = Vec2::new(-ch.y, ch.x) / len;
+    let off = (r * r - len * len / 4.0).max(0.0).sqrt();
+    // A bulge under 1 (less than half a circle) has its centre on the
+    // side the arc does not bow to.
+    let side = if bulge.abs() < 1.0 { 1.0 } else { -1.0 } * bulge.signum();
+    let c = a.midpoint(b) + normal * (off * side);
+    let on_circle = ((p - c).hypot() - r).abs();
+    // Within the arc's sweep: the circle's distance; outside it, the
+    // nearer end's.
+    let ang = |q: Point| (q - c).y.atan2((q - c).x);
+    let (a0, ap) = (ang(a), ang(p));
+    let sweep = theta;
+    let mut d = ap - a0;
+    if sweep > 0.0 {
+        while d < 0.0 {
+            d += std::f64::consts::TAU;
+        }
+        while d >= std::f64::consts::TAU {
+            d -= std::f64::consts::TAU;
+        }
+        if d <= sweep {
+            return on_circle;
+        }
+    } else {
+        while d > 0.0 {
+            d -= std::f64::consts::TAU;
+        }
+        while d <= -std::f64::consts::TAU {
+            d += std::f64::consts::TAU;
+        }
+        if d >= sweep {
+            return on_circle;
+        }
+    }
+    (p - a).hypot().min((p - b).hypot())
+}
+
+/// A biarc for cubic `c`: two arcs meeting at a point with one tangent,
+/// the first leaving `c`'s start along its tangent, the second reaching
+/// its end along its tangent. `None` when the curve has no tangents.
+fn biarc(c: &[Point; 4]) -> Option<(Point, f64, f64)> {
+    let dir = |v: Vec2| {
+        let l = v.hypot();
+        (l > 1e-12).then(|| v / l)
+    };
+    let t1 = dir(c[1] - c[0])
+        .or_else(|| dir(c[2] - c[0]))
+        .or_else(|| dir(c[3] - c[0]))?;
+    let t2 = dir(c[3] - c[2])
+        .or_else(|| dir(c[3] - c[1]))
+        .or_else(|| dir(c[3] - c[0]))?;
+    let v = c[3] - c[0];
+    if v.hypot() < 1e-12 {
+        return None;
+    }
+    let t = t1 + t2;
+    let denom = 2.0 * (1.0 - t1.dot(t2));
+    let d = if denom.abs() < 1e-9 {
+        let vt2 = v.dot(t2);
+        if vt2.abs() < 1e-12 {
+            return None;
+        }
+        v.dot(v) / (4.0 * vt2)
+    } else {
+        let vt = v.dot(t);
+        let disc = vt * vt + denom * v.dot(v);
+        (-vt + disc.max(0.0).sqrt()) / denom
+    };
+    if !(d.is_finite() && d > 0.0) {
+        return None;
+    }
+    let q1 = c[0] + t1 * d;
+    let q2 = c[3] - t2 * d;
+    let joint = q1.midpoint(q2);
+    let b1 = bulge_from_tangent(c[0], joint, t1);
+    // The second arc, read backwards, leaves the end against its tangent.
+    let b2 = -bulge_from_tangent(c[3], joint, -t2);
+    Some((joint, b1, b2))
+}
+
+/// Cubic `c` as arcs within `tol`: the points the arcs start from, each
+/// with its bulge, up to (not including) `c`'s end.
+fn cubic_to_arcs(c: &[Point; 4], tol: f64, depth: u32, out: &mut Vec<(Point, f64)>) {
+    // A straight segment (its handles on the line) is one.
+    let chord = c[3] - c[0];
+    let len = chord.hypot();
+    let off_line = |p: Point| {
+        if len < 1e-12 {
+            (p - c[0]).hypot()
+        } else {
+            chord.cross(p - c[0]).abs() / len
+        }
+    };
+    if off_line(c[1]) <= tol * 0.25 && off_line(c[2]) <= tol * 0.25 {
+        out.push((c[0], 0.0));
+        return;
+    }
+    if let Some((joint, b1, b2)) = biarc(c) {
+        let fits = (1..16).all(|k| {
+            let p = cubic_at(c, f64::from(k) / 16.0);
+            distance_to_bulge_arc(p, c[0], joint, b1)
+                .min(distance_to_bulge_arc(p, joint, c[3], b2))
+                <= tol
+        });
+        if fits || depth >= 12 {
+            out.push((c[0], b1));
+            out.push((joint, b2));
+            return;
+        }
+    } else if depth >= 12 {
+        out.push((c[0], 0.0));
+        return;
+    }
+    let (a, b) = split_cubic(c);
+    cubic_to_arcs(&a, tol, depth + 1, out);
+    cubic_to_arcs(&b, tol, depth + 1, out);
+}
+
+/// The subpaths of `path` as polylines of arcs within `tol` (#4012):
+/// each vertex with the bulge of the arc to the next, and whether the
+/// subpath is closed.
+fn arc_polylines(path: &BezPath, tol: f64) -> Vec<(Vec<(Point, f64)>, bool)> {
+    cubic_subpaths(path)
+        .into_iter()
+        .map(|sub| {
+            let mut pts = Vec::new();
+            for seg in &sub.segments {
+                for piece in split_at_inflections(seg) {
+                    cubic_to_arcs(&piece, tol, 0, &mut pts);
+                }
+            }
+            if !sub.closed {
+                if let Some(last) = sub.segments.last() {
+                    pts.push((last[3], 0.0));
+                }
+            }
+            (pts, sub.closed)
+        })
+        .filter(|(pts, _)| pts.len() >= 2)
+        .collect()
+}
+
 /// The drawing unit a DXF export writes its coordinates in (#3583):
 /// `$INSUNITS` names it, and every length is divided by its size in mm.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -1716,10 +2093,31 @@ impl DxfUnits {
     }
 }
 
+/// How a DXF export writes the curves of an outline (#4012).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DxfCurves {
+    /// Arcs joined smoothly, one tangent to the next (polylines with
+    /// bulges, read by every CAD and CAM program): a curve cut on a
+    /// machine runs as arcs, not as short straight steps.
+    #[default]
+    Arcs,
+    /// The curves exactly, as cubic splines of the same nodes.
+    Splines,
+    /// Short straight segments, as earlier versions wrote.
+    Lines,
+}
+
+impl DxfCurves {
+    /// Every choice, in the order the Export dialog lists them.
+    pub const ALL: [DxfCurves; 3] = [DxfCurves::Arcs, DxfCurves::Splines, DxfCurves::Lines];
+}
+
 /// The choices of a DXF export.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct DxfOptions {
     pub units: DxfUnits,
+    /// How curves are written (#4012).
+    pub curves: DxfCurves,
 }
 
 /// Write one page as an ASCII DXF of the AutoCAD 2000 dialect (AC1015),
@@ -1751,6 +2149,7 @@ pub fn page_to_dxf_with(doc: &Document, page_index: usize, opts: &DxfOptions) ->
         handle: 0xFF,
         layer: "0".into(),
         unit,
+        curves: opts.curves,
     };
     // The page in drawing units.
     let size = tracedraw_core::geometry::Size::new(page.size.width / unit, page.size.height / unit);
@@ -2267,6 +2666,97 @@ mod tests {
         }
     }
 
+    /// #4012: a curved outline goes out as arcs that follow it within a
+    /// hundredth of a millimetre and meet tangent to each other, as the
+    /// exact spline of its nodes, or as short lines when asked.
+    #[test]
+    fn curves_export_as_smooth_arcs_or_exact_splines() {
+        let mut doc = Document::new("t", Size::new(100.0, 100.0));
+        let mut ids = doc.ids().clone();
+        let mut path = BezPath::new();
+        path.move_to((10.0, 50.0));
+        path.curve_to((10.0, 10.0), (60.0, 90.0), (90.0, 40.0));
+        path.line_to((90.0, 20.0));
+        let mut s = Shape::new(ids.shape(), ShapeKind::Path { path: path.clone(), closed: false });
+        s.fill = Fill::None;
+        s.stroke = Some(Stroke::new(Color::BLACK, 0.5));
+        doc.pages[0].layers[0].shapes = vec![s];
+        doc.set_ids(ids);
+        let with = |curves| {
+            page_to_dxf_with(
+                &doc,
+                0,
+                &DxfOptions {
+                    curves,
+                    ..Default::default()
+                },
+            )
+        };
+        let count = |out: &str, v: &str| out.lines().filter(|l| l.trim() == v).count();
+        // Arcs: one polyline with bulges, far fewer vertices than lines.
+        let arcs = with(DxfCurves::Arcs);
+        assert_eq!(arcs, page_to_dxf(&doc, 0), "arcs by default");
+        assert!(count(&arcs, "42") > 0, "bulges");
+        let arcs_n = arc_polylines(&path, 0.01)[0].0.len();
+        let lines_n = DxfWriterProbe::polylines(&path, 0.01)[0].0.len();
+        assert!(arcs_n * 2 < lines_n, "{arcs_n} {lines_n}");
+        // Read back, the arcs follow the curve (the page's way up, or
+        // the drawing's).
+        let back = parse(&arcs, &mut IdSource::default()).expect("reparse");
+        let got = back.shapes[0].page_path();
+        let near = |q: Point| {
+            use tracedraw_core::geometry::ParamCurveNearest as _;
+            path.segments()
+                .map(|seg| seg.nearest(q, 1e-9).distance_sq.sqrt())
+                .fold(f64::INFINITY, f64::min)
+        };
+        // The import may place the drawing anywhere on its page: line
+        // the boxes up first.
+        let (want, have) = (path.bounding_box(), got.bounding_box());
+        let shift = want.origin() - have.origin();
+        let shift_up = Vec2::new(want.x0 - have.x0, want.y1 - (100.0 - have.y0));
+        let (mut far, mut far_up) = (0.0f64, 0.0f64);
+        tracedraw_core::geometry::flatten(&got, 0.001, &mut |el| {
+            if let PathEl::LineTo(p) | PathEl::MoveTo(p) = el {
+                far = far.max(near(p + shift));
+                far_up = far_up.max(near(Point::new(p.x, 100.0 - p.y) + shift_up));
+            }
+        });
+        assert!(far.min(far_up) < 0.05, "{far} {far_up}");
+        // The arcs meet tangent to each other.
+        let polys = arc_polylines(&path, 0.01);
+        assert_eq!(polys.len(), 1);
+        let pts = &polys[0].0;
+        let turn = |v: Vec2, a: f64| Vec2::new(v.x * a.cos() - v.y * a.sin(), v.x * a.sin() + v.y * a.cos());
+        for w in pts.windows(3) {
+            let (a, b, c) = (w[0], w[1], w[2]);
+            let into = turn(b.0 - a.0, 2.0 * a.1.atan()).normalize();
+            let out = turn(c.0 - b.0, -2.0 * b.1.atan()).normalize();
+            // The corner where the curve meets the straight line stays one.
+            if (b.0 - Point::new(90.0, 40.0)).hypot() > 1e-6 {
+                assert!(into.dot(out) > 0.999, "{a:?} {b:?} {c:?} {into:?} {out:?}");
+            }
+        }
+        // Splines: one SPLINE, its control points the nodes and handles.
+        let spline = with(DxfCurves::Splines);
+        assert_eq!(count(&spline, "SPLINE"), 1);
+        assert_eq!(count(&spline, "LWPOLYLINE"), 0);
+        let back = parse(&spline, &mut IdSource::default()).expect("reparse spline");
+        let bb = back.shapes[0].page_path().bounding_box();
+        let want = path.bounding_box();
+        assert!(
+            (bb.width() - want.width()).abs() < 0.05 && (bb.height() - want.height()).abs() < 0.05,
+            "{bb:?} {want:?}"
+        );
+    }
+
+    struct DxfWriterProbe;
+    impl DxfWriterProbe {
+        fn polylines(path: &BezPath, tol: f64) -> Vec<(Vec<Point>, bool)> {
+            Writer::polylines(path, tol)
+        }
+    }
+
     /// The export's drawing unit (#3583): every unit names itself in
     /// `$INSUNITS` and writes the lengths in it, so the drawing reads back
     /// at its own size in mm; outlines keep their width.
@@ -2292,7 +2782,14 @@ mod tests {
             "millimetres, as before"
         );
         for units in DxfUnits::ALL {
-            let out = page_to_dxf_with(&doc, 0, &DxfOptions { units });
+            let out = page_to_dxf_with(
+                &doc,
+                0,
+                &DxfOptions {
+                    units,
+                    ..Default::default()
+                },
+            );
             let pairs: Vec<&str> = out.lines().map(str::trim).collect();
             let at = pairs.iter().position(|l| *l == "$INSUNITS").unwrap();
             assert_eq!(pairs[at + 2], units.insunits().to_string(), "{units:?}");

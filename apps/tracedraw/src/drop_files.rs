@@ -135,8 +135,17 @@ impl App {
         }
     }
 
-    /// Open or import one dropped file.
+    /// Open or import one dropped file. A .zip holding drawings or
+    /// pictures (a .cdr a messaging app sent as `name.cdr.zip`) has them
+    /// unpacked and each dropped in its turn (#3853).
     pub fn drop_file(&mut self, path: &Path, on: DropOn) {
+        let inside = unpack_drawings(path);
+        if !inside.is_empty() {
+            for p in &inside {
+                self.drop_file(p, on);
+            }
+            return;
+        }
         match self.dropped_kind(path, on) {
             Dropped::Import => {
                 let at = self.view_center();
@@ -404,6 +413,81 @@ impl FileDrag {
             _ => false,
         }
     }
+}
+
+/// The drawings (files TraceDraw opens) a .zip at `path` holds, unpacked into a
+/// folder of their own under the temporary folder; none when `path` is
+/// not a readable .zip or holds none (folders and other files are left).
+pub fn unpack_drawings(path: &Path) -> Vec<PathBuf> {
+    let is_zip = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| e.eq_ignore_ascii_case("zip"));
+    if !is_zip {
+        return Vec::new();
+    }
+    let Ok(file) = std::fs::File::open(path) else {
+        return Vec::new();
+    };
+    let Ok(mut archive) = zip::ZipArchive::new(std::io::BufReader::new(file)) else {
+        return Vec::new();
+    };
+    let wanted = |name: &str| {
+        let p = Path::new(name);
+        let ext = p
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        !name.starts_with("__MACOSX")
+            && !p
+                .file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.starts_with("._"))
+            && OPEN_EXTENSIONS.contains(&ext.as_str())
+            // Texts and tables beside a drawing are notes, not drawings.
+            && !matches!(
+                ext.as_str(),
+                "txt" | "rtf" | "docx" | "xlsx" | "csv" | "tsv" | "zip"
+            )
+    };
+    static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    let dir = std::env::temp_dir().join(format!(
+        "tracedraw-zip-{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    ));
+    let mut out = Vec::new();
+    for i in 0..archive.len() {
+        let Ok(mut entry) = archive.by_index(i) else {
+            continue;
+        };
+        let Ok(entry_name) = entry.name().map(|n| n.to_string()) else {
+            continue;
+        };
+        if !entry.is_file() || !wanted(&entry_name) {
+            continue;
+        }
+        // Only the file's own name: no folder of the archive is made, and
+        // no name can climb out of the folder.
+        let Some(name) = entry
+            .enclosed_name()
+            .and_then(|p| p.file_name().map(|n| n.to_owned()))
+        else {
+            continue;
+        };
+        if std::fs::create_dir_all(&dir).is_err() {
+            return Vec::new();
+        }
+        let to = dir.join(name);
+        let Ok(mut f) = std::fs::File::create(&to) else {
+            continue;
+        };
+        if std::io::copy(&mut entry, &mut f).is_ok() {
+            out.push(to);
+        }
+    }
+    out
 }
 
 /// The pointer over the window, in points, while files are dragged over
@@ -792,6 +876,34 @@ mod tests {
         assert!(app.status.contains("notes.zip"), "{}", app.status);
         // Files held over the window keep it painting the hint.
         assert!(ctx.has_requested_repaint());
+    }
+
+    /// #3853: a drawing sent zipped (`sample.svg.zip`) and dropped opens
+    /// as the drawing inside; the archive's other files are left.
+    #[test]
+    fn a_zipped_drawing_dropped_opens_as_the_drawing_inside() {
+        let (ctx, mut app) = setup();
+        let dir = dir("zipped");
+        let svg = std::fs::read(svg(&dir)).expect("svg");
+        let path = dir.join("sample.svg.zip");
+        let mut zip = zip::ZipWriter::new(std::io::Cursor::new(Vec::new()));
+        let o = zip::write::SimpleFileOptions::default();
+        zip.start_file("notes.txt", o).expect("txt");
+        std::io::Write::write_all(&mut zip, b"hello").expect("write");
+        zip.start_file("art/sample.svg", o).expect("svg");
+        std::io::Write::write_all(&mut zip, &svg).expect("write");
+        std::fs::write(&path, zip.finish().expect("zip").into_inner()).expect("zip file");
+        let inside = super::unpack_drawings(&path);
+        assert_eq!(inside.len(), 1, "{inside:?}");
+        assert_eq!(
+            inside[0].file_name().and_then(|n| n.to_str()),
+            Some("sample.svg")
+        );
+        app.show_welcome = true;
+        let docs = app.docs.len();
+        frame(&ctx, &mut app, vec![path], false);
+        assert_eq!(app.docs.len(), docs + 1, "{}", app.status);
+        assert!(shape_count(&app) > 0);
     }
 
     /// #2686: on Windows a drop (or the drag leaving) could fail to reach

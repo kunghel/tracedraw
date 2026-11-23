@@ -131,8 +131,18 @@ impl EventHandler {
                 tracing::error!("tried to run event handler, but no handler was set");
             },
             Err(_) => {
-                // Prevent re-entrancy.
-                panic!("tried to handle event while another event is currently being handled");
+                // TraceDraw: an event that arrives while another is being
+                // handled is left out with a line in the log. winit
+                // panicked here, and the panic cannot pass through the
+                // AppKit block that delivers a queued event, so the
+                // program ended at once with "panic in a function that
+                // cannot unwind" and the drawing was lost (TraceDraw
+                // #4017, #4042). It happens when the system runs its own
+                // loop inside the handler (a dialog of the system held
+                // open), which delivers the events queued meanwhile.
+                tracing::warn!(
+                    "an event that arrived while another was being handled was left out"
+                );
             },
         }
     }

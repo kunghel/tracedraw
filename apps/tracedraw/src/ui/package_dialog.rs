@@ -124,6 +124,9 @@ pub fn problem_of(st: &PackageState, android: bool) -> Option<&'static str> {
 }
 
 pub fn dialog(app: &mut App, ctx: &Context, st: &mut PackageState, close: &mut bool) {
+    if let Some(dir) = crate::files::take_picked("package-folder") {
+        st.folder = dir.join(st.stem()).display().to_string();
+    }
     let mut help = false;
     window(ctx, tr("package.title")).show(ctx, |ui| {
         ui.set_width(520.0);
@@ -148,9 +151,7 @@ pub fn dialog(app: &mut App, ctx: &Context, st: &mut PackageState, close: &mut b
                             browse = browse.rich_disabled_tip(tr(tip));
                         }
                         if let (true, Some(token)) = (browse.clicked(), token) {
-                            if let Some(dir) = crate::files::pick_folder(token) {
-                                st.folder = dir.join(st.stem()).display().to_string();
-                            }
+                            crate::files::pick_folder_into(token, None, "package-folder");
                         }
                     });
                     ui.end_row();

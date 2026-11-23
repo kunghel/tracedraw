@@ -74,3 +74,13 @@ haberlerini açar.
   sorunu bildirebilirsiniz.
 - [[menu.help > menu.help.message_settings]] TraceDraw iletilerinin
   ayarlandığı seçenekleri açar.
+
+## TraceDraw yanıt vermediğinde {#problem-reports}
+
+TraceDraw'ın bir adımı 10 saniyeden uzun sürdüğünde, ne yaptığına dair bir rapor kaydeder (sürüm, sistem, araç, son komut, çizimin boyutu ve günlüğünün sonu); çizimin adını veya içeriğini asla kaydetmez. TraceDraw yeniden yanıt verdiğinde ya da kapatılması gerektiyse veya bir hatayla kapandıysa bir sonraki açılışta bir ileti bunu önerir.
+
+1. Raporu okumak için **[[report.show]]** düğmesine tıklayın.
+2. **[[report.send]]** düğmesine tıklayın: özetli yeni bir GitHub kaydı ve raporun klasörü açılır.
+3. Raporu kayda sürükleyin, ne yaptığınızı yazın ve gönderin. Öncesinde hiçbir şey gönderilmez.
+
+**[[report.not_now]]** iletiyi kapatır. Her rapor yalnızca bir kez önerilir.

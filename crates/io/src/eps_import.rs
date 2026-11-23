@@ -877,6 +877,10 @@ struct Interp<'a> {
     shapes: Vec<Shape>,
     warnings: Vec<String>,
     fonts: HashMap<Rc<str>, Dict>,
+    /// Instances given to `defineresource`, by category and key, which
+    /// `findresource` hands back (#3556: shadings and colour spaces
+    /// kept as resources came back empty).
+    resources: HashMap<(Rc<str>, Rc<str>), Obj>,
     rand_state: u64,
     /// Device transform: PostScript points, y up (same as ours) to mm.
     base: Affine,
@@ -937,6 +941,7 @@ impl<'a> Interp<'a> {
             shapes: Vec::new(),
             warnings: Vec::new(),
             fonts: HashMap::new(),
+            resources: HashMap::new(),
             rand_state: 0x2545F4914F6CDD1D,
             base,
             bbox,
@@ -1029,6 +1034,8 @@ impl<'a> Interp<'a> {
             "stop",
             "stopped",
             "countexecstack",
+            "countdictstack",
+            "dictstack",
             "execstack",
             "quit",
             "forall",
@@ -2140,6 +2147,20 @@ impl<'a> Interp<'a> {
                 }
             }
             "countexecstack" => self.push(Obj::Int(self.depth as i64)),
+            "countdictstack" => self.push(Obj::Int(self.dicts.len() as i64)),
+            "dictstack" => {
+                // array dictstack subarray: the dictionaries, bottom first.
+                let a = need!(self.pop());
+                let Obj::Array(items, exec) = a else {
+                    return Flow::Normal;
+                };
+                let n = self.dicts.len().min(items.borrow().len());
+                for (i, d) in self.dicts.iter().take(n).enumerate() {
+                    items.borrow_mut()[i] = Obj::Dict(d.clone());
+                }
+                let sub: Vec<Obj> = items.borrow()[..n].to_vec();
+                self.push(mk_array(sub, exec));
+            }
             "execstack" => {
                 let a = need!(self.pop());
                 self.push(a);
@@ -2190,8 +2211,9 @@ impl<'a> Interp<'a> {
                     }
                     (Obj::Dict(d), _) | (Obj::Font(d), _) => {
                         let key = need!(key_of(&k));
-                        match d.borrow().map.get(&key) {
-                            Some(v) => v.clone(),
+                        let found = d.borrow().map.get(&key).cloned();
+                        match found {
+                            Some(v) => self.dict_of_op(v),
                             None => {
                                 self.warn(format!("get: undefined key {key}"));
                                 Obj::Null
@@ -2336,7 +2358,10 @@ impl<'a> Interp<'a> {
                 let k = need!(self.pop());
                 let key = need!(key_of(&k));
                 match self.lookup(&key) {
-                    Some(v) => self.push(v),
+                    Some(v) => {
+                        let v = self.dict_of_op(v);
+                        self.push(v);
+                    }
                     None => self.warn(format!("load: undefined {key}")),
                 }
             }
@@ -2790,14 +2815,21 @@ impl<'a> Interp<'a> {
                     src = need!(self.pop());
                 }
                 if let Obj::File(f) = &src {
-                    if f.borrow().main && f.borrow().pending_filter.is_none() {
-                        // Lazy: decode when first read.
+                    if f.borrow().main {
+                        // Lazy: decode when first read. A filter stacked on
+                        // a still-lazy filter of the current file joins its
+                        // chain, so the data is not read before the
+                        // operator that consumes it runs.
+                        let chain: Rc<str> = match &f.borrow().pending_filter {
+                            Some(p) => Rc::from(format!("{p}|{fname}")),
+                            None => fname.clone(),
+                        };
                         let nf = Rc::new(RefCell::new(FileObj {
                             buf: Vec::new(),
                             pos: 0,
                             main: true,
                             closed: false,
-                            pending_filter: Some(fname.clone()),
+                            pending_filter: Some(chain),
                         }));
                         if fname.as_ref() == "DCTDecode" {
                             self.jpeg_files.push(Rc::as_ptr(&nf) as usize);
@@ -2871,6 +2903,11 @@ impl<'a> Interp<'a> {
                     self.push(key);
                     return self.operator("findfont");
                 }
+                if let Some(o) = key_of(&key).and_then(|k| self.resources.get(&(c.clone(), k))) {
+                    let o = o.clone();
+                    self.push(o);
+                    return Flow::Normal;
+                }
                 let d = mk_dict();
                 if let Some(k) = key_of(&key) {
                     d.borrow_mut()
@@ -2880,15 +2917,30 @@ impl<'a> Interp<'a> {
                 self.push(Obj::Dict(d));
             }
             "defineresource" => {
-                let _cat = self.pop();
+                let cat = self.pop();
                 let inst = need!(self.pop());
-                let _key = self.pop();
+                let key = self.pop();
+                if let (Some(c), Some(k)) =
+                    (cat.as_ref().and_then(key_of), key.as_ref().and_then(key_of))
+                {
+                    if self.resources.len() < 100_000 {
+                        self.resources.insert((c, k), inst.clone());
+                    }
+                }
                 self.push(inst);
             }
             "resourcestatus" => {
-                let _cat = self.pop();
-                let _key = self.pop();
-                self.push(Obj::Bool(false));
+                let cat = self.pop();
+                let key = self.pop();
+                let known = match (cat.as_ref().and_then(key_of), key.as_ref().and_then(key_of)) {
+                    (Some(c), Some(k)) => self.resources.contains_key(&(c, k)),
+                    _ => false,
+                };
+                if known {
+                    self.push(Obj::Int(0));
+                    self.push(Obj::Int(0));
+                }
+                self.push(Obj::Bool(known));
             }
             // ----- path construction -----
             "newpath" => {
@@ -3599,6 +3651,20 @@ impl<'a> Interp<'a> {
         Flow::Normal
     }
 
+    /// The standard dictionaries live in `systemdict` as operators that
+    /// push them. Their value, as `get` or `load` sees it, is the dictionary
+    /// itself, so `systemdict/globaldict get begin` opens a dictionary
+    /// instead of failing and leaving the dictionary stack one short at the
+    /// matching `end`.
+    fn dict_of_op(&self, v: Obj) -> Obj {
+        match v {
+            Obj::Op("systemdict") => Obj::Dict(self.systemdict.clone()),
+            Obj::Op("globaldict") => Obj::Dict(self.globaldict.clone()),
+            Obj::Op("userdict" | "statusdict" | "errordict") => Obj::Dict(self.userdict.clone()),
+            other => other,
+        }
+    }
+
     /// Replace executable names by operators inside a procedure (bind).
     fn bind(&mut self, items: &Arr, depth: usize) {
         if depth > 32 {
@@ -4048,19 +4114,25 @@ impl<'a> Interp<'a> {
     /// Decode a lazy filter on the main file now (first read).
     fn materialize(&mut self, f: &Rc<RefCell<FileObj>>) {
         let pending = f.borrow().pending_filter.clone();
-        let Some(fname) = pending else { return };
-        let raw = self.file_raw_for_filter(f, &fname);
-        let decoded = match &*fname {
-            "ASCIIHexDecode" => decode_asciihex(&raw),
-            "ASCII85Decode" => decode_ascii85(&raw),
-            "RunLengthDecode" => decode_runlength(&raw),
-            "FlateDecode" => inflate(&raw),
-            "LZWDecode" => {
-                self.warn("LZWDecode filter is not supported; data skipped");
-                Vec::new()
-            }
-            _ => raw,
-        };
+        let Some(chain) = pending else { return };
+        // `chain` lists the filters in the order they decode, separated by
+        // `|`; the first one decides where the raw data ends.
+        let first = chain.split('|').next().unwrap_or("");
+        let raw = self.file_raw_for_filter(f, first);
+        let mut decoded = raw;
+        for fname in chain.split('|') {
+            decoded = match fname {
+                "ASCIIHexDecode" => decode_asciihex(&decoded),
+                "ASCII85Decode" => decode_ascii85(&decoded),
+                "RunLengthDecode" => decode_runlength(&decoded),
+                "FlateDecode" => inflate(&decoded),
+                "LZWDecode" => {
+                    self.warn("LZWDecode filter is not supported; data skipped");
+                    Vec::new()
+                }
+                _ => decoded,
+            };
+        }
         let mut fb = f.borrow_mut();
         fb.buf = decoded;
         fb.pos = 0;
@@ -5148,6 +5220,80 @@ mod tests {
             }
             other => panic!("{other:?}"),
         }
+    }
+
+    /// A shading stored with `defineresource` comes back whole from
+    /// `findresource`, so its colours reach the gradient (#3556: the
+    /// stripes came out flat grey because only a stub came back).
+    #[test]
+    fn shading_from_defineresource_keeps_its_colours() {
+        let ps = "%!PS\n%%BoundingBox: 0 0 100 100\n/sh0 << /ShadingType 2 /ColorSpace /DeviceRGB /Coords [0 0 100 0] /Function << /FunctionType 2 /Domain [0 1] /C0 [1 0 0] /C1 [0 0 1] /N 1 >> >> /Gradient defineresource pop\n/sh0 /Gradient resourcestatus { pop pop } { (missing) } ifelse\ngsave 0 0 100 50 rectclip /sh0 /Gradient findresource shfill grestore\n";
+        let imp = run(ps);
+        let f = imp
+            .shapes
+            .iter()
+            .find_map(|s| match &s.fill {
+                Fill::Fountain(f) => Some(f),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("{:?}", imp.warnings));
+        assert_eq!(
+            f.stops.first().map(|s| s.color),
+            Some(Color::Rgb {
+                r: 1.0,
+                g: 0.0,
+                b: 0.0
+            })
+        );
+        assert_eq!(
+            f.stops.last().map(|s| s.color),
+            Some(Color::Rgb {
+                r: 0.0,
+                g: 0.0,
+                b: 1.0
+            })
+        );
+    }
+
+    /// Two filters stacked on the current file decode together when the
+    /// image reads them, so the image dictionary written after the filters
+    /// is still read as program text (#3556: the stripe images vanished).
+    #[test]
+    fn stacked_filters_on_the_current_file_wait_for_the_image() {
+        // Run-length data: a literal run of 4 bytes, then end of data.
+        let rl = [3u8, 0x00, 0x80, 0xff, 0x40, 128];
+        let hex: String = rl.iter().map(|b| format!("{b:02x}")).collect();
+        let ps = format!(
+            "%!PS\n%%BoundingBox: 0 0 20 20\n/DeviceGray setcolorspace\n20 20 scale\n/src currentfile /ASCIIHexDecode filter /RunLengthDecode filter def\n<< /ImageType 1 /Width 2 /Height 2 /BitsPerComponent 8 /Decode [0 1] /ImageMatrix [2 0 0 -2 0 2] /DataSource src >> image\n{hex}>\n0 0 1 1 rectfill\n"
+        );
+        let imp = run(&ps);
+        let img = imp
+            .shapes
+            .iter()
+            .find(|s| matches!(s.kind, ShapeKind::Bitmap { .. }))
+            .unwrap_or_else(|| panic!("{:?}", imp.warnings));
+        match &img.kind {
+            ShapeKind::Bitmap { png, .. } => {
+                let pm = tiny_skia::Pixmap::decode_png(png).unwrap();
+                let px = pm.pixels();
+                assert_eq!(px[1].red(), 128);
+                assert_eq!(px[3].red(), 64);
+            }
+            _ => unreachable!(),
+        }
+        assert_eq!(imp.shapes.len(), 2, "{:?}", imp.warnings);
+    }
+
+    /// `systemdict/globaldict get begin` opens a dictionary, and
+    /// `countdictstack array dictstack` lists the stack, so the matching
+    /// `end`s leave the dictionaries a prolog opened in place (#3556: a
+    /// helper defined by an earlier prolog section went missing and the
+    /// images of the file were never drawn).
+    #[test]
+    fn standard_dictionaries_and_dictstack_keep_the_dictionary_stack() {
+        let ps = "%!PS\n%%BoundingBox: 0 0 100 100\n/helpers 5 dict dup begin def /box { 0 0 40 40 rectfill } def\nsystemdict begin /globaldict where { /globaldict get begin } if end /globaldict where { pop end } if\ncountdictstack array dictstack 0 get begin end\nbox\n";
+        let imp = run(ps);
+        assert_eq!(imp.shapes.len(), 1, "{:?}", imp.warnings);
     }
 
     #[test]

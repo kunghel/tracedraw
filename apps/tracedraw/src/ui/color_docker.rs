@@ -1179,6 +1179,24 @@ fn more_actions(app: &mut App, ui: &mut Ui, c: Color, has: bool) {
         app.swap_colors();
         ui.close();
     }
+    // Two objects exchange their fills; each outline takes its own
+    // object's fill colour (#3770).
+    if ui
+        .add_enabled(app.selection.len() == 2, egui::Button::new(tr("docker.swap_fills")))
+        .rich_tip(crate::ui::tips::keyed("docker.swap_fills"))
+        .clicked()
+    {
+        app.swap_fills();
+        ui.close();
+    }
+    if ui
+        .add_enabled(has, egui::Button::new(tr("docker.outline_from_fill")))
+        .rich_tip(crate::ui::tips::keyed("docker.outline_from_fill"))
+        .clicked()
+    {
+        app.outline_from_fill();
+        ui.close();
+    }
     ui.separator();
     if ui.button(tr("docker.add_to_document_palette")).clicked() {
         app.add_to_document_palette(c);

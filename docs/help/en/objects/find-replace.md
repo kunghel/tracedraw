@@ -21,6 +21,17 @@ fill, outline, outline width, font or type and replaces those. Open it with
 
 The panel says how many were found.
 
+To find what cannot be typed in the field, right-click it and choose from
+[[find.special_character]]: [[find.code_paragraph]] (`^p`),
+[[menu.text.code_line_break]] (`^l`), [[find.code_tab]] (`^t`),
+[[menu.text.code_nonbreaking_space]] (`^s`) and, in [[dialog.find]],
+[[find.code_spaces]] (`^w`). The same codes work in [[dialog.replace_with]]:
+for example, find `^w` and replace with `^w` to leave one space wherever
+there were several, or find `^p` and replace with a space to join
+paragraphs. Type `^^` for a caret. The right-click menu also has
+[[menu.edit.cut]], [[menu.edit.copy]], [[menu.edit.paste]] and
+[[menu.edit.select_all]].
+
 ## Finding objects {#objects}
 
 Choose [[dialog.find_objects]], type part of a name, or a kind of object such

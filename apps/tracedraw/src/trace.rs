@@ -99,6 +99,7 @@ impl Preset {
             merged: Vec::new(),
             recolored: Vec::new(),
             pixel_scale: 1.0,
+            clean_sketch: false,
         }
     }
 }
@@ -188,6 +189,10 @@ pub struct Settings {
     /// patch kept, how far a curve may stray, how wide a corner the blur
     /// rounded) is in pixels of the art.
     pub pixel_scale: f64,
+    /// A pencil sketch cleaned up first (hatching and doubled outlines
+    /// made solid, construction lines and specks gone, edges smoothed)
+    /// and traced black on white: see [`crate::trace_sketch`].
+    pub clean_sketch: bool,
 }
 
 impl Settings {
@@ -357,6 +362,10 @@ pub fn trace(img: &RgbaImage, s: &Settings) -> Vec<Traced> {
 pub fn trace_unless(img: &RgbaImage, s: &Settings, cancel: Option<&Cancel>) -> Option<Vec<Traced>> {
     if s.centerline {
         return centerline(img, s, cancel);
+    }
+    if s.clean_sketch {
+        let clean = crate::trace_sketch::clean_sketch(img);
+        return trace_unless(&clean, &crate::trace_sketch::sketch_settings(s), cancel);
     }
     let mut traced = if s.optimize {
         let best = optimize(img, s, cancel)?;
@@ -1181,14 +1190,18 @@ fn outline(img: &RgbaImage, s: &Settings, cancel: Option<&Cancel>) -> Option<Vec
             .collect();
         // The holes of each colour with no page showing in them: their
         // pixels (in the colour's box) and the colours in them.
-        let mut holes: Vec<Vec<(Vec<u32>, Vec<usize>)>> = vec![Vec::new(); palette.len()];
+        let mut holes: Vec<Vec<(Vec<u32>, Vec<(usize, usize)>)>> = vec![Vec::new(); palette.len()];
         let order = if s.remove_overlap {
             let mut order: Vec<usize> = (0..palette.len()).collect();
             order.sort_by_key(|i| luma[*i]);
             order
         } else {
-            let mut inside: Vec<Vec<bool>> = vec![vec![false; palette.len()]; palette.len()];
-            let mut seen = vec![false; palette.len()];
+            // How many pixels of each colour lie in the holes of each other.
+            let mut weight: Vec<Vec<usize>> = vec![vec![0; palette.len()]; palette.len()];
+            let mut seen = vec![0usize; palette.len()];
+            // A hole no bigger than a speck (half a pixel of the art) is
+            // one: the region covers it whatever is drawn in it.
+            let speck = 2 * fine * fine;
             for ci in 0..palette.len() {
                 if !present[ci] || Some(ci) == background {
                     continue;
@@ -1201,20 +1214,43 @@ fn outline(img: &RgbaImage, s: &Settings, cancel: Option<&Cancel>) -> Option<Vec
                 let label_at = |i: usize| regions[(y0 + i / cw) * w + x0 + i % cw];
                 let own: Vec<bool> = (0..cw * ch).map(|i| label_at(i) == ci).collect();
                 for_each_hole(&own, cw, ch, |hole| {
-                    seen.fill(false);
+                    seen.fill(0);
                     for &i in hole {
                         match seen.get_mut(label_at(i)) {
-                            Some(v) => *v = true,
+                            Some(v) => *v += 1,
                             // The page shows in this hole: it stays one.
                             None => return,
                         }
                     }
-                    let colours: Vec<usize> = (0..seen.len()).filter(|l| seen[*l]).collect();
-                    for &l in &colours {
-                        inside[ci][l] = true;
+                    let colours: Vec<(usize, usize)> = if hole.len() < speck {
+                        Vec::new()
+                    } else {
+                        (0..seen.len())
+                            .filter(|l| seen[*l] > 0)
+                            .map(|l| (l, seen[l]))
+                            .collect()
+                    };
+                    for &(l, n) in &colours {
+                        weight[ci][l] += n;
                     }
                     holes[ci].push((hole.iter().map(|i| *i as u32).collect(), colours));
                 });
+            }
+            // Two colours each in the other's holes: the one holding more
+            // of the other is the one around. A few pixels of the ground
+            // left between two colours of the art (blots of a compressed
+            // picture, the blend at a thin gap) made the ground "inside"
+            // a ring it holds; the ring went under it, each was cut to the
+            // edge they share and the page showed between them as a light
+            // line (#3727). Black eyes in a head inside a black outline
+            // still go by darkness when they weigh alike.
+            let n = palette.len();
+            let mut inside: Vec<Vec<bool>> = vec![vec![false; n]; n];
+            for a in 0..n {
+                for b in 0..n {
+                    let (ab, ba) = (weight[a][b], weight[b][a]);
+                    inside[a][b] = ab > 0 && ab * MUTUAL_RATIO > ba;
+                }
             }
             stacking_order(&inside, &luma)
         };
@@ -1305,7 +1341,15 @@ fn outline(img: &RgbaImage, s: &Settings, cancel: Option<&Cancel>) -> Option<Vec
             // every region to its own pixels (no holes were looked for).
             let mut mask = own;
             for (pixels, colours) in &holes[ci] {
-                if colours.iter().all(|l| rank[*l] > rank[ci]) {
+                // Filled when what is drawn below the region in it is no
+                // more than a few blots: they go under it, hidden, and the
+                // regions drawn over it meet it with no page between.
+                let below: usize = colours
+                    .iter()
+                    .filter(|(l, _)| rank[*l] <= rank[ci])
+                    .map(|(_, n)| *n)
+                    .sum();
+                if below * BLOTS_SHARE <= pixels.len() {
                     for &i in pixels {
                         mask[i as usize] = true;
                     }
@@ -1396,6 +1440,13 @@ fn outline(img: &RgbaImage, s: &Settings, cancel: Option<&Cancel>) -> Option<Vec
     }
     Some(out)
 }
+
+/// How many times more of one colour must lie in the other's holes than
+/// of the other in its for the first to be taken as the one around.
+const MUTUAL_RATIO: usize = 4;
+/// A hole of a region is filled when the colours drawn below the region
+/// cover at most this share of it (one part in this many).
+const BLOTS_SHARE: usize = 20;
 
 /// How many times at most a trace is drawn, compared with its picture
 /// and made again where it differs.
@@ -7298,5 +7349,119 @@ mod tests {
         }
         let drawn = render_traced(&t, 160, 160, 1.0);
         assert_eq!(wrong_share(&img, &drawn, None), Some(0.0));
+    }
+}
+
+/// A flat-colour logo saved as a compressed picture, traced with the
+/// highest detail, leaves no page showing between its colours (#3727).
+#[cfg(test)]
+mod page_gaps_tests {
+    use super::*;
+
+    /// A head of four flat colours with a black outline and a black ring
+    /// on a blue ground, drawn smooth and saved as a JPEG.
+    fn compressed_logo() -> RgbaImage {
+        let n = 240;
+        let mut pm = tiny_skia::Pixmap::new(n, n).unwrap();
+        pm.fill(tiny_skia::Color::from_rgba8(0x1f, 0x4e, 0x9a, 255));
+        let shape = |pts: &[(f32, f32)]| {
+            let mut pb = tiny_skia::PathBuilder::new();
+            pb.move_to(pts[0].0, pts[0].1);
+            for p in &pts[1..] {
+                pb.line_to(p.0, p.1);
+            }
+            pb.close();
+            pb.finish().unwrap()
+        };
+        let paint = |c: [u8; 3]| {
+            let mut paint = tiny_skia::Paint::default();
+            paint.set_color_rgba8(c[0], c[1], c[2], 255);
+            paint.anti_alias = true;
+            paint
+        };
+        let id = tiny_skia::Transform::identity();
+        let head = shape(&[
+            (60.0, 40.0),
+            (120.0, 70.0),
+            (180.0, 40.0),
+            (200.0, 140.0),
+            (120.0, 210.0),
+            (40.0, 140.0),
+        ]);
+        let fill = |pm: &mut tiny_skia::Pixmap, pts: &[(f32, f32)], c: [u8; 3]| {
+            pm.fill_path(
+                &shape(pts),
+                &paint(c),
+                tiny_skia::FillRule::Winding,
+                id,
+                None,
+            );
+        };
+        pm.fill_path(
+            &head,
+            &paint([0x10, 0x20, 0x40]),
+            tiny_skia::FillRule::Winding,
+            id,
+            None,
+        );
+        fill(
+            &mut pm,
+            &[(66.0, 52.0), (118.0, 80.0), (110.0, 150.0), (52.0, 138.0)],
+            [0x6c, 0xb4, 0xe8],
+        );
+        fill(
+            &mut pm,
+            &[(118.0, 80.0), (172.0, 52.0), (188.0, 138.0), (126.0, 150.0)],
+            [0xc8, 0xcc, 0xd2],
+        );
+        fill(
+            &mut pm,
+            &[(80.0, 150.0), (160.0, 150.0), (120.0, 200.0)],
+            [0xff, 0xff, 0xff],
+        );
+        fill(
+            &mut pm,
+            &[(100.0, 160.0), (140.0, 160.0), (120.0, 185.0)],
+            [0, 0, 0],
+        );
+        let stroke = tiny_skia::Stroke {
+            width: 4.0,
+            ..Default::default()
+        };
+        pm.stroke_path(&head, &paint([0, 0, 0]), &stroke, id, None);
+        let mut pb = tiny_skia::PathBuilder::new();
+        pb.push_circle(150.0, 100.0, 9.0);
+        pm.stroke_path(&pb.finish().unwrap(), &paint([0, 0, 0]), &stroke, id, None);
+        let img = RgbaImage::from_raw(n, n, pm.data().to_vec()).unwrap();
+        let mut jpeg = Vec::new();
+        image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg, 70)
+            .encode_image(&image::DynamicImage::ImageRgba8(img).to_rgb8())
+            .unwrap();
+        image::load_from_memory(&jpeg).unwrap().to_rgba8()
+    }
+
+    /// Blots of the ground left between the colours of the art made the
+    /// ground "inside" the outline it holds: the outline went under it,
+    /// each was cut to the edge they share, and drawn smooth the page
+    /// showed between them as a broken light line. Now every pixel of the
+    /// trace is covered, with the photo and the logo settings alike, and
+    /// the ground is one shape under the art.
+    #[test]
+    fn a_compressed_flat_logo_shows_no_page_between_its_colours() {
+        let img = compressed_logo();
+        let mut photo = Preset::HighQualityImage.settings();
+        photo.detail = 100.0;
+        photo.smoothing = 60.0;
+        for s in [photo, Preset::DetailedLogo.settings()] {
+            let traced = trace(&img, &s);
+            let drawn = render_traced_scaled(&traced, img.width(), img.height(), 3.0, 1.0);
+            let page = drawn.pixels().filter(|p| p[3] < 250).count();
+            assert_eq!(page, 0, "page showing through, detail {}", s.detail);
+            let ground = traced
+                .iter()
+                .position(|t| t.color.to_rgb8()[2] > 140 && t.color.to_rgb8()[0] < 60)
+                .expect("the blue ground");
+            assert_eq!(ground, 0, "the ground goes under everything");
+        }
     }
 }

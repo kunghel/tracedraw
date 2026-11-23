@@ -88,6 +88,15 @@ below names the call it makes.
 | `Application.Version` | the program's version, as text |
 | `Application.Name` | `'TraceDraw'` |
 | `Application.CreateColor` | the `Color` class |
+| `Application.ZoomToFit()` | View > Zoom To Fit: every object in the window |
+| `Application.ZoomToPage()` | View > Zoom To Page |
+| `Application.ZoomToSelection()` | View > Zoom To Selection |
+| `Application.CopyVisibleArea()` | Edit > Copy Visible Area: what the window shows, as a picture on the clipboard |
+
+The view calls take effect when the script ends, after its objects are in
+the drawing, in the order the script made them (#4020). The macro
+recorder records Zoom To Fit, Zoom To Page, Zoom To Selection and Copy
+Visible Area as these calls, in their place among the other steps.
 
 `ActiveDocument`, `ActivePage`, `ActiveLayer` and `ActiveSelection` are also
 global, so a script can start with either form.
@@ -261,6 +270,17 @@ points. A recorded macro records a dimension the Dimension tools drew
 (and those Add Dimensions draws) as one of these calls, so playing it back
 makes a live dimension again; they went unrecorded until 0.48 (#2348).
 
+A dimension's style is set with `Shape.SetDimensionStyle(style)` (also on
+a `ShapeRange` and `ActiveSelection`), `style` naming the settings as a
+style is saved: `text_size` (points), `font`, `precision`, `prefix`,
+`suffix`, `line_width`, `text_color` and the others; objects that are not
+dimensions are left alone, a name the style does not have is an error,
+and it answers how many dimensions changed. `Shape.LabelSize` reads and
+sets the label's size in points (`null` for other objects). A change made
+on the Dimension bar while a macro is recorded is recorded as
+`ActiveSelection.SetDimensionStyle({...})` with the settings it changed,
+so it plays back on the dimension the macro just drew (#4026).
+
 ### Symbols
 
 `Document.Symbols` lists the drawing's symbols (`Index`, `Name`).
@@ -306,6 +326,11 @@ what the user sees.
 - `scripting::extra::tests::a_vba_macro_makes_a_linear_dimension`
 - `scripting::extra::tests::a_recorded_dimension_plays_back_as_one`
 - `scripting::extra::tests::dimensions_drawn_while_recording_are_recorded`
+- `view_steps::tests::the_recorder_keeps_the_zoom_steps`
+- `scripting::extra::tests::a_dimension_label_size_change_is_recorded_and_plays_back`
+- `scripting::extra::tests::scripts_and_macros_set_a_dimensions_label_size`
+- `view_steps::tests::a_recorded_zoom_to_fit_plays_back`
+- `view_steps::tests::scripts_and_macros_zoom_to_fit_the_objects`
 - `scripting::extra::tests::a_script_dimension_follows_its_object`
 - `scripting::extra::tests::similar_groups_become_one_symbol_and_keep_their_text`
 - `scripting::extra::tests::a_script_creates_and_places_symbols`

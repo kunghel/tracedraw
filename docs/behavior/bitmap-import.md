@@ -143,9 +143,18 @@ file past the limit is not imported and the status bar says why.
 
 ## On screen and in exports
 
-A picture is decoded once and kept (`crates/render/src/image_cache.rs`,
-512 MB of decoded pixels in the desktop build, 256 MB in the browser;
-the least recently drawn go first). Drawn at less than half its pixels'
+A picture is decoded once and kept (`crates/render/src/image_cache.rs`;
+the least recently drawn go first). The budget floats with the machine,
+read again at every decode: half of the scarcer of the free physical
+memory and the free commit limit (physical plus what the page file may
+still take), counting back the bytes the cache already holds, clamped
+between 64 MiB and a quarter of the memory of the machine (a 32-bit
+process: a quarter of its address space) (`image_cache::tests::the_budget_holds_half_the_free_memory`,
+`image_cache::tests::the_ceiling_is_a_quarter_of_the_machine`).
+Where free memory cannot be read (the browser, macOS, Android) the
+budget is fixed: 512 MB of decoded pixels in the desktop build, 256 MB
+in the browser. A picture up to the whole budget is kept, however large
+a share of it (`image_cache::tests::a_picture_up_to_the_budget_is_kept`). Drawn at less than half its pixels'
 size, it is drawn from a reduced copy instead: level `k` halves the
 sides `k` times, each pixel the average of the four beneath it, and the
 level used is `floor(log2(1 / s))` for `s` screen pixels per picture

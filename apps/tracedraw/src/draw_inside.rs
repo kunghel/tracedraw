@@ -23,6 +23,7 @@ pub fn draws_shapes(tool: Tool) -> bool {
             | Tool::Polyline
             | Tool::TwoPointLine
             | Tool::BSpline
+            | Tool::CurvaturePen
             | Tool::ThreePointCurve
             | Tool::BrushStrokes
             | Tool::PainterlyBrush

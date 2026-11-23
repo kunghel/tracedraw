@@ -70,14 +70,25 @@ alone goes there.
      (the first page of a PDF). Data they cannot read leaves the
      picture to be pasted
      (`clipboard::tests::vectors_another_program_copied_paste_as_objects`);
-  3. SVG text: its objects;
-  4. an image: a bitmap object;
-  5. other text: artistic text in the middle of the page, one step to
+  3. DXF text (text whose first two lines are `0` and `SECTION`, as a
+     CAD program such as Cadcraft copies a drawing): its objects, read
+     by the DXF reader of File > Import; text it cannot read goes on as
+     below (#3544, `clipboard::tests::dxf_text_pastes_as_objects`);
+  4. SVG text: its objects;
+  5. an image: a bitmap object;
+  6. other text: artistic text in the middle of the page, one step to
      undo with its fill and outline (`clipboard::tests::pasted_text_is_one_step`).
 
 Ctrl+Shift+V pastes the objects copied here in the middle of the view.
 Paste on the page's context menu centres what it pastes where the menu
 was opened.
+
+Edit > Paste Above Selection pastes as Paste does, then lays what came
+just in front of the topmost selected object, in its layer or group,
+instead of at the top of the active layer; one Undo takes it back. With
+nothing selected it is Paste. It has no shortcut of its own; one can be
+given in Options > Customization (#3673,
+`clipboard::tests::paste_above_selection_lands_in_front_of_the_selection`).
 
 ### In a browser and on Android (#1403)
 

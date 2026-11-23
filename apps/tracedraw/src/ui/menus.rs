@@ -435,8 +435,7 @@ thread_local! {
 
 /// A right-click on the menu row `id`, greyed or not, closes the menu and
 /// asks for the row's properties: Options > Customization > Commands at
-/// that command, on its Shortcut Keys tab, as CorelDRAW's Customize >
-/// Menu Item Properties does (#2504).
+/// that command, on its Shortcut Keys tab (#2504).
 fn row_properties(ui: &mut Ui, r: &egui::Response, id: &str, enabled: bool) {
     #[cfg(test)]
     ROWS.with(|rows| rows.borrow_mut().push((id.to_string(), r.rect)));
@@ -546,6 +545,45 @@ fn item_text_tip(
     } else if let Some(g) = crate::ui::menu_glyphs::for_key(id) {
         crate::ui::menu_glyphs::draw(ui.painter(), ir, g, color);
     }
+    if r.clicked() {
+        ui.close();
+        true
+    } else {
+        false
+    }
+}
+
+/// A menu item whose picture in the gutter is drawn by `pic` in the
+/// row's ink (greyed with the row when it cannot run).
+pub(crate) fn item_drawn(
+    ui: &mut Ui,
+    label: &str,
+    shortcut: &str,
+    enabled: bool,
+    id: &str,
+    pic: &dyn Fn(&egui::Painter, egui::Rect, egui::Color32),
+) -> bool {
+    if invoke::active() {
+        return invoke::hit(id, shortcut, enabled);
+    }
+    let shortcut = invoke::shown_shortcut(id, shortcut);
+    let (r, _) = menu_row(ui, label, &shortcut, enabled, Mark::None);
+    #[cfg(test)]
+    PICTURED.with(|p| p.borrow_mut().push(id.to_string()));
+    #[cfg(test)]
+    if replay::hit(id, enabled) {
+        return true;
+    }
+    let ir = egui::Rect::from_center_size(
+        egui::pos2(r.rect.left() + GUTTER / 2.0, r.rect.center().y),
+        egui::vec2(16.0, 16.0),
+    );
+    let color = if enabled {
+        Tokens::icon()
+    } else {
+        crate::theme::Tokens::menu_text_off()
+    };
+    pic(ui.painter(), ir, color);
     if r.clicked() {
         ui.close();
         true
@@ -737,6 +775,7 @@ fn menu_pic(key: &str) -> Option<crate::ui::propbar::Pic> {
         "menu.object.group_ungroup_all" => Pic::UngroupAll,
         "menu.object.combine" => Pic::Combine,
         "menu.object.break_apart"
+        | "menu.object.break_apart_keep_holes"
         | "menu.object.break_shadow_apart"
         | "menu.object.break_shadows_apart"
         | "menu.object.break_contour_apart"
@@ -769,7 +808,7 @@ fn menu_pic(key: &str) -> Option<crate::ui::propbar::Pic> {
         "menu.object.tf_position" => Pic::Position,
         "menu.object.tf_rotate" | "menu.object.rotate_by_lines" => Pic::Rotate,
         "menu.object.tf_scale" => Pic::ScaleMirror,
-        "menu.object.tf_size" => Pic::SizeBox,
+        "menu.object.tf_size" | "menu.object.object_size" => Pic::SizeBox,
         "menu.object.tf_skew" => Pic::SkewBox,
         "menu.object.mirror_h" => Pic::MirrorH,
         "menu.object.mirror_v" => Pic::MirrorV,
@@ -2472,7 +2511,7 @@ fn title_width(ui: &Ui, label: &str) -> f32 {
     text + 2.0 * ui.spacing().button_padding.x
 }
 
-fn menu_bar_style(style: &mut egui::Style) {
+pub(crate) fn menu_bar_style(style: &mut egui::Style) {
     egui::containers::menu::menu_style(style);
     style.override_font_id = Some(egui::FontId::proportional(BAR_FONT));
     // An open or hovered title: light blue with a blue frame, square.
@@ -2831,10 +2870,10 @@ fn file_menu(app: &mut App, ui: &mut Ui) {
     }
     sep(ui);
     if item(ui, "menu.file.save", "Ctrl+S", doc) {
-        app.save(false);
+        app.save_showing_progress(false);
     }
     if item(ui, "menu.file.save_as", "Ctrl+Shift+S", doc) {
-        app.save(true);
+        app.save_showing_progress(true);
     }
     if item(ui, "menu.file.save_as_template", "", doc) {
         app.save_as_template();
@@ -2843,12 +2882,9 @@ fn file_menu(app: &mut App, ui: &mut Ui) {
         ui,
         "menu.file.revert",
         "",
-        app.file.is_some() && app.engine.is_dirty(),
+        app.revert_path().is_some() && app.engine.is_dirty(),
     ) {
-        if let Some(p) = app.file.clone() {
-            // Read again (not the open drawing shown, see `open_path`).
-            app.open_path_with_password(p, "");
-        }
+        app.revert();
     }
     sep(ui);
     todo_sub(ui, "menu.file.acquire_image");
@@ -3021,6 +3057,9 @@ fn edit_menu(app: &mut App, ui: &mut Ui) {
     if item(ui, "menu.edit.copy_properties_from", "Ctrl+Shift+A", has) {
         app.open_copy_properties();
     }
+    if item(ui, "menu.edit.copy_visible_area", "", app.drawing_shown()) {
+        app.copy_visible_area();
+    }
     sep(ui);
     if item(ui, "menu.edit.paste", "Ctrl+V", true) {
         app.paste_any();
@@ -3029,6 +3068,10 @@ fn edit_menu(app: &mut App, ui: &mut Ui) {
     // the system clipboard is not read every frame to tell.
     if item(ui, "menu.edit.paste_in_view", "Ctrl+Shift+V", true) {
         app.paste_in_view();
+    }
+    // Pasted just in front of the topmost selected object (#3673).
+    if item(ui, "menu.edit.paste_above_selection", "", true) {
+        app.paste_above_selection();
     }
     if item(ui, "menu.edit.paste_special", "", true) {
         app.dialog = Dialog::PasteSpecial(Default::default());
@@ -3118,7 +3161,7 @@ fn view_menu(app: &mut App, ui: &mut Ui) {
     }
     sep(ui);
     if item(ui, "menu.view.fullscreen_preview", "F9", true) {
-        app.fullscreen_preview = true;
+        super::preview::begin(app, ui.ctx(), false);
     }
     if item(
         ui,
@@ -3126,8 +3169,7 @@ fn view_menu(app: &mut App, ui: &mut Ui) {
         "",
         !app.selection.is_empty(),
     ) {
-        app.preview_selected_only = true;
-        app.fullscreen_preview = true;
+        super::preview::begin(app, ui.ctx(), true);
     }
     if check(ui, "menu.view.page_sorter", "", app.page_sorter) {
         app.page_sorter = !app.page_sorter;
@@ -3188,6 +3230,23 @@ fn view_menu(app: &mut App, ui: &mut Ui) {
         app.simulate_overprints = !app.simulate_overprints;
         app.raster.borrow_mut().invalidate();
     }
+    // One ink at a time in the drawing window, in its colour.
+    sub(ui, "menu.view.separations", |ui| {
+        if radio(
+            ui,
+            "menu.view.separations_composite",
+            "",
+            app.view_plate.is_none(),
+        ) {
+            app.set_view_plate(None);
+        }
+        for (i, name) in app.separation_names().into_iter().enumerate() {
+            let id = format!("menu.view.separations.{i}");
+            if check_label(ui, &name, &id, app.view_plate == Some(i)) {
+                app.set_view_plate(Some(i));
+            }
+        }
+    });
     if check(
         ui,
         "menu.view.rasterize_complex_effects",
@@ -3461,6 +3520,12 @@ fn node_items(app: &mut App, ui: &mut Ui) {
             app.run_node_command(key);
         }
     }
+    // With any tool, on the whole of each selected curve.
+    sep(ui);
+    let every = app.can_add_node_every_segment();
+    if item(ui, "menu.object.node_add_every", "", every) {
+        app.add_node_every_segment();
+    }
 }
 
 fn object_menu(app: &mut App, ui: &mut Ui) {
@@ -3543,6 +3608,9 @@ fn object_menu(app: &mut App, ui: &mut Ui) {
         // A formula; with one selected, the same item edits it (#2183).
         if item(ui, "menu.object.insert_formula", "", true) {
             app.open_formula_dialog();
+        }
+        if item(ui, "menu.object.insert_flare", "", true) {
+            app.open_flare_dialog();
         }
         if item(ui, "menu.object.insert_qr", "", true) {
             app.insert_qr_code();
@@ -3789,6 +3857,17 @@ fn object_menu(app: &mut App, ui: &mut Ui) {
         if item(ui, "menu.object.rotate_by_lines", "", has) {
             app.start_rotate_by_lines();
         }
+        // Each object by the same (or random) amounts about its own centre.
+        if item(ui, "menu.object.transform_each", "", has) {
+            app.open_transform_each();
+        }
+        // The width and height typed in a small box; a shortcut can be
+        // given to it in Customization (#3799).
+        if item(ui, "menu.object.object_size", "", has) {
+            if let Some(d) = crate::ui::dialogs::object_size_dialog(app) {
+                app.dialog = d;
+            }
+        }
     });
     if item(ui, "menu.object.clear_transformations", "", has) {
         app.clear_transformations();
@@ -3804,6 +3883,15 @@ fn object_menu(app: &mut App, ui: &mut Ui) {
         }
         if item(ui, "menu.object.copy_envelope_from", "", has) {
             app.start_copy_envelope();
+        }
+        // The top object's outline as the others' envelope.
+        if item(
+            ui,
+            "menu.object.envelope_from_top",
+            "",
+            app.selection.len() >= 2,
+        ) {
+            app.envelope_from_top_object();
         }
         for kind in CopyKind::LIVE {
             if item(ui, kind.key(), "", has) {
@@ -3836,6 +3924,14 @@ fn object_menu(app: &mut App, ui: &mut Ui) {
         app.can_clear_transparency(),
     ) {
         app.clear_transparency();
+    }
+    if item(
+        ui,
+        "menu.object.flatten_transparency",
+        "",
+        app.can_clear_transparency(),
+    ) {
+        app.flatten_transparency();
     }
     sep(ui);
     sub(ui, "menu.object.align_distribute", |ui| {
@@ -3888,6 +3984,26 @@ fn object_menu(app: &mut App, ui: &mut Ui) {
             if item(ui, key, shortcut, three) {
                 app.distribute(d);
             }
+        }
+        if item(ui, "menu.object.arrange_in_grid", "", app.selection.len() >= 2) {
+            let n = app.selection.len();
+            app.dialog = Dialog::ArrangeGrid {
+                columns: (n as f64).sqrt().ceil().max(1.0) as usize,
+                gap_x: app.units.from_mm(2.0),
+                gap_y: app.units.from_mm(2.0),
+                by_position: false,
+                compact: false,
+                align_x: 1,
+                align_y: 1,
+            };
+        }
+        // The smaller of two objects copied all over the inside of the
+        // larger, the copies counted (#3834).
+        if item(ui, "menu.object.fill_with_copies", "", app.selection.len() == 2) {
+            app.dialog = Dialog::FillWithCopies {
+                gap_x: app.units.from_mm(2.0),
+                gap_y: app.units.from_mm(2.0),
+            };
         }
         sep(ui);
         if item(ui, "menu.object.align_distribute_docker", "", true) {
@@ -4002,6 +4118,31 @@ fn object_menu(app: &mut App, ui: &mut Ui) {
             }
         }
         sep(ui);
+        // Pieces of overlapping objects, and the live combine.
+        for op in crate::pieces::Pieces::ALL {
+            if item(ui, op.key(), "", app.pieces_ready(op)) {
+                app.pieces(op);
+            }
+        }
+        let can_live = app.selection.len() >= 2
+            || app
+                .selected_shapes()
+                .first()
+                .is_some_and(|s| app.selection.len() == 1 && matches!(s.kind, ShapeKind::Group { .. }));
+        if item(ui, "menu.object.combine_live", "", can_live) {
+            app.combine_live();
+        }
+        sep(ui);
+        if item(ui, "menu.object.cut_below", "", app.cut_below_ready()) {
+            app.cut_objects_below();
+        }
+        if item(ui, "menu.object.cut_grid", "", app.grid_cut_ready()) {
+            app.grid_cut.open = true;
+        }
+        if item(ui, "menu.object.remove_strays", "", true) {
+            app.remove_strays();
+        }
+        sep(ui);
         if item(ui, "menu.object.shaping_docker", "", true) {
             app.show_dockers = true;
             app.docker_tab = DockerTab::Shaping;
@@ -4014,6 +4155,12 @@ fn object_menu(app: &mut App, ui: &mut Ui) {
     let label = app.break_apart_label();
     if item(ui, label, "Ctrl+K", has) {
         app.break_apart();
+    }
+    // The holes stay in the parts around them (#3700).
+    if label == "menu.object.break_apart"
+        && item(ui, "menu.object.break_apart_keep_holes", "", has)
+    {
+        app.break_apart_keep_holes();
     }
     if item(ui, "menu.object.add_perspective", "", has) {
         app.add_perspective();
@@ -4044,6 +4191,8 @@ fn object_menu(app: &mut App, ui: &mut Ui) {
         app.dialog = Dialog::OutlineOffset {
             distance: app.units.from_mm(app.outline_offset_mm),
             outside: true,
+            join: app.outline_offset_join,
+            steps: app.outline_offset_steps.max(1),
         };
     }
     // The outline one step wider or narrower, for a key of one's own
@@ -4476,6 +4625,13 @@ fn text_menu(app: &mut App, ui: &mut Ui) {
     if item(ui, "menu.text.toggle_bullets", "Ctrl+Shift+L", is_para) {
         app.toggle_bullets();
     }
+    // List levels (#3685).
+    if item(ui, "menu.text.list_level_down", "", is_para) {
+        app.change_list_level(true);
+    }
+    if item(ui, "menu.text.list_level_up", "", is_para) {
+        app.change_list_level(false);
+    }
     if item(ui, "menu.text.drop_cap", "", true) {
         app.dialog = Dialog::TextDropCap;
     }
@@ -4557,6 +4713,11 @@ fn text_menu(app: &mut App, ui: &mut Ui) {
         let linked = app.selection.iter().any(|id| app.is_linked_frame(*id));
         if item(ui, "menu.text.frame_unlink", "", linked) {
             app.unlink_text_frames();
+        }
+        // Text and a closed shape picked: the text goes inside the
+        // shape's outline (discussion #3238).
+        if item(ui, "menu.text.frame_inside_shape", "", app.selection.len() == 2) {
+            app.put_text_inside_shape();
         }
     });
     // Linked text content (#1568): texts that hold the same characters,

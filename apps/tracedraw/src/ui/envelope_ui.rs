@@ -138,10 +138,7 @@ fn preset_list(app: &mut App, ui: &mut Ui, enabled: bool) {
 /// The Envelope tool's property bar.
 pub fn envelope_bar(app: &mut App, ui: &mut Ui) {
     let selected = !app.selection.is_empty();
-    let enveloped = app
-        .selection
-        .iter()
-        .any(|id| app.envelope_of(*id).is_some());
+    let enveloped = app.selection.iter().any(|id| app.has_any_envelope(*id));
     preset_list(app, ui, selected);
     sep(ui);
     for m in Mode::ALL {
@@ -268,10 +265,7 @@ fn preset_cell(ui: &mut Ui, i: usize, size: Vec2, enabled: bool) -> bool {
 /// with the mapping, and Keep lines, Copy and Clear.
 pub fn envelope_docker(app: &mut App, ui: &mut Ui) {
     let selected = !app.selection.is_empty();
-    let enveloped = app
-        .selection
-        .iter()
-        .any(|id| app.envelope_of(*id).is_some());
+    let enveloped = app.selection.iter().any(|id| app.has_any_envelope(*id));
     let tip = crate::ui::tips::keyed("envelope.add_new");
     if crate::ui::docker_form::wide_button(ui, &tr("envelope.add_new"), selected, &tip) {
         app.add_new_envelope();
@@ -358,10 +352,37 @@ pub fn envelope_docker(app: &mut App, ui: &mut Ui) {
             app.clear_envelope();
         }
     });
+    ui.separator();
+    mesh_row(app, ui, selected);
     if !selected {
         ui.add_space(4.0);
         dim(ui, tr("docker.envelope_hint"));
     }
+}
+
+/// The mesh envelope: its columns and rows, and Add Mesh Envelope, which
+/// lays the grid over the selection; its points are dragged with the
+/// Envelope tool.
+fn mesh_row(app: &mut App, ui: &mut Ui, selected: bool) {
+    ui.horizontal(|ui| {
+        let max = tracedraw_core::envelope::MESH_MAX;
+        let (mut cols, mut rows) = app.envelope_mesh;
+        ui.label(tr("envelope.mesh_cols"));
+        ui.add(egui::DragValue::new(&mut cols).range(1..=max))
+            .rich_tip(tr("envelope.mesh_cols_desc"));
+        ui.label(tr("envelope.mesh_rows"));
+        ui.add(egui::DragValue::new(&mut rows).range(1..=max))
+            .rich_tip(tr("envelope.mesh_rows_desc"));
+        app.envelope_mesh = (cols.clamp(1, max), rows.clamp(1, max));
+        if ui
+            .add_enabled(selected, egui::Button::new(tr("envelope.add_mesh")))
+            .rich_tip(tr("envelope.add_mesh_desc"))
+            .clicked()
+        {
+            app.add_mesh_envelope();
+            app.set_tool(Tool::Envelope);
+        }
+    });
 }
 
 /// How far a drawn frame may stray from its curves, in pixels.

@@ -103,12 +103,18 @@ Object points (Options > Snapping modes) first, then alignment guides,
 then dynamic guides, then guidelines, the baseline grid, the document
 grid and pixels, then edges and text baselines.
 
+A moved selection whose box edge or centre, or grabbed point, lies on a
+guideline, the grid or another object's edge stays there: dynamic guides
+apply to a move only when nothing else caught it, so a box moved into the
+corner of a vertical and a horizontal guideline lands on both (#3952).
+
 ## Checks
 
 - `live_guides::tests` (each option, equal gaps, dynamic guides,
   crossings, ticks, anchors, clipping)
 - `snap::tests::alignment_guides_pull_a_drawing_point_and_respect_snapping_off`
 - `snap::tests::dynamic_guides_come_from_acquired_points`
+- `snap::tests::a_box_lands_on_two_crossing_guidelines_at_once`
 - `snap::tests::equal_sizes_snap_while_drawing_and_resizing`
 - `snap::tests::the_multipage_view_aligns_with_objects_of_the_other_pages`
 - `pick_drag_tests::a_rectangle_drawn_with_alignment_guides_takes_another_objects_size`

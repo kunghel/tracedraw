@@ -22,6 +22,17 @@ largura do contorno, fonte ou tipo e os substitui. Abra-o com
 
 O painel diz quantos foram encontrados.
 
+Para localizar o que não dá para digitar no campo, clique nele com o
+botão direito e escolha em [[find.special_character]]:
+[[find.code_paragraph]] (`^p`), [[menu.text.code_line_break]] (`^l`),
+[[find.code_tab]] (`^t`), [[menu.text.code_nonbreaking_space]] (`^s`) e,
+em [[dialog.find]], [[find.code_spaces]] (`^w`). Os mesmos códigos valem
+em [[dialog.replace_with]]: por exemplo, localize `^w` e substitua por `^w`
+para deixar um só espaço onde havia vários, ou localize `^p` e substitua
+por um espaço para juntar parágrafos. Digite `^^` para um acento
+circunflexo. O menu do botão direito também tem [[menu.edit.cut]],
+[[menu.edit.copy]], [[menu.edit.paste]] e [[menu.edit.select_all]].
+
 ## Localizar objetos {#objects}
 
 Escolha [[dialog.find_objects]], digite parte de um nome, ou um tipo de objeto

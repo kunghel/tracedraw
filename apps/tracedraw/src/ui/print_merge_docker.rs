@@ -735,6 +735,43 @@ impl App {
         }
     }
 
+    /// Print Merged Document merges only to print: once the Print dialog,
+    /// Print Preview and the prompt between the sides of a two-sided print
+    /// are all closed, the merged drawing it made closes again and the
+    /// drawing merged is back in front, so that printing leaves no extra
+    /// drawing behind (Create Merged Document is what keeps one). A merged
+    /// drawing changed meanwhile stays open.
+    pub fn close_printed_merge(&mut self) {
+        if self.merge_docker.made.is_none()
+            || self.print_preview.is_some()
+            || self.duplex_backs.is_some()
+            || matches!(self.dialog, crate::ui::dialogs::Dialog::Print(_))
+        {
+            return;
+        }
+        let Some(made) = self.merge_docker.made.take() else {
+            return;
+        };
+        let tab_of = |app: &Self, instance: u64| {
+            (0..app.docs.len())
+                .find(|&i| app.tab_engine(i).is_some_and(|e| e.instance() == instance))
+        };
+        let Some(i) = tab_of(self, made.drawing.0) else {
+            return;
+        };
+        if self.tab_engine(i).map(|e| e.revision()) != Some(made.drawing.1) || self.has_twin(i) {
+            return;
+        }
+        let status = std::mem::take(&mut self.status);
+        self.switch_document(i);
+        self.close_active_document();
+        if let Some(source) = tab_of(self, made.source.0) {
+            self.switch_document(source);
+        }
+        // What the print said (sent to a printer, a failure) stays.
+        self.status = status;
+    }
+
     /// The tab of the drawing Print Merged Document made last, when it is
     /// still open and unchanged, the merge data is the same and the
     /// active drawing is that drawing or, unchanged, the one it was
@@ -810,6 +847,11 @@ fn anchor_grid(ui: &mut Ui, anchor: &mut u8) {
 }
 
 pub fn print_merge(app: &mut App, ui: &mut Ui) {
+    if let Some(dir) = crate::files::take_picked("print-merge-folder") {
+        if let Some(st) = app.merge_state.as_mut() {
+            st.pictures = Some(dir);
+        }
+    }
     let loaded = app.merge_state.is_some();
     let full = ui.available_width();
     ui.horizontal(|ui| {
@@ -1045,11 +1087,7 @@ fn folder_label(dir: &std::path::Path) -> String {
 fn choose_pictures(app: &mut App) {
     match crate::files::FolderUse::MergePictures.action() {
         crate::files::FolderAction::PickFolder(token) => {
-            if let Some(dir) = crate::files::pick_folder(token) {
-                if let Some(st) = app.merge_state.as_mut() {
-                    st.pictures = Some(dir);
-                }
-            }
+            crate::files::pick_folder_into(token, None, "print-merge-folder");
         }
         // Android: the system's folder picker, the folder's pictures
         // (#1926); the browser: the pictures, several at once.
@@ -2081,10 +2119,11 @@ mod tests {
     }
 
     /// Print Merged Document, then Print Preview from the Print dialog
-    /// and its Close: one merged drawing, made once. Closing the preview
-    /// made the merged drawing again behind it.
+    /// and its Close: the merged drawing was only there to be printed,
+    /// so it is gone again and the drawing merged is back in front. An
+    /// extra merged drawing stayed behind each time.
     #[test]
-    fn closing_print_preview_merges_nothing_again() {
+    fn print_merged_document_leaves_no_drawing_behind() {
         let ctx = crate::theme::ui_context();
         let mut app = App::headless();
         let mut st = data(std::path::Path::new("."));
@@ -2126,20 +2165,43 @@ mod tests {
             run(app, vec![button(false)]);
         };
         let docs = app.docs.len();
+        let source = app.engine.instance();
         click_on(&mut app, &tr("merge.print_document"));
-        assert_eq!(app.docs.len(), docs + 1, "the merged drawing");
+        assert_eq!(app.docs.len(), docs + 1, "the merged drawing, to print");
+        assert_eq!(app.doc().pages.len(), 2, "a page per record");
         assert!(matches!(app.dialog, crate::ui::dialogs::Dialog::Print(_)));
+        // It stays while its printing is open.
+        for _ in 0..3 {
+            run(&mut app, Vec::new());
+        }
+        assert_eq!(app.docs.len(), docs + 1);
         click_on(&mut app, &tr("menu.file.print_preview"));
         assert!(app.print_preview.is_some(), "the preview opened");
+        for _ in 0..3 {
+            run(&mut app, Vec::new());
+        }
+        assert_eq!(app.docs.len(), docs + 1, "still there under the preview");
         click_on(&mut app, &tr("dialog.close"));
         assert!(app.print_preview.is_none(), "the preview closed");
         for _ in 0..6 {
             run(&mut app, Vec::new());
         }
-        assert_eq!(app.docs.len(), docs + 1, "no second merged drawing");
-        // Escape closes it the same way.
+        assert_eq!(app.docs.len(), docs, "no merged drawing left behind");
+        assert_eq!(app.engine.instance(), source, "back in the drawing merged");
+        assert!(app.merge_docker.made.is_none());
+        // Cancel in the Print dialog, or Escape in the preview: the same.
+        app.create_merged_document(true);
+        assert_eq!(app.docs.len(), docs + 1);
+        run(&mut app, Vec::new());
+        app.dialog = crate::ui::dialogs::Dialog::None;
+        run(&mut app, Vec::new());
+        assert_eq!(app.docs.len(), docs);
+        assert_eq!(app.engine.instance(), source);
+        app.create_merged_document(true);
+        app.dialog = crate::ui::dialogs::Dialog::None;
         app.print_preview(None);
         run(&mut app, Vec::new());
+        assert_eq!(app.docs.len(), docs + 1);
         run(
             &mut app,
             vec![egui::Event::Key {
@@ -2154,44 +2216,29 @@ mod tests {
         for _ in 0..6 {
             run(&mut app, Vec::new());
         }
-        assert_eq!(app.docs.len(), docs + 1, "no second merged drawing");
-        // Print Merged Document again, from the merged drawing or from
-        // the drawing merged: the same merged drawing is printed.
-        let merged = app.active_doc;
-        app.dialog = crate::ui::dialogs::Dialog::None;
+        assert_eq!(app.docs.len(), docs);
+        assert_eq!(app.engine.instance(), source);
+        // A two-sided print by hand keeps it until the backs are done.
         app.create_merged_document(true);
-        assert_eq!((app.docs.len(), app.active_doc), (docs + 1, merged));
-        assert!(matches!(app.dialog, crate::ui::dialogs::Dialog::Print(_)));
         app.dialog = crate::ui::dialogs::Dialog::None;
-        app.switch_document(0);
+        app.duplex_backs = Some(crate::ui::dialogs::PrintState::default());
+        app.close_printed_merge();
+        assert_eq!(app.docs.len(), docs + 1, "the backs still print from it");
+        app.duplex_backs = None;
+        app.close_printed_merge();
+        assert_eq!(app.docs.len(), docs);
+        // A merged drawing changed meanwhile is kept.
         app.create_merged_document(true);
-        assert_eq!((app.docs.len(), app.active_doc), (docs + 1, merged));
-        assert!(matches!(app.dialog, crate::ui::dialogs::Dialog::Print(_)));
         app.dialog = crate::ui::dialogs::Dialog::None;
-        // Create Merged Document always makes one.
+        app.insert_merge_field();
+        app.close_printed_merge();
+        assert_eq!(app.docs.len(), docs + 1, "a changed one stays open");
+        // Create Merged Document keeps the drawing it makes.
         app.switch_document(0);
         app.create_merged_document(false);
-        assert_eq!(app.docs.len(), docs + 2);
-        // Other records, or a changed drawing, make a new one.
-        app.switch_document(0);
-        if let Some(st) = app.merge_state.as_mut() {
-            st.rows.push(vec!["Cy".into(), String::new(), "C-3".into()]);
+        for _ in 0..3 {
+            run(&mut app, Vec::new());
         }
-        app.create_merged_document(true);
-        assert_eq!(app.docs.len(), docs + 3);
-        assert_eq!(app.doc().pages.len(), 3);
-        app.dialog = crate::ui::dialogs::Dialog::None;
-        app.switch_document(0);
-        app.merge_docker.column = 1;
-        app.insert_merge_field();
-        app.create_merged_document(true);
-        assert_eq!(app.docs.len(), docs + 4);
-        // A merged drawing changed after it was made is merged anew.
-        let before = app.docs.len();
-        app.merge_docker.column = 0;
-        app.dialog = crate::ui::dialogs::Dialog::None;
-        app.insert_merge_field();
-        app.create_merged_document(true);
-        assert_eq!(app.docs.len(), before + 1);
+        assert_eq!(app.docs.len(), docs + 2);
     }
 }

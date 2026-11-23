@@ -388,6 +388,12 @@ their own crypt filter and signature contents are left alone.
   rest in typed order showed निदेशालय, विभाग and अनिल as नदिेशालय, वभिाग
   and अनलि (#3177,
   `pdf_import::tests::hindi_typed_after_an_actual_text_letter_keeps_its_i_signs`).
+  A text that begins with tabs or spaces (a list item's tab after its
+  bullet, drawn as a space glyph, then the letters moved on with `Td`)
+  comes in without them and starts where its first letter was drawn:
+  the tab was kept, so in another font the letters slid back over the
+  bullet, as डॉ. did in a Hindi list (#3718,
+  `pdf_import::tests::leading_tab_or_space_is_left_out_and_text_starts_at_its_first_letter`).
 - Hindi written by Export as PDF with its font comes back as the typed
   words, shaped to the glyphs of the original: all 59 words of the
   Devanagari corpus (35 came back wrong before, with letters doubled,

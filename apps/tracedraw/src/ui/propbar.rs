@@ -20,7 +20,7 @@ pub const BAR_H: f32 = 37.0;
 const ROW: f32 = 19.0;
 /// A property bar button's side: 28 px at the medium button size, with
 /// a [`Tokens::prop_icon`] icon.
-fn btn() -> f32 {
+pub(crate) fn btn() -> f32 {
     crate::theme::Tokens::prop_button()
 }
 
@@ -1503,7 +1503,7 @@ pub fn guide_bar(app: &mut App, ui: &mut Ui) {
     use tracedraw_core::document::GuideLine;
     let guides = app.page_guides();
     let single = match app.selected_guides.as_slice() {
-        [i] => guides.get(*i).copied(),
+        [i] => guides.get(*i).cloned(),
         _ => None,
     };
     let Some(g) = single else {
@@ -2390,8 +2390,10 @@ fn outline_width_box(
                 picked = parse_outline_width(&buf, app.outline_units());
             }
         }
-        let (arrow_rect, arrow) =
-            ui.allocate_exact_size(egui::vec2(16.0, resp.rect.height()), egui::Sense::click());
+        let (arrow_rect, arrow) = ui.allocate_exact_size(
+            egui::vec2(16.0, resp.rect.height()),
+            egui::Sense::click_and_drag(),
+        );
         let arrow = arrow.rich_tip(crate::ui::tips::pair(
             "toolbar.outline_width",
             "toolbar.outline_widths_desc",
@@ -2417,9 +2419,42 @@ fn outline_width_box(
             egui::Popup::toggle_id(&ctx, popup_id);
         }
         crate::ui::keynav::list_button_keys(&ctx, &arrow, popup_id);
-        resp.rect.union(arrow_rect)
+        (resp.rect.union(arrow_rect), arrow)
     });
-    let anchor = inner.inner;
+    let (anchor, arrow) = inner.inner;
+    // A drag left or right (down or up) on the arrow or on the pen picture
+    // before the box slides the width through the list, a step every few
+    // pixels, as on the other number fields (#3862, #1303).
+    let drag_id = id.with("drag");
+    let apart = crate::ui::field::take_label_drag(ui, anchor).filter(|d| *d != egui::Vec2::ZERO);
+    let dragged = arrow.dragged() && !crate::ui::overflow::finger_sliding(&ctx);
+    if dragged || apart.is_some() {
+        ctx.set_cursor_icon(egui::CursorIcon::ResizeHorizontal);
+        let d = apart.unwrap_or_default() + if dragged { arrow.drag_delta() } else { egui::Vec2::ZERO };
+        let acc = ui.data(|m| m.get_temp::<f32>(drag_id)).unwrap_or(0.0) + d.x - d.y;
+        let steps = (acc / crate::ui::field::DRAG_PX_PER_STEP).trunc() as i32;
+        ui.data_mut(|m| {
+            m.insert_temp(
+                drag_id,
+                acc - steps as f32 * crate::ui::field::DRAG_PX_PER_STEP,
+            )
+        });
+        if steps != 0 {
+            ui.data_mut(|d| d.remove::<String>(id));
+            let mut w = width;
+            for _ in 0..steps.unsigned_abs().min(64) {
+                match outline_width_step(w, steps > 0, app.outline_units()) {
+                    Some(next) => w = next,
+                    None => break,
+                }
+            }
+            if w != width {
+                picked = Some(w);
+            }
+        }
+    } else {
+        ui.data_mut(|m| m.remove::<f32>(drag_id));
+    }
     // The wheel over the closed list: the next width up or down, one step
     // per notch (#663). An event of a notch or more is one step whatever
     // its size (browsers send a notch as 100 points or 3 lines); parts of
@@ -4548,6 +4583,82 @@ mod tests {
             }
             assert_eq!(width(&app), Some(p[6 - k]), "notch {k}");
         }
+    }
+
+    /// A drag right on the outline width box's arrow slides the width up
+    /// through the list, a drag left back down, as on the number fields
+    /// (#3862).
+    #[test]
+    fn a_drag_on_the_outline_width_arrow_slides_the_width() {
+        let ctx = crate::theme::ui_context();
+        let mut app = App::headless();
+        let id = app
+            .new_shape(ShapeKind::Rect {
+                rect: R::new(10.0, 10.0, 60.0, 40.0),
+                radius: 0.0,
+                corners: None,
+            })
+            .expect("rect");
+        app.select(vec![id]);
+        let p = outline_width_presets(app.outline_units());
+        app.apply_outline_width(p[4]);
+        let width = |app: &App| {
+            app.doc()
+                .find_shape(id)
+                .and_then(|s| s.stroke.as_ref().map(|s| s.width))
+                .unwrap_or_default()
+        };
+        let clock = std::cell::Cell::new(0.0f64);
+        let run = |app: &mut App, events: Vec<egui::Event>| -> egui::Rect {
+            let mut box_id = egui::Id::NULL;
+            clock.set(clock.get() + 1.0 / 60.0);
+            let mut out = ctx.run_ui(
+                egui::RawInput {
+                    screen_rect: Some(egui::Rect::from_min_size(
+                        egui::Pos2::ZERO,
+                        egui::vec2(900.0, 300.0),
+                    )),
+                    events,
+                    time: Some(clock.get()),
+                    ..Default::default()
+                },
+                |ui| {
+                    ui.horizontal(|ui| {
+                        box_id = ui.make_persistent_id("outline_width_box");
+                        outline_part(app, ui);
+                    });
+                },
+            );
+            out.textures_delta.clear();
+            ctx.read_response(box_id)
+                .map(|r| r.rect)
+                .unwrap_or(egui::Rect::NOTHING)
+        };
+        for _ in 0..3 {
+            run(&mut app, Vec::new());
+        }
+        let field = run(&mut app, Vec::new());
+        assert!(field.is_positive(), "{field:?}");
+        let at = egui::pos2(field.right() + 8.0, field.center().y);
+        let button = |pos, pressed| egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        let before = width(&app);
+        run(&mut app, vec![egui::Event::PointerMoved(at)]);
+        run(&mut app, vec![button(at, true)]);
+        for k in 1..=6 {
+            run(
+                &mut app,
+                vec![egui::Event::PointerMoved(at + egui::vec2(6.0 * k as f32, 0.0))],
+            );
+        }
+        let end = at + egui::vec2(36.0, 0.0);
+        run(&mut app, vec![button(end, false)]);
+        let up = width(&app);
+        assert!(up > before, "{before} -> {up}");
     }
 
     /// The outline width list keeps each width and its unit on one row,

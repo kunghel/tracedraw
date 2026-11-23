@@ -734,6 +734,9 @@ impl App {
         if let Some(on) = c.simulate_overprints {
             self.simulate_overprints = on;
         }
+        for step in c.view_steps {
+            self.run_view_step(step);
+        }
     }
 
     /// Answer the message or input box the macro waits for.
@@ -1483,6 +1486,30 @@ mod tests {
             "{:?}",
             app.scripts_output
         );
+    }
+
+    /// A VBA macro's ActiveWindow.ActiveView.ToFitAllObjects zooms to
+    /// fit what it drew, as View > Zoom To Fit does (#4020).
+    #[test]
+    fn a_macro_zooms_to_fit_what_it_drew() {
+        let code = "Sub Go()\r\n\
+            ActiveDocument.Unit = cdrMillimeter\r\n\
+            ActiveLayer.CreateRectangle2 150, 120, 20, 20\r\n\
+            ActiveWindow.ActiveView.ToFitAllObjects\r\n\
+            End Sub\r\n";
+        let mut app = app_with(project("Fit", code, Vec::new()));
+        app.canvas_rect =
+            egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(800.0, 600.0));
+        app.fit_pending = false;
+        app.view.fit(
+            tracedraw_core::geometry::Rect::new(0.0, 0.0, 600.0, 600.0),
+            app.canvas_rect,
+        );
+        let before = app.view.zoom;
+        app.run_macro(0, "Main", "Go");
+        drive(&mut app, |_| {});
+        assert!(app.macros.error.is_none(), "{:?}", app.macros.error);
+        assert!(app.view.zoom > before * 4.0, "{before} {}", app.view.zoom);
     }
 
     #[test]

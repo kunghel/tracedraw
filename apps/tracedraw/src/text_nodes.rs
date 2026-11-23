@@ -30,9 +30,10 @@ fn span_at(spans: &[TextSpan], c: usize) -> Option<&TextSpan> {
     None
 }
 
-/// Text the Shape tool edits: not fitted to a path.
+/// Text the Shape tool edits: its characters have nodes, text fitted to
+/// a path too (#3252).
 fn editable(s: &Shape) -> bool {
-    matches!(&s.kind, ShapeKind::Text { on_path: None, .. })
+    matches!(&s.kind, ShapeKind::Text { .. })
 }
 
 /// Text fitted to a path: the Shape tool shows its horizontal spacing
@@ -49,13 +50,20 @@ pub fn on_path(s: &Shape) -> bool {
 
 /// The character nodes of a text object: (character index, page point) at
 /// each character's origin on its baseline, moved by its offsets.
-/// Newlines have none, nor has text fitted to a path.
+/// Newlines have none. Text fitted to a path has them where its letters
+/// stand along the path (#3252).
 pub fn char_nodes(s: &Shape) -> Vec<(usize, Point)> {
     let ShapeKind::Text { spans, .. } = &s.kind else {
         return Vec::new();
     };
     if !editable(s) {
         return Vec::new();
+    }
+    if on_path(s) {
+        return path_glyph_frames(s)
+            .into_iter()
+            .map(|(c, at, _)| (c, s.transform * at))
+            .collect();
     }
     let Some((layout, to_page)) = crate::text_editing::layout_of_text_shape(s, Affine::IDENTITY)
     else {
@@ -88,6 +96,37 @@ pub fn char_nodes(s: &Shape) -> Vec<(usize, Point)> {
             out.push((c, to_page * Point::new(x + dx, line.baseline + dy)));
         }
     }
+    out
+}
+
+/// The letters of text fitted to a path, each once, in its own space:
+/// (character index, its origin on its baseline, its frame there: the
+/// unit vectors along the path and towards the letter's top).
+fn path_glyph_frames(s: &Shape) -> Vec<(usize, Point, (Vec2, Vec2))> {
+    let Some(layout) = tracedraw_core::document::text_glyph_layout(&s.kind) else {
+        return Vec::new();
+    };
+    let mut out: Vec<(usize, Point, (Vec2, Vec2))> = Vec::new();
+    for g in &layout.glyphs {
+        if g.text.is_empty() || g.text == "\n" || out.iter().any(|(c, _, _)| *c == g.char_idx) {
+            continue;
+        }
+        let o = g.transform * Point::ZERO;
+        let x = g.transform * Point::new(1.0, 0.0) - o;
+        let y = g.transform * Point::new(0.0, 1.0) - o;
+        if x.hypot() < 1e-12 {
+            continue;
+        }
+        let along = x / x.hypot();
+        // Upright to the path, on the side the letter stands (a slanted
+        // letter's own upright leans).
+        let mut up = Vec2::new(-along.y, along.x);
+        if up.dot(y) < 0.0 {
+            up = -up;
+        }
+        out.push((g.char_idx, o, (along, up)));
+    }
+    out.sort_by_key(|(c, _, _)| *c);
     out
 }
 
@@ -293,7 +332,7 @@ impl App {
         true
     }
 
-    /// The letter spacing keys on some letters only, as in CorelDRAW
+    /// The letter spacing keys on some letters only
     /// (#2171): in the text being edited, the selected characters, or
     /// with no selection the gap at the caret (the space after the
     /// letter before it; nothing before the first letter); with the
@@ -427,21 +466,17 @@ impl App {
     /// horizontal one.
     pub fn text_arrow_at(&self, p: Point) -> Option<(ShapeId, bool)> {
         let at = self.view.to_screen(p);
+        // Text fitted to a path has the horizontal arrow only (#193).
         for s in self.node_texts() {
             let (h, v) = self.spacing_arrow_spots(&s);
             if h.distance(at) <= 8.0 {
                 return Some((s.id, true));
             }
-            if v.distance(at) <= 8.0 {
+            if v.distance(at) <= 8.0 && !on_path(&s) {
                 return Some((s.id, false));
             }
         }
-        // Text fitted to a path has the horizontal arrow only (#193).
-        self.selected_shapes()
-            .into_iter()
-            .filter(on_path)
-            .find(|s| self.spacing_arrow_spots(s).0.distance(at) <= 8.0)
-            .map(|s| (s.id, true))
+        None
     }
 
     /// Move the characters `chars` of the text as it was (`start`) by the
@@ -453,7 +488,18 @@ impl App {
         if chars.is_empty() {
             return;
         }
-        let l = to_layout(start, d);
+        let mut l = to_layout(start, d);
+        // Fitted to a path: along the path and away from it, as the first
+        // chosen letter stands (#3252).
+        if on_path(start) {
+            let first = chars.iter().min().copied().unwrap_or(0);
+            if let Some((_, _, (along, up))) = path_glyph_frames(start)
+                .into_iter()
+                .find(|(c, _, _)| *c >= first)
+            {
+                l = Vec2::new(l.dot(along), l.dot(up));
+            }
+        }
         let spans = apply_to_chars(spans, chars, |sp| {
             let size = (sp.size_pt * PT_MM).max(1e-9);
             sp.offset_x_pct += l.x / size * 100.0;
@@ -976,7 +1022,7 @@ mod tests {
         assert!(!app.step_char_spacing(true));
     }
 
-    /// The letter spacing keys on one letter, as in CorelDRAW (#2171):
+    /// The letter spacing keys on one letter (#2171):
     /// with the caret in the text being edited, only the gap at the caret
     /// widens (the letter before it gets range kerning); with letters
     /// selected, or chosen with the Shape tool, only those. The whole
@@ -1112,6 +1158,72 @@ mod tests {
             panic!();
         };
         assert!(para.char_spacing_pct > 0.0, "{}", para.char_spacing_pct);
+    }
+
+    /// Text fitted to a path has a node at each letter along the path;
+    /// dragging one moves its letter along the path and away from it, as
+    /// the path runs there (#3252).
+    #[test]
+    fn text_on_a_path_has_character_nodes_that_move_along_it() {
+        if !has_fonts() {
+            return;
+        }
+        let mut app = App::headless();
+        let mut path = tracedraw_core::BezPath::new();
+        path.move_to(Point::new(0.0, 0.0));
+        path.line_to(Point::new(200.0, 200.0));
+        let id = app
+            .new_shape(ShapeKind::Text {
+                spans: vec![TextSpan::new("COINS", "DejaVu Sans", 24.0)],
+                origin: Point::ZERO,
+                frame: None,
+                align: TextAlign::Left,
+                para: ParagraphStyle::default(),
+                on_path: Some(tracedraw_core::TextOnPath {
+                    path,
+                    ..Default::default()
+                }),
+            })
+            .expect("a text");
+        app.select(vec![id]);
+        app.tool = crate::tools::Tool::Shape;
+        let s = app.doc().find_shape(id).cloned().expect("text");
+        let nodes = char_nodes(&s);
+        assert_eq!(
+            nodes.iter().map(|(c, _)| *c).collect::<Vec<_>>(),
+            [0, 1, 2, 3, 4]
+        );
+        // Each node on the path's line (page space: the path as placed).
+        let on_line = |p: Point, s: &Shape| {
+            let a = s.transform * Point::new(0.0, 0.0);
+            let b = s.transform * Point::new(200.0, 200.0);
+            let d = b - a;
+            ((p - a).cross(d) / d.hypot()).abs() < 0.05
+        };
+        assert!(nodes.iter().all(|(_, p)| on_line(*p, &s)), "{nodes:?}");
+        assert_eq!(app.text_node_at(nodes[2].1), Some((id, 2)));
+        // 10 mm along the path, page space.
+        let along = (s.transform * Point::new(200.0, 200.0)) - (s.transform * Point::ZERO);
+        let step = along / along.hypot() * 10.0;
+        app.move_text_chars(&s, &[2], step, false);
+        let now = app.doc().find_shape(id).cloned().expect("text");
+        let ShapeKind::Text { spans, .. } = &now.kind else {
+            panic!();
+        };
+        let moved = span_at(spans, 2).expect("span");
+        assert!(moved.offset_x_pct > 0.0, "{}", moved.offset_x_pct);
+        assert!(
+            moved.baseline_shift_pt.abs() < 1e-6,
+            "{}",
+            moved.baseline_shift_pt
+        );
+        let after = char_nodes(&now);
+        assert!(on_line(after[2].1, &now), "{after:?}");
+        assert!(((after[2].1 - nodes[2].1).hypot() - 10.0).abs() < 0.1);
+        assert!((after[1].1 - nodes[1].1).hypot() < 1e-6);
+        // No vertical arrow on a path (#193).
+        let (_, v) = app.spacing_arrow_spots(&now);
+        assert_eq!(app.text_arrow_at(app.view.to_page(v)), None);
     }
 
     #[test]

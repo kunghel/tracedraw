@@ -424,6 +424,47 @@ impl App {
             (label == "Connector Radius").then(|| (self.engine.revision(), ids));
     }
 
+    /// The connection of the connector `id` once its moved end (the `to`
+    /// end when `keep_from`, else the `from` end), now at `ends`, is
+    /// joined to the anchor of an object it was dropped on, and its new
+    /// path; None when that end is on no anchor (or on the object the
+    /// other end holds).
+    fn reanchor(
+        &self,
+        id: ShapeId,
+        c: &Connection,
+        ends: (Point, Point),
+        keep_from: bool,
+    ) -> Option<(Connection, BezPath)> {
+        let moved = if keep_from { ends.1 } else { ends.0 };
+        let other = if keep_from { c.from } else { c.to };
+        let tol = self.anchor_tolerance().max(0.5);
+        let target = self.doc().all_layers().flat_map(|l| l.shapes.iter()).find_map(|s| {
+            if s.id == id || s.id == other || Connection::of(s).is_some() {
+                return None;
+            }
+            let p = self
+                .anchors_of(s.id)
+                .into_iter()
+                .find(|p| (*p - moved).hypot() <= tol)?;
+            Some((s.id, p))
+        })?;
+        let (obj, p) = target;
+        let b = self.anchor_box(obj)?;
+        let mut c2 = c.clone();
+        if keep_from {
+            c2.to = obj;
+            c2.to_anchor = fractions(b, p);
+            c2.ends = (ends.0, p);
+        } else {
+            c2.from = obj;
+            c2.from_anchor = fractions(b, p);
+            c2.ends = (p, ends.1);
+        }
+        let path = c2.path(c2.ends.0, c2.ends.1);
+        Some((c2, path))
+    }
+
     /// Connectors follow their objects (see the module notes). Runs once
     /// per change of the drawing; the changes join the step that made it.
     pub fn refresh_connectors(&mut self) {
@@ -489,6 +530,26 @@ impl App {
                         ends: (pa, pb),
                         ..c.clone()
                     };
+                    cmds.push(Command::SetObjectData {
+                        shape: id,
+                        data: with_connection(s.data.clone(), Some(&c2)),
+                    });
+                }
+                // One end dragged (with the Shape tool) onto an anchor of
+                // an object: joined there instead, the other end kept
+                // (#3860: changing an anchor let the connector go).
+                Some((pa, pb))
+                    if (near(qa, pa) || near(qb, pb))
+                        && self.reanchor(id, &c, (qa, qb), near(qa, pa)).is_some() =>
+                {
+                    let (c2, path) = self.reanchor(id, &c, (qa, qb), near(qa, pa)).expect("checked");
+                    cmds.push(Command::SetShapeKind {
+                        shape: id,
+                        kind: ShapeKind::Path {
+                            path: s.transform.inverse() * path,
+                            closed: false,
+                        },
+                    });
                     cmds.push(Command::SetObjectData {
                         shape: id,
                         data: with_connection(s.data.clone(), Some(&c2)),
@@ -585,6 +646,58 @@ mod tests {
         app.select(vec![b, c]);
         app.duplicate();
         assert_eq!(connectors(&app).len(), 3);
+    }
+
+    /// #3860: an end of a connector dragged onto another anchor (of the
+    /// same object or another one) joins it there and stays attached;
+    /// dropped away from any anchor it is let go, as before.
+    #[test]
+    fn a_connector_end_dragged_onto_an_anchor_joins_it_there() {
+        let mut app = App::headless();
+        app.view.zoom = 1.0;
+        let a = rect(&mut app, 0.0, 0.0);
+        let b = rect(&mut app, 60.0, 0.0);
+        let d = rect(&mut app, 60.0, 60.0);
+        let c = app
+            .connect(a, Point::new(20.0, 10.0), b, Point::new(60.0, 10.0), ConnectorKind::Straight)
+            .expect("connector");
+        app.refresh_connectors();
+        let drag_end = |app: &mut App, to: Point| {
+            let (qa, _) = ends(app, c);
+            let mut path = BezPath::new();
+            path.move_to(qa);
+            path.line_to(to);
+            app.run(Command::SetShapeKind {
+                shape: c,
+                kind: ShapeKind::Path { path, closed: false },
+            });
+            app.refresh_connectors();
+        };
+        // b's top anchor.
+        let top = app.anchors_of(b).into_iter().find(|p| (p.y - 0.0).abs() < 1e-6).expect("top");
+        drag_end(&mut app, top);
+        let k = Connection::of(&app.doc().shape_on_page(c).expect("c")).expect("still joined");
+        assert_eq!((k.from, k.to), (a, b));
+        assert!((k.to_anchor.1 - 0.0).abs() < 1e-6, "{:?}", k.to_anchor);
+        // It follows b from that anchor.
+        app.run(Command::TransformShapes {
+            shapes: vec![b],
+            transform: tracedraw_core::geometry::Affine::translate((0.0, 5.0)),
+        });
+        app.refresh_connectors();
+        assert!((ends(&app, c).1 - Point::new(top.x, top.y + 5.0)).hypot() < 1e-6);
+        // Onto an anchor of another object: joined to it.
+        let left = app
+            .anchors_of(d)
+            .into_iter()
+            .min_by(|p, q| p.x.total_cmp(&q.x))
+            .expect("left");
+        drag_end(&mut app, left);
+        let k = Connection::of(&app.doc().shape_on_page(c).expect("c")).expect("joined to d");
+        assert_eq!((k.from, k.to), (a, d));
+        // Away from every anchor: let go.
+        drag_end(&mut app, Point::new(200.0, 200.0));
+        assert!(Connection::of(&app.doc().shape_on_page(c).expect("c")).is_none());
     }
 
     /// A connector follows the objects it joins; moved with them it stays

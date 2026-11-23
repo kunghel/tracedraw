@@ -285,6 +285,121 @@ pub fn parse_palette_xml(xml: &str) -> Vec<(String, Color)> {
     out
 }
 
+/// The document information a ZIP file keeps in the XMP packet of
+/// `META-INF/metadata.xml` (#3411): author, subject, keywords, copyright,
+/// notes and rating, under the standard XMP properties TraceDraw writes
+/// there (`dc:creator`, `dc:description`, `dc:subject`, `dc:rights`,
+/// `exif:UserComment`, `xmp:Rating`). Fields the file leaves out stay
+/// empty. `None` for RIFF files and files without the member.
+pub fn document_info(bytes: &[u8], container: &Container) -> Option<DocumentInfo> {
+    if container.kind == ContainerKind::Riff {
+        return None;
+    }
+    let mut archive = zip::ZipArchive::new(std::io::Cursor::new(bytes)).ok()?;
+    let f = archive.by_name("META-INF/metadata.xml").ok()?;
+    let mut xml = String::new();
+    f.take(MAX_PROFILE).read_to_string(&mut xml).ok()?;
+    Some(parse_document_info(&xml))
+}
+
+/// The document information of a file, as [`document_info`] reads it.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct DocumentInfo {
+    pub author: String,
+    pub subject: String,
+    pub keywords: String,
+    pub copyright: String,
+    pub notes: String,
+    pub rating: u8,
+}
+
+/// [`DocumentInfo`] out of an XMP packet.
+pub fn parse_document_info(xml: &str) -> DocumentInfo {
+    DocumentInfo {
+        author: xmp_values(xml, "dc:creator").join("; "),
+        subject: xmp_values(xml, "dc:description").join(" "),
+        keywords: xmp_values(xml, "dc:subject").join(", "),
+        copyright: xmp_values(xml, "dc:rights").join(" "),
+        notes: xmp_values(xml, "exif:UserComment").join(" "),
+        rating: xmp_values(xml, "xmp:Rating")
+            .first()
+            .and_then(|v| v.trim().parse::<f64>().ok())
+            .filter(|r| r.is_finite())
+            .map(|r| r.clamp(0.0, 5.0).round() as u8)
+            .unwrap_or(0),
+    }
+}
+
+/// The values of XMP property `name`: the items of its `rdf:Seq`,
+/// `rdf:Bag` or `rdf:Alt`, or its text, or its value written as an
+/// attribute of `rdf:Description`; entities decoded, blanks left out.
+fn xmp_values(xml: &str, name: &str) -> Vec<String> {
+    let decode = |v: &str| {
+        v.replace("&quot;", "\"")
+            .replace("&apos;", "'")
+            .replace("&lt;", "<")
+            .replace("&gt;", ">")
+            .replace("&amp;", "&")
+            .trim()
+            .to_string()
+    };
+    let open = format!("<{name}");
+    let close = format!("</{name}>");
+    let mut out = Vec::new();
+    let mut rest = xml;
+    while let Some(at) = rest.find(&open) {
+        let after = &rest[at + open.len()..];
+        // The whole name, not the start of a longer one.
+        if !after.starts_with(|c: char| c == '>' || c == '/' || c.is_whitespace()) {
+            rest = after;
+            continue;
+        }
+        let Some(gt) = after.find('>') else { break };
+        if after[..gt].ends_with('/') {
+            rest = &after[gt + 1..];
+            continue;
+        }
+        let body_start = gt + 1;
+        let Some(len) = after[body_start..].find(&close) else {
+            break;
+        };
+        let body = &after[body_start..body_start + len];
+        if body.contains("<rdf:li") {
+            let mut items = body;
+            while let Some(li) = items.find("<rdf:li") {
+                let tail = &items[li..];
+                let Some(gt) = tail.find('>') else { break };
+                if tail[..gt].ends_with('/') {
+                    items = &tail[gt + 1..];
+                    continue;
+                }
+                let Some(end) = tail[gt + 1..].find("</rdf:li>") else {
+                    break;
+                };
+                out.push(decode(&tail[gt + 1..gt + 1 + end]));
+                items = &tail[gt + 1 + end..];
+            }
+        } else if !body.contains('<') {
+            out.push(decode(body));
+        }
+        rest = &after[body_start + len..];
+    }
+    // `xmp:Rating="3"` on the description itself.
+    if out.is_empty() {
+        let mut rest = xml;
+        while let Some(at) = rest.find("<rdf:Description") {
+            let tail = &rest[at..];
+            let Some(gt) = tail.find('>') else { break };
+            if let Some(v) = attribute(&tail[..gt], name) {
+                out.push(v.trim().to_string());
+            }
+            rest = &tail[gt..];
+        }
+    }
+    out.retain(|v| !v.is_empty());
+    out
+}
+
 /// The value of `key="..."` in a tag, with the five XML entities decoded.
 fn attribute(tag: &str, key: &str) -> Option<String> {
     let pat = format!("{key}=\"");
@@ -313,6 +428,43 @@ fn attribute(tag: &str, key: &str) -> Option<String> {
 mod tests {
 
     use super::*;
+
+    /// #3411: author, subject, keywords, copyright, notes and rating go
+    /// into the XMP packet of a saved file and come back when it opens;
+    /// they were neither written nor read.
+    #[test]
+    fn document_information_goes_out_and_comes_back() {
+        let mut doc = tracedraw_core::Document::default();
+        doc.title = "Poster".into();
+        doc.metadata.author = "Ana & Rui".into();
+        doc.metadata.subject = "Spring fair".into();
+        doc.metadata.keywords = "fair, poster; spring".into();
+        doc.metadata.copyright = "(c) 2026 Ana".into();
+        doc.metadata.notes = "Print on <A3>".into();
+        doc.metadata.rating = 4;
+        for v in [17u16, 25] {
+            let bytes = crate::write::document_to_cdr_version(&doc, v);
+            let (back, _) = crate::open_bytes(&bytes, "file").expect("opens");
+            let md = &back.metadata;
+            assert_eq!(md.author, "Ana & Rui", "{v}");
+            assert_eq!(md.subject, "Spring fair");
+            assert_eq!(md.keywords, "fair, poster, spring");
+            assert_eq!(md.copyright, "(c) 2026 Ana");
+            assert_eq!(md.notes, "Print on <A3>");
+            assert_eq!(md.rating, 4);
+        }
+        // A packet of another writer: one creator per list item, the
+        // rating as an attribute, nothing else.
+        let xml = r#"<x:xmpmeta><rdf:RDF><rdf:Description rdf:about="" xmp:Rating="5"><dc:creator><rdf:Seq><rdf:li>A</rdf:li><rdf:li>B</rdf:li></rdf:Seq></dc:creator><dc:creatorTool>x</dc:creatorTool></rdf:Description></rdf:RDF></x:xmpmeta>"#;
+        let info = parse_document_info(xml);
+        assert_eq!(info.author, "A; B");
+        assert_eq!(info.rating, 5);
+        assert_eq!(info.keywords, "");
+        // Damaged packets give what they can and never fail.
+        for bad in ["<dc:creator><rdf:li>x", "<dc:subject/>", "<dc:rights>", ""] {
+            let _ = parse_document_info(bad);
+        }
+    }
 
     #[test]
     fn document_palette_xml_reads_names_and_tints() {

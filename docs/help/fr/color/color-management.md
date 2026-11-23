@@ -78,3 +78,10 @@ Le panneau [[docker.color]] signale aussi ces couleurs.
 
 Sans profils chargés, TraceDraw convertit les couleurs avec son propre
 modèle d'encres quadrichromiques sur papier couché.
+
+[[menu.view > menu.view.separations]] montre la page telle qu'une seule encre
+l'imprime, dans la couleur de cette encre : choisissez cyan, magenta, jaune,
+noir ou une encre d'accompagnement du dessin, et seul ce que cette encre
+imprime s'affiche. Vous continuez à dessiner et à modifier comme d'habitude ;
+le dessin lui-même ne change pas. [[menu.view.separations_composite]] montre de
+nouveau toutes les encres.

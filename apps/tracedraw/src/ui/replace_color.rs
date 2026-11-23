@@ -68,7 +68,10 @@ impl App {
         }
         if let Err(e) = self
             .engine
-            .run_batch("Replace Color", &[Command::ReplaceColors { pairs }])
+            .run_batch("Replace Color", &[Command::ReplaceColors {
+                pairs,
+                shapes: Vec::new(),
+            }])
         {
             self.status = e.to_string();
             return false;

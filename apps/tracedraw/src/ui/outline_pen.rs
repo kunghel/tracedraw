@@ -886,7 +886,7 @@ fn variable(ui: &mut Ui, st: &mut OutlinePenState, lib: &crate::ui::line_style::
 
 /// The pictures of the dialog's buttons.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Pic {
+pub(crate) enum Pic {
     DashDefault,
     DashAlign,
     JoinMiter,
@@ -902,8 +902,14 @@ enum Pic {
 
 /// A 28 x 24 button with a picture; true when clicked.
 fn pic_button(ui: &mut Ui, pic: Pic, on: bool, enabled: bool, tip: &str) -> bool {
+    pic_button_tipped(ui, pic, on, enabled, &tr(tip))
+}
+
+/// [`pic_button`] with the whole text of its tip given (a title over a
+/// description), as the Properties panel shows the same choices.
+pub(crate) fn pic_button_tipped(ui: &mut Ui, pic: Pic, on: bool, enabled: bool, tip: &str) -> bool {
     let (rect, resp) = ui.allocate_exact_size(Vec2::new(28.0, 24.0), Sense::click());
-    let resp = resp.rich_tip(tr(tip));
+    let resp = resp.rich_tip(tip);
     let p = ui.painter();
     crate::theme::paint_icon_button(p, rect, resp.hovered() && enabled, on);
     let ink = if enabled {

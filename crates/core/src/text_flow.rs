@@ -102,6 +102,9 @@ pub struct WrapRegion {
     pub bbox: Rect,
     /// The outline as line segments.
     pub segments: Vec<(Point, Point)>,
+    /// The text stays inside the outline instead of away from it: the
+    /// shape a frame's text was put into ([`ParagraphStyle::inside`]).
+    pub inside: bool,
 }
 
 impl WrapRegion {
@@ -151,7 +154,78 @@ impl WrapRegion {
             wrap,
             bbox: bbox?,
             segments,
+            inside: false,
         })
+    }
+
+    /// The region of an outline the text stays inside of, `inset` mm
+    /// from its edge; `None` for an empty or broken one.
+    pub fn inside_path(path: &BezPath, inset: f64) -> Option<WrapRegion> {
+        let wrap = TextWrap {
+            mode: WrapMode::Contour,
+            side: WrapSide::Straddle,
+            offset: inset,
+        };
+        let mut r = WrapRegion::from_path(path, wrap)?;
+        r.inside = true;
+        Some(r)
+    }
+
+    /// The x ranges inside the outline along the horizontal line at `y`
+    /// (even-odd), left to right.
+    fn spans_at(&self, y: f64) -> Vec<(f64, f64)> {
+        let mut xs: Vec<f64> = Vec::new();
+        for (p, q) in &self.segments {
+            let (p, q) = if p.y <= q.y { (*p, *q) } else { (*q, *p) };
+            // Half open, so a vertex shared by two segments counts once.
+            if y < p.y || y >= q.y {
+                continue;
+            }
+            xs.push(p.x + (q.x - p.x) * (y - p.y) / (q.y - p.y));
+        }
+        xs.sort_by(|a, b| a.total_cmp(b));
+        xs.chunks_exact(2).map(|c| (c[0], c[1])).collect()
+    }
+
+    /// For a region the text stays inside of: the x ranges a line whose
+    /// band runs from `y0` up to `y1` may use, the parts inside the
+    /// outline over the whole height of the band, the offset taken off
+    /// each end. Empty where the band is not wholly inside.
+    pub fn inner(&self, y0: f64, y1: f64) -> Vec<(f64, f64)> {
+        let m = self.wrap.margin();
+        let (lo, hi) = (y0.min(y1) - m, y0.max(y1) + m);
+        // The band's edges, its middle and every corner of the outline
+        // in between: what is inside at all of them is inside all the
+        // way, for an outline of straight pieces.
+        let mut ys = vec![lo, hi, (lo + hi) / 2.0];
+        for (p, q) in &self.segments {
+            for y in [p.y, q.y] {
+                if y > lo && y < hi {
+                    ys.push(y);
+                }
+            }
+        }
+        ys.sort_by(|a, b| a.total_cmp(b));
+        ys.dedup_by(|a, b| (*a - *b).abs() < 1e-9);
+        // Many corners in one band (a circle's flattened arc): a spread
+        // of them is enough.
+        let step = (ys.len() / 24).max(1);
+        let mut free: Option<Vec<(f64, f64)>> = None;
+        for y in ys.iter().step_by(step).chain(std::iter::once(&hi)) {
+            let spans = self.spans_at(*y);
+            free = Some(match free {
+                None => spans,
+                Some(f) => intersect(&f, &spans),
+            });
+            if free.as_ref().is_some_and(Vec::is_empty) {
+                return Vec::new();
+            }
+        }
+        free.unwrap_or_default()
+            .into_iter()
+            .map(|(a, b)| (a + m, b - m))
+            .filter(|(a, b)| b > a)
+            .collect()
     }
 
     /// The x range the region takes from a line whose band runs from `y0`
@@ -199,9 +273,24 @@ impl WrapRegion {
     }
 }
 
+/// The parts two sorted lists of x ranges share.
+fn intersect(a: &[(f64, f64)], b: &[(f64, f64)]) -> Vec<(f64, f64)> {
+    let mut out = Vec::new();
+    for (a0, a1) in a {
+        for (b0, b1) in b {
+            let (s, e) = (a0.max(*b0), a1.min(*b1));
+            if e > s {
+                out.push((s, e));
+            }
+        }
+    }
+    out
+}
+
 /// The parts of the line `x0..x1` whose band runs from `y0` up to `y1`
 /// that no region takes, left to right; parts narrower than `min_width`
-/// are left out.
+/// are left out. A region the text stays inside of leaves only what is
+/// inside it.
 pub fn free_segments(
     x0: f64,
     x1: f64,
@@ -212,6 +301,10 @@ pub fn free_segments(
 ) -> Vec<(f64, f64)> {
     let mut free = vec![(x0, x1)];
     for r in regions {
+        if r.inside {
+            free = intersect(&free, &r.inner(y0, y1));
+            continue;
+        }
         let Some((a, b)) = r.blocked(y0, y1) else {
             continue;
         };
@@ -252,7 +345,7 @@ impl FrameFlow {
         use std::hash::{Hash, Hasher};
         let mut h = std::collections::hash_map::DefaultHasher::new();
         for r in &wrap {
-            (r.wrap.mode as u8, r.wrap.side as u8).hash(&mut h);
+            (r.wrap.mode as u8, r.wrap.side as u8, r.inside).hash(&mut h);
             r.wrap.offset.to_bits().hash(&mut h);
             for (a, b) in &r.segments {
                 for v in [a.x, a.y, b.x, b.y] {
@@ -345,6 +438,13 @@ fn obstacle_path(item: &Item) -> BezPath {
 
 /// The flow of every paragraph frame of one stacking order, in order.
 fn flows(items: &[Item], page_height: Option<f64>, baseline_start: f64) -> Vec<Option<FrameFlow>> {
+    // The shapes texts were put into, by id.
+    let container = |id: crate::id::ShapeId| -> Option<BezPath> {
+        items
+            .iter()
+            .find(|it| it.shape.id == id)
+            .map(|it| it.parent * it.shape.page_path())
+    };
     let obstacles: Vec<(usize, BezPath, crate::text_flow::TextWrap)> = items
         .iter()
         .enumerate()
@@ -372,8 +472,20 @@ fn flows(items: &[Item], page_height: Option<f64>, baseline_start: f64) -> Vec<O
                 let to_layout =
                     Affine::translate((-origin.x, -(origin.y + f.height))) * to_page.inverse();
                 let frame_box = Rect::new(0.0, -f.height, f.width, 0.0);
+                // The shape the text was put into: its lines stay
+                // inside the outline.
+                if let Some(path) = para.inside.and_then(container) {
+                    let local = to_layout * path;
+                    if let Some(region) = WrapRegion::inside_path(&local, para.inside_inset()) {
+                        wrap.push(region);
+                    }
+                }
                 for (j, path, style) in &obstacles {
                     if *j <= i {
+                        continue;
+                    }
+                    // The shape the text is in never pushes it out.
+                    if para.inside == Some(items[*j].shape.id) {
                         continue;
                     }
                     let local = to_layout * path.clone();
@@ -430,11 +542,38 @@ fn store(shapes: &mut [Shape], flows: &mut std::vec::IntoIter<Option<FrameFlow>>
     }
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Times the flow was worked out again in this thread: the engine's
+    /// tests check a paint command does not pay for this walk.
+    static REFRESHES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+fn refreshes_for_test_bump() {
+    REFRESHES.with(|c| c.set(c.get() + 1));
+}
+
+/// Times [`Document::refresh_text_flow`] ran in this thread, reset by the
+/// caller (engine tests only).
+#[cfg(test)]
+pub(crate) fn refreshes_for_test(reset: bool) -> usize {
+    REFRESHES.with(|c| {
+        let n = c.get();
+        if reset {
+            c.set(0);
+        }
+        n
+    })
+}
+
 impl Document {
     /// Work out again what every paragraph frame's text wraps around and
     /// where the page's baseline grid falls for it (see the module
     /// documentation). Cheap when nothing wraps.
     pub fn refresh_text_flow(&mut self) {
+        #[cfg(test)]
+        refreshes_for_test_bump();
         let start = self.metadata.grid.baseline_start;
         let mut all: Vec<Vec<Option<FrameFlow>>> = Vec::new();
         for page in &self.pages {
@@ -467,6 +606,48 @@ mod tests {
 
     fn square(x0: f64, y0: f64, x1: f64, y1: f64, wrap: TextWrap) -> WrapRegion {
         WrapRegion::from_path(&Rect::new(x0, y0, x1, y1).to_path(0.01), wrap).unwrap()
+    }
+
+    /// A region the text stays inside of: a line gets the part of the
+    /// outline it fits in over its whole height, less the inset; a
+    /// triangle's lines grow wider downwards and a ring's hole splits
+    /// them.
+    #[test]
+    fn lines_stay_inside_the_shape_the_text_was_put_into() {
+        // A triangle, its point up at (50, 0), its base from (0, -100)
+        // to (100, -100).
+        let mut tri = BezPath::new();
+        tri.move_to((50.0, 0.0));
+        tri.line_to((100.0, -100.0));
+        tri.line_to((0.0, -100.0));
+        tri.close_path();
+        let r = WrapRegion::inside_path(&tri, 0.0).expect("region");
+        // The band from y = -50 down to -60: as wide as the triangle is
+        // at its top edge, where it is narrowest.
+        let free = free_segments(0.0, 100.0, -60.0, -50.0, std::slice::from_ref(&r), 2.0);
+        assert_eq!(free.len(), 1);
+        assert!((free[0].0 - 25.0).abs() < 1e-6 && (free[0].1 - 75.0).abs() < 1e-6, "{free:?}");
+        // Lower down there is more room; above the point and under the
+        // base none.
+        let lower = free_segments(0.0, 100.0, -90.0, -80.0, std::slice::from_ref(&r), 2.0);
+        assert!((lower[0].0 - 10.0).abs() < 1e-6 && (lower[0].1 - 90.0).abs() < 1e-6);
+        assert!(free_segments(0.0, 100.0, 5.0, 15.0, std::slice::from_ref(&r), 2.0).is_empty());
+        assert!(free_segments(0.0, 100.0, -120.0, -110.0, std::slice::from_ref(&r), 2.0).is_empty());
+        assert!(free_segments(0.0, 100.0, -105.0, -95.0, std::slice::from_ref(&r), 2.0).is_empty());
+        // The inset is kept above and below the line too (the outline
+        // 5 mm over the line is 27.5 to 72.5) and comes off both ends.
+        let inset = WrapRegion::inside_path(&tri, 5.0).expect("region");
+        let f = free_segments(0.0, 100.0, -60.0, -50.0, &[inset], 2.0);
+        assert!((f[0].0 - 32.5).abs() < 1e-6 && (f[0].1 - 67.5).abs() < 1e-6, "{f:?}");
+        // A square with a square hole: a line through the hole has two
+        // parts.
+        let mut ring = Rect::new(0.0, -100.0, 100.0, 0.0).to_path(0.01);
+        ring.extend(Rect::new(40.0, -60.0, 60.0, -40.0).to_path(0.01));
+        let ring = WrapRegion::inside_path(&ring, 0.0).expect("region");
+        let f = free_segments(0.0, 100.0, -55.0, -45.0, std::slice::from_ref(&ring), 2.0);
+        assert_eq!(f, vec![(0.0, 40.0), (60.0, 100.0)]);
+        let f = free_segments(0.0, 100.0, -20.0, -10.0, &[ring], 2.0);
+        assert_eq!(f, vec![(0.0, 100.0)]);
     }
 
     #[test]

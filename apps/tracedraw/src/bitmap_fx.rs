@@ -112,9 +112,18 @@ pub fn decode(png: &[u8]) -> Option<RgbaImage> {
 
 /// Encode an RGBA image as PNG bytes.
 pub fn encode(img: &RgbaImage) -> Option<Vec<u8>> {
-    let mut buf = std::io::Cursor::new(Vec::new());
-    img.write_to(&mut buf, image::ImageFormat::Png).ok()?;
-    Some(buf.into_inner())
+    use image::codecs::png::{CompressionType, FilterType, PngEncoder};
+    use image::ImageEncoder;
+    let mut buf = Vec::new();
+    PngEncoder::new_with_quality(&mut buf, CompressionType::Fast, FilterType::Sub)
+        .write_image(
+            img.as_raw(),
+            img.width(),
+            img.height(),
+            image::ExtendedColorType::Rgba8,
+        )
+        .ok()?;
+    Some(buf)
 }
 
 /// `img` laid on white paper: every pixel opaque, a see-through one
@@ -134,27 +143,65 @@ pub fn flatten_on_white(img: &RgbaImage) -> RgbaImage {
 /// Encode `img` as a grayscale PNG (8-bit gray, with an alpha channel
 /// only when a pixel is not opaque): a grayscale picture, whose colour
 /// mode the status line reads from the PNG (#1777). Each pixel's level
-/// is its luminance, `0.299 R + 0.587 G + 0.114 B`.
+/// is its luminance, `0.299 R + 0.587 G + 0.114 B`, computed in one
+/// integer pass over the raw RGBA bytes.
 pub fn encode_gray(img: &RgbaImage) -> Option<Vec<u8>> {
-    let level = |p: &Rgba<u8>| {
-        (0.299 * p[0] as f32 + 0.587 * p[1] as f32 + 0.114 * p[2] as f32)
-            .round()
-            .clamp(0.0, 255.0) as u8
-    };
-    let mut buf = std::io::Cursor::new(Vec::new());
-    if img.pixels().all(|p| p[3] == 255) {
-        let gray = image::GrayImage::from_fn(img.width(), img.height(), |x, y| {
-            image::Luma([level(img.get_pixel(x, y))])
-        });
-        gray.write_to(&mut buf, image::ImageFormat::Png).ok()?;
-    } else {
-        let gray = image::GrayAlphaImage::from_fn(img.width(), img.height(), |x, y| {
-            let p = img.get_pixel(x, y);
-            image::LumaA([level(p), p[3]])
-        });
-        gray.write_to(&mut buf, image::ImageFormat::Png).ok()?;
+    use image::codecs::png::{CompressionType, FilterType, PngEncoder};
+    use image::ImageEncoder;
+    let (w, h) = img.dimensions();
+    let n = (w as usize).checked_mul(h as usize)?;
+    let raw = img.as_raw();
+    if raw.len() < n.checked_mul(4)? {
+        return None;
     }
-    Some(buf.into_inner())
+    let luma = |p: &[u8]| -> u8 {
+        ((299 * u32::from(p[0]) + 587 * u32::from(p[1]) + 114 * u32::from(p[2]) + 500) / 1000) as u8
+    };
+    let mut chunks = raw[..n * 4].chunks_exact(4);
+    let mut gray = Vec::with_capacity(n);
+    let mut ga: Option<Vec<u8>> = None;
+    while let Some(p) = chunks.next() {
+        let y = luma(p);
+        if p[3] == 255 {
+            gray.push(y);
+        } else {
+            let mut out = Vec::with_capacity(n.checked_mul(2)?);
+            for &g in &gray {
+                out.extend_from_slice(&[g, 255]);
+            }
+            gray = Vec::new();
+            out.extend_from_slice(&[y, p[3]]);
+            for rest in chunks {
+                out.extend_from_slice(&[luma(rest), rest[3]]);
+            }
+            ga = Some(out);
+            break;
+        }
+    }
+    let mut buf = Vec::new();
+    let enc = PngEncoder::new_with_quality(&mut buf, CompressionType::Fast, FilterType::Sub);
+    match ga {
+        None => enc
+            .write_image(&gray, w, h, image::ExtendedColorType::L8)
+            .ok()?,
+        Some(ga) => enc
+            .write_image(&ga, w, h, image::ExtendedColorType::La8)
+            .ok()?,
+    }
+    Some(buf)
+}
+
+/// The language key of a bitmap's colour mode name, as the status bar
+/// and the Objects docker show it.
+pub fn mode_key(cmyk: bool, png: &[u8]) -> &'static str {
+    match mode_of(cmyk, png) {
+        ColorMode::Cmyk => "convert_colors.cmyk",
+        ColorMode::Grayscale => "convert_colors.gray",
+        ColorMode::Paletted => "dialog.convert_mode_paletted",
+        ColorMode::Lab => "convert_colors.lab",
+        ColorMode::BlackWhite => "dialog.convert_mode_bw",
+        ColorMode::Rgb => "convert_colors.rgb",
+    }
 }
 
 /// The colour mode a bitmap is in: CMYK when marked so, black and white
@@ -703,5 +750,29 @@ mod tests {
             mode_of(false, &encode_lab(&img).expect("lab")),
             ColorMode::Lab
         );
+    }
+
+    #[test]
+    fn encode_gray_one_pass_preserves_luma_and_alpha() {
+        let mut opaque = RgbaImage::new(3, 1);
+        opaque.put_pixel(0, 0, Rgba([0, 0, 0, 255]));
+        opaque.put_pixel(1, 0, Rgba([255, 255, 255, 255]));
+        opaque.put_pixel(2, 0, Rgba([100, 150, 200, 255]));
+        let png = encode_gray(&opaque).expect("opaque gray");
+        assert_eq!(png[25], 0, "8-bit L8 without alpha");
+        let back = decode(&png).expect("decodes");
+        let want = ((299 * 100u32 + 587 * 150 + 114 * 200 + 500) / 1000) as u8;
+        assert_eq!(back.get_pixel(0, 0), &Rgba([0, 0, 0, 255]));
+        assert_eq!(back.get_pixel(1, 0), &Rgba([255, 255, 255, 255]));
+        assert_eq!(back.get_pixel(2, 0), &Rgba([want, want, want, 255]));
+
+        let mut semi = opaque.clone();
+        semi.put_pixel(2, 0, Rgba([100, 150, 200, 128]));
+        let png_a = encode_gray(&semi).expect("gray with alpha");
+        assert_eq!(png_a[25], 4, "8-bit La8 with alpha");
+        let back_a = decode(&png_a).expect("decodes");
+        assert_eq!(back_a.get_pixel(0, 0), &Rgba([0, 0, 0, 255]));
+        assert_eq!(back_a.get_pixel(1, 0), &Rgba([255, 255, 255, 255]));
+        assert_eq!(back_a.get_pixel(2, 0), &Rgba([want, want, want, 128]));
     }
 }

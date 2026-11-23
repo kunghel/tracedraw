@@ -589,13 +589,20 @@ impl App {
     /// Paragraph text `s` does not fit its frame (the last frame of a
     /// linked chain included); cached per document revision.
     pub fn text_overflows(&self, s: &Shape) -> bool {
-        let rev = self.engine.revision();
+        // Keyed by the text's own content (spans, frame, align, paragraph
+        // incl. its flow, on-path), not by the document revision: a
+        // revision bump used to clear the whole cache and re-lay out every
+        // shown frame on each keystroke. Unchanged frames keep their hit;
+        // a wrap change reaches the flow and thus the key.
+        use std::hash::{Hash, Hasher};
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        format!("{:?}", s.kind).hash(&mut h);
+        let key = h.finish();
         let mut cache = self.overflow_cache.borrow_mut();
-        if cache.0 != rev {
-            *cache = (rev, Default::default());
-        }
-        if let Some(v) = cache.1.get(&s.id) {
-            return *v;
+        if let Some((k, v)) = cache.get(&s.id) {
+            if *k == key {
+                return *v;
+            }
         }
         let v = match &s.kind {
             ShapeKind::Text {
@@ -617,7 +624,10 @@ impl App {
             }
             _ => false,
         };
-        cache.1.insert(s.id, v);
+        if cache.len() > 4000 {
+            cache.clear();
+        }
+        cache.insert(s.id, (key, v));
         v
     }
 
@@ -641,6 +651,9 @@ impl App {
             .flat_map(|l| &l.shapes)
             .filter(|s| s.visible)
         {
+            if self.symbol_edit_index().is_some() && self.outside_clip_edit(s.id) {
+                continue;
+            }
             // Only text frames: asking every object whether it is selected
             // cost a search of the selection each (#367).
             let Some(mut c) = s.text_frame_corners() else {

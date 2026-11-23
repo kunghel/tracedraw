@@ -129,6 +129,10 @@ van een mesh behoudt de kleuren.
 - Een vulling [[docker.fill_texture]] is een gegenereerde, natuurlijk ogende
   textuur: [[texture.clouds]], [[texture.marble]], [[texture.noise]] of
   [[texture.wood]], met de kleuren en schaal ervan.
+- [[texture.holographic]] en [[texture.holo_glitter]] geven een vaste holografische folielook: regenboogkleuren tussen
+  donkere en lichte vlakken (kleuren A en B), de glitter met fonkelende
+  korrels. Het verandert niet met de kijkhoek; PDF en SVG bevatten het als
+  afbeelding.
 
 ## Meerdere vullingen op één object {#several-fills}
 

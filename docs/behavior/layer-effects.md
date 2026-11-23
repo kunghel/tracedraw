@@ -16,7 +16,7 @@ The list, one row each:
 | Bevel / Emboss | `Bevel` (Soft edge or Emboss) | type, depth, level, light angle, intensity, light and shadow colors |
 | Outline | `Contour`, one step outside | width, color |
 | 3D | `Extrude`, back parallel | distance and direction of the depth, light angle and intensity |
-| Inner shadow | `InnerShadow` | distance, angle, blur, opacity, color, blend mode |
+| Inner shadow | `InnerShadow` | distance, angle, blur, opacity, spread, color, blend mode |
 | Outer shadow | `OuterShadow`: a drop shadow of the object's shape beneath it and all its effects draw; any number beside the object's own drop shadow | as Inner shadow |
 | Inner glow | `Glow` inside: an inner shadow that does not move | radius, opacity, color, blend mode |
 | Outer glow | `Glow` outside: a drop shadow that does not move, solid up to the edge and fading beyond it (feather direction Outside) | as Inner glow |
@@ -25,6 +25,7 @@ The list, one row each:
 | Gaussian blur | `GaussianBlur`: the object drawn on a layer of its own and blurred (three box passes) | radius |
 | Blend If | `BlendIf`: the object drawn on a layer of its own, each pixel kept as much as its own lightness and the lightness of what lies beneath it fall in two ranges | This object and Beneath ranges, Show all |
 | Displace | `Displace`: the outline pushed by the lightness of the photo beneath, and the photo's shadows and highlights taken onto the object | Horizontal, Vertical, Shading, Strength, Use photo beneath |
+| Halftone | `Halftone`: the object drawn with all its other effects on a layer of its own, then turned into dots (`tracedraw_render::halftone`) | dot, color mode, color, dot spacing, dot scale, softness, angle, center X and Y, cut by the object's edge |
 
 - The check box switches the entry's effect on. Ticked the first time it
   adds the effect with the values shown; cleared, the effect is kept
@@ -40,7 +41,32 @@ The list, one row each:
   color overlay red at 50 %; gradient overlay black to white at 90°,
   50 %; blur 1 mm; Blend If shows all of the object itself and hides it
   over dark pixels beneath, fading in up to a quarter of the way to
-  white (0 / 63 on the 0 to 255 scale).
+  white (0 / 63 on the 0 to 255 scale); halftone round RGB dots 1 mm
+  apart at 45°, scale 100 %, softness 10 %, centred, cut by the edge.
+
+Inner shadow spread (0 % by default, older files read as 0 %) chokes
+the feathered edge: the blurred coverage is divided by 1 minus the spread
+(at most 99 %) and capped at full, so the shadow stays solid over that
+share of the blur and fades over the rest. Drawn on the halftone's own
+layer, an inner shadow keeps each pixel's coverage and darkens edge pixels
+as fully as the inside, so no light rim turns into dots.
+
+Halftone: a grid turned by the angle, with a dot centre at Center X and Y
+across the object's bounds (0 % left and bottom), takes in each cell the
+mean color of the drawn pixels. The dot's area is the tone times the scale
+squared times the cell (exact until dots touch; a line is a band as wide as
+the tone). RGB: three dots in the cell, red, green and blue, each as large
+as its channel, added as light (white where all three meet), for light
+dots on a dark ground. CMYK: cyan, magenta, yellow and black from the
+color (black the lack of the brightest channel), on screens at 15°, 75°,
+0° and 45° past the angle, each an ink dot multiplying white paper that
+follows the object's edge. One color: dots of the chosen color as large as
+the darkness (1 minus luma). Cut by the edge multiplies the dots by the
+object's own alpha; off, the tone is weighed by the cell's alpha and the
+dots stay whole (they reach half a cell past the edge, so bands and the
+layer grow by a cell). Softness widens the dot edge up to a cell (at
+least one pixel). The effect applies last, to everything the object and
+its effects draw, and the object's other effects stay live under it.
 
 Blend If. Each range is a strip from black to white with four markers:
 where the dark end starts to show and where it shows fully, where the
@@ -116,4 +142,9 @@ Tests: `live::tests::layer_effect_overlays_and_fill_opacity`,
 (render),
 `ui::layer_effects::tests::displace_takes_the_photo_beneath_and_samples_it_again_after_a_move`,
 `tests::layer_effects_shadow_glow_and_blur_the_object` (render),
+`tests::halftone_turns_the_object_and_its_effects_into_dots` (render),
+`tests::inner_shadow_spread_darkens_the_feathered_edge` (render),
+`live::tests::an_inner_shadow_saved_without_spread_reads_back`,
+`halftone::tests::*` (dot areas, RGB, CMYK, cut and whole dots, screen
+angle and centre),
 `ui::layer_effects::tests::entries_switch_set_and_remove_their_effects`.

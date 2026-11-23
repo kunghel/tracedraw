@@ -240,6 +240,36 @@ delete the selection as everywhere (#1527,
   `pick_drag_tests::bspline_double_click_makes_the_previewed_curve`
   and `pick_drag_tests::a_bspline_keeps_its_control_points_for_the_shape_tool`.
 
+## Curvature Pen
+
+The curve group's Curvature Pen (after B-Spline; no shortcut) places
+points as the B-Spline tool does (a click or the start of a drag each,
+double click or Enter to finish, a click on the first point from three
+closes, Backspace takes the last back, each point one undo step) but the
+curve runs through them (`geometry::curvature_path`):
+
+- At a smooth point the handles lie along the chord from the point before
+  to the point after; each handle is as long as a circular arc leaving
+  its own segment's chord at that angle needs: a third of the segment's
+  chord over cos² of half the angle (at most two thirds, at a right
+  angle). Three points on a circle make that circle however wide the arc,
+  so a long curve drawn with few points is as smooth as a short one
+  (#3948; the handles used to shrink as the curve turned, flattening wide
+  arcs). Moving or adding a point refits the segments beside it.
+- A point placed with Alt, C or V held is a corner, as are the two ends of
+  an open curve: the handle beside it is the smooth handle across the
+  segment mirrored about the segment's chord, so the end bends as a
+  parabola would. Two corners side by side give a straight segment.
+- Closed, the last point runs on to the first, smooth there unless that
+  point is a corner.
+- The preview is the curve with the pointer as the next point; no control
+  polygon is drawn. The curve made is a plain curve with the points as its
+  nodes (no B-spline control points are kept).
+
+Test: `pick_drag_tests::the_curvature_pen_draws_a_smooth_curve_through_its_clicks`,
+`geometry::tests::a_curvature_curve_runs_through_its_points`,
+`geometry::tests::a_wide_curvature_arc_stays_round`.
+
 ## Polyline and 2-point line
 
 - Polyline: clicks add straight segments (no smooth handles);

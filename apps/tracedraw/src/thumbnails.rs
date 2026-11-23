@@ -57,7 +57,11 @@ pub fn clear() {
 /// The first page of the active drawing as a PNG thumbnail, with what
 /// lies beside it on the desktop (#2357).
 fn first_page_png(app: &App) -> Option<Vec<u8>> {
-    let doc = app.doc();
+    page_png(app.doc())
+}
+
+/// The first page of `doc` as a PNG thumbnail.
+fn page_png(doc: &tracedraw_core::Document) -> Option<Vec<u8>> {
     let page = doc.pages.first()?;
     let pm = tracedraw_render::render_whole_page_image(doc, page.id, SIZE)?;
     // The background is opaque white, so premultiplied data is plain RGBA.
@@ -85,11 +89,29 @@ impl App {
             return;
         }
         self.recent_thumbs.remove(path);
-        let (Some(out), Some(png)) = (thumbnail_path(path), first_page_png(self)) else {
+        let Some(out) = thumbnail_path(path) else {
             return;
         };
-        if let Err(e) = crate::files::write_creating(&out, png) {
-            log::warn!("could not keep a thumbnail for {}: {e}", path.display());
+        // Drawn on a thread of its own (#3914): a drawing with a picture
+        // of some hundred million pixels took the whole picture apart
+        // for 160 pixels before its first frame showed.
+        let doc = self.doc().clone();
+        let path = path.to_path_buf();
+        let job = move || {
+            let Some(png) = page_png(&doc) else {
+                return;
+            };
+            if let Err(e) = crate::files::write_creating(&out, png) {
+                log::warn!("could not keep a thumbnail for {}: {e}", path.display());
+            }
+        };
+        if cfg!(test) {
+            job();
+        } else if let Err(e) = std::thread::Builder::new()
+            .name("thumbnail".into())
+            .spawn(job)
+        {
+            log::warn!("no thread for a thumbnail: {e}");
         }
     }
 
@@ -174,9 +196,9 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    /// An object beside the page on the desktop is in the thumbnail too,
-    /// as in the reference program (#2357); one far out does not shrink
-    /// the page to a dot.
+    /// An object beside the page on the desktop is in the thumbnail too
+    /// (#2357), which shows the drawing's extent rather than the page's
+    /// (#3052); one far out does not shrink the rest to a dot.
     #[test]
     fn the_thumbnail_shows_what_lies_beside_the_page() {
         let mut app = App::headless();
@@ -191,10 +213,12 @@ mod tests {
         });
         let area = tracedraw_render::whole_page_area(app.doc(), app.page).expect("area");
         assert!((area.x1 - (page.x1 + 200.0)).abs() < 1.0, "{area:?}");
+        // The drawing's extent, not the page's (#3052).
+        assert!((area.x0 - (page.x1 + 20.0)).abs() < 1.0, "{area:?}");
         let png = first_page_png(&app).expect("a thumbnail");
         let img = image::load_from_memory(&png).expect("a PNG");
         assert_eq!(img.width().max(img.height()), 160);
-        assert!(img.width() > img.height(), "page and object side by side");
+        assert!(img.width() > img.height(), "the object, wider than tall");
         // The object, on the right, is drawn (not white).
         let rgba = img.to_rgba8();
         let x = img.width() - img.width() / 8;
@@ -215,5 +239,14 @@ mod tests {
         let far = tracedraw_render::whole_page_area(app.doc(), app.page).expect("area");
         let reach = page.width() * (1.0 + tracedraw_render::WHOLE_PAGE_REACH);
         assert!(far.x1 <= reach + 1e-6, "{far:?}");
+        // An object on the page: the thumbnail is the object, not the page.
+        let mut app = App::headless();
+        app.new_shape(ShapeKind::Rect {
+            rect: Rect::new(40.0, 40.0, 140.0, 90.0),
+            radius: 0.0,
+            corners: None,
+        });
+        let area = tracedraw_render::whole_page_area(app.doc(), app.page).expect("area");
+        assert!(area.width() < 110.0 && area.height() < 60.0, "{area:?}");
     }
 }

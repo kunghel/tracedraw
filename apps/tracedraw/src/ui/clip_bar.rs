@@ -77,6 +77,10 @@ pub fn show(app: &mut App, ctx: &Context) {
                     ui.horizontal(|ui| {
                         if editing {
                             finish_button(app, ui);
+                            if app.symbol_edit_index().is_some() {
+                                ui.separator();
+                                cancel_symbol_button(app, ui);
+                            }
                             return;
                         }
                         let Some(clip) = clip else {
@@ -162,5 +166,20 @@ fn finish_button(app: &mut App, ui: &mut egui::Ui) {
     );
     if finish.clicked() {
         app.finish_clip_frame_edit();
+    }
+}
+
+/// Cancel beside Finish on the bar while a symbol is edited on its
+/// clean sheet.
+fn cancel_symbol_button(app: &mut App, ui: &mut egui::Ui) {
+    if ui
+        .add(
+            egui::Button::new(RichText::new(tr("docker.cancel_symbol_edit")).color(Tokens::text()))
+                .frame(false),
+        )
+        .rich_tip(tr("docker.cancel_symbol_edit_tip"))
+        .clicked()
+    {
+        app.cancel_symbol_edit();
     }
 }

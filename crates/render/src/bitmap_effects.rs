@@ -113,7 +113,11 @@ fn make(shape: &Shape, symbols: &[Symbol], dpi: f64) -> Option<RasterFx> {
     bare.raster_fx = None;
     bare.effects
         .retain(|e| !tracedraw_core::document::beside_picture(e));
-    bare.transform = Affine::scale_non_uniform(sx, sy);
+    // Fountain fills lie on the page box: turn them back with the picture
+    // (#3983).
+    let local = Affine::scale_non_uniform(sx, sy);
+    bare.carry_fills(local * shape.transform.inverse(), Affine::IDENTITY);
+    bare.transform = local;
     let bounds = bare.bounds();
     if ![bounds.x0, bounds.y0, bounds.x1, bounds.y1]
         .iter()
@@ -331,5 +335,62 @@ mod tests {
         }
         assert!(finite_gaussian_rgba(&source[..3], 160, 3, 15.0).is_none());
         assert!(finite_gaussian_rgba(&source, 160, 3, f64::NAN).is_none());
+    }
+
+    /// A mirrored or turned object's fountain fill runs the same way in
+    /// its blurred picture as on the page: the fill lies on the page box,
+    /// so the picture drawn without the mirror took it unmirrored and the
+    /// mirror then flipped it (#3983).
+    #[test]
+    fn a_mirrored_gradient_keeps_its_direction_when_blurred() {
+        use tracedraw_core::{Fountain, FountainKind};
+        let brightness = |doc: &Document, y: f64| {
+            let pm = crate::render_page_image(doc, doc.pages[0].id, 254.0).unwrap();
+            let zoom = 254.0 / 25.4;
+            let px = pm
+                .pixel((20.0 * zoom) as u32, ((40.0 - y) * zoom) as u32)
+                .unwrap();
+            px.red() as i32
+        };
+        for t in [
+            Affine::new([1.0, 0.0, 0.0, -1.0, 0.0, 40.0]),
+            Affine::new([-1.0, 0.0, 0.0, 1.0, 40.0, 0.0]),
+            Affine::new([0.0, 1.0, -1.0, 0.0, 40.0, 0.0]),
+        ] {
+            let mut doc = Document::new("mirror", Size::new(40.0, 40.0));
+            doc.metadata.resolution_dpi = 254.0;
+            let mut s = Shape::new(
+                ShapeId(10),
+                ShapeKind::rect_with_corners(Rect::new(10., 10., 30., 30.), Default::default()),
+            );
+            // Black at the bottom of the page box, white at the top.
+            s.fill = Fill::Fountain(Fountain::two(
+                FountainKind::Linear,
+                Color::BLACK,
+                Color::WHITE,
+                90.0,
+            ));
+            s.stroke = None;
+            s.transform = t;
+            doc.pages[0].layers[0].shapes.push(s.clone());
+            let (low, high) = (brightness(&doc, 12.0), brightness(&doc, 28.0));
+            assert!(low + 100 < high, "plain: {low} {high}");
+            s.raster_fx = Some(Box::new(RasterFx {
+                effects: vec![BitmapEffect {
+                    id: "gaussian_blur".into(),
+                    params: [("radius".into(), 1.0)].into(),
+                    visible: true,
+                }],
+                rect: Rect::ZERO,
+                width_px: 0,
+                height_px: 0,
+                png: Default::default(),
+                source: 0,
+            }));
+            doc.pages[0].layers[0].shapes[0] = s;
+            assert_eq!(prepare(&mut doc), 1);
+            let (low, high) = (brightness(&doc, 12.0), brightness(&doc, 28.0));
+            assert!(low + 100 < high, "blurred {t:?}: {low} {high}");
+        }
     }
 }

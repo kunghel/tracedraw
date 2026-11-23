@@ -306,6 +306,13 @@ pub fn draw_on(painter: &Painter, r: Rect, tool: Tool, color: Color32, bg: Color
             }
             pen.node(11.0, 12.0, true);
         }
+        Tool::CurvaturePen => {
+            // A smooth curve running through the points clicked.
+            pen.line("M3 18C5 10 8 6 11 10S17 19 21 6", ink);
+            pen.node(3.0, 18.0, false);
+            pen.node(11.0, 10.0, false);
+            pen.node(21.0, 6.0, true);
+        }
         Tool::Polyline => {
             pen.line("M3 19L7 6 13 15 20 4", ink);
             pen.node(3.0, 19.0, false);
@@ -465,6 +472,14 @@ pub fn draw_on(painter: &Painter, r: Rect, tool: Tool, color: Color32, bg: Color
             // A grid of cells, the node on its corner.
             pen.body(&rrect(3.0, 3.0, 18.0, 18.0, 2.0));
             pen.thin("M9 3v18M15 3v18M3 9h18M3 15h18", ink);
+            pen.node(21.0, 21.0, true);
+        }
+        Tool::ShapeGenerator => {
+            // A pattern of quarter circles filling a box, the node on
+            // its corner.
+            pen.body(&rrect(3.0, 3.0, 18.0, 18.0, 2.0));
+            pen.thin("M3 12a9 9 0 0 0 9-9M12 21a9 9 0 0 1 9-9", acc);
+            pen.thin("M3 7.5a4.5 4.5 0 0 0 4.5-4.5M16.5 21a4.5 4.5 0 0 1 4.5-4.5", ink);
             pen.node(21.0, 21.0, true);
         }
 

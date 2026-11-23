@@ -65,6 +65,17 @@ on or off without the dialog box: for the selected paragraph text, or
 for the paragraphs at the cursor while you type. The bullet keeps the
 symbol and indent set for it.
 
+In the same dialog box, [[dialog.bullet_color]] and [[dialog.bullet_style]]
+give the bullet or number a colour, bold and italic of its own instead of
+the first letter's. For a list inside a list,
+[[menu.text > menu.text.list_level_down]] sets the paragraphs one
+level deeper and [[menu.text > menu.text.list_level_up]] brings them back
+(the dialog box has the [[dialog.bullet_level]] too). Each level is set in
+by the [[dialog.bullet_level_indent]] and counts on its own, starting again under
+each paragraph above it. [[dialog.bullet_restart]] starts a number again,
+and [[dialog.bullet_continue]] goes on from the last number of its level
+after paragraphs without bullets.
+
 ## Drop caps {#drop-cap}
 
 A drop cap is a large first letter that spans several lines.

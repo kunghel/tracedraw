@@ -22,10 +22,10 @@
 //!   text paragraph names exists in the tables, and a clip container's
 //!   argument 8005 names a group of the document's `LIST clpt` (whose
 //!   objects carry no `usdn`, as files have them);
-//! - bitmaps: an object's pixel size is its `bmp ` image's, and from
-//!   version 14 its box (from the origin) the image's size at the
-//!   image's resolution, as every bitmap of the files seen holds it
-//!   (#1222);
+//! - bitmaps: an object's pixel size is its `bmp ` image's, and its box
+//!   (from the origin) the image's size at the image's resolution, as
+//!   every bitmap of the files seen holds it (#1222; every version since
+//!   #3696);
 //! - blends: a blend's linked group (`LIST lnkg` of object type 7 with a
 //!   step argument) stands between two objects of its list, its ends,
 //!   has a `usdn` of its own and a step count of 1 to 999 (#1192).
@@ -621,7 +621,8 @@ impl<'a> Checker<'a> {
     }
 
     /// A bitmap object's coordinates argument, as files of versions 14,
-    /// 18, 19 and 27 hold it (the origin and the number checked only from 14): the
+    /// 18, 19 and 27 hold it (the origin and the number checked in every
+    /// version, as the writer writes them, #3696): the
     /// image's box from the origin (top left, bottom
     /// right) twice, 2 and the bits per pixel, the pixel size, the
     /// image's number (never 0), the id of a `bmp ` record, 0, 0, -1, 0,
@@ -637,9 +638,11 @@ impl<'a> Checker<'a> {
             self.note(place, "bitmap record shorter than its corners");
             return None;
         };
-        // Only files of versions 14, 18, 19 and 27 were seen to hold the box at
-        // the origin and a non-zero number; older ones are not held to it.
-        let seen = self.v >= 14;
+        // Files of versions 14, 18, 19 and 27 hold the box at the origin
+        // and a non-zero number, and the writer writes every version so
+        // (#3696: version 13 files written with the box on the page and
+        // the number 0 opened without their pictures).
+        let seen = true;
         if seen && (corners[0] != 0 || corners[3] != 0) {
             self.note(
                 place,

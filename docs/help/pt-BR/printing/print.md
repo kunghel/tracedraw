@@ -152,6 +152,25 @@ imposição e as marcas.
   mostra o deslocamento, com **Redefinir**). **Transformar** mostra alças para
   esticar a arte.
 
+## Ver uma tinta enquanto desenha {#view-separations}
+
+[[menu.view > menu.view.separations]] mostra a página na janela de desenho
+como uma tinta a imprime, na cor dessa tinta: o ciano em ciano, o magenta em
+magenta, e cada tinta especial do desenho com o próprio nome. Escolha uma
+tinta no submenu e continue editando; o desenho em si não muda.
+[[menu.view.separations_composite]] volta a mostrar todas as tintas.
+
+![Três círculos ciano, magenta e amarelo sobrepostos, vistos só pela tinta magenta](../../img/printing-print-view-separations.png)
+
+## Achatar a transparência {#flatten-transparency}
+
+Algumas impressoras e formatos de arquivo antigos não sabem misturar objetos
+transparentes com o que está embaixo deles.
+[[menu.object > menu.object.flatten_transparency]] transforma os objetos
+selecionados em um único bitmap opaco de como eles aparecem sobre o que está
+embaixo, a 300 dpi e com o formato deles, no mesmo lugar da pilha. Os objetos
+de baixo continuam como estão. Um único Desfazer volta tudo.
+
 ## Outras formas de imprimir {#other}
 
 - [[menu.file > menu.file.send_to]] salva um PDF na sua área de trabalho ou

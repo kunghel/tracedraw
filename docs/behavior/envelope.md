@@ -184,11 +184,11 @@ nothing selected, how to start.
   frame's nodes are the outline's, its corners the outline's own sharp
   nodes nearest the corners of its box when there are four such (a band,
   a trapezoid, a rectangle), else the outline's points nearest those
-  corners (a node goes in there). As in CorelDRAW, each object takes
+  corners (a node goes in there). Each object takes
   that shape at the shape's size, upright as it lies on the page and
   centred where the object is, with the mapping and Keep Lines new
   envelopes take; it is not moved into the shape (#2178: text above an
-  arched band went down onto it, where CorelDRAW leaves it above the
+  arched band went down onto it, where it should stay above the
   band, arched like it; the video of #2344 shows the same, the object
   moved into the shape by hand afterwards) (#993, #2344, #2178,
   `tracedraw_core::envelope::tests::frames_are_made_from_outlines`,

@@ -266,6 +266,24 @@ pub fn replace_colors(doc: &mut Document, pairs: &[(Color, Color)]) -> usize {
     n
 }
 
+/// [`replace_colors`] on `shapes` only (and the objects inside them):
+/// the number changed (#3534).
+pub fn replace_colors_in(doc: &mut Document, shapes: &[ShapeId], pairs: &[(Color, Color)]) -> usize {
+    let f = |c: Color| {
+        pairs
+            .iter()
+            .find(|(from, _)| *from == c)
+            .map_or(c, |(_, to)| *to)
+    };
+    let mut n = 0;
+    for id in shapes {
+        if let Some(s) = doc.find_shape_mut(*id) {
+            n += map_shape_colors(s, &f);
+        }
+    }
+    n
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

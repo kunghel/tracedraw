@@ -71,6 +71,7 @@
 
 - [[docker.fill_pattern]] 塗りつぶしはタイルを繰り返します: 2 色、ベクターパターン、またはビットマップです。[パターン塗りつぶし](patterns.md) を参照してください。
 - [[docker.fill_texture]] 塗りつぶしは、生成された自然に見えるテクスチャです: [[texture.clouds]]、[[texture.marble]]、[[texture.noise]]、[[texture.wood]] で、色と拡大率を指定します。
+- [[texture.holographic]] と [[texture.holo_glitter]] は固定のホログラム箔の見た目です: 暗い部分と明るい部分 (色 A と B) の間を虹色が流れ、グリッターはきらめく粒を加えます。見る角度では変わらず、PDF と SVG には画像として書き出されます。
 
 ## 一つのオブジェクトに複数の塗りつぶし {#several-fills}
 

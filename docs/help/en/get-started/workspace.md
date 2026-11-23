@@ -91,6 +91,11 @@ its top and foot or the mouse wheel over it. Each panel has collapse
 and close buttons in its title bar. The [Panels](../reference/dockers.md)
 page lists every panel.
 
+A panel can also float, or have a window of its own: right-click its
+title or its tab and tick Own Window. That window can go to another
+monitor, and it keeps its place and size; untick Own Window to bring the
+panel back into the main window.
+
 ## The drawing window {#drawing-window}
 
 The page sits on the desktop, the area around it, where you can also keep

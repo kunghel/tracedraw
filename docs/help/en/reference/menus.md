@@ -98,6 +98,7 @@ only the Welcome Screen is open. The menus can show your own shortcuts; see
 | [[menu.view.navigator]] | [Views](../get-started/undo-and-views.md#views) |
 | [[menu.view.proof_colors]] | [Color management](../color/color-management.md#proof) |
 | [[menu.view.simulate_overprints]] | [Color management](../color/color-management.md#proof) |
+| [[menu.view.separations]] | [Color management](../color/color-management.md#proof) |
 | [[menu.view.rasterize_complex_effects]] | [Rulers, grids and guidelines](../pages-layout/guidelines-and-grid.md) |
 | [[menu.view.page]] | [Rulers, grids and guidelines](../pages-layout/guidelines-and-grid.md) |
 | [[menu.view.page_border]] | [Rulers, grids and guidelines](../pages-layout/guidelines-and-grid.md) |
@@ -225,6 +226,15 @@ only the Welcome Screen is open. The menus can show your own shortcuts; see
 | [[menu.object.front_minus_back]] | [Shaping](../lines-shapes/shaping.md) |
 | [[menu.object.back_minus_front]] | [Shaping](../lines-shapes/shaping.md) |
 | [[menu.object.boundary]] | [Shaping](../lines-shapes/shaping.md) |
+| [[menu.object.break_pieces]] | [Shaping](../lines-shapes/shaping.md) |
+| [[menu.object.merge_colors]] | [Shaping](../lines-shapes/shaping.md) |
+| [[menu.object.cut_to_top]] | [Shaping](../lines-shapes/shaping.md) |
+| [[menu.object.piece_outlines]] | [Shaping](../lines-shapes/shaping.md) |
+| [[menu.object.exclude]] | [Shaping](../lines-shapes/shaping.md) |
+| [[menu.object.combine_live]] | [Shaping](../lines-shapes/shaping.md) |
+| [[menu.object.cut_below]] | [Shaping](../lines-shapes/shaping.md) |
+| [[menu.object.cut_grid]] | [Shaping](../lines-shapes/shaping.md) |
+| [[menu.object.remove_strays]] | [Shaping](../lines-shapes/shaping.md) |
 | [[menu.object.shaping_docker]] | [Shaping](../lines-shapes/shaping.md) |
 | [[menu.object.combine]] | [Objects and layers](../objects/objects-and-layers.md) |
 | [[menu.object.break_apart]] | [Objects and layers](../objects/objects-and-layers.md) |

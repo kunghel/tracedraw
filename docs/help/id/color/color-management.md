@@ -75,3 +75,9 @@ memperingatkan tentang warna semacam itu.
 
 Tanpa profil yang dimuat, TraceDraw mengonversi warna dengan modelnya sendiri
 untuk tinta proses di atas kertas berlapis.
+
+[[menu.view > menu.view.separations]] menampilkan halaman seperti dicetak oleh
+satu tinta, dalam warna tinta itu: pilih sian, magenta, kuning, hitam, atau
+tinta spot gambar, dan hanya yang dicetak tinta itu yang tampak. Anda tetap
+menggambar dan menyunting seperti biasa; gambarnya sendiri tidak berubah.
+[[menu.view.separations_composite]] menampilkan semua tinta lagi.

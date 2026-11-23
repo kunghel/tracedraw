@@ -70,7 +70,8 @@ pub fn midpoint_params(f: &Fountain) -> Vec<(usize, f64)> {
 /// The nodes of a fountain on the object's page bounds: start, end and
 /// skew handle; none for a shaped fountain (it follows the outline).
 pub fn fountain_handles(f: &Fountain, b: Rect) -> Vec<(FountainHandle, Point)> {
-    if f.kind == FountainKind::Shaped {
+    // Colour points have their own nodes (`crate::color_points`).
+    if matches!(f.kind, FountainKind::Shaped | FountainKind::Points) {
         return Vec::new();
     }
     let h = f.handles.unwrap_or_else(|| f.default_handles(b));
@@ -676,7 +677,9 @@ impl App {
         };
         let b = s.page_path().bounding_box();
         let mut f = match &s.fill {
-            Fill::Fountain(f) if f.kind != FountainKind::Shaped => f.clone(),
+            Fill::Fountain(f) if !matches!(f.kind, FountainKind::Shaped | FountainKind::Points) => {
+                f.clone()
+            }
             other => {
                 let first = match (other, &self.default_fill()) {
                     (Fill::Solid(c), _) | (_, Fill::Solid(c)) => *c,
@@ -762,6 +765,12 @@ impl App {
     /// (#2827: the object took the colour as its fill); otherwise it
     /// fills the selection.
     pub fn palette_fill(&mut self, c: tracedraw_core::Color) {
+        // The image editing mode: the colour the brush paints.
+        if let Some(pe) = self.pixel_edit.as_mut() {
+            let [r, g, b] = c.to_rgb8();
+            pe.opts.color = [r, g, b, 255];
+            return;
+        }
         if self.tool == crate::tools::Tool::InteractiveFill {
             if let Some((_, i)) = self.selected_fill_node() {
                 self.set_fountain_node(i, Some(c), None, None, false);
@@ -840,7 +849,7 @@ pub fn node_bar(app: &mut App, ui: &mut egui::Ui) {
     if !(app.tool == Tool::InteractiveFill || mask) || !matches!(app.drag, crate::app::Drag::None) {
         return;
     }
-    let Some((shape, f, b)) = app.selected_fountain() else {
+    let Some((_, f, b)) = app.selected_fountain() else {
         return;
     };
     let Some(i) = app.fill_node.filter(|i| *i < f.stops.len()) else {
@@ -855,19 +864,16 @@ pub fn node_bar(app: &mut App, ui: &mut egui::Ui) {
     let down = ui.input(|inp| inp.pointer.any_down());
     let begun = down && ui.data(|d| d.get_temp::<bool>(id).unwrap_or(false));
     let mut color = f.stops[i].color;
-    // The object's uniform transparency, as the Properties docker shows
-    // it (#2507); a mask transparency reads 0 here.
+    // The selected node's own transparency: only that colour of the
+    // fill fades, the other nodes and the object stay as they are
+    // (#2827; the object's uniform transparency is in the Properties
+    // docker and the Transparency tool).
     // With the Transparency tool the node's own transparency, its grey
     // in the mask (#2737: the gradient's nodes had no such bar there).
     let mut transparency = if mask {
         crate::ui::transparency_docker::gray_transparency(color).round()
     } else {
-        app.doc()
-            .find_shape(shape)
-            .map(crate::mixed::ShapeTransparency::of)
-            .filter(|t| t.kind <= 1)
-            .map(|t| t.amount.round())
-            .unwrap_or(0.0)
+        ((1.0 - f64::from(f.stops[i].opacity)) * 100.0).round()
     };
     let mut changed_color = false;
     let mut changed_opacity = false;
@@ -911,7 +917,7 @@ pub fn node_bar(app: &mut App, ui: &mut egui::Ui) {
         app.set_mask_node_transparency(i, transparency, begun);
         ui.data_mut(|d| d.insert_temp(id, down));
     } else if changed_opacity {
-        app.set_object_transparency(transparency);
+        app.set_fountain_node(i, None, Some((1.0 - transparency / 100.0) as f32), None, begun);
         ui.data_mut(|d| d.insert_temp(id, down));
     } else if !down {
         ui.data_mut(|d| d.insert_temp(id, false));
@@ -937,6 +943,33 @@ mod tests {
 
     fn near(a: Point, b: Point) -> bool {
         (a - b).hypot() < 1e-6
+    }
+
+    /// #3747: Ctrl+click on a palette colour with a fountain node picked
+    /// mixes a tenth of the colour into that node; it did nothing.
+    #[test]
+    fn ctrl_click_on_a_palette_colour_mixes_into_the_picked_node() {
+        let mut app = App::headless();
+        let id = square(&mut app);
+        app.apply_fill(Fill::Fountain(tracedraw_core::Fountain::two(
+            tracedraw_core::FountainKind::Linear,
+            Color::WHITE,
+            Color::BLACK,
+            0.0,
+        )));
+        app.set_tool(crate::tools::Tool::InteractiveFill);
+        app.fill_node = Some(0);
+        app.mix_into_fill(Color::rgb8(255, 0, 0));
+        let Fill::Fountain(f) = &app.doc().find_shape(id).expect("shape").fill else {
+            panic!("still a fountain");
+        };
+        let want = crate::ui::palette::mix(Color::WHITE, Color::rgb8(255, 0, 0), 0.1);
+        assert_eq!(f.stops[0].color.to_rgb8(), want.to_rgb8());
+        assert_eq!(
+            f.stops[1].color.to_rgb8(),
+            [0, 0, 0],
+            "the other node stays"
+        );
     }
 
     /// #2827: with the Transparency tool and a node of the gradient

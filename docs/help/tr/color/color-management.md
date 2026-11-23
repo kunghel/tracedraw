@@ -76,3 +76,9 @@ renkler için uyarır.
 
 Yüklü profil olmadan TraceDraw renkleri, kuşe kâğıt üzerindeki işlem
 mürekkeplerinin kendi modeliyle dönüştürür.
+
+[[menu.view > menu.view.separations]] sayfayı tek bir mürekkebin bastığı gibi,
+o mürekkebin renginde gösterir: camgöbeği, eflatun, sarı, siyah ya da çizimin
+bir spot mürekkebini seçin; yalnızca o mürekkebin bastığı görünür. Her zamanki
+gibi çizmeye ve düzenlemeye devam edersiniz; çizimin kendisi değişmez.
+[[menu.view.separations_composite]] tüm mürekkepleri yeniden gösterir.

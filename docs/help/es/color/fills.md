@@ -133,6 +133,9 @@ de una malla conserva sus colores.
 - Un relleno [[docker.fill_texture]] es una textura generada de aspecto
   natural: [[texture.clouds]], [[texture.marble]], [[texture.noise]] o
   [[texture.wood]], con sus colores y su escala.
+- [[texture.holographic]] y [[texture.holo_glitter]] dan un aspecto fijo de lámina holográfica: colores del arcoíris
+  entre zonas oscuras y claras (colores A y B), la purpurina con granos
+  brillantes. No cambia con el ángulo de visión; PDF y SVG lo llevan como imagen.
 
 ## Varios rellenos en un objeto {#several-fills}
 

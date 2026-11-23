@@ -64,6 +64,27 @@ necessários. Cada alinhamento ou distribuição é um passo de desfazer.
 Para colocar cópias a distâncias iguais de uma vez, veja
 [Duplicar e repetir](step-and-repeat.md).
 
+## Organizar em grade {#grid}
+
+[[menu.object > menu.object.align_distribute > menu.object.arrange_in_grid]]
+coloca os objetos selecionados em linhas e colunas, na ordem em que você os
+selecionou, a partir do canto superior esquerdo da seleção. Escolha quantos
+objetos vão em cada linha e o espaço entre as colunas e entre as linhas.
+Cada célula tem a largura do objeto mais largo e a altura do mais alto, e
+cada objeto fica no centro da sua célula, então objetos de formas e
+tamanhos diferentes ficam alinhados. É um único passo de desfazer.
+
+A janela tem mais escolhas. Ordem preenche as células na ordem em que
+você selecionou os objetos ou como eles estão agora, de cima para baixo
+e da esquerda para a direita. Células deixa todas as células do mesmo
+tamanho ou ajusta cada coluna ao seu objeto mais largo e cada linha ao
+mais alto. Posição na célula é um quadrado de nove lugares: clique em um
+canto, no meio de um lado ou no centro para dizer onde cada objeto fica
+na célula. Com a prévia ligada, o desenho mostra para onde cada objeto
+vai, como caixas em contorno, antes de você clicar em OK; Preencher com
+cópias mostra as cópias do mesmo jeito e as conta enquanto você muda os
+espaços.
+
 ## Encaixar objetos num caminho {#fit-to-path}
 
 O painel [[docker.fit_to_path]] coloca objetos ao longo de uma linha, de uma

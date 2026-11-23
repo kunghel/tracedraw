@@ -109,9 +109,40 @@ fn element_depth(xml: &str) -> usize {
     deepest
 }
 
+/// The stack of the thread an SVG file is read on: groups nested up to
+/// [`MAX_ELEMENT_DEPTH`] are read by recursion, whatever thread asks.
+#[cfg(not(target_arch = "wasm32"))]
+const PARSE_STACK: usize = 32 << 20;
+
 /// Parse SVG text. `ids` allocates shape identifiers so the result can be
-/// added to an existing document.
+/// added to an existing document. Outside the browser the file is read on
+/// a thread with a stack of its own ([`PARSE_STACK`]), so deeply nested
+/// groups have a known room whatever thread asks for the import; when
+/// that thread cannot be started the file is read here.
 pub fn parse(svg: &str, ids: &mut IdSource) -> std::result::Result<Imported, String> {
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        let spawned = std::thread::scope(|s| {
+            let handle = std::thread::Builder::new()
+                .name("svg-import".into())
+                .stack_size(PARSE_STACK)
+                .spawn_scoped(s, || parse_here(svg, ids))
+                .ok()?;
+            Some(
+                handle
+                    .join()
+                    .unwrap_or_else(|_| Err("the SVG reader stopped unexpectedly".into())),
+            )
+        });
+        if let Some(result) = spawned {
+            return result;
+        }
+    }
+    parse_here(svg, ids)
+}
+
+/// [`parse`] on the current thread.
+fn parse_here(svg: &str, ids: &mut IdSource) -> std::result::Result<Imported, String> {
     let depth = element_depth(svg);
     if depth > MAX_ELEMENT_DEPTH {
         return Err(format!(
@@ -394,9 +425,20 @@ fn mark_links(svg: &str) -> (String, std::collections::HashMap<String, Link>) {
 }
 
 fn convert_node(node: &usvg::Node, cx: &Cx, ids: &mut IdSource) -> Option<Shape> {
-    let to_page = cx.to_page;
     match node {
         usvg::Node::Group(g) => convert_group(g, cx, ids),
+        _ => convert_leaf(node, cx, ids),
+    }
+}
+
+/// A node that is not a group. Kept out of the recursion through
+/// [`convert_node`] and [`convert_group`], so each level of nested groups
+/// takes only a small stack frame (deep files read on small stacks).
+#[inline(never)]
+fn convert_leaf(node: &usvg::Node, cx: &Cx, ids: &mut IdSource) -> Option<Shape> {
+    let to_page = cx.to_page;
+    match node {
+        usvg::Node::Group(_) => None,
         usvg::Node::Path(p) => match crate::svg_text::marker_index(p) {
             Some(n) => {
                 let text = cx.texts.get(n)?;
@@ -412,10 +454,9 @@ fn convert_node(node: &usvg::Node, cx: &Cx, ids: &mut IdSource) -> Option<Shape>
 }
 
 fn convert_group(g: &usvg::Group, cx: &Cx, ids: &mut IdSource) -> Option<Shape> {
-    let to_page = cx.to_page;
     // usvg already pushed the group transform into the children's
     // absolute transforms, so children are converted with `to_page` only.
-    let mut children: Vec<Shape> = g
+    let children: Vec<Shape> = g
         .children()
         .iter()
         .filter_map(|c| convert_node(c, cx, ids))
@@ -423,6 +464,19 @@ fn convert_group(g: &usvg::Group, cx: &Cx, ids: &mut IdSource) -> Option<Shape> 
     if children.is_empty() {
         return None;
     }
+    finish_group(g, children, cx, ids)
+}
+
+/// The group `g` made of its converted `children`: clip frame, opacity,
+/// mask, name and link. Out of the recursion, as [`convert_leaf`] is.
+#[inline(never)]
+fn finish_group(
+    g: &usvg::Group,
+    mut children: Vec<Shape>,
+    cx: &Cx,
+    ids: &mut IdSource,
+) -> Option<Shape> {
+    let to_page = cx.to_page;
     // A link's group carries the address; an id made for it is no name.
     let link = cx.links.get(g.id());
     let name = match link {

@@ -45,6 +45,8 @@ pub struct Changes {
     pub status: Option<String>,
     /// View > Simulate Overprints as it set it (`ActiveView.Type`).
     pub simulate_overprints: Option<bool>,
+    /// Zoom To Fit and the other view steps it took (#4020).
+    pub view_steps: Vec<crate::view_steps::ViewStep>,
 }
 
 /// What the macro asks the app for.
@@ -242,6 +244,7 @@ fn take_changes(ctx: &mut Context, all: bool) -> Changes {
         output: std::mem::take(&mut h.output),
         status: h.status.take(),
         simulate_overprints: h.simulate_overprints.take(),
+        view_steps: std::mem::take(&mut h.view_steps),
     }
 }
 

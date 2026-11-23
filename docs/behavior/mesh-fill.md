@@ -8,6 +8,18 @@ handles (`MeshNode::handles`: towards the next and the previous column,
 the next and the previous row); every cell is then the Coons patch
 bounded by its four grid lines.
 
+The editing grid follows those curves with adaptive line segments at
+the current zoom, targeting a quarter of a screen point of error after
+the object's transform. Zooming in refines a bent edge instead of
+revealing a fixed polygon; straight edges stay a single segment even
+when another edge bends. The Shape, Mesh Fill and Interactive Fill
+tools share this grid drawing.
+Subdivision stops after twelve levels (at most 4096 segments per edge)
+so extreme file coordinates cannot cause unbounded work; non-finite
+screen geometry is skipped. These display limits do not alter the mesh.
+Flattened edges are cached independently: panning reuses their points,
+and moving a node or handle rebuilds only the edges that changed.
+
 ## Mesh Fill tool
 
 - A click on an object gives it a mesh fill of the bar's rows and
@@ -165,6 +177,9 @@ mesh.
 
 ## Checks
 
+- `canvas::tests::mesh_grid_curves_stay_smooth_at_every_zoom`
+- `canvas::tests::mesh_tools_draw_smooth_curves_and_keep_straight_edges_cheap`
+- `canvas::tests::mesh_grid_overlay_updates_after_view_and_geometry_changes`
 - `tracedraw_core::style::tests::meshes_regrid_and_lose_lines_keeping_their_colours`
 - `tracedraw_core::style::tests::mesh_handles_move_with_their_nodes_and_cut_at_new_lines`
 - `tracedraw_render::tests::curved_mesh_cells_follow_their_handles`

@@ -139,6 +139,10 @@ lignes et de colonnes d'une maille conserve ses couleurs.
 - Une surface [[docker.fill_texture]] est une texture générée, d'aspect
   naturel : [[texture.clouds]], [[texture.marble]], [[texture.noise]] ou
   [[texture.wood]], avec ses couleurs et son échelle.
+- [[texture.holographic]] et [[texture.holo_glitter]] donnent un aspect fixe de film holographique : couleurs de
+  l'arc-en-ciel entre zones sombres et claires (couleurs A et B), les
+  paillettes avec des grains brillants. Il ne change pas avec l'angle de vue ;
+  PDF et SVG le portent comme image.
 
 ## Plusieurs surfaces sur un objet {#several-fills}
 

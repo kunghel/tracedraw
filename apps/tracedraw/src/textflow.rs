@@ -88,6 +88,13 @@ pub fn relink_copies(originals: &[Shape], copies: &mut [Shape]) {
                 c.data = with_key(std::mem::take(&mut c.data), key, Some(*to));
             }
         }
+        // A text put inside a shape copied along is inside that copy; a
+        // copy made without the shape is a plain frame.
+        if let ShapeKind::Text { para, .. } = &mut c.kind {
+            if let Some(was) = para.inside {
+                para.inside = map.get(&was).copied();
+            }
+        }
         // A dimension copied with the object it measures measures the
         // copy: its anchors named the original, so the copied dimension
         // followed the original rectangle and not its own (#3345).
@@ -295,6 +302,75 @@ impl App {
             (a, b)
         };
         self.link_frames(a, b);
+    }
+
+    /// Text > Paragraph Text Frame > Put Text Inside Shape: with one text
+    /// and one closed shape selected, the text becomes a frame as large
+    /// as the shape and its lines stay inside the shape's outline, also
+    /// after the shape is moved or edited (discussion #3238). The text
+    /// goes over the shape when it was under it.
+    pub fn put_text_inside_shape(&mut self) {
+        use tracedraw_core::geometry::Shape as _;
+        let picked = self.selected_shapes();
+        let text = picked
+            .iter()
+            .find(|s| matches!(s.kind, ShapeKind::Text { on_path: None, .. }));
+        let shape = picked.iter().find(|s| {
+            !matches!(s.kind, ShapeKind::Text { .. })
+                && s.page_path()
+                    .elements()
+                    .iter()
+                    .any(|e| matches!(e, tracedraw_core::geometry::PathEl::ClosePath))
+        });
+        let (Some(text), Some(shape), 2) = (text, shape, picked.len()) else {
+            self.status = tr("status.inside_needs_text_and_shape");
+            return;
+        };
+        let ShapeKind::Text {
+            spans, align, para, ..
+        } = text.kind.clone()
+        else {
+            return;
+        };
+        // The shape's box in the text's own space: the frame the lines
+        // are laid in before the outline narrows them.
+        let room = (text.transform.inverse() * shape.page_path()).bounding_box();
+        if !(room.width() > 0.0 && room.height() > 0.0) {
+            self.status = tr("status.inside_needs_text_and_shape");
+            return;
+        }
+        let mut para = para;
+        para.inside = Some(shape.id);
+        let mut cmds = vec![Command::SetShapeKind {
+            shape: text.id,
+            kind: ShapeKind::Text {
+                spans,
+                origin: Point::new(room.x0, room.y0),
+                frame: Some(tracedraw_core::geometry::Size::new(
+                    room.width(),
+                    room.height(),
+                )),
+                align,
+                para,
+                on_path: None,
+            },
+        }];
+        if let (Ok((lt, it)), Ok((ls, is))) =
+            (self.doc().locate(text.id), self.doc().locate(shape.id))
+        {
+            if lt == ls && it < is {
+                cmds.push(Command::Reorder {
+                    shape: text.id,
+                    layer: ls,
+                    index: is,
+                });
+            }
+        }
+        let id = text.id;
+        if self.engine.run_batch("Put Text Inside Shape", &cmds).is_ok() {
+            self.select(vec![id]);
+            self.status = tr("status.text_put_inside");
+        }
     }
 
     /// `id` is a paragraph frame with no characters, in no chain.
@@ -1454,5 +1530,115 @@ mod tests {
         assert_eq!(found.len(), 2, "{}", app.status);
         assert_eq!(app.next_frame(found[0]), Some(found[1]));
         assert_eq!(app.engine.history_labels().0.len(), steps + 1);
+    }
+
+    /// Put Text Inside Shape (discussion #3238): the text's lines follow
+    /// the outline of the shape it was put into, a triangle here, so
+    /// they grow wider towards its base; the shape moved, they go along.
+    #[test]
+    fn text_put_inside_a_shape_stays_inside_its_outline() {
+        use tracedraw_core::geometry::{BezPath, Shape as _};
+        tracedraw_text::install();
+        let mut app = App::headless();
+        let words = "aa ".repeat(400);
+        let t = app
+            .new_shape(ShapeKind::Text {
+                spans: vec![TextSpan::new(words.trim(), "DejaVu Sans", 8.0)],
+                origin: Point::new(300.0, 300.0),
+                frame: None,
+                align: TextAlign::Left,
+                para: Default::default(),
+                on_path: None,
+            })
+            .unwrap();
+        let mut tri = BezPath::new();
+        tri.move_to((50.0, 20.0));
+        tri.line_to((90.0, 100.0));
+        tri.line_to((10.0, 100.0));
+        tri.close_path();
+        let s = app
+            .new_shape(ShapeKind::Path {
+                path: tri.clone(),
+                closed: true,
+            })
+            .unwrap();
+        // One object alone is not enough.
+        app.select(vec![t]);
+        app.put_text_inside_shape();
+        assert_eq!(app.status, tr("status.inside_needs_text_and_shape"));
+        app.select(vec![t, s]);
+        app.put_text_inside_shape();
+        assert_eq!(app.status, tr("status.text_put_inside"));
+        let inside = |app: &App| {
+            let text = app.doc().find_shape(t).unwrap().clone();
+            let outline = app.doc().find_shape(s).unwrap().page_path();
+            let ink = text.page_path();
+            let b = ink.bounding_box();
+            assert!(b.width() > 20.0 && b.height() > 20.0, "{b:?}");
+            // Every corner of every letter is in the triangle.
+            let mut n = 0;
+            for el in ink.elements() {
+                let p = match el {
+                    tracedraw_core::geometry::PathEl::MoveTo(p)
+                    | tracedraw_core::geometry::PathEl::LineTo(p) => *p,
+                    _ => continue,
+                };
+                n += 1;
+                assert!(outline.winding(p) != 0, "{p:?} is outside");
+            }
+            assert!(n > 50);
+            b
+        };
+        let b = inside(&app);
+        assert!(matches!(
+            &app.doc().find_shape(t).unwrap().kind,
+            ShapeKind::Text { frame: Some(_), para, .. } if para.inside == Some(s)
+        ));
+        // The text is over the shape.
+        let (_, it) = app.doc().locate(t).unwrap();
+        let (_, is) = app.doc().locate(s).unwrap();
+        assert!(it > is);
+        // The shape alone moved a little: the lines follow its outline.
+        app.select(vec![s]);
+        app.run(Command::TransformShapes {
+            shapes: vec![s],
+            transform: Affine::translate((6.0, 0.0)),
+        });
+        let moved = inside(&app);
+        assert!(moved.x0 > b.x0 + 1.0, "{b:?} {moved:?}");
+        // Both duplicated: the copy of the text is inside the copy of
+        // the shape, not the original.
+        let originals = vec![
+            app.doc().find_shape(t).unwrap().clone(),
+            app.doc().find_shape(s).unwrap().clone(),
+        ];
+        let mut n = 9000;
+        let mut copies: Vec<Shape> = originals
+            .iter()
+            .map(|o| {
+                o.with_fresh_ids(&mut || {
+                    n += 1;
+                    ShapeId(n)
+                })
+            })
+            .collect();
+        relink_copies(&originals, &mut copies);
+        assert!(matches!(
+            &copies[0].kind,
+            ShapeKind::Text { para, .. } if para.inside == Some(copies[1].id)
+        ));
+        let mut alone = vec![copies[0].clone()];
+        relink_copies(&originals[..1], &mut alone);
+        assert!(matches!(
+            &alone[0].kind,
+            ShapeKind::Text { para, .. } if para.inside.is_none()
+        ));
+        // One step back takes the whole command back.
+        app.undo();
+        app.undo();
+        assert!(matches!(
+            &app.doc().find_shape(t).unwrap().kind,
+            ShapeKind::Text { frame: None, para, .. } if para.inside.is_none()
+        ));
     }
 }

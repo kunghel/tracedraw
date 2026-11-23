@@ -183,6 +183,29 @@ With the Pick tool the selected live fit shows two handles:
 
 Each handle drag is one undo step.
 
+### Strokes read from `.cdr` files
+
+A brush stroke a `.cdr` file links to its curve (#3680; the
+reader marks the curve with the stroke's objects, see `cdr-format.md`)
+opens as a live fit of those objects to the curve, when they lie on it
+as a fit places them. The settings are measured from the objects, taken
+from the start of the curve: the first object is the one fitted (turned
+back to how it lies along the path), the others are its copies; spaced by
+distance (the steps between the first and the last, in microns), copies
+filling the path, turned with it by the turn the first object has from
+the path's direction (thousandths of a degree, -180 to 180), starting
+where the first one's centre lands; a centre off the path places the
+objects above it with the side that makes up the shift (negative when
+the object straddles the path), and an end offset keeps the count the
+file's when the path has room for more. The fit worked out from those
+settings must put every node of every object within 0.15 mm of where
+the file drew it; otherwise the objects stay plain objects. Either way
+the mark goes; nothing is added to undo
+(`fit_live::tests::a_brush_stroke_read_from_a_cdr_file_opens_live`,
+`a_stroke_whose_objects_do_not_follow_a_fit_stays_as_drawn`). The
+objects keep the file's look until the curve or an object changes; then
+the fit places them (within that tolerance of the file).
+
 ## Preview
 
 The preview is worked out again only when the settings, the selection or

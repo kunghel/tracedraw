@@ -134,7 +134,7 @@ La page a cinq onglets.
 
 - [[benchmark.quick]]: [[benchmark.quick_tip]]
 - [[benchmark.advanced]]: [[benchmark.advanced_tip]] [[benchmark.advanced_warning]]
-- [[benchmark.zoom_title]]: [[benchmark.zoom_smooth]], [[benchmark.zoom_corel]] ([[benchmark.zoom_corel_tip]]) [[benchmark.zoom_light]].
+- [[benchmark.zoom_title]]: [[benchmark.zoom_smooth]], [[benchmark.zoom_instant]] ([[benchmark.zoom_instant_tip]]) [[benchmark.zoom_light]].
 - [[benchmark.test_without_card]]: [[benchmark.restart_tip]]
 
 [[options.light_zoom]]: [[options.light_zoom_tip]]

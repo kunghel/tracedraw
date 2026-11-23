@@ -64,7 +64,7 @@ pub fn entries(doc: &Document) -> Vec<TocEntry> {
         }
         found.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.total_cmp(&b.0)));
         let label = field
-            .map(|f| f.label(index))
+            .map(|f| f.label_in(index, doc.pages.len()))
             .filter(|l| !l.is_empty())
             .unwrap_or_else(|| (index + 1).to_string());
         out.extend(found.into_iter().map(|(_, _, level, text)| TocEntry {
@@ -302,6 +302,7 @@ mod tests {
             style: 2,
             prefix: String::new(),
             suffix: String::new(),
+            ..Default::default()
         });
         let mut layer = Layer::new(master, "Master");
         layer.shapes.push(number);

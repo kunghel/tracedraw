@@ -12,6 +12,8 @@ Intermediate objects between a start and an end object.
 | Loop | off | with a rotation, the steps' centres leave the straight way and curve from the start to the end (a half circle at 180 degrees, a curl through the middle at 360) |
 | Blend along full path | off | along a path, the first and last steps sit on the path's ends |
 | Start / End on path | 0 %, 100 % | along a path, where the start and end objects sit, in % of its length, either way round (#2946) |
+| Bend (no path) | straight | the round handle in the middle of the line, Blend tool: the steps follow a curve from the start object's centre to the end object's through the handle (`BlendOptions::bend`, the curve's middle offset from the straight line's); spacing and Rotate all objects apply along it; dropped within 4 screen pixels of the straight line, or Straighten in the panel, straight again |
+| Blend object by object | off | two groups: each object of the start group (at any depth) blends into the matching one of the end group, the fewer spread over the more in order, each in its own colours; step `k` is a group of the pairs' steps `k`, turned and placed along the path or bend as a whole (`BlendOptions::by_parts`); off, or with one end not a group, each end blends as one outline |
 | Apply to sizing | off | the object acceleration changes the steps' outlines and sizes too |
 | Color blend | Direct | Direct (straight through RGB), Clockwise (hue increasing), Counterclockwise (hue decreasing), through HSB |
 
@@ -25,7 +27,8 @@ Not yet: mapping nodes, splitting and fusing.
 Two picture buttons choose Steps or Spacing (Spacing only for a blend
 on a path), then the Steps and Spacing fields (the one not chosen is
 greyed), Rotation, Loop (with a rotation), Blend along full path,
-Rotate all objects and Start on path / End on path (with a path). Under "Acceleration" the Object and
+Rotate all objects and Start on path / End on path (with a path),
+Blend object by object, and Straighten (with a bent line). Under "Acceleration" the Object and
 Color sliders, Apply to sizing, Link acceleration (the colour slider
 follows the object one and is greyed) and Reset (both back to even).
 Under "Color Blend" three picture buttons: Direct, Clockwise and
@@ -109,8 +112,12 @@ group or placed inside a frame
 
 Both objects stay objects of the drawing. The start object holds the
 Blend effect, which names the end object and keeps a copy of it in page
-space (its own effects left out) for drawing the steps; the end object
-draws itself (`blend_link.rs`). After every change of the drawing, in
+space (its own effects left out, but for envelopes and perspectives,
+so the steps run to the end as it is drawn, #3969) for drawing the
+steps; the end object draws itself (`blend_link.rs`). A blend grouped
+and bent by the group's envelope keeps every step where it was when the
+group is ungrouped: each object takes the envelope (#3714) and the copy
+of the end keeps it. After every change of the drawing, in
 the same undo step:
 
 - the end object moved, resized, turned or recoloured: the copy is
@@ -287,6 +294,7 @@ of its own) stays a drawn group.
 
 - `ui::effect_bars::tests::the_blend_bar_edits_the_selected_blend`
 - `blend_link::tests::the_end_object_stays_and_the_steps_follow_it`
+- `blend_link::tests::an_ungrouped_bent_blend_keeps_its_steps`
 - `write::tests::a_blend_goes_out_live_from_version_9`,
   `a_blend_whose_end_is_its_own_goes_out_live_with_the_end_as_an_object`,
   `a_text_blend_opens_live_again`,

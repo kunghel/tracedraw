@@ -228,6 +228,7 @@ pub fn begin(ctx: &egui::Context) -> Instant {
 /// The end of a step of the frame being built, named for the slow-frame
 /// log: the time since the step before (or the frame's start) is its.
 pub fn mark(name: &'static str) {
+    crate::hang_watch::mark(name);
     MARKS.with(|m| m.borrow_mut().push((name, Instant::now())));
 }
 

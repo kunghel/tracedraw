@@ -23,6 +23,7 @@
 //! failure: opening a file must always yield a document.
 #![forbid(unsafe_code)]
 
+pub mod artistic;
 mod bitmap_effects;
 mod blend_record;
 pub mod check;
@@ -228,6 +229,24 @@ pub fn open_bytes_keeping(
     // An RGB document stays one (#3425).
     if let Some(mode) = container::primary_color_mode(bytes, &container) {
         doc_report.0.metadata.primary_color_mode = mode;
+    }
+    // Author, subject, keywords, copyright, notes and rating (#3411).
+    if let Some(info) = container::document_info(bytes, &container) {
+        let md = &mut doc_report.0.metadata;
+        for (field, value) in [
+            (&mut md.author, info.author),
+            (&mut md.subject, info.subject),
+            (&mut md.keywords, info.keywords),
+            (&mut md.copyright, info.copyright),
+            (&mut md.notes, info.notes),
+        ] {
+            if !value.is_empty() {
+                *field = value;
+            }
+        }
+        if info.rating > 0 {
+            md.rating = info.rating;
+        }
     }
     for n in notes {
         doc_report.1.warn(n);

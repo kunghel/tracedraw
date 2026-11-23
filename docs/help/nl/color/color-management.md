@@ -76,3 +76,9 @@ CMYK-inkten niet kunnen afdrukken, zien er doffer uit. Het paneel
 
 Zonder geladen profielen zet TraceDraw kleuren om met een eigen model van
 proceskleuren op gestreken papier.
+
+[[menu.view > menu.view.separations]] toont de pagina zoals één inkt die
+afdrukt, in de kleur van die inkt: kies cyaan, magenta, geel, zwart of een
+steunkleur van de tekening, en alleen wat die inkt afdrukt is te zien. U blijft
+gewoon tekenen en bewerken; de tekening zelf verandert niet.
+[[menu.view.separations_composite]] toont weer alle inkten.

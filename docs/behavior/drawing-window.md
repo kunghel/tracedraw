@@ -213,18 +213,34 @@ window shows.
   wait for the view to rest: the last render, scaled into place, would
   look blurry, so the main canvas renders the new zoom at once on a
   thread of its own (`raster::Raster::zooms_at_once`), the scaled
-  picture showing meanwhile. A zoom step that comes while that render
-  runs does not restart it (nothing is thrown away): when it ends its
-  picture is shown, nearer the zoom on screen than the one before, and
-  the next render starts in the same frame for the latest zoom. A burst
-  of wheel notches so shows a sharper picture after every render, and
-  the sharp one about one render after the last step instead of 0.12 s
-  plus a render. Like every render it covers only the canvas, the part
-  of the page on screen, drawn in bands on all cores at once (so the
-  whole visible part comes about as fast as a tile under the pointer
-  would). The pages beside the current one in the Multipage View still
-  wait for the view to rest (many of them come due at once), and the
-  browser build, which draws on one thread, keeps the wait too.
+  picture showing meanwhile. The steps of a zoom the view is already
+  moving in are skipped while that render is on its way: the running
+  render keeps its turn, and when it is done, for a zoom the view has
+  already left, the next render starts at once, for the zoom the view
+  is at, the turn not left idle for the wheel to rest (so a long turn
+  costs one render a landing, not a give up and a start over at every
+  notch). A render still on its way when the wheel has rested is asked
+  to give up at its next object (#2522), after a wait that follows the
+  wheel's own pace, one and a half the gap between the last two
+  notches, between 0.04 s (`raster::ZOOM_SETTLE_MIN`) and 0.12 s
+  (`raster::SETTLE_SECONDS`). With the wheel's glide the picture on the
+  way is drawn for the view the glide lands at (`raster::zoom_target`),
+  and the view is put at that view when the glide ends, so the landing
+  is sharp as soon as that render is.
+  Like every render it covers only the canvas, the part of the page on
+  screen, drawn in bands on all cores at once (so the whole visible
+  part comes about as fast as a tile under the pointer would). The
+  pages beside the current one in the Multipage View still wait for the
+  view to rest (many of them come due at once), and the browser build,
+  which draws on one thread, keeps the wait too.
+  The pictures of the last zooms are kept, of the drawing as it stands
+  (at most 6, and at most 96 MB of them, the oldest dropped first;
+  any change of the drawing, the page or the canvas drops them, #3894).
+  While a zoom's own picture is drawn, the kept picture nearest in zoom
+  that covers all the window shows, scaled, instead of the last one, so
+  a zoom out and back shows a sharp picture at once; coming back to
+  exactly a zoom and place shown before shows its picture with no
+  render at all (`raster::tests::coming_back_to_a_zoom_shows_its_kept_picture_at_once`).
   `frame_times_of_a_zoom_burst` (in `pick_drag_tests.rs`) measures the
   wait from the last step to the sharp picture.
 - The main canvas's picture drawn on a thread comes a band at a time
@@ -233,7 +249,7 @@ window shows.
   it, each laid over the last picture as soon as it is done
   (`Raster::incoming`, a see-through texture the picture's size). After
   a zoom on a large drawing the window sharpens from the middle out
-  while the rest is still drawn, as CorelDRAW fills its window in,
+  while the rest is still drawn,
   instead of showing the scaled, blurry picture until the whole new one
   is ready (discussion #2389). The bands of a render that gave up are
   not shown; the pages beside the current one come whole.
@@ -244,6 +260,11 @@ window shows.
   showed twice as dark there, with a seam where the bands ended, and
   flickered while kerning or dragging re-rendered it every frame
   (#3639, `raster::tests::the_bands_so_far_cover_their_rows_on_screen`).
+  Bands come only over a picture of the same drawing (the
+  view moved): the picture of a change (each step of a shadow or object
+  being dragged) comes whole, since bands over the picture from before
+  it showed both at once, cut along the bands' edges (#3562,
+  `raster::tests::a_change_comes_whole_and_a_moved_view_in_bands`).
 - Only what can show is drawn: an object (or, inside a group, each of
   its objects) whose bounds, grown by what its outline may reach, lie
   wholly off the canvas is skipped, while objects with effects or a

@@ -107,6 +107,8 @@ pub enum PatternAction {
     CreateBitmap,
     /// A picture file as a bitmap pattern on the selection.
     ImportBitmap,
+    /// Choose the folder of pictures the bitmap picker lists (#3323).
+    ChooseFolder,
 }
 
 /// The pickers' link to the drawing: its patterns, fetched when first
@@ -115,6 +117,10 @@ pub struct PatternPickers<'a> {
     library: Option<PatternLibrary>,
     fetch: &'a dyn Fn() -> PatternLibrary,
     pub action: Option<PatternAction>,
+    /// The folder of pictures the bitmap picker lists (#3323).
+    pub folder: Option<std::path::PathBuf>,
+    /// A picture of that folder picked as the tile.
+    pub file: Option<std::path::PathBuf>,
 }
 
 impl<'a> PatternPickers<'a> {
@@ -123,6 +129,8 @@ impl<'a> PatternPickers<'a> {
             library: None,
             fetch,
             action: None,
+            folder: None,
+            file: None,
         }
     }
 
@@ -199,14 +207,150 @@ impl App {
             }
             PatternAction::ImportBitmap => {
                 crate::files::Dialog::new()
-                    .add_filter(
-                        tr("file.images"),
-                        &["png", "jpg", "jpeg", "gif", "bmp", "webp", "tif", "tiff"],
-                    )
+                    .add_filter(tr("file.images"), &PICTURE_EXTENSIONS)
                     .pick_file(self, |app, path| app.import_pattern_bitmap(&path));
+            }
+            PatternAction::ChooseFolder => {
+                if let crate::files::FolderAction::PickFolder(token) =
+                    crate::files::FolderUse::PatternFolder.action()
+                {
+                    let start = self.settings.pattern_folder.clone();
+                    crate::files::pick_folder_with(token, start.as_deref(), |app, dir| {
+                        app.settings.pattern_folder = Some(dir);
+                        app.save_settings();
+                    });
+                }
             }
         }
     }
+}
+
+/// The picture files of the pattern folder `dir` (not its subfolders),
+/// sorted by name, at most [`MAX_FOLDER_PICTURES`] (#3323).
+pub fn folder_pictures(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return Vec::new();
+    };
+    let mut out: Vec<std::path::PathBuf> = entries
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| {
+            p.is_file()
+                && p.extension()
+                    .and_then(|e| e.to_str())
+                    .map(str::to_ascii_lowercase)
+                    .is_some_and(|e| PICTURE_EXTENSIONS.contains(&e.as_str()))
+        })
+        .collect();
+    out.sort();
+    out.truncate(MAX_FOLDER_PICTURES);
+    out
+}
+
+/// The picture files a pattern tile is read from.
+pub const PICTURE_EXTENSIONS: [&str; 8] =
+    ["png", "jpg", "jpeg", "gif", "bmp", "webp", "tif", "tiff"];
+
+/// The most pictures of a folder the picker lists.
+pub const MAX_FOLDER_PICTURES: usize = 500;
+
+/// The side of a folder picture's thumbnail in the picker, points.
+const THUMB: f32 = 32.0;
+
+/// The pattern folder's pictures in the bitmap picker's list (#3323): a
+/// row each, its thumbnail and file name; the one clicked is returned.
+/// The list is read again every two seconds while shown, and the
+/// thumbnails are made a few a frame, kept until the folder changes.
+pub fn folder_rows(ui: &mut Ui, dir: &std::path::Path) -> Option<std::path::PathBuf> {
+    type Listing = (std::path::PathBuf, f64, Vec<std::path::PathBuf>);
+    type Thumbs = (
+        std::path::PathBuf,
+        std::collections::HashMap<std::path::PathBuf, Option<egui::TextureHandle>>,
+    );
+    let ctx = ui.ctx().clone();
+    let now = ctx.input(|i| i.time);
+    let list_id = egui::Id::new("pattern_folder_list");
+    let thumbs_id = egui::Id::new("pattern_folder_thumbs");
+    let listing = ctx
+        .data(|d| d.get_temp::<Listing>(list_id))
+        .filter(|(d, t, _)| d == dir && now - t < 2.0);
+    let files = match listing {
+        Some((_, _, files)) => files,
+        None => {
+            let files = folder_pictures(dir);
+            ctx.data_mut(|d| d.insert_temp(list_id, (dir.to_path_buf(), now, files.clone())));
+            files
+        }
+    };
+    let mut thumbs = ctx
+        .data(|d| d.get_temp::<Thumbs>(thumbs_id))
+        .filter(|(d, _)| d == dir)
+        .unwrap_or_else(|| (dir.to_path_buf(), Default::default()));
+    let mut made = 0;
+    let mut picked = None;
+    if files.is_empty() {
+        ui.weak(tr("docker.pattern_folder_empty"));
+    }
+    for f in &files {
+        if !thumbs.1.contains_key(f) && made < 3 {
+            made += 1;
+            thumbs.1.insert(f.clone(), thumbnail(&ctx, f));
+        }
+        let name = f
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        let clicked = ui
+            .horizontal(|ui| {
+                let (rect, _) = ui.allocate_exact_size(Vec2::splat(THUMB), egui::Sense::hover());
+                match thumbs.1.get(f) {
+                    Some(Some(t)) => {
+                        let size = t.size_vec2();
+                        let scale = (THUMB / size.x.max(size.y)).min(1.0);
+                        let r = Rect::from_center_size(rect.center(), size * scale);
+                        ui.painter().image(
+                            t.id(),
+                            r,
+                            Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+                            egui::Color32::WHITE,
+                        );
+                    }
+                    _ => {
+                        ui.painter().rect_stroke(
+                            rect.shrink(4.0),
+                            2.0,
+                            egui::Stroke::new(1.0, ui.visuals().weak_text_color()),
+                            egui::StrokeKind::Inside,
+                        );
+                    }
+                }
+                ui.selectable_label(false, name).clicked()
+            })
+            .inner;
+        if clicked {
+            picked = Some(f.clone());
+        }
+    }
+    if files.iter().any(|f| !thumbs.1.contains_key(f)) {
+        ctx.request_repaint();
+    }
+    ctx.data_mut(|d| d.insert_temp(thumbs_id, thumbs));
+    picked
+}
+
+/// A small picture of the file at `path` for the picker; `None` when it
+/// cannot be read.
+fn thumbnail(ctx: &egui::Context, path: &std::path::Path) -> Option<egui::TextureHandle> {
+    let bytes = crate::files::read(path).ok()?;
+    let img = image::load_from_memory(&bytes).ok()?;
+    let side = (THUMB * 2.0) as u32;
+    let small = img.thumbnail(side, side).to_rgba8();
+    let size = [small.width() as usize, small.height() as usize];
+    let color = egui::ColorImage::from_rgba_unmultiplied(size, small.as_raw());
+    Some(ctx.load_texture(
+        format!("pattern_folder:{}", path.display()),
+        color,
+        egui::TextureOptions::LINEAR,
+    ))
 }
 
 /// The name a picker shows for a library pattern: its number and size.
@@ -465,6 +609,73 @@ mod tests {
             tile: Size::new(tile, tile),
             placement: Default::default(),
         }
+    }
+
+    /// The pattern folder (#3323): its pictures are listed by name, other
+    /// files left out, each gets a thumbnail in the picker, and the one
+    /// picked becomes the selection's bitmap pattern.
+    #[test]
+    fn the_pattern_folders_pictures_are_listed_and_one_becomes_the_tile() {
+        let dir = std::env::temp_dir().join(format!("td-pattern-folder-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("sub")).expect("dir");
+        let png = |w, h| {
+            let mut pm = tiny_skia::Pixmap::new(w, h).unwrap();
+            pm.fill(tiny_skia::Color::from_rgba8(0, 128, 255, 255));
+            pm.encode_png().unwrap()
+        };
+        std::fs::write(dir.join("b.png"), png(3, 2)).expect("b");
+        std::fs::write(dir.join("a.PNG"), png(2, 2)).expect("a");
+        std::fs::write(dir.join("notes.txt"), "x").expect("txt");
+        std::fs::write(dir.join("sub/c.png"), png(2, 2)).expect("c");
+        let files = folder_pictures(&dir);
+        let names: Vec<_> = files
+            .iter()
+            .map(|f| f.file_name().unwrap().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(names, ["a.PNG", "b.png"]);
+        // Shown in a list: nothing picked, a thumbnail made for each.
+        let ctx = egui::Context::default();
+        for _ in 0..2 {
+            let mut out = ctx.run_ui(Default::default(), |ui| {
+                assert_eq!(folder_rows(ui, &dir), None);
+            });
+            out.textures_delta.clear();
+        }
+        type Thumbs = (
+            std::path::PathBuf,
+            std::collections::HashMap<std::path::PathBuf, Option<egui::TextureHandle>>,
+        );
+        let thumbs = ctx
+            .data(|d| d.get_temp::<Thumbs>(egui::Id::new("pattern_folder_thumbs")))
+            .expect("thumbnails");
+        assert!(files
+            .iter()
+            .all(|f| matches!(thumbs.1.get(f), Some(Some(_)))));
+        // The one picked fills the selection.
+        let mut app = App::headless();
+        let id = app
+            .new_shape(ShapeKind::Rect {
+                rect: Rect::new(10.0, 10.0, 30.0, 30.0),
+                radius: 0.0,
+                corners: None,
+            })
+            .expect("rect");
+        app.select(vec![id]);
+        app.import_pattern_bitmap(&files[1]);
+        let _ = std::fs::remove_dir_all(&dir);
+        let fill = &app.doc().shape_on_page(id).expect("shape").fill;
+        assert!(
+            matches!(
+                fill,
+                Fill::Pattern(Pattern::Bitmap {
+                    width_px: 3,
+                    height_px: 2,
+                    ..
+                })
+            ),
+            "{fill:?}"
+        );
     }
 
     /// The library holds each vector and bitmap pattern of the drawing

@@ -129,6 +129,8 @@ pub struct NewDocSettings {
     pub gray_profile: String,
     pub intent: String,
     pub saved_presets: Vec<SavedPreset>,
+    /// Color settings was left open: the next dialog shows it open (#4058).
+    pub color_settings_open: bool,
 }
 
 impl Default for NewDocSettings {
@@ -142,6 +144,7 @@ impl Default for NewDocSettings {
             gray_profile: GRAY_PROFILES[0].into(),
             intent: INTENTS[1].into(),
             saved_presets: Vec::new(),
+            color_settings_open: false,
         }
     }
 }
@@ -254,6 +257,8 @@ pub struct NewDocState {
     /// The ICC profiles installed on this computer, looked up once the
     /// colour settings are first shown (#1033).
     pub found: Option<Vec<FoundProfile>>,
+    /// The Width box takes the keyboard when the dialog shows (#3886).
+    pub focus_width: bool,
 }
 
 impl NewDocState {
@@ -262,9 +267,10 @@ impl NewDocState {
             name,
             settings: settings.clone(),
             dont_show: false,
-            color_settings_open: false,
+            color_settings_open: settings.color_settings_open,
             saving_preset: None,
             found: None,
+            focus_width: true,
         }
     }
 
@@ -350,7 +356,13 @@ pub fn new_document_dialog(app: &mut App, ctx: &Context, st: &mut NewDocState, c
                 at(0.0, y + 14.0).y,
                 &tr("dialog.name"),
             );
-            chrome::text_field(ui, field(FIELD_X, y, WIDE), &mut st.name);
+            // A Hebrew or Arabic name reads right to left (#3885).
+            crate::ui::save_as::name_edit_at(
+                ui,
+                field(FIELD_X, y, WIDE),
+                &mut st.name,
+                egui::Id::new("newdoc_name_field"),
+            );
             tip(
                 ui,
                 field(FIELD_X, y, WIDE),
@@ -491,6 +503,9 @@ pub fn new_document_dialog(app: &mut App, ctx: &Context, st: &mut NewDocState, c
                 .clicked()
             {
                 st.color_settings_open = !st.color_settings_open;
+                // Remembered at once, OK or Cancel (#4058).
+                st.settings.color_settings_open = st.color_settings_open;
+                app.settings.new_document.color_settings_open = st.color_settings_open;
             }
             y += 29.0;
             if st.color_settings_open {
@@ -685,6 +700,46 @@ fn dimensions(
         &crate::ui::tips::keyed("newdoc.page_size"),
     );
     y += ROW_PITCH;
+    // The dialog opens with Width taking the keyboard, and Tab goes from
+    // Width straight to Height (Shift+Tab back), past the units, so a
+    // page size is typed without the mouse (#3886).
+    let (width_box, height_box) = (
+        chrome::number_edit_id("newdoc_width"),
+        chrome::number_edit_id("newdoc_height"),
+    );
+    // Asked for until it holds: a window's first frame only measures it.
+    if st.focus_width {
+        if ui.memory(|m| m.has_focus(width_box)) {
+            st.focus_width = false;
+        } else {
+            ui.memory_mut(|m| m.request_focus(width_box));
+        }
+    }
+    // The key's own modifiers, as egui moves the focus by them.
+    let (tab, shift_tab) = ui.input(|i| {
+        i.events.iter().fold((false, false), |(t, st), e| match e {
+            egui::Event::Key {
+                key: egui::Key::Tab,
+                pressed: true,
+                modifiers,
+                ..
+            } => (t || !modifiers.any(), st || modifiers.shift_only()),
+            _ => (t, st),
+        })
+    });
+    ui.memory_mut(|m| {
+        let to = if tab && m.has_focus(width_box) {
+            Some(height_box)
+        } else if shift_tab && m.has_focus(height_box) {
+            Some(width_box)
+        } else {
+            None
+        };
+        if let Some(to) = to {
+            m.move_focus(egui::FocusDirection::None);
+            m.request_focus(to);
+        }
+    });
     // Width and the units.
     label(ui, y, "newdoc.width");
     if length(
@@ -966,6 +1021,78 @@ fn orientation_button(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Color settings opens as it was left, and the choice survives the
+    /// settings file (#4058).
+    #[test]
+    fn color_settings_open_is_remembered() {
+        let st = NewDocState::from_settings(&NewDocSettings::default(), "A".into());
+        assert!(!st.color_settings_open);
+        let saved = NewDocSettings {
+            color_settings_open: true,
+            ..NewDocSettings::default()
+        };
+        let back: NewDocSettings =
+            serde_json::from_str(&serde_json::to_string(&saved).unwrap()).unwrap();
+        let st = NewDocState::from_settings(&back, "B".into());
+        assert!(st.color_settings_open);
+    }
+
+    /// The dialog opens with Width taking the keyboard, its number
+    /// selected; Tab goes straight to Height, its number selected too,
+    /// so a page size is typed without the mouse (#3886).
+    #[test]
+    fn tab_goes_from_width_straight_to_height() {
+        let ctx = crate::theme::ui_context();
+        let mut app = App::headless();
+        let mut st = NewDocState::from_settings(&NewDocSettings::default(), "Untitled".into());
+        st.settings.values.units = Units::Millimeters.id().into();
+        let mut close = false;
+        let tab = |modifiers| egui::Event::Key {
+            key: egui::Key::Tab,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers,
+        };
+        let mut frame = |app: &mut App, st: &mut NewDocState, events: Vec<egui::Event>| {
+            let input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1400.0, 900.0),
+                )),
+                events,
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(input, |ui| {
+                new_document_dialog(app, &ui.ctx().clone(), st, &mut close)
+            });
+            out.textures_delta.clear();
+        };
+        let width_box = crate::ui::chrome::number_edit_id("newdoc_width");
+        let height_box = crate::ui::chrome::number_edit_id("newdoc_height");
+        frame(&mut app, &mut st, Vec::new());
+        frame(&mut app, &mut st, Vec::new());
+        assert!(
+            ctx.memory(|m| m.has_focus(width_box)),
+            "Width has the keyboard"
+        );
+        frame(&mut app, &mut st, vec![egui::Event::Text("200".into())]);
+        frame(&mut app, &mut st, vec![tab(egui::Modifiers::NONE)]);
+        frame(&mut app, &mut st, Vec::new());
+        assert!(ctx.memory(|m| m.has_focus(height_box)), "one Tab: Height");
+        let width = st.settings.values.width_mm;
+        assert!((width - 200.0).abs() < 1e-6, "{width}");
+        frame(&mut app, &mut st, vec![egui::Event::Text("400".into())]);
+        frame(&mut app, &mut st, vec![tab(egui::Modifiers::SHIFT)]);
+        frame(&mut app, &mut st, Vec::new());
+        assert!(
+            ctx.memory(|m| m.has_focus(width_box)),
+            "Shift+Tab: back to Width"
+        );
+        let height = st.settings.values.height_mm;
+        assert!((height - 400.0).abs() < 1e-6, "{height}");
+    }
 
     #[test]
     fn build_makes_the_pages_size_resolution_and_colour_mode() {

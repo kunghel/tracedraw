@@ -80,11 +80,37 @@
   for slow computers. A notch zooms its whole step at once, without the
   glide, and the canvas keeps the last picture scaled while the zoom
   goes on, drawing the drawing anew once the view has rested 0.3 s
-  (`raster::LIGHT_SETTLE_SECONDS`) instead of starting a render at every
-  step. A three-notch wheel turn with the glide starts 6 renders (each
-  frame of the glide gives up the last one); with Light zoom, 1
+  (`raster::LIGHT_SETTLE_SECONDS`), for the zoom the wheel stopped at
   (`raster::tests::light_zoom_renders_once_when_the_zoom_stops`,
   `pick_drag_tests::light_zoom_draws_once_per_wheel_turn`).
+  A turn of one notch starts 1 render with the glide, 1 with Light
+  zoom. With the glide the picture on the way is drawn for the
+  view the glide lands at (`raster::zoom_target`, from
+  `ZoomGlide::target_view`), not for the zoom the frames are passing
+  through: the turn's render is not spent on a zoom the glide has
+  already passed, and when the glide ends the view is put at that same
+  view (`ZoomGlide::land`), the picture fitting the landing to the bit
+  (`view_motion::tests::the_glide_lands_on_the_view_it_was_aimed_at`,
+  `raster::tests::the_picture_of_a_glide_is_drawn_for_the_view_it_lands_at`).
+  A pan while the glide goes folds the glide's aim into the panned
+  view, the point the pan put under the anchor staying there
+  (`view_motion::tests::a_pan_while_the_glide_goes_folds_into_its_landing`).
+  The first step of a zoom renders at once; the steps after it are
+  skipped while that render is on its way, the running render keeping
+  its turn
+  (`raster::tests::the_latest_zoom_wins_without_restarting_renders`),
+  and when it is done, for a zoom the view has already left, the next
+  render starts at once, for the view the glide lands at then, or,
+  without the glide, the zoom the view is at, the turn not left
+  idle for the wheel to rest
+  (`raster::tests::a_zoom_burst_skips_steps_until_the_view_settles`).
+  A render still on its way when the wheel has rested is asked to give
+  up at its next object, after a wait that follows the wheel's own
+  pace: one and a half the gap between the last two notches, at the
+  least 0.04 s (`raster::ZOOM_SETTLE_MIN`), at most 0.12 s
+  (`raster::SETTLE_SECONDS`), so a wheel that has stopped is told from
+  one that goes on a few frames later, and a slow turn's render lands
+  between the notches.
 - With the Scroll setting: the wheel scrolls vertically; Shift+wheel
   scrolls horizontally; Ctrl+wheel zooms.
 - A trackpad pinch zooms by the gesture's factor with either setting.
@@ -163,6 +189,23 @@
   the view there (and follows the pointer while held) and its release
   closes the pop-up; a press anywhere else or Esc closes it. Check:
   `ui::window_bars::tests::view_navigator_has_the_key_n`.
+
+## Progressive preview memory
+
+The desktop canvas assembles completed render bands directly into one
+output picture. Finished bands are released after their preview callback;
+they do not accumulate into another whole picture before assembly. The
+assembly lock is released before the callback, so a slow consumer does
+not hold up workers copying other bands. Cancellation discards the
+incomplete output and never returns it as a finished picture (#3883).
+
+This reduces temporary band storage; it does not cap image decoding,
+effect buffers, or the interface's queued texture uploads. The synthetic
+`progressive_memory::progressive_assembly_does_not_retain_a_second_picture`
+regression measures live allocations, checks the pixels, and exercises
+cancellation before rendering and from a preview callback. Run that test
+binary alone on at least two CPUs, preferably in a memory-limited
+container.
 
 ## Checks
 

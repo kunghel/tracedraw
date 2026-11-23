@@ -12,8 +12,8 @@ zooming in.
   [[menu.view.snap_document_grid]] (<kbd>Ctrl+Y</kbd>),
   [[menu.view.snap_baseline_grid]], [[menu.view.snap_guidelines]],
   [[menu.view.snap_objects]] (<kbd>Alt+Z</kbd>) and [[menu.view.snap_page]] on
-  and off. At first guidelines and the page are on and objects are off, so
-  a moved object goes where the pointer puts it; turned on, objects stay on. The baseline grid
+  and off. At first guidelines, the page and objects are on; turned off,
+  objects stay off. The baseline grid
   works on its own too: with only it on, nodes and objects snap to its lines.
 - [[menu.view.snap_off]] (<kbd>Alt+Q</kbd>) turns all snapping off and on
   again.
@@ -45,7 +45,10 @@ of the options; see [TraceDraw options](../customize/options-app.md#snapping).
 When you start moving a selection with the [[tool.pick]] tool on one of its
 points (a node, a midpoint or the center), that point is carried onto the
 other object's point or edge. Otherwise the edges and center of the
-selection's box snap to guidelines, grids, the page and other objects. The
+selection's box snap to guidelines, grids, the page and the objects beside,
+above or below it: an object only pulls the box when the two face each
+other, so a move away from other objects goes where the pointer puts it.
+To line up with objects farther away, turn on alignment guides. The
 handles snap while you resize.
 
 ## Dynamic and alignment guides {#dynamic-guides}

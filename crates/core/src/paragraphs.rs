@@ -47,6 +47,10 @@ pub struct ParagraphFormat {
     /// Left to right or right to left; not in older files.
     #[serde(skip_serializing_if = "crate::document::TextDirection::is_left_to_right")]
     pub direction: crate::document::TextDirection,
+    /// Kashida in justified Arabic-script lines (#3827); not in older
+    /// files.
+    #[serde(skip_serializing_if = "crate::document::Kashida::is_off")]
+    pub kashida: crate::document::Kashida,
 }
 
 impl Default for ParagraphFormat {
@@ -79,6 +83,7 @@ impl ParagraphFormat {
             tabs: p.tabs.clone(),
             hyphenate: p.hyphenate,
             direction: p.direction,
+            kashida: p.kashida,
         }
     }
 
@@ -104,6 +109,7 @@ impl ParagraphFormat {
         p.tabs = self.tabs.clone();
         p.hyphenate = self.hyphenate;
         p.direction = self.direction;
+        p.kashida = self.kashida;
         self.align
     }
 
@@ -138,7 +144,8 @@ impl ParagraphFormat {
             drop_cap_lines,
             tabs,
             hyphenate,
-            direction
+            direction,
+            kashida
         );
     }
 }

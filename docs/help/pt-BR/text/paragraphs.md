@@ -51,6 +51,17 @@ marcadores sem a caixa de diálogo: no texto de parágrafo selecionado, ou
 nos parágrafos onde está o cursor enquanto você digita. O marcador mantém
 o símbolo e o recuo definidos para ele.
 
+Na mesma caixa de diálogo, [[dialog.bullet_color]] e [[dialog.bullet_style]]
+dão ao marcador ou número cor, negrito e itálico próprios em vez dos da
+primeira letra. Para uma lista dentro de outra,
+[[menu.text > menu.text.list_level_down]] leva os parágrafos um
+nível para dentro e [[menu.text > menu.text.list_level_up]] os traz de
+volta (a caixa de diálogo também tem o [[dialog.bullet_level]]). Cada nível
+entra pelo [[dialog.bullet_level_indent]] e conta sozinho, recomeçando sob cada
+parágrafo acima dele. [[dialog.bullet_restart]] recomeça um número, e
+[[dialog.bullet_continue]] continua do último número do seu nível depois
+de parágrafos sem marcadores.
+
 ## Capitulares {#drop-cap}
 
 Uma capitular é uma primeira letra grande que ocupa várias linhas.

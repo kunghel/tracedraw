@@ -890,7 +890,12 @@ impl App {
             .find_shape(old.id)
             .cloned()
             .unwrap_or(old.clone());
-        let keep = |e: &Effect| !matches!(e, Effect::Envelope { .. } | Effect::Perspective { .. });
+        let keep = |e: &Effect| {
+            !matches!(
+                e,
+                Effect::Envelope { .. } | Effect::Perspective { .. } | Effect::MeshEnvelope { .. }
+            )
+        };
         cmds.push(Command::SetEffectStack {
             shape: old.id,
             effects: raw.effects.iter().filter(|e| keep(e)).cloned().collect(),

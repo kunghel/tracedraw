@@ -2,7 +2,7 @@
 
 | Setting | Default |
 |---|---|
-| Snap to objects | off (Alt+Z, the Snap To list, Options > Snapping turn it on; the choice is kept); radius 10 px (screen) for all snapping |
+| Snap to objects | on (Alt+Z, the Snap To list, Options > Snapping turn it off; the choice is kept, and preferences saved before keep the setting they have); radius 10 px (screen) for all snapping |
 | Snap to guides | on |
 | Snap to grid | off (Ctrl+Y); document grid 10 mm both ways through the ruler origin (Document Setup > Grid) |
 | Snap to baseline grid | off; baselines from the page top (see `rulers-grid-guidelines.md`) |
@@ -70,7 +70,15 @@ Drawing tools snap the pointer. A move with the Pick tool that starts on
 one of the selection's points (a node, a midpoint, a quadrant or the
 centre within the radius) carries that point onto another object's point
 or edge; otherwise the selection's box edges and centre snap to
-guidelines, the grids, the page and the other objects' boxes. Once
+guidelines, the grids, the page and the boxes of the objects it faces:
+another object's left, right and centre lines catch it only where the two
+boxes' heights overlap or come within the radius, its top, bottom and
+middle only where their widths do. An object far above or below no longer
+pulls the box sideways because one of its sides is level with it
+somewhere on the page; that pull, on every move over a busy page, is why
+snapping to objects was off at first from #1814 on, and lining up from
+afar is left to alignment guides
+(`snap::tests::a_moved_box_snaps_only_to_the_objects_it_faces`). Once
 the pointer has gone further than the snapping radius from where the
 move began, that grabbed point also snaps to the selection's own points
 and edges where they were at the start, by the modes on (nodes,
@@ -162,6 +170,7 @@ other object's point or edge takes it first
   (`snap::tests::a_guideline_catches_an_object_moved_near_it`).
 - `snap::tests::drawing_tools_snap_to_object_points_and_show_the_mark`
 - `snap::tests::snapping_to_objects_turns_off_but_the_page_stays`
+- `snap::tests::a_first_start_snaps_to_objects_and_the_page_within_10_px`
 - `snap::tests::a_move_carries_its_snap_point_onto_another_object`
 - Given a 50 x 30 mm rectangle grabbed at its centre, when it is dropped
   3 px off where the middle of its right side was, then it moves exactly

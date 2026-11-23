@@ -72,3 +72,9 @@ také panel [[docker.color]].
 
 Bez načtených profilů převádí TraceDraw barvy vlastním modelem procesních
 barev na křídovém papíře.
+
+[[menu.view > menu.view.separations]] zobrazí stránku tak, jak ji tiskne jedna
+barva, v barvě této barvy: vyberte azurovou, purpurovou, žlutou, černou nebo
+přímou barvu kresby a ukáže se jen to, co tato barva tiskne. Kreslit a
+upravovat můžete dál jako obvykle; kresba sama se nemění.
+[[menu.view.separations_composite]] opět zobrazí všechny barvy.

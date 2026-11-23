@@ -71,6 +71,9 @@ fn setup(tool: Tool) -> (egui::Context, App, ShapeId) {
     app.show_welcome = false;
     let id = rect(&mut app, Rect::new(10.0, 10.0, 60.0, 40.0));
     app.select(vec![id]);
+    // The lines are dragged by set distances near the object's own
+    // edges, which snapping to objects (on at first) would catch.
+    app.snap.objects = false;
     for _ in 0..3 {
         frame(&ctx, &mut app, Vec::new(), Modifiers::NONE);
     }
@@ -505,4 +508,33 @@ fn ctrl_turns_a_distortion_handle_all_the_way_round_at_its_length() {
     // Shift: sideways only, at its height.
     let got = constrain_end(c, end, Point::new(4.0, 30.0), false, true, 15.0);
     assert_eq!(got, Point::new(4.0, 10.0));
+}
+
+#[test]
+fn the_blend_bend_handle_curves_the_line() {
+    let (ctx, mut app, a) = setup(Tool::Pick);
+    let b = rect(&mut app, Rect::new(110.0, 60.0, 130.0, 80.0));
+    app.selection = vec![a, b];
+    app.blend_selection(5, 0.0, 0.0, 0.0);
+    app.set_tool(Tool::Blend);
+    app.select(vec![a]);
+    frame(&ctx, &mut app, Vec::new(), Modifiers::NONE);
+    let c = app.blend_controls().expect("blend controls");
+    assert!(c.can_bend && c.bend.is_none());
+    let mid = c.start.midpoint(c.end);
+    let before = steps(&app);
+    let d = Vec2::new(0.0, -20.0);
+    drag(&ctx, &mut app, mid, mid + d, Modifiers::NONE);
+    let c = app.blend_controls().expect("still a blend");
+    let bend = c.bend.expect("bent");
+    assert!((bend - d).hypot() < 0.5, "{bend:?}");
+    assert!(near(c.bend_point(), mid + d), "{:?}", c.bend_point());
+    assert_eq!(steps(&app), before + 1, "one undo step");
+    // The objects stay; the middle step leaves the straight way.
+    let ev = tracedraw_core::live::evaluate(app.doc().find_shape(a).expect("shape"));
+    let m = ev.above[2].bounds().center();
+    assert!(m.y < mid.y - 10.0, "{m:?} vs {mid:?}");
+    // Dropped back on the straight line, it is straight again.
+    drag(&ctx, &mut app, mid + d, mid, Modifiers::NONE);
+    assert_eq!(app.blend_controls().expect("blend").bend, None);
 }

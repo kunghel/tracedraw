@@ -1810,6 +1810,7 @@ mod tests {
                 handles: vec![],
                 corners: vec![],
                 mapping: Default::default(),
+                reference: None,
             },
         ];
         let next = with_distortion(

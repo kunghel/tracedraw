@@ -404,6 +404,44 @@ impl App {
         Some(self.leaf_at(s, p, tol).unwrap_or_else(|| s.clone()))
     }
 
+    /// The part a colour is read from at `p`: as [`Self::leaf_to_read`],
+    /// but an unfilled object hit only because Treat All Objects as Filled
+    /// counts its inside lets the objects beneath be read: its inside
+    /// shows them, not a colour of its own (#3856).
+    pub fn leaf_to_read_color(&self, p: Point) -> Option<tracedraw_core::Shape> {
+        if self.focus_shape_on_page().is_some() || !self.settings.treat_all_filled {
+            return self.leaf_to_read(p);
+        }
+        let tol = self.object_pick_tol();
+        let fill_open = self.doc().metadata.fill_open_curves;
+        self.page_layers()
+            .into_iter()
+            .rev()
+            .filter(|l| l.visible)
+            .flat_map(|l| l.shapes.iter().rev())
+            .filter(|s| s.visible && self.shape_hit(s, p, tol))
+            .map(|s| self.leaf_at(s, p, tol).unwrap_or_else(|| s.clone()))
+            .find(|leaf| {
+                let plain = leaf.effects.is_empty()
+                    && !matches!(
+                        leaf.kind,
+                        ShapeKind::Text { .. }
+                            | ShapeKind::Table(_)
+                            | ShapeKind::Bitmap { .. }
+                            | ShapeKind::Group { .. }
+                            | ShapeKind::ClipFrame { .. }
+                            | ShapeKind::SymbolInstance { .. }
+                    );
+                let unfilled =
+                    matches!(leaf.fill, Fill::None) || (leaf.kind.is_open_curve() && !fill_open);
+                if !(plain && unfilled) {
+                    return true;
+                }
+                let half = outline_reach(leaf, leaf.transform);
+                crate::canvas::distance_to_path(&leaf.page_path(), p) <= (tol * 1.5).max(half + tol)
+            })
+    }
+
     /// The innermost part of the object `id` under `p` (see
     /// [`Self::leaf_to_read`]), its transforms composed; `None` when
     /// `p` is on no part of it.
@@ -545,7 +583,10 @@ impl App {
             .enumerate()
             .min_by(|a, b| a.1.distance_squared(p).total_cmp(&b.1.distance_squared(p)))?
             .0;
-        Some(grid[nearest])
+        // The grid is in the space of the groups around the text; the
+        // letters are found on the page (#4037).
+        let parent = self.doc().parent_transform(text).unwrap_or(Affine::IDENTITY);
+        Some(parent * grid[nearest])
     }
 
     fn leaf_at(
@@ -621,7 +662,23 @@ impl App {
                     continue;
                 }
             }
-            if !skip(s.id) && self.shape_hit(s, p, tol) {
+            if skip(s.id) {
+                continue;
+            }
+            // The cheap reject first, from boxes measured once per change
+            // of the drawing (#3559): `shape_hit` starts with the same
+            // ask but works the box out per object per pointer move. Not
+            // while a symmetry group is edited: its members are picked,
+            // and their boxes are not the group's.
+            if members.is_none() {
+                if let Some(b) = self.plain_bounds_cached(s) {
+                    let half = outline_reach(s, s.transform);
+                    if !b.inflate(tol + half, tol + half).contains(p) {
+                        continue;
+                    }
+                }
+            }
+            if self.shape_hit(s, p, tol) {
                 return Some(self.blend_end_under_steps(s, p, tol, &skip).unwrap_or(s.id));
             }
         }
@@ -740,7 +797,28 @@ impl App {
         {
             return false;
         }
-        if !s.effects.is_empty() {
+        // Effects the renderer draws (a lens, a transparency, shadows, a
+        // glow, a blur, a halftone, Blend If) leave the object's outline
+        // as it is: it is picked as it stands, without working the effects
+        // out and copying the object at every move of the pointer (#3756).
+        // Groups, clip frames and symbols keep the full path below.
+        let renderer_only = !s.effects.is_empty()
+            && s.effects.iter().all(|e| e.drawn_by_renderer())
+            && !matches!(
+                s.kind,
+                ShapeKind::Group { .. }
+                    | ShapeKind::ClipFrame { .. }
+                    | ShapeKind::SymbolInstance { .. }
+            );
+        if renderer_only
+            && s.effects
+                .iter()
+                .any(|e| matches!(e, tracedraw_core::live::Effect::Lens(_)))
+            && tracedraw_core::command::close_subpaths(&s.page_path()).contains(p)
+        {
+            return true;
+        }
+        if !s.effects.is_empty() && !renderer_only {
             // What the object draws: its warped outline and the objects
             // its effects add.
             let ev = tracedraw_core::live::evaluate(s);
@@ -797,13 +875,19 @@ impl App {
             !matches!(s.fill, Fill::None) && (!open || self.doc().metadata.fill_open_curves);
         // The fill of an open curve shown runs across its open ends, as
         // drawn.
-        let in_fill = filled
-            && if open {
+        // The inside of an open curve is that of the curve closed across
+        // its open ends, as its fill is drawn: the raw path took one side
+        // of a slanted line's box as inside, so a click in the empty half
+        // of that box picked the line over the objects there (#4032). A
+        // straight line closed has no inside.
+        let inside = || {
+            if open {
                 tracedraw_core::command::close_subpaths(&path).contains(p)
             } else {
                 path.contains(p)
-            };
-        if in_fill || (self.settings.treat_all_filled && path.contains(p)) {
+            }
+        };
+        if (filled || self.settings.treat_all_filled) && inside() {
             return true;
         }
         crate::canvas::distance_to_path(&path, p) <= (tol * 1.5).max(half + tol)
@@ -1464,6 +1548,8 @@ impl App {
             start_angle: a,
             current_angle: a,
             grab: Some(g),
+            start_radius: (p - c).hypot(),
+            scale: 1.0,
         };
         true
     }
@@ -1875,8 +1961,13 @@ impl App {
             }
             return;
         }
-        // A picture edited in place takes the pointer.
+        // A picture edited in place takes the pointer; the middle button
+        // still pans there, as everywhere (#3855).
         if self.pixel_edit.is_some() {
+            if response.dragged_by(PointerButton::Middle) {
+                self.pan_drag(response.drag_delta(), &response.ctx);
+                return;
+            }
             self.pixel_edit_input(response, pointer, mods);
             return;
         }
@@ -1888,6 +1979,19 @@ impl App {
             let up = !response.ctx.input(|i| i.pointer.primary_down());
             let boxing = matches!(self.drag, Drag::Box { .. });
             let released = (self.transforming() || boxing) && up;
+            // A finger lifted from a guideline it dragged takes the
+            // pointer with it (PointerGone), so the release seemed to be
+            // outside the window and the guideline went (#3867): where it
+            // let go stands in.
+            let guide = matches!(
+                self.drag,
+                Drag::MoveGuide { .. } | Drag::RotateGuide { .. } | Drag::GuidePivot
+            );
+            if guide && response.drag_stopped() {
+                if let Some(at) = response.interact_pointer_pos() {
+                    self.pointer_page = Some(self.view.to_page(at));
+                }
+            }
             if response.drag_stopped() || released {
                 self.end_drag();
             }
@@ -2161,9 +2265,12 @@ impl App {
                 self.three_point_input(response, p, mods)
             }
             Tool::Freehand => self.freehand_input(response, p, mods),
-            Tool::Bezier | Tool::Pen | Tool::Polyline | Tool::TwoPointLine | Tool::BSpline => {
-                self.curve_input(response, p, mods)
-            }
+            Tool::Bezier
+            | Tool::Pen
+            | Tool::Polyline
+            | Tool::TwoPointLine
+            | Tool::BSpline
+            | Tool::CurvaturePen => self.curve_input(response, p, mods),
             Tool::Text => self.text_input(response, p, mods),
             Tool::ColorEyedropper | Tool::AttributesEyedropper => {
                 // A press let go counts as a click also when the pointer
@@ -2478,6 +2585,8 @@ impl App {
                             start_angle: a,
                             current_angle: a,
                             grab: None,
+                            start_radius: (p - c).hypot(),
+                            scale: 1.0,
                         };
                     } else {
                         self.drag = Drag::Skew {
@@ -2759,6 +2868,11 @@ impl App {
                 {
                     return;
                 }
+                // A group bent by an envelope holding a blend: the blend's
+                // options, the group in focus (#3968).
+                if self.edit_bent_blend(id) {
+                    return;
+                }
                 // A group or clip frame: into focus mode.
                 if self.focus_on_double_click(id) {
                     self.focus_on(id);
@@ -3022,6 +3136,8 @@ impl App {
                 center,
                 start_angle,
                 current_angle,
+                start_radius,
+                scale,
                 ..
             } => {
                 let mut a = (snapped_handle - *center).atan2();
@@ -3031,6 +3147,10 @@ impl App {
                     a = *start_angle + ((a - *start_angle) / step).round() * step;
                 }
                 *current_angle = a;
+                // Shift scales while turning, keeping the proportions:
+                // the pointer's distance from the centre against where
+                // the turn started (#3772).
+                *scale = rotate_drag_scale(mods.shift, *start_radius, (p - *center).hypot());
             }
             _ => {}
         }
@@ -3457,6 +3577,11 @@ impl App {
                 ..Default::default()
             });
             c.nodes.push((p, None));
+            // Options > Tools > Freehand/Bézier: the second click ends
+            // the line, one straight segment (#3848).
+            if self.settings.curves.freehand_click_ends && c.nodes.len() >= 2 {
+                self.finish_curve();
+            }
             return;
         }
         if response.drag_started_by(PointerButton::Primary) {
@@ -3525,7 +3650,10 @@ impl App {
         };
         // B-Spline: each click (or the start of a drag) places a control
         // point; there are no handles to pull.
-        let bspline = self.tool == Tool::BSpline;
+        // The Curvature Pen places its points as the B-Spline tool does;
+        // its curve runs through them.
+        let bspline = matches!(self.tool, Tool::BSpline | Tool::CurvaturePen);
+        let curvature = self.tool == Tool::CurvaturePen;
         let smooth = matches!(self.tool, Tool::Bezier | Tool::Pen);
         if response.double_clicked_by(PointerButton::Primary) {
             self.finish_curve();
@@ -3630,10 +3758,12 @@ impl App {
                 smooth,
                 dragging_handle: false,
                 bspline,
+                curvature,
                 ..Default::default()
             });
             c.smooth = smooth;
             c.bspline = bspline;
+            c.curvature = curvature;
             let drag = response.drag_started_by(PointerButton::Primary);
             // A click places a node without a handle: the segment to it
             // is the one the preview showed, shaped by the handle of the
@@ -3710,7 +3840,13 @@ impl App {
                     } else {
                         c.alt_from = None;
                         if let Some(last) = c.nodes.last_mut() {
-                            last.1 = Some(p);
+                            // A slight tremor on a trackpad tap starts a
+                            // drag in egui without an intentional handle
+                            // pull: keep the node a crisp corner until the
+                            // handle is pulled at least 3 screen pixels out.
+                            let pulled =
+                                (p - last.0).hypot() * self.view.zoom.max(1e-6) as f64 >= 3.0;
+                            last.1 = pulled.then_some(p);
                         }
                     }
                 }
@@ -3792,6 +3928,8 @@ impl App {
             i.key_down(egui::Key::C)
                 || i.key_down(egui::Key::V)
                 || (c.spline_fix_key && i.modifiers.command)
+                // Curvature Pen: Alt held makes the point a corner.
+                || (c.curvature && i.modifiers.alt)
         })
     }
 
@@ -3816,7 +3954,7 @@ impl App {
                 closed: true,
             },
         ) {
-            if c.bspline {
+            if c.bspline && !c.curvature {
                 let points = c.nodes.iter().map(|n| n.0).collect();
                 self.keep_spline(id, &path, points, c.spline_fixed_flags());
             }
@@ -3954,7 +4092,9 @@ impl App {
         // A mesh fill's nodes are picked and dragged here too, as with the
         // Mesh Fill and Shape tools; a palette colour then goes to the
         // chosen nodes, the fill staying a mesh (#2506).
-        if self.selected_mesh().is_some() && self.effect_node_input(response, p) {
+        if (self.selected_mesh().is_some() || self.has_color_points())
+            && self.effect_node_input(response, p)
+        {
             return;
         }
         // A double click on a colour node removes it; on the line, it adds
@@ -4250,6 +4390,8 @@ impl App {
                     if to_page.is_none() && self.drop_frame.is_none() {
                         self.perspective_after_move(total);
                         self.displace_after_move();
+                        // A circle text let go on a round object fits it.
+                        self.fit_curved_text_to_round();
                     }
                 }
                 if let Some((idx, r)) = to_page {
@@ -4551,12 +4693,19 @@ impl App {
                 center,
                 start_angle,
                 current_angle,
+                scale,
                 ..
             } => {
                 let a = current_angle - start_angle;
+                let s = if scale.is_finite() && *scale > 0.0 {
+                    *scale
+                } else {
+                    1.0
+                };
                 Some(
                     Affine::translate(center.to_vec2())
                         * Affine::rotate(a)
+                        * Affine::scale(s)
                         * Affine::translate(-center.to_vec2()),
                 )
             }
@@ -4702,9 +4851,9 @@ impl App {
                 // Text > Bullets On/Off at the caret (#3593).
                 self.toggle_bullets();
             } else if is(Key::S, cmd) {
-                self.save(false);
+                self.save_showing_progress(false);
             } else if is(Key::S, cmd | Modifiers::SHIFT) {
-                self.save(true);
+                self.save_showing_progress(true);
             } else {
                 continue;
             }
@@ -4879,7 +5028,11 @@ impl App {
                             modifiers,
                             ..
                         } => {
-                            modifiers.command
+                            // A function key types nothing in a field
+                            // either: F4 with the zoom box or a docker's
+                            // number field holding the keyboard did
+                            // nothing (#3931). It goes to the drawing.
+                            (modifiers.command || function_key(*key))
                                 && !modifiers.alt
                                 && !field_editing_key(*key)
                                 && !crate::shortcuts::is_modifier(*key)
@@ -4966,6 +5119,10 @@ impl App {
         // An import waiting for its place: Space or Enter centres it on
         // the page, Esc calls it off (#1936).
         if self.import_placement_keys(ctx) {
+            return;
+        }
+        // Space over the Shape Generator's growth starts or pauses it.
+        if crate::ui::shape_gen_docker::growth_keys(self, ctx) {
             return;
         }
         // Esc during a move, scale, rotation or skew cancels it: nothing
@@ -5147,10 +5304,10 @@ impl App {
             self.redo();
         }
         if pressed(Key::S, cmd) {
-            self.save(false);
+            self.save_showing_progress(false);
         }
         if pressed(Key::S, cmd | Modifiers::SHIFT) {
-            self.save(true);
+            self.save_showing_progress(true);
         }
         if pressed(Key::S, Modifiers::ALT) && self.symmetry_edit.is_none() {
             self.create_symmetry();
@@ -5449,7 +5606,7 @@ impl App {
         // its own F9 and close at once; while it shows, its F9 closes it.
         if !self.fullscreen_preview && first_pressed(Key::F9, Modifiers::NONE) {
             ctx.input_mut(|i| i.consume_key(Modifiers::NONE, Key::F9));
-            self.fullscreen_preview = true;
+            crate::ui::preview::begin(self, ctx, false);
         }
         // F11: the Edit Fill dialog. F3: zoom out.
         if pressed(Key::F11, Modifiers::NONE) {
@@ -5544,6 +5701,11 @@ impl App {
                 && self.selected_mesh_node().is_some()
             {
                 self.delete_mesh_lines();
+            } else if matches!(self.tool, Tool::InteractiveFill | Tool::Shape)
+                && self.selected_color_point().is_some()
+            {
+                // The chosen colour point goes, while two stay.
+                self.delete_color_point();
             } else if matches!(self.tool, Tool::Envelope | Tool::Shape)
                 && self.selected_envelope_node().is_some()
             {
@@ -5991,6 +6153,25 @@ fn text_command_key(key: Key, mods: Modifiers) -> bool {
 /// select all, copy, cut, paste, undo, redo, and the moves and deletes by
 /// word. A field with the keyboard keeps these; other Ctrl shortcuts are
 /// commands for the drawing.
+/// F1 to F12, which no field types or edits with (#3931).
+fn function_key(key: Key) -> bool {
+    matches!(
+        key,
+        Key::F1
+            | Key::F2
+            | Key::F3
+            | Key::F4
+            | Key::F5
+            | Key::F6
+            | Key::F7
+            | Key::F8
+            | Key::F9
+            | Key::F10
+            | Key::F11
+            | Key::F12
+    )
+}
+
 fn field_editing_key(key: Key) -> bool {
     matches!(
         key,
@@ -6069,4 +6250,15 @@ fn drawn_path_of(
         c.transform_by(s.transform);
         drawn_path_of(&c, id, depth + 1)
     })
+}
+
+/// The scale factor of a rotate drag: with Shift, the pointer's distance
+/// from the centre of rotation against its distance when the turn
+/// started, kept away from zero; 1 without Shift or when the turn
+/// started on the centre itself (#3772).
+pub(crate) fn rotate_drag_scale(shift: bool, start_radius: f64, radius: f64) -> f64 {
+    if !shift || !(start_radius > 1e-6) || !radius.is_finite() {
+        return 1.0;
+    }
+    (radius / start_radius).max(0.01)
 }

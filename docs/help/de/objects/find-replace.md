@@ -23,6 +23,17 @@ Umriss, Umrissbreite, Schrift oder Typ und ersetzt diese. Öffnen Sie es mit
 
 Das Andockfenster zeigt an, wie viele Treffer gefunden wurden.
 
+Was sich im Feld nicht tippen lässt, wählen Sie mit einem Rechtsklick
+auf das Feld unter [[find.special_character]]: [[find.code_paragraph]]
+(`^p`), [[menu.text.code_line_break]] (`^l`), [[find.code_tab]] (`^t`),
+[[menu.text.code_nonbreaking_space]] (`^s`) und, in [[dialog.find]],
+[[find.code_spaces]] (`^w`). Dieselben Codes gelten in
+[[dialog.replace_with]]: Suchen Sie zum Beispiel `^w` und ersetzen Sie es
+durch `^w`, damit überall nur ein Leerzeichen bleibt, oder suchen Sie `^p`
+und ersetzen Sie es durch ein Leerzeichen, um Absätze zu verbinden. `^^`
+steht für ein Zirkumflex. Das Kontextmenü hat außerdem [[menu.edit.cut]],
+[[menu.edit.copy]], [[menu.edit.paste]] und [[menu.edit.select_all]].
+
 ## Objekte suchen {#objects}
 
 Wählen Sie [[dialog.find_objects]], geben Sie einen Teil eines Namens oder eine

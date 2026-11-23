@@ -15,7 +15,7 @@
   <img alt="Windows, macOS, Linux and the browser" src="https://img.shields.io/badge/Windows%20%C2%B7%20macOS%20%C2%B7%20Linux%20%C2%B7%20Web-native-1f6fc5?style=flat-square">
   <img alt="License: MIT or Apache-2.0" src="https://img.shields.io/badge/license-MIT%20or%20Apache--2.0-444444?style=flat-square">
   <img alt="Status: alpha" src="https://img.shields.io/badge/status-alpha-d97706?style=flat-square">
-  <img alt="19 interface languages" src="https://img.shields.io/badge/interface-19%20languages-7b5cff?style=flat-square">
+  <img alt="20 interface languages" src="https://img.shields.io/badge/interface-20%20languages-7b5cff?style=flat-square">
 </p>
 
 <p align="center">
@@ -162,7 +162,7 @@ or the moon button at the right of the status bar).
       <br>
       <sub>The same page with the interface in Japanese.</sub>
       <h3>In your language</h3>
-      English, Chinese (Simplified), Hindi, Spanish, French, Arabic with a right-to-left layout, Bengali, Russian, Portuguese (Brazil), Indonesian, German, Japanese, Chinese (Traditional), Italian, Dutch, Polish, Turkish, Czech and Lao, with system fonts found for every script. Options &rsaquo; Global switches the language at once.
+      English, Chinese (Simplified), Hindi, Spanish, French, Arabic with a right-to-left layout, Bengali, Russian, Portuguese (Brazil), Indonesian, German, Japanese, Chinese (Traditional), Italian, Dutch, Polish, Turkish, Czech, Lao and Vietnamese, with system fonts found for every script. Options &rsaquo; Global switches the language at once.
     </td>
   </tr>
   <tr>

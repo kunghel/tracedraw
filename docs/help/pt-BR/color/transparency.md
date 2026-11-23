@@ -19,6 +19,10 @@ seguir um padrão ou uma textura.
   no preenchimento e no contorno, com a quantidade usada por último, 50% de
   início) e **Objeto > Remover transparência**. Os dois podem receber um atalho
   de teclado em Personalização > Comandos.
+- **Objeto > Achatar transparência** transforma os objetos transparentes
+  selecionados num só bitmap opaco de como eles aparecem sobre o que está por
+  baixo, com a forma deles, para impressoras e ficheiros que não misturam
+  transparência. Os objetos por baixo ficam como estão.
 
 ## Configurações {#settings}
 

@@ -127,6 +127,23 @@ handles.
 
 The result is an ordinary curve; the control points are not kept.
 
+## Curvature Pen {#curvature-pen}
+
+The [[tool.curvature_pen]] tool draws a smooth curve through the points you
+click, with no handles to pull.
+
+1. Click to place each point. The curve runs through every point and bends
+   smoothly by itself; the preview shows where the next click takes it.
+2. Hold <kbd>Alt</kbd> (or <kbd>C</kbd> or <kbd>V</kbd>) while you click to
+   make that point a corner.
+3. Double-click or press <kbd>Enter</kbd> to finish. Click the first point
+   (once there are three) to close the curve.
+
+The result is an ordinary curve whose nodes are the points you clicked, so
+the [[tool.shape]] tool edits it like any other.
+
+![Four clicks with the Curvature Pen: a smooth curve runs through each point](../../img/lines-shapes-lines-curvature-pen.png)
+
 ## Polyline {#polyline}
 
 The [[tool.polyline]] tool draws straight segments one after the other:

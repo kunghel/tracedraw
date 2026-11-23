@@ -192,6 +192,14 @@ fn placed<'a>(window: egui::Window<'a>, ctx: &Context, id: egui::Id) -> egui::Wi
     }
 }
 
+/// Where the middle of a dialog opened beside the drawing goes: towards
+/// the right edge of `screen`, left of the panels' column, at mid height.
+/// In a narrow window it is the centre.
+pub fn beside_pos(screen: Rect) -> Pos2 {
+    let x = (screen.right() - 240.0).max(screen.center().x);
+    Pos2::new(x, screen.center().y)
+}
+
 /// An auto-sized dialog window in the same chrome as [`dialog`]: the white
 /// title bar with the close button, a white edge and the light grey body,
 /// centred over the main window. The close button asks the dialog system
@@ -202,6 +210,8 @@ pub struct Window {
     /// A window the user sizes: its first size and the smallest, with a
     /// maximize button in the title bar.
     resize: Option<(Vec2, Vec2)>,
+    /// Opens at the right of the main window instead of its centre.
+    beside: bool,
 }
 
 /// The chrome window for a dialog titled `title`.
@@ -212,6 +222,7 @@ pub fn window(title: impl Into<String>) -> Window {
         title,
         id,
         resize: None,
+        beside: false,
     }
 }
 
@@ -345,6 +356,14 @@ impl Window {
         self
     }
 
+    /// Open the window at the right of the main window, clear of the
+    /// middle of the drawing: for a dialog whose result is previewed on
+    /// the drawing while it is open. It is dragged like any other.
+    pub fn beside_drawing(mut self) -> Self {
+        self.beside = true;
+        self
+    }
+
     /// Draw the window with `add` as its body. Returns what `add` returned.
     pub fn show<R>(self, ctx: &Context, add: impl FnOnce(&mut Ui) -> R) -> Option<R> {
         if self.resize.is_some() {
@@ -360,7 +379,16 @@ impl Window {
             .resizable(false)
             .frame(window_frame());
         // Dragged by the title bar; opens centred (or where it was left).
-        let window = placed(window, ctx, self.id);
+        let opening = self.beside
+            && center_dialogs(ctx)
+            && ctx
+                .data(|d| d.get_temp::<u64>(self.id.with("chrome_last_frame")))
+                .is_none_or(|l| l + 1 < ctx.cumulative_frame_nr());
+        let mut window = placed(window, ctx, self.id);
+        if opening {
+            let screen = ctx.content_rect();
+            window = window.current_pos(beside_pos(screen));
+        }
         // egui sizes and places a window from the frame before. Message
         // boxes share one window, so a box whose text or buttons changed
         // (the next box, or a line that grows) was drawn for a frame in
@@ -1217,7 +1245,9 @@ pub fn spin_field(
             Pos2::new(col.left(), col.top() + i as f32 * half),
             Vec2::new(col.width(), half),
         );
-        let a = ui.interact(r, egui::Id::new((id, "spin", i)), Sense::click());
+        // Clicks but no focus: Tab from the box goes to the next box,
+        // not to the arrows beside it (#3886, as the bars' boxes, #1537).
+        let a = ui.interact(r, egui::Id::new((id, "spin", i)), Sense::CLICK);
         if a.hovered() {
             ui.painter()
                 .rect_filled(r.shrink(1.0), 0.0, crate::theme::Tokens::tool_hover());
@@ -1263,11 +1293,19 @@ pub fn number_field(
 ) -> Option<f64> {
     let edit_id = egui::Id::new((id, "number_text"));
     let shown = format_number(value, decimals, suffix);
-    let mut text = ui
-        .ctx()
-        .data(|d| d.get_temp::<String>(edit_id))
-        .unwrap_or_else(|| shown.clone());
-    let resp = text_field(ui, rect, &mut text);
+    let stored = ui.ctx().data(|d| d.get_temp::<String>(edit_id));
+    let fresh = stored.is_none();
+    let mut text = stored.unwrap_or_else(|| shown.clone());
+    let resp = ui.put(
+        rect,
+        egui::TextEdit::singleline(&mut text)
+            .id(number_edit_id(id))
+            .vertical_align(egui::Align::Center)
+            .margin(Margin::symmetric(4, 0))
+            .min_size(rect.size()),
+    );
+    // Just focused, its number is selected to be typed over (#3886).
+    crate::ui::field::select_all_when_focused(ui, &resp, fresh, &text);
     let mut out = None;
     if resp.has_focus() {
         ui.ctx().data_mut(|d| d.insert_temp(edit_id, text.clone()));
@@ -1283,6 +1321,12 @@ pub fn number_field(
         ui.ctx().data_mut(|d| d.remove::<String>(edit_id));
     }
     out
+}
+
+/// The id of the text box of [`number_field`] (and [`spin_field`]) `id`,
+/// to give it the keyboard.
+pub fn number_edit_id(id: &str) -> egui::Id {
+    egui::Id::new((id, "number_edit"))
 }
 
 /// A number as the fields show it: `decimals` places, the suffix after a

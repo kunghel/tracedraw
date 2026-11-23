@@ -244,7 +244,7 @@ mod tests {
     }
 
     /// #2306: Weld, Trim and Intersect on one selected group act on the
-    /// group's objects, as in CorelDRAW (the bottom one the target), in
+    /// group's objects (the bottom one the target), in
     /// one undo step, instead of waiting for a target.
     #[test]
     fn the_operations_act_on_a_selected_group() {

@@ -469,16 +469,21 @@ fn draw_vertical(app: &App, painter: &Painter, left: Rect) {
     let view = &app.view;
     let rulers = app.doc().metadata.rulers.clone();
     let ppu = view.zoom as f64 * app.units.world_mm();
+    // The zero of the ruler: the origin, or mirrored to the top of the
+    // page when the ruler counts downwards (#3872); the numbers carry no
+    // sign, so they grow away from it either way.
+    let page = app.page_rect();
+    let zero = rulers.vertical_zero(page.y0, page.y1);
     // Y up: the bottom of the ruler has the smaller values.
-    let a = value_of(app, view.to_page(left.left_bottom()).y, rulers.origin_y);
-    let b = value_of(app, view.to_page(left.left_top()).y, rulers.origin_y);
+    let a = value_of(app, view.to_page(left.left_bottom()).y, zero);
+    let b = value_of(app, view.to_page(left.left_top()).y, zero);
     let major = major_step(ppu);
     let font = label_font();
     let base = left.right() - TICK_GAP;
     let mut pixels = Pixels::default();
     for (v, kind) in ticks(a, b, ppu, rulers.tick_divisions) {
         let py = view
-            .to_screen(Point::new(0.0, app.units.world_to_mm(v) + rulers.origin_y))
+            .to_screen(Point::new(0.0, app.units.world_to_mm(v) + zero))
             .y
             .round();
         let y = py + 0.5;
@@ -632,6 +637,22 @@ mod tests {
         assert_eq!(t.iter().filter(|(_, k)| *k == TickKind::Half).count(), 1);
         // Absurd ranges give nothing rather than millions of ticks.
         assert!(ticks(-1e12, 1e12, 1000.0, 10).is_empty());
+    }
+
+    #[test]
+    fn the_vertical_ruler_can_count_from_the_top() {
+        // #3872: from the top, the default origin lies at the page's top
+        // edge and a moved origin is mirrored within the page.
+        let mut r = tracedraw_core::document::RulerSettings::default();
+        assert_eq!(r.vertical_zero(0.0, 297.0), 0.0);
+        r.vertical_from_top = true;
+        assert_eq!(r.vertical_zero(0.0, 297.0), 297.0);
+        r.origin_y = 10.0;
+        assert_eq!(r.vertical_zero(0.0, 297.0), 287.0);
+        // Older files without the setting read as bottom to top.
+        let old: tracedraw_core::document::RulerSettings =
+            serde_json::from_str("{\"origin_y\": 5.0}").expect("reads");
+        assert!(!old.vertical_from_top);
     }
 
     #[test]

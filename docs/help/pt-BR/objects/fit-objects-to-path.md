@@ -137,6 +137,13 @@ objeto ao longo do caminho para mudar o espaçamento, ou o anel abaixo do
 caminho para girar todos os objetos (Ctrl gira de 15 em 15 graus).
 Desligue [[docker.fit_to_path_live]] para deixar os objetos onde estão.
 
+Um traço de pincel num arquivo `.cdr`, cujos objetos se repetem
+ao longo de uma curva ligados a ela, também abre assim: a curva mantém os
+objetos nela, com o espaçamento e o giro que o arquivo tinha, e editar a
+curva os posiciona de novo.
+
+![Objetos mantidos ao vivo numa onda, com as alças de espaçamento e giro](../../img/objects-fit-objects-to-path-live.png)
+
 ## Dicas e limites {#tips}
 
 - Numa forma fechada, os objetos dão a volta inteira, o lado de fechamento

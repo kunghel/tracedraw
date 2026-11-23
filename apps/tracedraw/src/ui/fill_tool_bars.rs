@@ -146,9 +146,13 @@ pub fn mesh_bar(app: &mut App, ui: &mut Ui) {
         .map(|(_, m)| (m.rows, m.cols))
         .unwrap_or((app.mesh_rows, app.mesh_cols));
     dim(ui, tr("toolbar.rows"));
-    let r1 = ui.add(NumField::new(&mut rows).range(1..=50));
+    let r1 = ui
+        .add(NumField::new(&mut rows).range(1..=50))
+        .rich_tip(tr("toolbar.rows"));
     dim(ui, tr("toolbar.columns"));
-    let r2 = ui.add(NumField::new(&mut cols).range(1..=50));
+    let r2 = ui
+        .add(NumField::new(&mut cols).range(1..=50))
+        .rich_tip(tr("toolbar.columns"));
     if r1.changed() || r2.changed() {
         app.set_mesh_grid(rows, cols);
     }
@@ -162,6 +166,7 @@ pub fn mesh_bar(app: &mut App, ui: &mut Ui) {
             mesh.is_some(),
             egui::Checkbox::new(&mut smooth, tr("docker.smooth_colour")),
         )
+        .rich_tip(tr("docker.smooth_colour"))
         .changed()
     {
         app.set_mesh_smooth(smooth);
@@ -232,6 +237,7 @@ pub fn mesh_bar(app: &mut App, ui: &mut Ui) {
     crate::ui::propbar::sep(ui);
     if ui
         .add_enabled(mesh.is_some(), egui::Button::new(tr("toolbar.clear_mesh")))
+        .rich_tip(tr("toolbar.clear_mesh"))
         .clicked()
     {
         app.clear_mesh();
@@ -332,6 +338,9 @@ pub fn smart_fill_bar(app: &mut App, ui: &mut Ui) {
     .rich_tip(crate::ui::tips::keyed("toolbar.smart_outline_edges"));
     ui.checkbox(&mut app.area_fill_live, tr("toolbar.smart_fill_live"))
         .rich_tip(crate::ui::tips::keyed("toolbar.smart_fill_live"));
+    // The guidelines close off areas too (#3863), off by default.
+    ui.checkbox(&mut app.area_fill_guides, tr("toolbar.builder_guides"))
+        .rich_tip(crate::ui::tips::pair("toolbar.builder_guides", "toolbar.smart_fill_guides_desc"));
     crate::ui::propbar::sep(ui);
     dim(ui, tr("toolbar.smart_fill_hint"));
 }

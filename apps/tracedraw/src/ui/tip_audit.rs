@@ -120,6 +120,11 @@ fn controls(
                 if !r.enabled || r.interact_rect.width() < 2.0 || r.interact_rect.height() < 2.0 {
                     continue;
                 }
+                // A scroll bar's handle (dragged, never focused) is the
+                // toolkit's own, like the scroll area it moves.
+                if !r.sense.is_focusable() && r.interact_rect.width() <= 16.0 {
+                    continue;
+                }
                 // The canvas, lists and scroll areas: no tip is wanted.
                 if r.interact_rect.width() > 420.0 || r.interact_rect.height() > 120.0 {
                     continue;

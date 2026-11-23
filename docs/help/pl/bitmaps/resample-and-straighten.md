@@ -62,7 +62,7 @@ Niektóre efekty, takie jak rozmycia, wychodzą poza krawędzie bitmapy.
 - [[menu.bitmaps.crop_bitmap]] kadruje bitmapę narzędziem [[tool.crop]];
   przeciągnięcie narożnika bitmapy narzędziem [[tool.shape]] również ją kadruje.
 - [[menu.bitmaps.edit_bitmap]] otwiera bitmapę w innym programie.
-- [[menu.bitmaps.edit_inside]] (or a double click on the picture with the Pick tool) edits its pixels in place, inside TraceDraw: selections, brush, soft eraser, clone, heal, blur, content fill, red eye, layers with opacity and merge modes, and any bitmap effect inside the selection only. Enter finishes, as one undo step.
+- [[menu.bitmaps.edit_inside]] (or a double click on the picture with the Pick tool) edits its pixels in place, inside TraceDraw: selections, brush, soft eraser, clone, heal, blur, content fill, red eye, layers with opacity, merge modes and masks, quick mask, stretch and warp, restore, tint and replace colour brushes, pixel shapes, liquify, Smart Resize, adjustment layers, a histogram, a remove brush, a brush and a stamp that follow the surface of the photo, and any bitmap effect inside the selection only. Enter finishes, as one undo step.
 - [[menu.bitmaps.remove_background]] sprawia, że tło zdjęcia staje się
   przezroczyste.
 - [[menu.bitmaps.remove_background_local]]: [Usuń tło](remove-background.md).

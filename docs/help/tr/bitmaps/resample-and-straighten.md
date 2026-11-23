@@ -61,7 +61,7 @@ Bulanıklaştırma gibi bazı efektler bir bitmapin kenarlarının dışına ta�
 - [[menu.bitmaps.crop_bitmap]] bir bitmapi [[tool.crop]] aracıyla kırpar;
   bir bitmapin köşesini [[tool.shape]] aracıyla sürüklemek de onu kırpar.
 - [[menu.bitmaps.edit_bitmap]] bitmapi başka bir programda açar.
-- [[menu.bitmaps.edit_inside]] (or a double click on the picture with the Pick tool) edits its pixels in place, inside TraceDraw: selections, brush, soft eraser, clone, heal, blur, content fill, red eye, layers with opacity and merge modes, and any bitmap effect inside the selection only. Enter finishes, as one undo step.
+- [[menu.bitmaps.edit_inside]] (or a double click on the picture with the Pick tool) edits its pixels in place, inside TraceDraw: selections, brush, soft eraser, clone, heal, blur, content fill, red eye, layers with opacity, merge modes and masks, quick mask, stretch and warp, restore, tint and replace colour brushes, pixel shapes, liquify, Smart Resize, adjustment layers, a histogram, a remove brush, a brush and a stamp that follow the surface of the photo, and any bitmap effect inside the selection only. Enter finishes, as one undo step.
 - [[menu.bitmaps.remove_background]] bir fotoğrafın arka planını saydam
   yapar.
 - [[menu.bitmaps.remove_background_local]]: [Arka Planı Kaldır](remove-background.md).

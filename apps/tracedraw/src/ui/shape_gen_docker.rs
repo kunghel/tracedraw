@@ -13,10 +13,13 @@ use crate::shape_gen::{
     generate, CellShape, GenKind, Generated, IsoLayout, Paint, ShapeGenSettings, Tess,
     TruchetStyle, Warp,
 };
+use crate::shape_gen_bg::WaveSide;
 use crate::shape_gen_cells::{Gradient, HtShape, PointMode};
 use crate::shape_gen_curves::{FractalType, SpiroType, TilingType};
 use crate::shape_gen_fill::{ContourMode, HatchMode, MazeStyle, SpaceCurve};
+use crate::shape_gen_growth::GrowthStart;
 use crate::shape_gen_slice::{SliceLayout, SlicePattern};
+use crate::shape_gen_warp::SplitMode;
 use crate::theme::Tokens;
 use crate::ui::docker_form::{indented, row, section, wide_button};
 use crate::ui::tips::RichTip;
@@ -36,6 +39,127 @@ struct PreviewData {
     frame: (f64, f64, f64),
     /// Voronoi sites in the drawing's coordinates.
     sites: Vec<(f64, f64)>,
+    /// The palette tone fills pick from.
+    palette: Vec<[u8; 3]>,
+    /// A mesh fill: the nodes in a row and every node in the preview's
+    /// unit box with its colour, row by row.
+    mesh: Option<(usize, Vec<(Pos2, Color32)>)>,
+}
+
+/// The live growth: advance it a little each frame, Start or Pause and
+/// Stop, its steps and points, and its preview. The panel's area is kept
+/// so Space over it starts and pauses the growth (and Shift+Space
+/// stops it).
+fn growth_controls(app: &mut App, ui: &mut Ui) -> Arc<PreviewData> {
+    let more = app.shape_gen_growth_tick(std::time::Duration::from_millis(12));
+    if more || app.shape_gen_growth_running() {
+        ui.ctx().request_repaint();
+    }
+    let panel = ui.clip_rect();
+    let frame = ui.ctx().cumulative_frame_nr();
+    ui.ctx().data_mut(|d| {
+        d.insert_temp(egui::Id::new(GROWTH_PANEL), (panel, frame));
+    });
+    let running = app.shape_gen_growth_running();
+    let (steps, points, settled) = app
+        .shape_gen_growth
+        .as_ref()
+        .map(|l| (l.sim.steps, l.sim.node_count(), l.sim.settled))
+        .unwrap_or((0, 0, false));
+    let has_doc = app.active_layer().is_some();
+    ui.horizontal(|ui| {
+        let (label, key) = if running {
+            (tr("shapegen.growth_pause"), "shapegen.growth_pause")
+        } else {
+            (tr("shapegen.growth_run"), "shapegen.growth_run")
+        };
+        if ui
+            .add_enabled(running || !settled, egui::Button::new(label))
+            .rich_tip(crate::ui::tips::keyed(key))
+            .clicked()
+        {
+            app.shape_gen_growth_toggle();
+        }
+        if ui
+            .add_enabled(
+                has_doc && points > 0,
+                egui::Button::new(tr("shapegen.growth_stop")),
+            )
+            .rich_tip(crate::ui::tips::keyed("shapegen.growth_stop"))
+            .clicked()
+        {
+            app.shape_gen_growth_stop();
+        }
+    });
+    let state = if settled {
+        "shapegen.growth_done"
+    } else {
+        "shapegen.growth_state"
+    };
+    ui.label(
+        egui::RichText::new(trf(
+            state,
+            &[
+                ("steps", &steps.to_string()),
+                ("points", &points.to_string()),
+            ],
+        ))
+        .color(Tokens::text_dim()),
+    );
+    // The preview, made again only when the growth moved on.
+    let id = egui::Id::new("shape_gen_growth_preview");
+    let key = (app.shape_gen.sanitized(), steps, points);
+    let cached: Option<((ShapeGenSettings, u32, usize), Arc<PreviewData>)> =
+        ui.ctx().data(|d| d.get_temp(id));
+    if let Some((k, data)) = cached {
+        if k == key {
+            return data;
+        }
+    }
+    let mut g = Generated::default();
+    if let Some(l) = &app.shape_gen_growth {
+        l.sim.draw(&mut g);
+    }
+    let data = Arc::new(build_preview(&g));
+    ui.ctx()
+        .data_mut(|d| d.insert_temp(id, (key, data.clone())));
+    data
+}
+
+/// Where the growth controls were last drawn, and on which frame.
+pub const GROWTH_PANEL: &str = "shape_gen_growth_panel";
+
+/// Space over the Shape Generator panel showing the growth starts or
+/// pauses it, Shift+Space stops it (makes it curves). True when it took
+/// the key.
+pub fn growth_keys(app: &mut App, ctx: &egui::Context) -> bool {
+    if app.shape_gen.kind != GenKind::Growth || ctx.egui_wants_keyboard_input() {
+        return false;
+    }
+    let Some((rect, frame)): Option<(egui::Rect, u64)> =
+        ctx.data(|d| d.get_temp(egui::Id::new(GROWTH_PANEL)))
+    else {
+        return false;
+    };
+    // Drawn on this frame or the one before: the panel is showing.
+    if frame + 1 < ctx.cumulative_frame_nr() {
+        return false;
+    }
+    let over = ctx
+        .input(|i| i.pointer.hover_pos())
+        .is_some_and(|p| rect.contains(p));
+    if !over {
+        return false;
+    }
+    if ctx.input_mut(|i| i.consume_key(egui::Modifiers::SHIFT, egui::Key::Space)) {
+        app.shape_gen_growth_stop();
+        return true;
+    }
+    if ctx.input_mut(|i| i.consume_key(egui::Modifiers::NONE, egui::Key::Space)) {
+        app.shape_gen_growth_toggle();
+        return true;
+    }
+    false
 }
 
 /// The most curves the preview draws (Create makes them all).
@@ -50,6 +174,8 @@ fn build_preview(g: &Generated) -> PreviewData {
             aspect: 1.0,
             frame: (0.0, 1.0, 1.0),
             sites: Vec::new(),
+            palette: Vec::new(),
+            mesh: None,
         };
     };
     let side = b.width().max(b.height()).max(1e-9);
@@ -91,6 +217,24 @@ fn build_preview(g: &Generated) -> PreviewData {
         aspect: (b.width() / b.height().max(1e-9)) as f32,
         frame: (b.x0, b.y1, side),
         sites: g.sites.iter().map(|p| (p.x, p.y)).collect(),
+        palette: g.palette.clone(),
+        mesh: g.mesh.as_ref().map(|m| {
+            let nodes = m
+                .nodes
+                .iter()
+                .map(|n| {
+                    let [r, gr, bl] = n.color.to_rgb8();
+                    (
+                        Pos2::new(
+                            ((n.pos.x - b.x0) / side) as f32,
+                            ((b.y1 - n.pos.y) / side) as f32,
+                        ),
+                        Color32::from_rgb(r, gr, bl),
+                    )
+                })
+                .collect();
+            (m.cols as usize + 1, nodes)
+        }),
     }
 }
 
@@ -178,7 +322,12 @@ fn draw_preview(ui: &mut Ui, data: &PreviewData, sense: Sense) -> (egui::Respons
     for (pts, closed, paint) in &data.curves {
         let pts: Vec<Pos2> = pts.iter().map(|p| map(*p)).collect();
         let fill = match paint {
-            Paint::Line => None,
+            Paint::Line | Paint::Accent | Paint::Mesh => None,
+            Paint::Tone(t) => {
+                let [r, g, b] =
+                    crate::shape_gen_bg::palette_color(&data.palette, *t as f64 / 255.0);
+                Some(Color32::from_rgb(r, g, b))
+            }
             Paint::Solid => Some(ink),
             Paint::Face(0) => Some(Color32::from_gray(0xE8)),
             Paint::Face(1) => Some(Color32::from_gray(0x9C)),
@@ -197,8 +346,19 @@ fn draw_preview(ui: &mut Ui, data: &PreviewData, sense: Sense) -> (egui::Respons
                 };
                 painter.add(egui::Shape::convex_polygon(pts, f, edge));
             }
+            Some(f) if *closed && matches!(paint, Paint::Tone(_)) => {
+                painter.add(egui::Shape::mesh(fill_spans(&pts, f)));
+            }
+            _ if *paint == Paint::Mesh => {
+                if let Some((cols, nodes)) = &data.mesh {
+                    painter.add(egui::Shape::mesh(mesh_cells(*cols, nodes, map)));
+                }
+            }
             _ if *closed => {
                 painter.add(egui::Shape::closed_line(pts, line));
+            }
+            _ if *paint == Paint::Accent => {
+                painter.add(egui::Shape::line(pts, Stroke::new(1.4, ACCENT)));
             }
             _ => {
                 painter.add(egui::Shape::line(pts, line));
@@ -206,6 +366,246 @@ fn draw_preview(ui: &mut Ui, data: &PreviewData, sense: Sense) -> (egui::Respons
         }
     }
     (resp, pm)
+}
+
+/// A filled polygon of any shape, as thin rows of its spans (even-odd).
+fn fill_spans(pts: &[Pos2], color: Color32) -> egui::Mesh {
+    let mut mesh = egui::Mesh::default();
+    let (lo, hi) = pts.iter().fold((f32::MAX, f32::MIN), |(lo, hi), p| {
+        (lo.min(p.y), hi.max(p.y))
+    });
+    let step = 1.0f32;
+    let mut y = lo + step / 2.0;
+    let mut xs: Vec<f32> = Vec::new();
+    while y < hi {
+        xs.clear();
+        for i in 0..pts.len() {
+            let (a, b) = (pts[i], pts[(i + 1) % pts.len()]);
+            if (a.y <= y) != (b.y <= y) {
+                xs.push(a.x + (y - a.y) / (b.y - a.y) * (b.x - a.x));
+            }
+        }
+        xs.sort_by(f32::total_cmp);
+        for pair in xs.chunks_exact(2) {
+            mesh.add_colored_rect(
+                egui::Rect::from_min_max(
+                    Pos2::new(pair[0], y - step / 2.0),
+                    Pos2::new(pair[1], y + step / 2.0),
+                ),
+                color,
+            );
+        }
+        y += step;
+    }
+    mesh
+}
+
+/// A mesh fill's cells as triangles shaded between their corner colours.
+fn mesh_cells(cols: usize, nodes: &[(Pos2, Color32)], map: impl Fn(Pos2) -> Pos2) -> egui::Mesh {
+    let mut mesh = egui::Mesh::default();
+    for (p, c) in nodes {
+        mesh.colored_vertex(map(*p), *c);
+    }
+    if cols < 2 {
+        return mesh;
+    }
+    let rows = nodes.len() / cols;
+    for r in 0..rows.saturating_sub(1) {
+        for c in 0..cols - 1 {
+            let i = (r * cols + c) as u32;
+            let (a, b, d, e) = (i, i + 1, i + cols as u32, i + cols as u32 + 1);
+            mesh.add_triangle(a, b, e);
+            mesh.add_triangle(a, e, d);
+        }
+    }
+    mesh
+}
+
+/// How the preview shows lines inside the split shape and the pins.
+const ACCENT: Color32 = Color32::from_rgb(0xD0, 0x30, 0x70);
+
+/// Pins edited in the preview: drag from anywhere to add a pin and pull,
+/// drag a pin's end to change its pull or its start to move it, right
+/// click one to delete it.
+fn edit_pins(app: &mut App, data: &PreviewData, resp: &egui::Response, pm: PreviewMap) {
+    use crate::shape_gen_warp::{pins, MAX_PINS};
+    let s = &mut app.shape_gen;
+    let (w, h) = (s.width.max(1e-9), s.height.max(1e-9));
+    let side = w.max(h);
+    let painter = resp
+        .ctx
+        .layer_painter(resp.layer_id)
+        .with_clip_rect(resp.rect);
+    let at = pins(s);
+    let screen: Vec<(Pos2, Pos2)> = at
+        .iter()
+        .map(|(a, pull)| {
+            (
+                pm.to_screen(data, a.x, a.y),
+                pm.to_screen(data, a.x + pull.x, a.y + pull.y),
+            )
+        })
+        .collect();
+    for (a, b) in &screen {
+        painter.line_segment([*a, *b], Stroke::new(1.2, ACCENT));
+        painter.circle_stroke(*a, 3.0, Stroke::new(1.2, ACCENT));
+        painter.circle_filled(*b, 3.5, ACCENT);
+    }
+    // The end first: a pin with no pull yet is moved by its end.
+    let hit = |p: Pos2| -> Option<(bool, usize)> {
+        let near = |q: Pos2| q.distance(p) <= 8.0;
+        screen
+            .iter()
+            .position(|(_, b)| near(*b))
+            .map(|k| (true, k))
+            .or_else(|| {
+                screen
+                    .iter()
+                    .position(|(a, _)| near(*a))
+                    .map(|k| (false, k))
+            })
+    };
+    let id = resp.id.with("dragged_pin");
+    if resp.drag_started() {
+        let target = resp.interact_pointer_pos().and_then(|p| {
+            hit(p).or_else(|| {
+                (s.warp_pins.len() < MAX_PINS).then(|| {
+                    let (x, y) = pm.to_drawing(data, p);
+                    s.warp_pins.push([x / w, y / h, 0.0, 0.0]);
+                    (true, s.warp_pins.len() - 1)
+                })
+            })
+        });
+        resp.ctx.data_mut(|d| d.insert_temp(id, target));
+    }
+    if resp.dragged() {
+        let target: Option<(bool, usize)> = resp.ctx.data(|d| d.get_temp(id)).flatten();
+        if let (Some((end, k)), Some(p)) = (target, resp.interact_pointer_pos()) {
+            let (x, y) = pm.to_drawing(data, p);
+            if let Some(pin) = s.warp_pins.get_mut(k) {
+                if end {
+                    pin[2] = (x - pin[0] * w) / side;
+                    pin[3] = (y - pin[1] * h) / side;
+                } else {
+                    pin[0] = x / w;
+                    pin[1] = y / h;
+                }
+            }
+        }
+    }
+    if resp.drag_stopped() {
+        resp.ctx
+            .data_mut(|d| d.insert_temp::<Option<(bool, usize)>>(id, None));
+    }
+    if resp.secondary_clicked() {
+        if let Some((_, k)) = resp.interact_pointer_pos().and_then(hit) {
+            if k < s.warp_pins.len() {
+                s.warp_pins.remove(k);
+            }
+        }
+    }
+}
+
+/// Deform (pins and their reach) and Split by shape (how, the second
+/// colour and width, and the picked outline).
+fn deform_split(app: &mut App, ui: &mut Ui, units: crate::app::Units, precision: usize) {
+    section(ui, None);
+    let used = !app.shape_gen.warp_pins.is_empty() || app.shape_gen.split_mode != SplitMode::Off;
+    let shown = egui::CollapsingHeader::new(tr("shapegen.deform"))
+        .id_salt("shapegen_deform")
+        .default_open(used)
+        .show(ui, |ui| deform_split_body(app, ui, units, precision));
+    shown
+        .header_response
+        .rich_tip(crate::ui::tips::keyed("shapegen.deform"));
+}
+
+fn deform_split_body(app: &mut App, ui: &mut Ui, units: crate::app::Units, precision: usize) {
+    {
+        let s = &mut app.shape_gen;
+        ui.add(
+            egui::Label::new(
+                egui::RichText::new(tr("shapegen.deform_hint")).color(Tokens::text_dim()),
+            )
+            .wrap(),
+        );
+        row(ui, &tr("shapegen.warp_reach"), |ui| {
+            slider(
+                ui,
+                &mut s.warp_reach,
+                1.0..=100.0,
+                0,
+                " %",
+                "shapegen.warp_reach",
+            )
+        });
+        if !s.warp_pins.is_empty() {
+            indented(ui, |ui| {
+                if ui
+                    .button(tr("shapegen.warp_clear"))
+                    .rich_tip(crate::ui::tips::keyed("shapegen.warp_clear"))
+                    .clicked()
+                {
+                    s.warp_pins.clear();
+                }
+            });
+        }
+        row(ui, &tr("shapegen.split_mode"), |ui| {
+            combo(
+                ui,
+                "shapegen_split_mode",
+                &mut s.split_mode,
+                &SplitMode::ALL,
+                SplitMode::key,
+                "shapegen.split_mode",
+            );
+        });
+        if s.split_mode == SplitMode::Colors {
+            row(ui, &tr("shapegen.split_color"), |ui| {
+                ui.color_edit_button_srgb(&mut s.split_color)
+                    .rich_tip(crate::ui::tips::keyed("shapegen.split_color"));
+            });
+            row(ui, &tr("shapegen.split_width"), |ui| {
+                length(
+                    ui,
+                    units,
+                    precision,
+                    &mut s.split_width,
+                    0.0,
+                    50.0,
+                    "shapegen.split_width",
+                )
+            });
+        }
+    }
+    if app.shape_gen.split_mode == SplitMode::Off {
+        return;
+    }
+    let picked = app.shape_gen.split_shape.is_some();
+    let text = if picked {
+        tr("shapegen.split_picked")
+    } else {
+        tr("shapegen.split_none")
+    };
+    ui.add(egui::Label::new(egui::RichText::new(text).color(Tokens::text_dim())).wrap());
+    let can = !app.selection.is_empty() && app.shape_gen_selected().is_none();
+    ui.horizontal(|ui| {
+        if ui
+            .add_enabled(can, egui::Button::new(tr("shapegen.split_pick")))
+            .rich_tip(crate::ui::tips::keyed("shapegen.split_pick"))
+            .clicked()
+        {
+            app.shape_gen_pick_split();
+        }
+        if picked
+            && ui
+                .button(tr("shapegen.clear_source"))
+                .rich_tip(crate::ui::tips::keyed("shapegen.split_clear"))
+                .clicked()
+        {
+            app.shape_gen_clear_split();
+        }
+    });
 }
 
 /// Voronoi sites edited in the preview: drag one to move it, double
@@ -356,6 +756,37 @@ fn combo<T: Copy + PartialEq>(
         })
         .response
         .rich_tip(crate::ui::tips::keyed(tip));
+}
+
+/// The palette: a colour button for each colour, Add and Remove.
+fn palette_row(ui: &mut Ui, s: &mut ShapeGenSettings) {
+    row(ui, &tr("shapegen.bg_colors"), |ui| {
+        ui.horizontal_wrapped(|ui| {
+            for c in s.bg_colors.iter_mut() {
+                ui.color_edit_button_srgb(c)
+                    .rich_tip(crate::ui::tips::keyed("shapegen.bg_colors"));
+            }
+            let n = s.bg_colors.len();
+            if ui
+                .add_enabled(
+                    n < crate::shape_gen_bg::MAX_COLORS,
+                    egui::Button::new("+").small(),
+                )
+                .rich_tip(crate::ui::tips::keyed("shapegen.bg_add_color"))
+                .clicked()
+            {
+                let last = s.bg_colors.last().copied().unwrap_or([128, 128, 128]);
+                s.bg_colors.push(last);
+            }
+            if ui
+                .add_enabled(n > 1, egui::Button::new("\u{2212}").small())
+                .rich_tip(crate::ui::tips::keyed("shapegen.bg_remove_color"))
+                .clicked()
+            {
+                s.bg_colors.pop();
+            }
+        });
+    });
 }
 
 fn seed_row(ui: &mut Ui, s: &mut ShapeGenSettings) {
@@ -1621,10 +2052,186 @@ pub fn shape_generator(app: &mut App, ui: &mut Ui) {
                     seed_row(ui, s);
                 }
             }
+            GenKind::Growth => {
+                row(ui, &tr("shapegen.growth_start"), |ui| {
+                    combo(
+                        ui,
+                        "shapegen_growth_start",
+                        &mut s.growth_start,
+                        &GrowthStart::ALL,
+                        GrowthStart::key,
+                        "shapegen.growth_start",
+                    );
+                });
+                if s.growth_start == GrowthStart::Seeds {
+                    row(ui, &tr("shapegen.growth_seed_count"), |ui| {
+                        count(
+                            ui,
+                            &mut s.growth_seed_count,
+                            1..=50,
+                            "shapegen.growth_seed_count",
+                        )
+                    });
+                }
+                row(ui, &tr("shapegen.growth_size"), |ui| {
+                    slider(
+                        ui,
+                        &mut s.growth_size,
+                        5.0..=100.0,
+                        0,
+                        " %",
+                        "shapegen.growth_size",
+                    )
+                });
+                row(ui, &tr("shapegen.growth_spacing"), |ui| {
+                    length(
+                        ui,
+                        units,
+                        precision,
+                        &mut s.growth_spacing,
+                        0.05,
+                        50.0,
+                        "shapegen.growth_spacing",
+                    )
+                });
+                row(ui, &tr("shapegen.growth_repel"), |ui| {
+                    slider(
+                        ui,
+                        &mut s.growth_repel,
+                        1.0..=5.0,
+                        1,
+                        "",
+                        "shapegen.growth_repel",
+                    )
+                });
+                row(ui, &tr("shapegen.growth_align"), |ui| {
+                    slider(
+                        ui,
+                        &mut s.growth_align,
+                        0.0..=1.0,
+                        2,
+                        "",
+                        "shapegen.growth_align",
+                    )
+                });
+                row(ui, &tr("shapegen.growth_rate"), |ui| {
+                    count(ui, &mut s.growth_rate, 0..=100, "shapegen.growth_rate")
+                });
+                row(ui, &tr("shapegen.growth_max_nodes"), |ui| {
+                    count(
+                        ui,
+                        &mut s.growth_max_nodes,
+                        100..=20_000,
+                        "shapegen.growth_max_nodes",
+                    )
+                });
+                row(ui, &tr("shapegen.growth_steps"), |ui| {
+                    count(
+                        ui,
+                        &mut s.growth_steps,
+                        0..=crate::shape_gen_growth::MAX_STEPS,
+                        "shapegen.growth_steps",
+                    )
+                });
+                seed_row(ui, s);
+            }
+            GenKind::LayerWaves => {
+                palette_row(ui, s);
+                row(ui, &tr("shapegen.bg_layers"), |ui| {
+                    count(ui, &mut s.bg_layers, 1..=40, "shapegen.bg_layers")
+                });
+                row(ui, &tr("shapegen.bg_amplitude"), |ui| {
+                    slider(
+                        ui,
+                        &mut s.bg_amplitude,
+                        0.0..=100.0,
+                        0,
+                        " %",
+                        "shapegen.bg_amplitude",
+                    )
+                });
+                row(ui, &tr("shapegen.bg_frequency"), |ui| {
+                    slider(
+                        ui,
+                        &mut s.bg_frequency,
+                        0.1..=10.0,
+                        1,
+                        "",
+                        "shapegen.bg_frequency",
+                    )
+                });
+                row(ui, &tr("shapegen.bg_complexity"), |ui| {
+                    count(ui, &mut s.bg_complexity, 1..=6, "shapegen.bg_complexity")
+                });
+                row(ui, &tr("shapegen.bg_side"), |ui| {
+                    combo(
+                        ui,
+                        "shapegen_bg_side",
+                        &mut s.bg_side,
+                        &WaveSide::ALL,
+                        WaveSide::key,
+                        "shapegen.bg_side",
+                    );
+                });
+                seed_row(ui, s);
+            }
+            GenKind::Blobs => {
+                palette_row(ui, s);
+                row(ui, &tr("shapegen.bg_blob_count"), |ui| {
+                    count(ui, &mut s.bg_blob_count, 1..=200, "shapegen.bg_blob_count")
+                });
+                row(ui, &tr("shapegen.bg_blob_size"), |ui| {
+                    slider(
+                        ui,
+                        &mut s.bg_blob_size,
+                        1.0..=300.0,
+                        0,
+                        " %",
+                        "shapegen.bg_blob_size",
+                    )
+                });
+                row(ui, &tr("shapegen.bg_blob_points"), |ui| {
+                    count(ui, &mut s.bg_blob_points, 3..=24, "shapegen.bg_blob_points")
+                });
+                row(ui, &tr("shapegen.bg_randomness"), |ui| {
+                    slider(
+                        ui,
+                        &mut s.bg_randomness,
+                        0.0..=90.0,
+                        0,
+                        " %",
+                        "shapegen.bg_randomness",
+                    )
+                });
+                seed_row(ui, s);
+            }
+            GenKind::SoftGradient => {
+                palette_row(ui, s);
+                row(ui, &tr("shapegen.bg_mesh_size"), |ui| {
+                    count(ui, &mut s.bg_mesh_size, 1..=8, "shapegen.bg_mesh_size")
+                });
+                row(ui, &tr("shapegen.bg_jitter"), |ui| {
+                    slider(
+                        ui,
+                        &mut s.bg_jitter,
+                        0.0..=100.0,
+                        0,
+                        " %",
+                        "shapegen.bg_jitter",
+                    )
+                });
+                seed_row(ui, s);
+            }
         }
         if !matches!(
             s.kind,
-            GenKind::IsoBlocks | GenKind::Tessellation | GenKind::Stipple | GenKind::Halftone
+            GenKind::IsoBlocks
+                | GenKind::Tessellation
+                | GenKind::Stipple
+                | GenKind::Halftone
+                | GenKind::LayerWaves
+                | GenKind::Blobs
+                | GenKind::SoftGradient
         ) && !(s.kind == GenKind::Tiling && s.tile_fill && s.tile_type == TilingType::Penrose)
             && !(s.kind == GenKind::Truchet && s.truchet_style == TruchetStyle::Filled)
             && !(s.kind == GenKind::DotGrid && s.filled)
@@ -1641,7 +2248,10 @@ pub fn shape_generator(app: &mut App, ui: &mut Ui) {
                 )
             });
         }
-        if !matches!(s.kind, GenKind::IsoBlocks | GenKind::ConeTemplate) {
+        if !matches!(
+            s.kind,
+            GenKind::IsoBlocks | GenKind::ConeTemplate | GenKind::SoftGradient
+        ) {
             indented(ui, |ui| {
                 ui.checkbox(&mut s.combine, tr("shapegen.combine"))
                     .rich_tip(crate::ui::tips::keyed("shapegen.combine"));
@@ -1651,10 +2261,20 @@ pub fn shape_generator(app: &mut App, ui: &mut Ui) {
     if app.shape_gen.kind.uses_source() {
         source_row(app, ui);
     }
+    let warping = crate::shape_gen_warp::applies(app.shape_gen.kind);
+    if warping {
+        deform_split(app, ui, units, precision);
+    }
     section(ui, None);
-    let data = preview_for(ui, &app.shape_gen.sanitized());
+    let growing = app.shape_gen.kind == GenKind::Growth;
+    let data = if growing {
+        growth_controls(app, ui)
+    } else {
+        preview_for(ui, &app.shape_gen.sanitized())
+    };
     let editing = app.shape_gen.kind == GenKind::Voronoi;
-    let sense = if editing {
+    let pinning = warping && !editing;
+    let sense = if editing || pinning {
         Sense::click_and_drag()
     } else {
         Sense::hover()
@@ -1663,6 +2283,9 @@ pub fn shape_generator(app: &mut App, ui: &mut Ui) {
     if editing {
         let resp = resp.rich_tip(crate::ui::tips::keyed("shapegen.edit_points"));
         edit_sites(app, &data, &resp, pm);
+    } else if pinning {
+        let resp = resp.rich_tip(crate::ui::tips::keyed("shapegen.edit_pins"));
+        edit_pins(app, &data, &resp, pm);
     }
     let n = if data.cut {
         trf(

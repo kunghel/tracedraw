@@ -777,7 +777,18 @@ pub fn plan(sizes: &[Size], o: &Options) -> Vec<SheetPlan> {
                         let s = (avail_w / grid_w).min(avail_h / grid_h);
                         (s, s)
                     } else {
-                        let s = (avail_w / grid_w).min(avail_h / grid_h).min(1.0);
+                        // Shrunk only for the pages and the marks: the
+                        // bleed runs out past the pages' edges (to the
+                        // paper's edge if need be), so a wider bleed never
+                        // makes the pages smaller (#3919).
+                        let marks = if o.marks.any() { MARK_MARGIN } else { 0.0 };
+                        let room_w = (sheet.width - ml - mr - 2.0 * marks).max(1.0);
+                        let room_h = (sheet.height - mt - mb - 2.0 * marks).max(1.0);
+                        let pages_w = grid_w - 2.0 * cols as f64 * inner_bleed;
+                        let pages_h = grid_h - 2.0 * rows as f64 * inner_bleed;
+                        let s = (room_w / pages_w.max(1e-9))
+                            .min(room_h / pages_h.max(1e-9))
+                            .min(1.0);
                         (s, s)
                     };
                     (sheet, s)
@@ -2073,6 +2084,36 @@ mod tests {
         let t = s[0].cells[0].trim;
         assert!((t.width() - 148.0 * k).abs() < 1e-6, "{t:?}");
         assert!((t.y1 - 297.0).abs() < 1e-6, "{t:?}");
+    }
+
+    /// A page that just fits its paper with crop marks keeps its size
+    /// when a bleed is added: the bleed runs past the page's edges
+    /// (#3919).
+    #[test]
+    fn a_bleed_never_shrinks_the_pages() {
+        let page = Size::new(180.0, 267.0);
+        let at = |bleed: f64| {
+            let o = Options {
+                sheet: Some(Size::new(210.0, 297.0)),
+                bleed,
+                marks: Marks {
+                    crop: true,
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            plan(&[page], &o)[0].cells[0].trim
+        };
+        let (none, five) = (at(0.0), at(5.0));
+        assert!(
+            (none.width() - five.width()).abs() < 1e-9,
+            "{none:?} {five:?}"
+        );
+        assert!(
+            (none.height() - five.height()).abs() < 1e-9,
+            "{none:?} {five:?}"
+        );
+        assert!((none.center().x - five.center().x).abs() < 1e-9);
     }
 
     #[test]

@@ -51,7 +51,7 @@ was changed on every tab (#633).
 | Page | Settings (defaults) |
 |---|---|
 | General | On start-up: Welcome Screen, Start a new document, Open last edited document; Show New Document dialog box (on); Show the splash screen at start-up (on); Use hardware acceleration and the graphics card (from the next start); Undo levels, Regular (150). The splash, hardware acceleration and Global > General's AI agents section are shown on the desktop only: on Android and in the browser they do nothing and are hidden (`ui::options::DesktopOnly`, #1415) |
-| Display | Proof colors; Show tooltips (on); Hide bounding box for curve tools (off); Enable node tracking (off, see `pick-tool.md`); Full-screen preview: Show page border (on); Default action for mouse wheel: Zoom or Scroll; View when a drawing opens (below); Ruler calibration (below); Screen margins (Android only, see `android.md`, #1917) |
+| Display | Proof colors; Show tooltips (on); Hide bounding box for curve tools (off); Enable node tracking (off, see `pick-tool.md`); Show objects while transforming (off, see `pick-tool.md`, #3569); Full-screen preview: Show page border (on); Default action for mouse wheel: Zoom or Scroll; View when a drawing opens (below); Ruler calibration (below); Screen margins (Android only, see `android.md`, #1917) |
 | Edit | Constrain angle (15 degrees: Ctrl while rotating); Drawing precision (3 decimal places: at most that many in the property bars' length fields, at least one, trailing zeros dropped; that many in the status bar) |
 | Nodes and Handles | Node size Small, Medium, Large (7, 9, 11 px); Handle size Small, Medium, Large (6, 8, 10 px, Large by default; the Pick tool's selection handles, #1285, see `pick-tool.md`, and the Shape tool's control handle heads: Small 60 %, Medium 80 %, Large their full length, #3003); node shape per type (cusp square, smooth circle, symmetrical diamond); Show curve direction (the first node of each part and the last of an open part are triangles turned along the curve, #3038); main colour (selected nodes and handles, blue) and secondary colour (red); Show unselected nodes with fill (on, Ctrl+Shift+G); Pick distance (6 px, nodes and handles) and, on the same row, Object click distance (3 px by default, 0 to 20): how far from an object's outline a click still picks it with the Pick tool and the other tools that pick objects by a click (`App::object_pick_tol`, `pick_drag_tests::the_object_click_distance_is_a_setting`, #1679); control handle arrow heads are as long as the node size (#1643) |
 | clip frame | Auto-center new content: when it lies completely outside the frame (default), always, never; Show lines in empty clip frame frames (on, on screen) |
@@ -177,8 +177,8 @@ rest starts as always: one copy, all pages, 100 %, as in the document.
 What File > Export (Ctrl+E) starts with (`formats`): the format (SVG),
 the resolution of bitmap formats (300 dpi, 1 to 2400), the JPEG and
 WebP quality (90, 1 to 100), Transparent background (on), the PDF
-standard (PDF 1.4), the PDF/X output condition (FOGRA39, at most 64
-characters) and the PDF bleed (0 mm, 0 to 50). Within a session File >
+standard (PDF 1.4), the PDF/X output condition (empty: the
+drawing's CMYK profile, #3829; at most 64 characters) and the PDF bleed (0 mm, 0 to 50). Within a session File >
 Export always starts with the choices of the last export (format,
 resolution, quality, transparency, WebP lossless, all pages, PDF choices
 and preset; not Selected only, which starts off again, nor the file's

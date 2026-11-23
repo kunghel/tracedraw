@@ -7,7 +7,7 @@ start with `%!` (the PostScript-based versions of that format; the later
 PDF-based ones go through the PDF import). A classic `.ai` file whose
 header carries the format's version comments (`%AI5_FileFormat`,
 `%%AI8_CreatorVersion` or an `%AI3_` comment) and whose prolog brings no
-procedure set of its own, as the files of TraceDraw's Illustrator 8
+procedure set of its own, as the files of TraceDraw's Classic AI (EPS)
 export (see `export.md`, AI files), is run with the format's operators
 defined first in PostScript: paths (`m`, `l`, `L`, `c`, `C`, `v`, `V`,
 `y`, `Y`), painting (`f`, `F`, `s`, `S`, `b`, `B`, `n`, `N`, with the
@@ -53,7 +53,7 @@ what the program paints; no external PostScript engine is involved.
   `gsave`/`grestore` restore the current path too, so
   `gsave fill grestore stroke` strokes the same path. Such an outline,
   stroked over the fill just painted on the same path (a classic
-  Illustrator file's `b` and `B` too, also in a clipping group), is
+  `.ai` file's `b` and `B` too, also in a clipping group), is
   that object's outline: one object with its fill and outline, not a
   filled object with an outline object over it. A stroke of another
   path, or one after a group or a page began, stays an object of its

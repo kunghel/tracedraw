@@ -75,3 +75,13 @@ Elija [[menu.help > menu.help.welcome_screen]] para volver a mostrarla.
   informar de un problema.
 - [[menu.help > menu.help.message_settings]] abre las opciones donde se
   configuran los mensajes de TraceDraw.
+
+## Cuando TraceDraw deja de responder {#problem-reports}
+
+Cuando un paso de TraceDraw tarda más de 10 segundos, guarda un informe de lo que estaba haciendo (versión, sistema, herramienta, último comando, tamaño del dibujo y el final de su registro), nunca el nombre ni el contenido del dibujo. Un mensaje lo ofrece cuando TraceDraw vuelve a responder, o en el siguiente inicio si tuvo que cerrarse o se cerró por un error.
+
+1. Haz clic en **[[report.show]]** para leer el informe.
+2. Haz clic en **[[report.send]]**: se abre una nueva incidencia en GitHub con un resumen y la carpeta del informe.
+3. Arrastra el informe a la incidencia, cuenta qué hacías y envíala. No se envía nada antes.
+
+**[[report.not_now]]** cierra el mensaje. Cada informe se ofrece una sola vez.

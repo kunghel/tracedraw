@@ -4,6 +4,7 @@
 //! repaint asked only while the view moves.
 
 use crate::app::App;
+use crate::view::View;
 use egui::{Pos2, Vec2};
 
 /// Time a glide takes to reach 90 % of its zoom when the wheel turns
@@ -40,14 +41,24 @@ pub struct ZoomGlide {
     glide: f32,
     /// Input time of the last notch, seconds.
     last_notch: Option<f64>,
+    /// The view the glide lands at: what the picture on its way is drawn
+    /// for, and what the view is put at when the last bit is used.
+    target: Option<View>,
+    /// The view as the glide's last frame left it, to tell a view moved
+    /// by something else (a pan, a pinch) from one the glide itself
+    /// moved.
+    applied: Option<View>,
 }
 
 impl ZoomGlide {
     /// Wheel `notches` at input time `now`, each zooming `step` times
-    /// (above 1), about `anchor`. The glide gets as long as the wheel's
-    /// speed asks: the notches of this event over the time since the
-    /// last one.
-    pub fn add(&mut self, notches: f32, step: f32, anchor: Pos2, now: f64) {
+    /// (above 1), about `anchor`, the view `view` where it is. The glide
+    /// gets as long as the wheel's speed asks: the notches of this event
+    /// over the time since the last one. The glide is aimed at the view
+    /// zoomed by everything still to come at once (the frames of the
+    /// glide multiply to it): the picture on its way is drawn for that
+    /// view, and the view is put at it when the last bit is used.
+    pub fn add(&mut self, notches: f32, step: f32, anchor: Pos2, now: f64, view: &View) {
         if notches == 0.0 || !notches.is_finite() || !(step > 0.0) || !step.is_finite() {
             return;
         }
@@ -61,6 +72,54 @@ impl ZoomGlide {
         self.last_notch = Some(now);
         self.left += notches * step.ln();
         self.anchor = anchor;
+        self.aim_from(view);
+        self.applied = Some(*view);
+    }
+
+    /// Aim the glide at `view` zoomed by everything still to come at
+    /// once.
+    fn aim_from(&mut self, view: &View) {
+        let mut target = *view;
+        target.zoom_at(self.anchor, self.left.exp());
+        self.target = Some(target);
+    }
+
+    /// The view the glide lands at, if any: the picture is drawn for it
+    /// while the view is still on its way.
+    pub fn target_view(&self) -> Option<View> {
+        self.target
+    }
+
+    /// The view went somewhere the glide did not take it (a pan, a
+    /// pinch): the glide lands from where the view is now, its aim
+    /// folded into the new place. A frame the glide itself moved in (the
+    /// usual) left the view where it put it: the aim stands.
+    pub fn follow(&mut self, view: &View) {
+        if !self.active() {
+            return;
+        }
+        let unmoved = self
+            .applied
+            .is_some_and(|a| a.zoom == view.zoom && a.origin == view.origin);
+        if !unmoved {
+            self.aim_from(view);
+        }
+    }
+
+    /// The glide has used its last bit (advance left nothing): the view
+    /// is put at the view it was aimed at, which the turn's picture was
+    /// drawn for, so the drawing is sharp when the glide ends instead of
+    /// a render starting for a zoom a few bits off. While there is zoom
+    /// still to come, the view is remembered as the glide left it.
+    pub fn land(&mut self, view: &mut View) {
+        if self.left == 0.0 {
+            if let Some(target) = self.target.take() {
+                *view = target;
+            }
+            self.applied = None;
+        } else {
+            self.applied = Some(*view);
+        }
     }
 
     /// The zoom factor for a frame `dt` seconds long (1 when nothing is
@@ -106,6 +165,8 @@ impl ZoomGlide {
     /// Drop the zoom still to come.
     pub fn stop(&mut self) {
         self.left = 0.0;
+        self.target = None;
+        self.applied = None;
     }
 }
 
@@ -331,28 +392,30 @@ mod tests {
         assert_eq!(glide_time(f32::NAN), GLIDE_SLOW);
         // A notch after a pause glides slowly; one 30 ms after the last
         // glides shorter and applies more of itself in the first frame.
+        let view = View::default();
         let mut g = ZoomGlide::default();
-        g.add(1.0, 1.15, Pos2::ZERO, 10.0);
+        g.add(1.0, 1.15, Pos2::ZERO, 10.0, &view);
         assert_eq!(g.glide(), GLIDE_SLOW);
         let slow_first = g.advance(1.0 / 60.0);
         g.stop();
-        g.add(1.0, 1.15, Pos2::ZERO, 10.03);
+        g.add(1.0, 1.15, Pos2::ZERO, 10.03, &view);
         assert!(g.glide() < GLIDE_SLOW / 2.0, "{}", g.glide());
         let fast_first = g.advance(1.0 / 60.0);
         assert!(fast_first > slow_first, "{fast_first} {slow_first}");
         // Several notches in one event after a pause: a fast turn too.
         let mut g = ZoomGlide::default();
-        g.add(3.0, 1.15, Pos2::ZERO, 50.0);
+        g.add(3.0, 1.15, Pos2::ZERO, 50.0, &view);
         assert!(g.glide() < GLIDE_SLOW);
     }
 
     #[test]
     fn a_glide_adds_up_to_the_steps_and_ends() {
+        let view = View::default();
         let mut g = ZoomGlide::default();
         assert!(!g.active());
         assert_eq!(g.advance(0.016), 1.0);
-        g.add(2.0, 1.25, Pos2::new(3.0, 4.0), 1.0);
-        g.add(-1.0, 1.25, Pos2::new(5.0, 6.0), 1.2);
+        g.add(2.0, 1.25, Pos2::new(3.0, 4.0), 1.0, &view);
+        g.add(-1.0, 1.25, Pos2::new(5.0, 6.0), 1.2, &view);
         assert_eq!(g.anchor(), Pos2::new(5.0, 6.0));
         let mut total = 1.0f32;
         let mut frames = 0;
@@ -363,12 +426,81 @@ mod tests {
         }
         assert!((total - 1.25).abs() < 1e-3, "{total}");
         // Nothing for a frame of no time; nonsense is ignored.
-        g.add(1.0, 1.15, Pos2::ZERO, 2.0);
+        g.add(1.0, 1.15, Pos2::ZERO, 2.0, &view);
         assert_eq!(g.advance(0.0), 1.0);
         g.stop();
         assert!(!g.active());
-        g.add(f32::NAN, 1.15, Pos2::ZERO, 3.0);
-        g.add(1.0, -2.0, Pos2::ZERO, 3.0);
+        g.add(f32::NAN, 1.15, Pos2::ZERO, 3.0, &view);
+        g.add(1.0, -2.0, Pos2::ZERO, 3.0, &view);
         assert!(!g.active());
+    }
+
+    /// The view the glide lands at is the one the picture was drawn for,
+    /// to the bit: a glide's frames multiply to its step only to the last
+    /// bits, and the landing puts the view at the aimed-at view, so no
+    /// render is started for the difference.
+    #[test]
+    fn the_glide_lands_on_the_view_it_was_aimed_at() {
+        let mut view = View::default();
+        let z0 = view.zoom;
+        let at = Pos2::new(400.0, 300.0);
+        let mut g = ZoomGlide::default();
+        g.add(1.0, 1.15, at, 1.0, &view);
+        let aim = g.target_view().expect("aimed at a view");
+        assert!((aim.zoom / (z0 * 1.15) - 1.0).abs() < 1e-4, "{aim:?}");
+        let mut frames = 0;
+        while g.active() {
+            let f = g.advance(1.0 / 60.0);
+            if f != 1.0 {
+                view.zoom_at(at, f);
+            }
+            g.land(&mut view);
+            frames += 1;
+            assert!(frames < 200, "the glide ends");
+        }
+        assert_eq!(view.zoom, aim.zoom, "the landing zoom, to the bit");
+        assert_eq!(view.origin, aim.origin, "the landing place, to the bit");
+        assert!((view.zoom / z0 - 1.15).abs() < 1e-3, "a notch in all");
+        // A landed glide aims at nothing more.
+        assert!(g.target_view().is_none());
+    }
+
+    /// A pan while the glide goes: the glide lands from where the pan
+    /// left the view, its aim folded into the new place, and the landing
+    /// puts the view at that folded-in aim, the pan's place kept.
+    #[test]
+    fn a_pan_while_the_glide_goes_folds_into_its_landing() {
+        let mut view = View::default();
+        let at = Pos2::new(400.0, 300.0);
+        let mut g = ZoomGlide::default();
+        g.add(1.0, 1.15, at, 1.0, &view);
+        // A frame of the glide, then a pan by hand.
+        let f = g.advance(1.0 / 60.0);
+        view.zoom_at(at, f);
+        g.land(&mut view);
+        assert!(g.active(), "still on its way");
+        view.pan(Vec2::new(30.0, -10.0));
+        let under = view.to_page(at);
+        // The next frame: the aim follows the panned view.
+        g.follow(&view);
+        let aim = g.target_view().expect("aimed");
+        let mut frames = 0;
+        while g.active() {
+            let f = g.advance(1.0 / 60.0);
+            if f != 1.0 {
+                view.zoom_at(at, f);
+            }
+            g.land(&mut view);
+            frames += 1;
+            assert!(frames < 200, "the glide ends");
+        }
+        assert_eq!(view.zoom, aim.zoom, "the landing zoom, to the bit");
+        assert_eq!(view.origin, aim.origin, "the landing place, to the bit");
+        // The pan is kept: the point the pan put under the anchor stays.
+        let landed = view.to_page(at);
+        assert!(
+            (landed.x - under.x).abs() < 1e-3 && (landed.y - under.y).abs() < 1e-3,
+            "{landed:?} {under:?}"
+        );
     }
 }

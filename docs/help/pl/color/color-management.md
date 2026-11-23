@@ -74,3 +74,9 @@ również ostrzega przed takimi kolorami.
 
 Bez wczytanych profili TraceDraw przekształca kolory według własnego modelu
 farb procesowych na papierze powlekanym.
+
+[[menu.view > menu.view.separations]] pokazuje stronę tak, jak drukuje ją jedna
+farba, w kolorze tej farby: wybierz cyjan, magentę, żółty, czarny lub kolor
+dodatkowy rysunku, a widać tylko to, co ta farba drukuje. Możesz dalej rysować
+i edytować jak zwykle; sam rysunek się nie zmienia.
+[[menu.view.separations_composite]] znów pokazuje wszystkie farby.

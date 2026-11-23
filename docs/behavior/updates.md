@@ -154,11 +154,22 @@ Updates opens the releases page).
   - AppImage: the new file, without `APPDIR`, `ARGV0` and `OWD` of the old
     mount;
   - Windows: `cmd /C start "" <setup> /SILENT /SUPPRESSMSGBOXES
-    /NORESTART /relaunch=1`. The shell is used so that the setup can ask
-    for administrator approval (a copy installed for all users). Setup
-    keeps the install folder and install mode of the existing copy, its
-    settings and file associations, and `packaging/windows/tracedraw.iss`
-    starts the new TraceDraw at the end when `/relaunch=1` is given;
+    /NORESTART /relaunch=1 /LOG=<setup>.log`. The shell is used so that
+    the setup can ask for administrator approval (a copy installed for
+    all users). Setup keeps the install folder and install mode of the
+    existing copy, its settings and file associations, and
+    `packaging/windows/tracedraw.iss` starts the new TraceDraw at the end
+    when `/relaunch=1` is given. With `/SUPPRESSMSGBOXES` a file in use
+    answers Abort and the setup ends with no word, so the setup closes
+    only TraceDraw's programs (`CloseApplicationsFilter=*.exe`, never
+    Explorer) and moves the thumbnail handler aside before the files go
+    in (`tracedraw_thumbnailer.dll.<n>.old`: Explorer keeps it loaded to
+    show `.cdr` and `.tdraw` pictures, and `restartreplace` needs
+    administrator rights an install for the current user has not); the
+    copies moved aside are deleted at the end, or by TraceDraw at its
+    next start. When the setup's log is still in the staging folder for a
+    version newer than the one that starts, the update did not finish and
+    the status bar says so with the log's path (#3816);
   - macOS: `open -n <bundle>`;
   - tar.gz and portable zip: the program again;
   - `.deb`: `sh -c 'pkexec dpkg -i "$1"; rm -f "$1"; exec "$2"'`: the

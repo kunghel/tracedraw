@@ -126,6 +126,9 @@ warnanya.
 - Isian [[docker.fill_texture]] adalah tekstur hasil olahan yang tampak alami:
   [[texture.clouds]], [[texture.marble]], [[texture.noise]], atau
   [[texture.wood]], dengan warna dan skalanya.
+- [[texture.holographic]] dan [[texture.holo_glitter]] memberi tampilan foil holografik tetap: warna pelangi di antara
+  bagian gelap dan terang (warna A dan B), glitter dengan butiran berkilau.
+  Tidak berubah menurut sudut pandang; PDF dan SVG membawanya sebagai gambar.
 
 ## Beberapa isian pada satu objek {#several-fills}
 

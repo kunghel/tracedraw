@@ -146,6 +146,24 @@ imposition and the marks.
   the sheet to move the artwork on its page (**Artwork position** shows the
   move, with **Reset**). **Transform** draws handles to stretch the artwork.
 
+## Viewing one ink while you draw {#view-separations}
+
+[[menu.view > menu.view.separations]] shows the page in the drawing window
+as one ink prints it, in that ink's colour: Cyan in cyan, Magenta in
+magenta, and each spot ink of the drawing under its own name. Choose an ink
+from the submenu and keep editing; the drawing itself does not change.
+[[menu.view.separations_composite]] shows every ink again.
+
+![Three overlapping cyan, magenta and yellow circles seen through the magenta ink alone](../../img/printing-print-view-separations.png)
+
+## Flattening transparency {#flatten-transparency}
+
+Some printers and older file formats cannot mix see-through objects with
+what lies beneath them. [[menu.object > menu.object.flatten_transparency]]
+turns the selected objects into one opaque bitmap of how they look over
+what is under them, at 300 dpi and shaped like them, in their place in the
+stack. The objects beneath stay as they are. One undo step takes it back.
+
 ## Other ways to print {#other}
 
 - [[menu.file > menu.file.send_to]] saves a PDF to your desktop or documents

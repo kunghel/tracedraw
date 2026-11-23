@@ -22,9 +22,9 @@ pub fn read_rows(bytes: &[u8]) -> Result<Vec<Vec<String>>, String> {
         if f.size() > MAX_PART {
             return Err(format!("{name} too large"));
         }
-        let mut s = String::new();
-        f.read_to_string(&mut s).map_err(|e| e.to_string())?;
-        Ok::<String, String>(s)
+        let mut raw = Vec::new();
+        f.read_to_end(&mut raw).map_err(|e| e.to_string())?;
+        Ok::<String, String>(decode_xml_bytes(&raw))
     };
     let sheet = first_sheet_path(
         &part(&mut zip, "xl/workbook.xml")?,
@@ -59,6 +59,93 @@ fn first_sheet_path(workbook: &str, rels: &str) -> Option<String> {
     })
 }
 
+/// Decode an XML part from UTF-8, UTF-16 with BOM, or the character set
+/// named in its `<?xml ... encoding="..."?>` prolog (`windows-1251`,
+/// `gbk`, `shift_jis`, `windows-1250`, etc.), stripping any non-UTF-8
+/// `encoding=` declaration so `roxmltree` parses the resulting UTF-8.
+fn decode_xml_bytes(raw: &[u8]) -> String {
+    if let Some(rest) = raw.strip_prefix(&[0xEF, 0xBB, 0xBF]) {
+        return String::from_utf8_lossy(rest).into_owned();
+    }
+    if let Some(rest) = raw.strip_prefix(&[0xFF, 0xFE]) {
+        let units: Vec<u16> = rest
+            .chunks_exact(2)
+            .map(|c| u16::from_le_bytes([c[0], c[1]]))
+            .collect();
+        return strip_xml_encoding(&String::from_utf16_lossy(&units));
+    }
+    if let Some(rest) = raw.strip_prefix(&[0xFE, 0xFF]) {
+        let units: Vec<u16> = rest
+            .chunks_exact(2)
+            .map(|c| u16::from_be_bytes([c[0], c[1]]))
+            .collect();
+        return strip_xml_encoding(&String::from_utf16_lossy(&units));
+    }
+    if let Ok(s) = std::str::from_utf8(raw) {
+        return s.to_string();
+    }
+    let head = &raw[..raw.len().min(200)];
+    let head_ascii: String = head.iter().map(|&b| b as char).collect();
+    let enc = xml_declared_encoding(&head_ascii)
+        .and_then(|label| encoding_rs::Encoding::for_label(label.as_bytes()))
+        .unwrap_or(encoding_rs::WINDOWS_1251);
+    let (cow, _, _) = enc.decode(raw);
+    strip_xml_encoding(&cow)
+}
+
+fn xml_declared_encoding(head: &str) -> Option<&str> {
+    let end = head.find("?>")?;
+    let decl = &head[..end];
+    let pos = decl.find("encoding")?;
+    let after = decl[pos + "encoding".len()..].trim_start();
+    let after = after.strip_prefix('=')?.trim_start();
+    let q = after.chars().next().filter(|&c| c == '"' || c == '\'')?;
+    let rest = &after[1..];
+    let close = rest.find(q)?;
+    Some(&rest[..close])
+}
+
+fn strip_xml_encoding(xml: &str) -> String {
+    match xml.find("?>").filter(|&end| xml[..end].starts_with("<?xml")) {
+        Some(end) => format!("<?xml version=\"1.0\"?>{}", &xml[end + 2..]),
+        None => xml.to_string(),
+    }
+}
+
+fn ooxml_escape_at(bytes: &[u8], i: usize) -> Option<u16> {
+    let slice = bytes.get(i..i.checked_add(7)?)?;
+    if slice[0] != b'_' || !matches!(slice[1], b'x' | b'X') || slice[6] != b'_' {
+        return None;
+    }
+    let hex = std::str::from_utf8(&slice[2..6]).ok()?;
+    u16::from_str_radix(hex, 16).ok()
+}
+
+/// Unescape OOXML `_xHHHH_` hex escapes (`ECMA-376` 22.4.2.4), including
+/// surrogate pairs.
+fn unescape_ooxml(s: &str) -> String {
+    if !s.contains("_x") && !s.contains("_X") {
+        return s.to_string();
+    }
+    let bytes = s.as_bytes();
+    let mut units: Vec<u16> = Vec::with_capacity(s.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if let Some(u) = ooxml_escape_at(bytes, i) {
+            units.push(u);
+            i += 7;
+            continue;
+        }
+        let ch = s[i..].chars().next().unwrap_or('\u{FFFD}');
+        let mut buf = [0u16; 2];
+        for u in ch.encode_utf16(&mut buf) {
+            units.push(*u);
+        }
+        i += ch.len_utf8();
+    }
+    String::from_utf16_lossy(&units)
+}
+
 /// The text of a string item: its `t`, or its runs' `t`s together
 /// (phonetic runs left out).
 fn item_text(n: roxmltree::Node) -> String {
@@ -69,7 +156,7 @@ fn item_text(n: roxmltree::Node) -> String {
         }
         s.push_str(t.text().unwrap_or(""));
     }
-    s
+    unescape_ooxml(&s)
 }
 
 fn shared_strings(xml: &str) -> Result<Vec<String>, String> {
@@ -138,7 +225,7 @@ fn sheet_rows(xml: &str, shared: &[String]) -> Result<Vec<Vec<String>>, String> 
                     .map(item_text)
                     .unwrap_or_default(),
                 Some("b") => (if v.trim() == "1" { "TRUE" } else { "FALSE" }).to_string(),
-                Some("str") | Some("e") => v.to_string(),
+                Some("str") | Some("e") => unescape_ooxml(v),
                 _ => number_text(v.trim()),
             };
             if cells.len() <= col {
@@ -217,5 +304,29 @@ mod tests {
         assert_eq!(column_of("AB7"), Some(27));
         assert_eq!(column_of("12"), None);
         assert!(read_rows(b"not a zip").is_err());
+    }
+
+    #[test]
+    fn multilingual_cells_legacy_xml_encodings_and_ooxml_escapes_read() {
+        let shared = r#"<sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><si><t>Позиция</t></si><si><t>日本語</t></si><si><t>مرحبا</t></si><si><t>A_x0020_B_x0416_</t></si></sst>"#;
+        let sheet = r#"<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetData>
+            <row r="1"><c r="A1" t="s"><v>0</v></c><c r="B1" t="s"><v>1</v></c><c r="C1" t="s"><v>2</v></c><c r="D1" t="s"><v>3</v></c></row>
+        </sheetData></worksheet>"#;
+        let rows = read_rows(&book(sheet, shared)).unwrap();
+        assert_eq!(
+            rows,
+            vec![vec![
+                "Позиция".to_string(),
+                "日本語".into(),
+                "مرحبا".into(),
+                "A BЖ".into()
+            ]]
+        );
+
+        // Non-UTF-8 sharedStrings.xml declared as windows-1251.
+        let xml_1251 = "<?xml version=\"1.0\" encoding=\"windows-1251\"?><sst xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\"><si><t>Бумага</t></si></sst>";
+        let (raw_1251, _, _) = encoding_rs::WINDOWS_1251.encode(xml_1251);
+        let decoded = decode_xml_bytes(&raw_1251);
+        assert_eq!(shared_strings(&decoded).unwrap(), vec!["Бумага".to_string()]);
     }
 }

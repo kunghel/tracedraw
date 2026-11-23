@@ -10,7 +10,7 @@ use crate::ui::tips::RichTip;
 use egui::Ui;
 use tracedraw_core::document::{PathTextOrientation, PathTextVertical, TextAlign};
 
-const ORIENTATIONS: [(PathTextOrientation, &str); 4] = [
+const ORIENTATIONS: [(PathTextOrientation, &str); 5] = [
     (PathTextOrientation::Rotate, "toolbar.path_rotate"),
     (
         PathTextOrientation::VerticalSkew,
@@ -21,6 +21,7 @@ const ORIENTATIONS: [(PathTextOrientation, &str); 4] = [
         "toolbar.path_horizontal_skew",
     ),
     (PathTextOrientation::Upright, "toolbar.path_upright"),
+    (PathTextOrientation::Radial, "toolbar.path_radial"),
 ];
 
 const VERTICALS: [(PathTextVertical, &str); 4] = [

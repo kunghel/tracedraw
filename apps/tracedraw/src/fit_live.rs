@@ -20,7 +20,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use tracedraw_core::{
     document::{Shape, ShapeKind, Uid},
-    geometry::{Affine, Point},
+    geometry::{Affine, Point, Vec2},
     Command, ShapeId,
 };
 
@@ -113,6 +113,202 @@ impl LiveFit {
         }
         out
     }
+}
+
+/// How far (mm) a node of an object the fit places may lie from where the
+/// file drew it for a stroke read from a `.cdr` file to be taken live.
+const ADOPT_TOLERANCE: f64 = 0.15;
+
+/// The points of `s` on the page, in order: its nodes and handles.
+fn page_points(s: &Shape) -> Vec<Point> {
+    let mut pts = Vec::new();
+    for el in s.page_path().elements() {
+        match *el {
+            kurbo::PathEl::MoveTo(p) | kurbo::PathEl::LineTo(p) => pts.push(p),
+            kurbo::PathEl::QuadTo(a, p) => pts.extend([a, p]),
+            kurbo::PathEl::CurveTo(a, b, p) => pts.extend([a, b, p]),
+            kurbo::PathEl::ClosePath => {}
+        }
+    }
+    pts
+}
+
+/// The live fit that places `objects` (in their order) on `guide` as the
+/// file drew them: the first object the one fitted, the others its
+/// copies, spaced by distance and turned with the path. The settings are
+/// measured from the objects; `None` unless the fit worked out from them
+/// puts every object back where it is, within [`ADOPT_TOLERANCE`].
+fn imported_fit(guide: &Shape, objects: &[Shape]) -> Option<LiveFit> {
+    let path = guide.page_path();
+    // From the start of the path (files list them either way).
+    let mut objects: Vec<(f64, &Shape)> = objects
+        .iter()
+        .map(|o| {
+            crate::fit_path::path_distance_of(&path, &FitPathSettings::default(), o.bounds().center())
+                .map(|(d, _, _)| (d, o))
+        })
+        .collect::<Option<_>>()?;
+    objects.sort_by(|a, b| a.0.total_cmp(&b.0));
+    let objects: Vec<Shape> = objects.into_iter().map(|(_, o)| o.clone()).collect();
+    let (first, rest) = objects.split_first()?;
+    if rest.is_empty() {
+        return None;
+    }
+    let mut set = FitPathSettings {
+        spacing: FitSpacing::Distance,
+        copies: crate::fit_path::FitCopies::Fill,
+        rotation: crate::fit_path::FitRotation::Follow,
+        live: true,
+        ..FitPathSettings::default()
+    };
+    // How the path is walked (forwards, every subpath), as `set` walks it.
+    let walk = FitPathSettings::default();
+    let turn_of = |s: &Shape| {
+        let c = s.transform.as_coeffs();
+        c[1].atan2(c[0])
+    };
+    let direction = |d: f64| {
+        crate::fit_path::path_point(&path, &walk, d).map(|(p, t)| (p, t.y.atan2(t.x), t))
+    };
+    // The first object turned back as it lies on the path: what the fit
+    // places. Its box centre is the point the fit puts on the path.
+    let (d0, _, _) = crate::fit_path::path_distance_of(&path, &walk, first.bounds().center())?;
+    let (_, phi0, _) = direction(d0)?;
+    let angle = (turn_of(first) - phi0).to_degrees();
+    // From -180 (left out) to 180 degrees, in thousandths.
+    let angle = (angle.rem_euclid(360.0) * 1000.0).round() / 1000.0;
+    set.angle = if angle > 180.0 { angle - 360.0 } else { angle };
+    let unturn = Affine::rotate_about(-turn_of(first), first.bounds().center());
+    let mut source = first.clone();
+    source.transform_by(unturn);
+    let centre = source.bounds().center();
+    // Where each object's centre (as the source has it) lands, and how
+    // far along the path and off it that is.
+    let landed = |s: &Shape| -> Option<(f64, f64)> {
+        let to = s.transform * source.transform.inverse();
+        let p = to * centre;
+        let (d, _, _) = crate::fit_path::path_distance_of(&path, &walk, p)?;
+        let (q, _, t) = direction(d)?;
+        Some((d, (p - q).dot(Vec2::new(-t.y, t.x))))
+    };
+    let (start, shift) = landed(first)?;
+    let (end, _) = landed(objects.last()?)?;
+    let distance = (end - start) / rest.len() as f64;
+    if !(distance.is_finite() && distance > 1e-3) {
+        return None;
+    }
+    // Whole microns: the file's step is a round number of them.
+    set.distance = (distance * 1e3).round() / 1e3;
+    set.offset = (start * 1e3).round() / 1e3;
+    if shift.abs() > 1e-3 {
+        // The centre lies off the path: placed above it, the object's
+        // half width across the path and the side make up the shift.
+        let b = source.bounds();
+        let a = set.angle.to_radians();
+        let across = b.width() / 2.0 * a.sin().abs() + b.height() / 2.0 * a.cos().abs();
+        set.place = crate::fit_path::FitPlace::Above;
+        set.side = ((shift - across) * 1e4).round() / 1e4;
+    }
+    // As many as the file has: the room ends half a step after the last.
+    let (_, total, closed) = crate::fit_path::path_distance_of(&path, &walk, centre)?;
+    if closed {
+        return None;
+    }
+    let room = total - set.offset;
+    let count = (room / set.distance + 1e-9).floor() as usize + 1;
+    if count != objects.len() {
+        let wanted = set.distance * (objects.len() as f64 - 0.5);
+        set.end_offset = ((room - wanted) * 1e4).round() / 1e4;
+    }
+    let shapes = [source.clone(), guide.clone()];
+    let layout = crate::fit_path::fit_to_path_layout_with(&shapes, &set, &|_| None)?;
+    if layout.placements.len() != objects.len() {
+        return None;
+    }
+    for (p, o) in layout.placements.iter().zip(&objects) {
+        let mut placed = source.clone();
+        placed.transform_by(p.transform);
+        let (a, b) = (page_points(&placed), page_points(o));
+        if a.len() != b.len() || a.iter().zip(&b).any(|(x, y)| (*x - *y).hypot() > ADOPT_TOLERANCE) {
+            return None;
+        }
+    }
+    // The move the fit gave the first object (from the source to it).
+    let placed = layout.placements.first()?.transform;
+    let uid = |s: &Shape| s.uid.map(uid_text);
+    Some(LiveFit {
+        path: uid(guide)?,
+        settings: set,
+        members: vec![Member {
+            uid: uid(first)?,
+            placed: Some(placed.as_coeffs()),
+        }],
+        copies: rest.iter().map(uid).collect::<Option<Vec<_>>>()?,
+    })
+}
+
+/// Turn the brush strokes the `.cdr` reader marked on their
+/// guides (`tracedraw_cdr::artistic::DATA_KEY`) into live fits of their
+/// objects to the guides, where the objects lie on the guide as a fit
+/// would place them (#3680). The marks go either way; strokes that do not
+/// fit stay plain objects. Returns how many were made live.
+pub fn adopt_imported_strokes(doc: &mut tracedraw_core::Document) -> usize {
+    #[derive(Deserialize)]
+    struct Stroke {
+        objects: Vec<String>,
+    }
+    const KEY: &str = tracedraw_cdr::artistic::DATA_KEY;
+    fn walk(s: &Shape, out: &mut Vec<ShapeId>, uids: &mut HashMap<String, ShapeId>) {
+        if s.data.iter().any(|(k, _)| k == KEY) {
+            out.push(s.id);
+        }
+        if let Some(u) = s.uid {
+            uids.entry(uid_text(u)).or_insert(s.id);
+        }
+        match &s.kind {
+            ShapeKind::Group { children } => children.iter().for_each(|c| walk(c, out, uids)),
+            ShapeKind::ClipFrame { frame, contents } => {
+                walk(frame, out, uids);
+                contents.iter().for_each(|c| walk(c, out, uids));
+            }
+            _ => {}
+        }
+    }
+    let mut guides = Vec::new();
+    let mut uids = HashMap::new();
+    for l in doc.all_layers() {
+        for s in &l.shapes {
+            walk(s, &mut guides, &mut uids);
+        }
+    }
+    let mut made = 0;
+    for id in guides {
+        let Some(guide) = doc.shape_on_page(id) else {
+            continue;
+        };
+        let fit = guide
+            .data
+            .iter()
+            .find(|(k, _)| k == KEY)
+            .and_then(|(_, v)| serde_json::from_str::<Stroke>(v).ok())
+            .and_then(|stroke| {
+                let objects: Option<Vec<Shape>> = stroke
+                    .objects
+                    .iter()
+                    .map(|u| uids.get(u).filter(|o| **o != id).and_then(|o| doc.shape_on_page(*o)))
+                    .collect();
+                imported_fit(&guide, &objects?)
+            });
+        let Some(shape) = doc.find_shape_mut(id) else {
+            continue;
+        };
+        shape.data.retain(|(k, _)| k != KEY);
+        if let Some(fit) = fit {
+            shape.data = LiveFit::into_data(Some(&fit), &shape.data);
+            made += 1;
+        }
+    }
+    made
 }
 
 /// The handles of the selected live fit, page millimetres.
@@ -956,6 +1152,109 @@ mod tests {
                 assert!((s.bounds().width() - 5.0).abs() < 1e-6);
             }
         }
+    }
+
+    /// A drawing whose guide carries the `.cdr` reader's mark of an
+    /// A brush stroke: triangles every 5 mm along a bent path,
+    /// turned half round from it and lying a little off it, listed from
+    /// the far end (as the file of #3680 lists them).
+    fn stroke_drawing(nudge: f64) -> (tracedraw_core::Document, Uid) {
+        use crate::fit_path::{FitCopies, FitPlace, FitRotation};
+        let mut doc = tracedraw_core::Document::new("Stroke", tracedraw_core::Size::new(200.0, 200.0));
+        let mut path = BezPath::new();
+        path.move_to((10.0, 10.0));
+        path.line_to((70.0, 10.0));
+        path.curve_to((100.0, 10.0), (110.0, 40.0), (110.0, 70.0));
+        let mut guide = Shape::new(doc.ids_mut().shape(), ShapeKind::Path { path, closed: false });
+        guide.uid = Some(Uid(0x100));
+        let mut tri = BezPath::new();
+        tri.move_to((0.0, -1.0));
+        tri.line_to((1.25, 1.2));
+        tri.line_to((-1.25, 1.2));
+        tri.close_path();
+        let mut source = Shape::new(doc.ids_mut().shape(), ShapeKind::Path { path: tri, closed: true });
+        source.transform = Affine::translate((40.0, 100.0)) * Affine::scale(0.6);
+        let set = FitPathSettings {
+            spacing: FitSpacing::Distance,
+            distance: 5.0,
+            copies: FitCopies::Fill,
+            rotation: FitRotation::Follow,
+            angle: 180.0,
+            place: FitPlace::Above,
+            side: -0.5,
+            ..FitPathSettings::default()
+        };
+        let layout = crate::fit_path::fit_to_path_layout_with(&[source.clone(), guide.clone()], &set, &|_| None)
+            .expect("layout");
+        let mut marks = Vec::new();
+        for (k, p) in layout.placements.iter().enumerate() {
+            let mut m = source.clone();
+            m.id = doc.ids_mut().shape();
+            m.uid = Some(Uid(0x200 + k as u128));
+            m.transform_by(p.transform);
+            if k == 3 {
+                m.transform_by(Affine::translate((nudge, 0.0)));
+            }
+            marks.push(uid_text(m.uid.expect("uid")));
+            doc.pages[0].layers[0].shapes.push(m);
+        }
+        marks.reverse();
+        let text = serde_json::json!({ "objects": marks }).to_string();
+        guide.data.push((tracedraw_cdr::artistic::DATA_KEY.to_string(), text));
+        doc.pages[0].layers[0].shapes.push(guide);
+        (doc, Uid(0x100))
+    }
+
+    #[test]
+    fn a_brush_stroke_read_from_a_cdr_file_opens_live() {
+        let (mut doc, guide_uid) = stroke_drawing(0.0);
+        assert_eq!(adopt_imported_strokes(&mut doc), 1);
+        let guide = doc
+            .all_layers()
+            .flat_map(|l| l.shapes.iter())
+            .find(|s| s.uid == Some(guide_uid))
+            .expect("guide");
+        assert!(guide.data.iter().all(|(k, _)| k != tracedraw_cdr::artistic::DATA_KEY));
+        let fit = LiveFit::of(guide).expect("live fit");
+        assert_eq!(fit.settings.distance, 5.0);
+        assert_eq!(fit.settings.angle, 180.0);
+        assert_eq!(fit.members.len(), 1);
+        // From the path's start: the first triangle is fitted, the others
+        // are its copies.
+        assert_eq!(fit.members[0].uid, uid_text(Uid(0x200)));
+        assert_eq!(fit.copies.first(), Some(&uid_text(Uid(0x201))));
+        let n = 1 + fit.copies.len();
+        // Opened: moving the guide takes the triangles along.
+        let mut app = App::headless();
+        app.open_document(doc, None);
+        let path = app.live_fits().first().map(|(p, _)| *p).expect("fit");
+        let first = |app: &App| {
+            let index = app.shapes_by_uid();
+            centre(app, index[&uid_text(Uid(0x200))])
+        };
+        let before = first(&app);
+        app.engine
+            .run(&Command::TransformShapes {
+                shapes: vec![path],
+                transform: Affine::translate((5.0, 7.0)),
+            })
+            .expect("move");
+        app.refresh_live_fits();
+        let after = first(&app);
+        assert!(close(after, before.x + 5.0, before.y + 7.0), "{before:?} -> {after:?}");
+        let fit = LiveFit::of(app.doc().find_shape(path).expect("guide")).expect("fit");
+        assert_eq!(1 + fit.copies.len(), n);
+    }
+
+    #[test]
+    fn a_stroke_whose_objects_do_not_follow_a_fit_stays_as_drawn() {
+        let (mut doc, _) = stroke_drawing(1.0);
+        assert_eq!(adopt_imported_strokes(&mut doc), 0);
+        // The mark goes all the same.
+        assert!(doc
+            .all_layers()
+            .flat_map(|l| l.shapes.iter())
+            .all(|s| s.data.is_empty()));
     }
 
     #[test]

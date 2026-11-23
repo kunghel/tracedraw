@@ -9,7 +9,7 @@ use crate::i18n::{tr, trf};
 use crate::theme::Tokens;
 use crate::ui::tips::RichTip;
 use egui::Ui;
-use tracedraw_core::{document::ShapeKind, live::Effect, Color, Command, Fill, ShapeId};
+use tracedraw_core::{document::ShapeKind, geometry::Affine, live::Effect, Color, Command, Fill, ShapeId};
 
 /// The colour picker every colour of the drawing uses (#442).
 fn color_button(ui: &mut Ui, c: &mut Color) -> bool {
@@ -69,6 +69,14 @@ pub fn show(app: &mut App, ui: &mut Ui, tab: DockerTab) {
         DockerTab::Effects => crate::ui::effects_docker::effects_docker(app, ui),
         DockerTab::Macros => crate::ui::macros_ui::manager(app, ui),
         DockerTab::PrintMerge => crate::ui::print_merge_docker::print_merge(app, ui),
+        DockerTab::PixelLayers
+        | DockerTab::PixelSelection
+        | DockerTab::PixelRetouch
+        | DockerTab::PixelDistort
+        | DockerTab::PixelEffects
+        | DockerTab::PixelImage
+        | DockerTab::PixelHistogram
+        | DockerTab::PixelHints => crate::ui::pixel_mode::docker_body(app, ui, tab),
         _ => {}
     }
 }
@@ -673,6 +681,109 @@ fn styles_list(app: &mut App, ui: &mut Ui) {
     }
 }
 
+/// The special characters a Find or Replace field's right-click menu
+/// puts in (#3679), with their codes; `^w` only in Find.
+pub(crate) const FIND_CODES: [(&str, &str); 5] = [
+    ("find.code_paragraph", "^p"),
+    ("menu.text.code_line_break", "^l"),
+    ("find.code_tab", "^t"),
+    ("menu.text.code_nonbreaking_space", "^s"),
+    ("find.code_spaces", "^w"),
+];
+
+/// `text` with the letters `from..to` (counted in characters) replaced
+/// by `put`, and where the cursor goes after it.
+pub(crate) fn put_in_field(text: &mut String, from: usize, to: usize, put: &str) -> usize {
+    let byte = |n: usize| text.char_indices().nth(n).map_or(text.len(), |(b, _)| b);
+    let (a, b) = (byte(from.min(to)), byte(from.max(to)));
+    text.replace_range(a..b, put);
+    from.min(to) + put.chars().count()
+}
+
+/// A Find or Replace field with a right-click menu: Cut, Copy, Paste,
+/// Select All, and the special characters as their codes (#3678, #3679).
+/// `spaces`: the menu offers `^w` (two or more spaces), a Find code only.
+fn find_field(ui: &mut Ui, text: &mut String, name: &str, spaces: bool) -> egui::Response {
+    let id = ui.make_persistent_id(name);
+    let out = egui::TextEdit::singleline(text).id(id).show(ui);
+    let all = text.chars().count();
+    let (from, to) = egui::TextEdit::load_state(ui.ctx(), id)
+        .and_then(|s| s.cursor.char_range())
+        .map(|r| {
+            let (a, b) = (r.primary.index.0, r.secondary.index.0);
+            (a.min(b), a.max(b))
+        })
+        .unwrap_or((all, all));
+    let mut put: Option<(usize, usize, String)> = None;
+    let mut select_all = false;
+    let response = out.response.response.clone();
+    response.context_menu(|ui| {
+        let picked: String = text.chars().skip(from).take(to - from).collect();
+        if ui
+            .add_enabled(from < to, egui::Button::new(tr("menu.edit.cut")))
+            .clicked()
+        {
+            ui.ctx().copy_text(picked.clone());
+            put = Some((from, to, String::new()));
+            ui.close();
+        }
+        if ui
+            .add_enabled(from < to, egui::Button::new(tr("menu.edit.copy")))
+            .clicked()
+        {
+            ui.ctx().copy_text(picked);
+            ui.close();
+        }
+        if ui.button(tr("menu.edit.paste")).clicked() {
+            if let Some(t) = crate::clipboard::system_text() {
+                // One line: the field has no room for line ends.
+                put = Some((from, to, t.replace(['\r', '\n'], " ")));
+            }
+            ui.close();
+        }
+        if ui.button(tr("menu.edit.select_all")).clicked() {
+            select_all = true;
+            ui.close();
+        }
+        ui.separator();
+        ui.menu_button(tr("find.special_character"), |ui| {
+            for (key, code) in FIND_CODES {
+                if code == "^w" && !spaces {
+                    continue;
+                }
+                if ui.button(format!("{}  {code}", tr(key))).clicked() {
+                    put = Some((from, to, code.to_string()));
+                    ui.close();
+                }
+            }
+        })
+        .response
+        .rich_tip(crate::ui::tips::pair(
+            "find.special_character",
+            "find.special_character_desc",
+        ));
+    });
+    let cursor = match put {
+        Some((a, b, s)) => Some(put_in_field(text, a, b, &s)),
+        None => None,
+    };
+    if cursor.is_some() || select_all {
+        if let Some(mut state) = egui::TextEdit::load_state(ui.ctx(), id) {
+            let range = match cursor {
+                Some(c) => egui::text::CCursorRange::one(egui::text::CCursor::new(c)),
+                None => egui::text::CCursorRange::two(
+                    egui::text::CCursor::new(0),
+                    egui::text::CCursor::new(text.chars().count()),
+                ),
+            };
+            state.cursor.set_char_range(Some(range));
+            state.store(ui.ctx(), id);
+        }
+        ui.memory_mut(|m| m.request_focus(id));
+    }
+    response
+}
+
 fn find_replace(app: &mut App, ui: &mut Ui) {
     let mut st = std::mem::take(&mut app.find_state);
     ui.horizontal(|ui| {
@@ -699,20 +810,17 @@ fn find_replace(app: &mut App, ui: &mut Ui) {
     }
     ui.horizontal(|ui| {
         ui.label(tr("dialog.find"));
-        ui.text_edit_singleline(&mut st.find)
-            .rich_tip(crate::ui::tips::pair(
-                "docker.find_field",
-                "docker.find_field_desc",
-            ));
+        find_field(ui, &mut st.find, "find_replace_find", true).rich_tip(crate::ui::tips::pair(
+            "docker.find_field",
+            "docker.find_field_desc",
+        ));
     });
     if st.kind == 0 {
         ui.horizontal(|ui| {
             ui.label(tr("dialog.replace_with"));
-            ui.text_edit_singleline(&mut st.replace)
-                .rich_tip(crate::ui::tips::pair(
-                    "docker.replace_field",
-                    "docker.replace_field_desc",
-                ));
+            find_field(ui, &mut st.replace, "find_replace_replace", false).rich_tip(
+                crate::ui::tips::pair("docker.replace_field", "docker.replace_field_desc"),
+            );
         });
         ui.checkbox(&mut st.match_case, tr("dialog.match_case"))
             .rich_tip(crate::ui::tips::pair(
@@ -1735,6 +1843,9 @@ fn blend(app: &mut App, ui: &mut Ui) {
             ),
         };
     let mut changed = false;
+    // A bent line is followed as a path is: spacing and turning with it
+    // apply.
+    let follows = has_path || opt.bend.is_some();
     let mut spacing_mm = opt.spacing.unwrap_or(app.blend_spacing_mm);
     // Steps or spacing: spacing needs a path.
     ui.horizontal(|ui| {
@@ -1765,7 +1876,7 @@ fn blend(app: &mut App, ui: &mut Ui) {
             ui,
             &tr("docker.blend_by_spacing"),
             by_spacing,
-            has_path,
+            follows,
             |p, r, c| {
                 let s = egui::Stroke::new(1.3, c);
                 let y = r.center().y;
@@ -1849,12 +1960,28 @@ fn blend(app: &mut App, ui: &mut Ui) {
         .changed();
     changed |= ui
         .add_enabled(
-            has_path,
+            follows,
             egui::Checkbox::new(&mut rotate_on_path, tr("docker.rotate_all_objects")),
         )
         .rich_tip(crate::ui::tips::keyed("docker.rotate_all_objects"))
         .rich_disabled_tip(crate::ui::tips::keyed("docker.rotate_all_objects"))
         .changed();
+    // Two groups: object by object, each in its own colours.
+    changed |= ui
+        .checkbox(&mut opt.by_parts, tr("docker.blend_by_parts"))
+        .rich_tip(crate::ui::tips::keyed("docker.blend_by_parts"))
+        .changed();
+    // A bent line (the round handle in its middle, Blend tool) made
+    // straight again.
+    if opt.bend.is_some()
+        && ui
+            .button(tr("docker.blend_straighten"))
+            .rich_tip(crate::ui::tips::keyed("docker.blend_straighten"))
+            .clicked()
+    {
+        opt.bend = None;
+        changed = true;
+    }
     if has_path {
         blend_path_ends(app, ui, &opt);
     }
@@ -2612,6 +2739,23 @@ fn bitmap_mask(app: &mut App, ui: &mut Ui) {
 }
 
 fn object_data(app: &mut App, ui: &mut Ui) {
+    // The fields of many objects at once, as a table (#3084).
+    let sheet_open = egui::Id::new("object_data_sheet_open");
+    let mut open = ui.data(|d| d.get_temp::<bool>(sheet_open)).unwrap_or(false);
+    if ui
+        .button(tr("docker.data_sheet"))
+        .rich_tip(crate::ui::tips::pair(
+            "docker.data_sheet",
+            "docker.data_sheet_tip",
+        ))
+        .clicked()
+    {
+        open = !open;
+    }
+    if open {
+        data_sheet_window(app, ui.ctx(), &mut open);
+    }
+    ui.data_mut(|d| d.insert_temp(sheet_open, open));
     let Some(s) = app.selected_shapes().into_iter().next() else {
         dim(ui, tr("docker.select_one_object"));
         return;
@@ -2712,6 +2856,192 @@ fn object_data(app: &mut App, ui: &mut Ui) {
         .sum();
     if total > 0.0 {
         ui.label(trf("docker.total_cost", &[("v", &format!("{total:.2}"))]));
+    }
+}
+
+/// One row of the object data sheet: an object, how deep in groups it
+/// lies under the objects listed, and its fields.
+#[derive(Debug, Clone, PartialEq)]
+struct SheetRow {
+    id: ShapeId,
+    depth: usize,
+    data: Vec<(String, String)>,
+}
+
+/// The rows of the data sheet for `roots` (the objects selected, else
+/// those of the page): each object, then the objects of its groups down
+/// to `levels` levels deeper.
+fn sheet_rows(roots: &[tracedraw_core::Shape], levels: usize) -> Vec<SheetRow> {
+    fn walk(s: &tracedraw_core::Shape, depth: usize, levels: usize, out: &mut Vec<SheetRow>) {
+        out.push(SheetRow {
+            id: s.id,
+            depth,
+            data: s.data.clone(),
+        });
+        if depth < levels {
+            if let ShapeKind::Group { children } = &s.kind {
+                for c in children {
+                    walk(c, depth + 1, levels, out);
+                }
+            }
+        }
+    }
+    let mut out = Vec::new();
+    for s in roots {
+        walk(s, 0, levels, &mut out);
+    }
+    out
+}
+
+/// A field a person keeps on an object (not one TraceDraw keeps for
+/// itself, named with a dot, such as `fill.rule`).
+fn user_field(name: &str) -> bool {
+    !name.contains('.')
+}
+
+/// The columns of the sheet: every field the rows hold, the usual ones
+/// first, then the others in the order they first come.
+fn sheet_columns(rows: &[SheetRow]) -> Vec<String> {
+    let mut cols: Vec<String> = Vec::new();
+    for k in ["Name", "Cost", "Comments"] {
+        if rows.iter().any(|r| r.data.iter().any(|(f, _)| f == k)) {
+            cols.push(k.to_string());
+        }
+    }
+    for r in rows {
+        for (k, _) in &r.data {
+            if user_field(k) && !cols.contains(k) {
+                cols.push(k.clone());
+            }
+        }
+    }
+    cols
+}
+
+/// A value as a number, with a currency sign, spaces or thousands
+/// commas around it allowed ("$1,250.50").
+fn sheet_number(v: &str) -> Option<f64> {
+    let t: String = v
+        .trim()
+        .chars()
+        .filter(|c| !matches!(c, '$' | '€' | '£' | '¥' | ',' | ' '))
+        .collect();
+    if t.is_empty() {
+        return None;
+    }
+    t.parse::<f64>().ok().filter(|n| n.is_finite())
+}
+
+/// The total of column `col` over the top rows (depth 0, so a group and
+/// its objects are not counted twice): `None` unless some value is a
+/// number and every filled one is.
+fn sheet_total(rows: &[SheetRow], col: &str) -> Option<f64> {
+    let mut sum = 0.0;
+    let mut any = false;
+    for r in rows.iter().filter(|r| r.depth == 0) {
+        let Some((_, v)) = r.data.iter().find(|(k, _)| k == col) else {
+            continue;
+        };
+        if v.trim().is_empty() {
+            continue;
+        }
+        sum += sheet_number(v)?;
+        any = true;
+    }
+    any.then_some(sum)
+}
+
+/// The object data sheet: the fields of the selected objects (or of the
+/// page's objects) as a table to read and edit, with the objects of
+/// their groups to the levels asked and a total under the number columns.
+fn data_sheet_window(app: &mut App, ctx: &egui::Context, open: &mut bool) {
+    let levels_id = egui::Id::new("object_data_sheet_levels");
+    let mut levels = ctx.data(|d| d.get_temp::<usize>(levels_id)).unwrap_or(0);
+    let roots: Vec<tracedraw_core::Shape> = {
+        let sel = app.selected_shapes();
+        if sel.is_empty() {
+            app.page_layers()
+                .iter()
+                .flat_map(|l| l.shapes.iter().cloned())
+                .collect()
+        } else {
+            sel
+        }
+    };
+    let rows = sheet_rows(&roots, levels);
+    let cols = sheet_columns(&rows);
+    let mut edit: Option<(ShapeId, String, String)> = None;
+    egui::Window::new(tr("docker.data_sheet"))
+        .id(egui::Id::new("object_data_sheet"))
+        .open(open)
+        .default_size([640.0, 280.0])
+        .resizable(true)
+        .show(ctx, |ui| {
+            ui.horizontal(|ui| {
+                ui.label(tr("docker.data_sheet_levels"));
+                ui.add(egui::DragValue::new(&mut levels).range(0..=9));
+            });
+            ui.separator();
+            egui::ScrollArea::both().show(ui, |ui| {
+                egui::Grid::new("object_data_sheet_grid")
+                    .striped(true)
+                    .num_columns(cols.len() + 1)
+                    .show(ui, |ui| {
+                        ui.label("");
+                        for c in &cols {
+                            ui.strong(c);
+                        }
+                        ui.end_row();
+                        let mut n = 0;
+                        for r in &rows {
+                            if r.depth == 0 {
+                                n += 1;
+                            }
+                            let num = if r.depth == 0 {
+                                n.to_string()
+                            } else {
+                                format!("{}-", "  ".repeat(r.depth))
+                            };
+                            ui.label(num);
+                            for (ci, c) in cols.iter().enumerate() {
+                                let stored = r
+                                    .data
+                                    .iter()
+                                    .find(|(k, _)| k == c)
+                                    .map(|(_, v)| v.clone())
+                                    .unwrap_or_default();
+                                let field = egui::Id::new(("object_data_sheet_cell", ci));
+                                let (_, typed) =
+                                    kept_text(ui, field, (r.id, ci), &stored, |ui, text| {
+                                        ui.add(egui::TextEdit::singleline(text).desired_width(80.0))
+                                    });
+                                if let Some(v) = typed {
+                                    edit = Some((r.id, c.clone(), v));
+                                }
+                            }
+                            ui.end_row();
+                        }
+                        ui.strong(tr("docker.data_sheet_total"));
+                        for c in &cols {
+                            match sheet_total(&rows, c) {
+                                Some(t) => ui.strong(format!("{t:.2}")),
+                                None => ui.label(""),
+                            };
+                        }
+                        ui.end_row();
+                    });
+            });
+        });
+    ctx.data_mut(|d| d.insert_temp(levels_id, levels));
+    if let Some((id, field, value)) = edit {
+        if let Some(s) = app.doc().find_shape(id) {
+            let mut data = s.data.clone();
+            match data.iter_mut().find(|(k, _)| *k == field) {
+                Some((_, v)) => *v = value,
+                None => data.push((field, value)),
+            }
+            app.run(Command::SetObjectData { shape: id, data });
+        }
     }
 }
 
@@ -2868,6 +3198,16 @@ fn symbols(app: &mut App, ui: &mut Ui) {
         {
             app.create_symbol_from_selection();
         }
+        // Every group copying the selected one becomes an instance where
+        // it stood, labels staying text (#2343).
+        if ui
+            .add_enabled(has, egui::Button::new(tr("docker.symbolize_similar")))
+            .rich_tip(tr("docker.symbolize_similar_tip"))
+            .rich_disabled_tip(tr("docker.symbolize_similar_tip"))
+            .clicked()
+        {
+            app.symbolize_similar();
+        }
         if ui
             .button(tr("docker.revert_to_objects"))
             .rich_tip(crate::ui::tips::keyed("docker.revert_to_objects"))
@@ -2884,6 +3224,7 @@ fn symbols(app: &mut App, ui: &mut Ui) {
         .map(|(i, s)| (i, s.name.clone()))
         .collect();
     let editing = app.symbol_edit_index();
+    let count = syms.len();
     let mut thumbs = std::mem::take(&mut app.symbol_thumbs);
     thumbs.begin_frame();
     let drawing = (app.engine.instance(), app.engine.revision());
@@ -2891,7 +3232,31 @@ fn symbols(app: &mut App, ui: &mut Ui) {
         ui.horizontal(|ui| {
             // What the symbol draws, beside its name (#3249).
             symbol_picture(app, ui, &mut thumbs, drawing, i);
-            ui.label(&name);
+            // A double click on the name renames the symbol in place.
+            let renaming = app
+                .symbol_rename
+                .as_ref()
+                .filter(|(idx, _)| *idx == i)
+                .map(|(_, s)| s.clone());
+            if let Some(mut text) = renaming {
+                let resp = ui.add(egui::TextEdit::singleline(&mut text).desired_width(90.0));
+                if !resp.has_focus() && !resp.lost_focus() {
+                    resp.request_focus();
+                }
+                if ui.input(|inp| inp.key_pressed(egui::Key::Escape)) {
+                    app.symbol_rename = None;
+                } else if resp.lost_focus() || ui.input(|inp| inp.key_pressed(egui::Key::Enter)) {
+                    app.rename_symbol(i, text.clone());
+                    app.symbol_rename = None;
+                } else {
+                    app.symbol_rename = Some((i, text));
+                }
+            } else {
+                let resp = ui.label(&name).rich_tip(tr("docker.rename_symbol_tip"));
+                if resp.double_clicked() {
+                    app.symbol_rename = Some((i, name.clone()));
+                }
+            }
             if ui
                 .small_button(tr("docker.insert"))
                 .rich_tip(crate::ui::tips::pair(
@@ -2945,6 +3310,34 @@ fn symbols(app: &mut App, ui: &mut Ui) {
             {
                 app.duplicate_symbol(i);
             }
+            // Replace: merge this symbol into another. The first press
+            // picks the source, a press on another symbol's button merges
+            // the source into it.
+            let picking = app.symbol_replace_source;
+            let label = if picking == Some(i) {
+                tr("dialog.cancel")
+            } else if picking.is_some() {
+                tr("docker.replace_target")
+            } else {
+                tr("docker.replace_symbol")
+            };
+            if ui
+                .add_enabled(
+                    count > 1 && app.clip_frame_edit.is_none(),
+                    egui::Button::new(label).small(),
+                )
+                .rich_tip(tr("docker.replace_symbol_tip"))
+                .clicked()
+            {
+                match picking {
+                    Some(src) if src == i => app.symbol_replace_source = None,
+                    Some(src) => {
+                        app.merge_symbols(src, i);
+                        app.symbol_replace_source = None;
+                    }
+                    None => app.symbol_replace_source = Some(i),
+                }
+            }
             let uses = symbol_uses(app.doc(), i);
             dim(ui, trf("docker.instances_n", &[("n", &uses.to_string())]));
         });
@@ -2956,6 +3349,15 @@ fn symbols(app: &mut App, ui: &mut Ui) {
     app.symbol_thumbs = thumbs;
     if app.doc().symbols.is_empty() {
         dim(ui, tr("docker.symbols_hint"));
+    }
+    if app.symbol_replace_source.is_some() {
+        if ui.input(|i| i.key_pressed(egui::Key::Escape)) {
+            app.symbol_replace_source = None;
+        }
+        dim(ui, tr("docker.replace_pick"));
+    }
+    if let Some(r) = app.symbolize_report.clone() {
+        dim(ui, r);
     }
 }
 
@@ -2986,6 +3388,13 @@ fn symbol_picture(
         ShapeId(u64::MAX - index as u64),
         ShapeKind::SymbolInstance { index },
     );
+    // Centre the definition in the tile: definitions saved by older files
+    // may sit away from the origin, which left their preview blank.
+    let mut shape = shape;
+    if let Some(sym) = app.doc().symbols.get(index) {
+        let c = sym.shape.bounds().center();
+        shape.transform = Affine::translate((-c.x, -c.y));
+    }
     let ppp = ui.ctx().pixels_per_point().max(0.5);
     let inner = r.shrink(2.0);
     let px = (inner.width() * ppp).round().max(4.0) as u32;
@@ -3890,6 +4299,76 @@ fn origin_grid(ui: &mut Ui, origin: &mut u8, enabled: bool) {
 }
 
 #[cfg(test)]
+mod data_sheet_tests {
+    use super::*;
+
+    fn obj(
+        id: u64,
+        data: &[(&str, &str)],
+        children: Vec<tracedraw_core::Shape>,
+    ) -> tracedraw_core::Shape {
+        let kind = if children.is_empty() {
+            ShapeKind::Rect {
+                rect: tracedraw_core::geometry::Rect::new(0.0, 0.0, 1.0, 1.0),
+                radius: 0.0,
+                corners: None,
+            }
+        } else {
+            ShapeKind::Group { children }
+        };
+        let mut s = tracedraw_core::Shape::new(ShapeId(id), kind);
+        s.data = data
+            .iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect();
+        s
+    }
+
+    /// The sheet lists the objects with every field as a column, the
+    /// objects of a group only to the levels asked, and totals the cost
+    /// of the listed objects once (#3084).
+    #[test]
+    fn the_data_sheet_lists_fields_and_totals_costs() {
+        let roots = vec![
+            obj(
+                1,
+                &[
+                    ("Name", "ART"),
+                    ("Cost", "$15.00"),
+                    ("Comments", "2020-PRES"),
+                ],
+                vec![],
+            ),
+            obj(
+                2,
+                &[("Name", "SIGN"), ("Cost", "68"), ("Size", ".75\"x7.25\"")],
+                vec![obj(
+                    3,
+                    &[
+                        ("Name", "TEXT"),
+                        ("Cost", "1,000"),
+                        ("fill.rule", "evenodd"),
+                    ],
+                    vec![],
+                )],
+            ),
+        ];
+        let rows = sheet_rows(&roots, 0);
+        assert_eq!(rows.iter().map(|r| r.id.0).collect::<Vec<_>>(), [1, 2]);
+        let rows = sheet_rows(&roots, 1);
+        assert_eq!(
+            rows.iter().map(|r| (r.id.0, r.depth)).collect::<Vec<_>>(),
+            [(1, 0), (2, 0), (3, 1)]
+        );
+        assert_eq!(sheet_columns(&rows), ["Name", "Cost", "Comments", "Size"]);
+        assert_eq!(sheet_total(&rows, "Cost"), Some(83.0));
+        assert_eq!(sheet_total(&rows, "Name"), None);
+        assert_eq!(sheet_total(&rows, "Size"), None);
+        assert_eq!(sheet_number("$1,250.50"), Some(1250.5));
+    }
+}
+
+#[cfg(test)]
 mod blend_docker_tests {
     use super::*;
 
@@ -4293,5 +4772,34 @@ mod object_data_copy_tests {
         app.undo();
         let data = app.doc().find_shape(b).expect("b").data.clone();
         assert_eq!(data.len(), 2);
+    }
+}
+
+#[cfg(test)]
+mod find_field_tests {
+    use super::*;
+
+    /// The Find and Replace fields' right-click menu puts its text where
+    /// the cursor is, or over the letters picked, counted in characters
+    /// (#3678); the special characters go in as their codes (#3679).
+    #[test]
+    fn the_find_fields_menu_puts_text_at_the_cursor() {
+        let mut t = "größe text".to_string();
+        assert_eq!(put_in_field(&mut t, 5, 5, "^p"), 7);
+        assert_eq!(t, "größe^p text");
+        // Over a selection made backwards: the selection goes.
+        assert_eq!(put_in_field(&mut t, 12, 8, "^t"), 10);
+        assert_eq!(t, "größe^p ^t");
+        // Cut: nothing put over the picked letters.
+        assert_eq!(put_in_field(&mut t, 0, 5, ""), 0);
+        assert_eq!(t, "^p ^t");
+        // At the end.
+        assert_eq!(put_in_field(&mut t, 5, 5, "^w"), 7);
+        assert_eq!(t, "^p ^t^w");
+        let codes: Vec<&str> = FIND_CODES.iter().map(|(_, c)| *c).collect();
+        assert_eq!(codes, ["^p", "^l", "^t", "^s", "^w"]);
+        for (key, _) in FIND_CODES {
+            assert_ne!(tr(key), key, "{key} is in the language files");
+        }
     }
 }

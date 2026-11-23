@@ -125,6 +125,9 @@ kolory.
 - Wypełnienie [[docker.fill_texture]] to generowana tekstura o naturalnym
   wyglądzie: [[texture.clouds]], [[texture.marble]], [[texture.noise]] lub
   [[texture.wood]], z własnymi kolorami i skalą.
+- [[texture.holographic]] i [[texture.holo_glitter]] dają stały wygląd folii holograficznej: kolory tęczy między
+  ciemnymi i jasnymi plamami (kolory A i B), brokat z błyszczącymi ziarnami.
+  Nie zmienia się z kątem patrzenia; PDF i SVG zapisują go jako obraz.
 
 ## Kilka wypełnień jednego obiektu {#several-fills}
 

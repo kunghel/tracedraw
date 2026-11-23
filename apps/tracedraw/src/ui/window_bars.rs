@@ -14,7 +14,7 @@ use egui::{Color32, Pos2, Rect, Sense, Stroke, Ui, Vec2};
 /// Height of the bottom row and width of the vertical scrollbar.
 pub const BAR: f32 = 17.0;
 /// One click on a scroll arrow moves the view this many pixels.
-const LINE: f32 = 40.0;
+pub(crate) const LINE: f32 = 40.0;
 
 /// Draw the scrollbars, the navigator row and the corner button around
 /// `canvas` inside `full`.
@@ -217,7 +217,7 @@ fn vertical(app: &mut App, ui: &mut Ui, bar: Rect, canvas: Rect) {
 }
 
 #[derive(Clone, Copy)]
-enum Dir {
+pub(crate) enum Dir {
     Left,
     Right,
     Up,
@@ -225,7 +225,7 @@ enum Dir {
 }
 
 /// A scroll arrow; repeats while held (after a short delay).
-fn arrow_button(ui: &mut Ui, r: Rect, id: &str, dir: Dir) -> bool {
+pub(crate) fn arrow_button(ui: &mut Ui, r: Rect, id: &str, dir: Dir) -> bool {
     let key = match dir {
         Dir::Left => "view.scroll_left",
         Dir::Right => "view.scroll_right",
@@ -340,14 +340,22 @@ pub fn page_navigator(app: &mut App, ui: &mut Ui) {
         if nav_button(ui, Glyph::Previous, &tr("status.previous_page")) && idx > 0 {
             app.goto_page(idx - 1);
         }
-        ui.label(
-            egui::RichText::new(trf(
-                "status.page_n_of_m",
-                &[("n", &(idx + 1).to_string()), ("m", &n.to_string())],
-            ))
-            .size(11.0)
-            .color(Tokens::text_dim()),
+        let counter = ui.add(
+            egui::Label::new(
+                egui::RichText::new(trf(
+                    "status.page_n_of_m",
+                    &[("n", &(idx + 1).to_string()), ("m", &n.to_string())],
+                ))
+                .size(11.0)
+                .color(Tokens::text_dim()),
+            )
+            .sense(Sense::click()),
         );
+        // A double click on "1 of N" opens Go to Page, when there is
+        // another page to go to (#3780).
+        if counter.double_clicked() && n > 1 {
+            app.dialog = crate::ui::dialogs::Dialog::GoToPage { page: idx + 1 };
+        }
         if nav_button(ui, Glyph::Next, &tr("status.next_page")) {
             app.goto_page(idx + 1);
         }

@@ -66,7 +66,7 @@ Certains effets, comme les flous, débordent des bords d'une image bitmap.
   [[tool.crop]] ; faire glisser un coin d'une image bitmap avec l'outil
   [[tool.shape]] la recadre aussi.
 - [[menu.bitmaps.edit_bitmap]] ouvre l'image bitmap dans un autre programme.
-- [[menu.bitmaps.edit_inside]] (or a double click on the picture with the Pick tool) edits its pixels in place, inside TraceDraw: selections, brush, soft eraser, clone, heal, blur, content fill, red eye, layers with opacity and merge modes, and any bitmap effect inside the selection only. Enter finishes, as one undo step.
+- [[menu.bitmaps.edit_inside]] (or a double click on the picture with the Pick tool) edits its pixels in place, inside TraceDraw: selections, brush, soft eraser, clone, heal, blur, content fill, red eye, layers with opacity, merge modes and masks, quick mask, stretch and warp, restore, tint and replace colour brushes, pixel shapes, liquify, Smart Resize, adjustment layers, a histogram, a remove brush, a brush and a stamp that follow the surface of the photo, and any bitmap effect inside the selection only. Enter finishes, as one undo step.
 - [[menu.bitmaps.remove_background]] rend transparent le fond d'une photo.
 - [[menu.bitmaps.remove_background_local]]: [Supprimer l'arrière-plan](remove-background.md).
 - [[menu.bitmaps.break_link]] et [[menu.bitmaps.update_from_link]] agissent

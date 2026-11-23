@@ -2,8 +2,9 @@
 //! a file to carry to another computer or to go back to later. A file
 //! holds the parts chosen when it was written (keyboard shortcuts; where
 //! the bars sit and which show, with the toolbox; the colour palette
-//! options; the interface size, desktop colour and page border), and an
-//! import applies the parts chosen then that the file has. Files are
+//! options; the interface size, desktop colour and page border; every
+//! other preference, such as the colour mode and the document defaults),
+//! and an import applies the parts chosen then that the file has. Files are
 //! JSON; anything odd in one is dropped or set back to its default, never
 //! trusted.
 
@@ -43,6 +44,8 @@ pub struct WorkspaceParts {
     pub bars: bool,
     pub palette: bool,
     pub appearance: bool,
+    /// Every other preference (#3721).
+    pub preferences: bool,
 }
 
 impl Default for WorkspaceParts {
@@ -57,21 +60,23 @@ impl WorkspaceParts {
         bars: true,
         palette: true,
         appearance: true,
+        preferences: true,
     };
 
     /// Each part with the i18n key of its name, in the order they are
     /// listed.
-    pub fn flags_mut(&mut self) -> [(&mut bool, &'static str); 4] {
+    pub fn flags_mut(&mut self) -> [(&mut bool, &'static str); 5] {
         [
             (&mut self.shortcuts, PART_SHORTCUTS),
             (&mut self.bars, PART_BARS),
             (&mut self.palette, PART_PALETTE),
             (&mut self.appearance, PART_APPEARANCE),
+            (&mut self.preferences, PART_PREFERENCES),
         ]
     }
 
     pub fn any(&self) -> bool {
-        self.shortcuts || self.bars || self.palette || self.appearance
+        self.shortcuts || self.bars || self.palette || self.appearance || self.preferences
     }
 }
 
@@ -79,6 +84,127 @@ const PART_SHORTCUTS: &str = "workspace.part_shortcuts";
 const PART_BARS: &str = "workspace.part_bars";
 const PART_PALETTE: &str = "workspace.part_palette";
 const PART_APPEARANCE: &str = "workspace.part_appearance";
+const PART_PREFERENCES: &str = "workspace.part_preferences";
+
+/// Preferences the preferences part never carries: those of this
+/// computer or of one session (files and folders opened, the window, the
+/// graphics card, measurements, updates, keys and accounts, programs and
+/// scripts installed here), and those another part carries.
+const NOT_CARRIED: &[&str] = &[
+    // This computer and this session.
+    "recent_files",
+    "last_dir",
+    "last_export_dir",
+    "folder_bookmarks",
+    "thesaurus_file",
+    "bitmap_editor",
+    "window_maximized",
+    "window_size",
+    "hardware_acceleration",
+    "gpu_adapter",
+    "gpu_effects",
+    "working_renderer",
+    "screen_ppi",
+    "benchmarks",
+    "benchmark_resume",
+    "upgrades",
+    "check_updates",
+    "update_check_asked",
+    "last_update_check",
+    "skipped_update",
+    "pending_update",
+    "recent_fonts",
+    "recent_glyphs",
+    "font_manager",
+    "welcome_tab_closed",
+    "github",
+    "ai",
+    "ai_enabled",
+    "ai_vectorize",
+    "ai_image",
+    "mcp_window",
+    "script_filters",
+    "plugins",
+    "object_apps",
+    "workspace_parts",
+    // The other parts.
+    "workspace",
+    "shortcuts",
+    "node_shortcuts",
+    "bars",
+    "shown_bars",
+    "dockers",
+    "toolbox",
+    "toolbox_hidden",
+    "show_outline_flyout",
+    "status_info",
+    "bar_items",
+    "palette",
+    "palette_bars",
+    "main_palette",
+    "palette_names",
+    "ui_size",
+    "desktop_rgb",
+    "desktop_custom",
+    "theme",
+    "center_dialogs",
+    "ui_shadows",
+    "colored_icons",
+    "docker_tabs_icons_only",
+    "follow_text_size",
+    "follow_high_contrast",
+];
+/// At most this many preferences are taken from a file.
+const MAX_PREFERENCES: usize = 1024;
+
+fn carried(key: &str) -> bool {
+    short_text(key) && !NOT_CARRIED.contains(&key)
+}
+
+/// The preferences the preferences part carries, as the preferences file
+/// writes them.
+fn carried_preferences(
+    s: &crate::settings::Settings,
+) -> serde_json::Map<String, serde_json::Value> {
+    match serde_json::to_value(s) {
+        Ok(serde_json::Value::Object(mut all)) => {
+            all.retain(|k, _| carried(k));
+            all
+        }
+        _ => serde_json::Map::new(),
+    }
+}
+
+/// `current` with the preferences of `from` over it. A value of the wrong
+/// shape keeps the current one; the others still come across.
+fn merged_preferences(
+    current: &crate::settings::Settings,
+    from: &serde_json::Map<String, serde_json::Value>,
+) -> crate::settings::Settings {
+    use serde_json::Value;
+    let Ok(Value::Object(mut base)) = serde_json::to_value(current) else {
+        return current.clone();
+    };
+    let keys: Vec<&String> = from.keys().filter(|k| carried(k)).collect();
+    let mut all = base.clone();
+    for k in &keys {
+        all.insert((*k).clone(), from[*k].clone());
+    }
+    if let Ok(s) = serde_json::from_value(Value::Object(all)) {
+        return s;
+    }
+    for k in keys {
+        let old = base.insert(k.clone(), from[k].clone());
+        if serde_json::from_value::<crate::settings::Settings>(Value::Object(base.clone())).is_err()
+        {
+            match old {
+                Some(v) => base.insert(k.clone(), v),
+                None => base.remove(k),
+            };
+        }
+    }
+    serde_json::from_value(Value::Object(base)).unwrap_or_else(|_| current.clone())
+}
 
 /// Where the bars sit and which show, and the toolbox.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
@@ -187,6 +313,11 @@ pub struct WorkspaceFile {
     pub palette_names: Option<std::collections::BTreeMap<String, String>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub appearance: Option<AppearancePart>,
+    /// Every other preference, as the preferences file writes them: the
+    /// colour mode and colour management, the document defaults, units,
+    /// tools, view, saving, printing and the rest (#3721).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preferences: Option<serde_json::Map<String, serde_json::Value>>,
 }
 
 /// Why a file was not taken.
@@ -239,6 +370,7 @@ impl WorkspaceFile {
             bars: self.bars.is_some(),
             palette: self.palette.is_some(),
             appearance: self.appearance.is_some(),
+            preferences: self.preferences.is_some(),
         }
     }
 
@@ -251,6 +383,12 @@ impl WorkspaceFile {
         }
         if let Some(list) = self.node_shortcuts.take() {
             self.node_shortcuts = Some(clean_shortcuts(list));
+        }
+        if let Some(prefs) = &mut self.preferences {
+            prefs.retain(|k, _| carried(k));
+            if prefs.len() > MAX_PREFERENCES {
+                self.preferences = None;
+            }
         }
         if let Some(bars) = &mut self.bars {
             let d = BarLayout::default();
@@ -396,7 +534,7 @@ impl App {
                 show_outline_flyout: s.show_outline_flyout,
                 status_info: s.status_info,
                 bar_items: s.bar_items.clone(),
-                dockers: Some(self.docker_setup()),
+                dockers: Some(self.main_docker_setup()),
             }),
             palette: parts.palette.then_some(s.palette),
             palette_bars: parts.palette.then(|| s.palette_bars.clone()),
@@ -416,6 +554,7 @@ impl App {
                 follow_text_size: Some(s.follow_text_size),
                 follow_high_contrast: Some(s.follow_high_contrast),
             }),
+            preferences: parts.preferences.then(|| carried_preferences(s)),
         }
     }
 
@@ -428,6 +567,14 @@ impl App {
         parts: WorkspaceParts,
     ) -> Vec<&'static str> {
         let mut applied = Vec::new();
+        // First, so that the parts below have the last word on what they
+        // carry.
+        if let (true, Some(p)) = (parts.preferences, &file.preferences) {
+            self.sync_settings();
+            let merged = merged_preferences(&self.settings, p).upgrade();
+            self.apply_imported_preferences(merged);
+            applied.push(PART_PREFERENCES);
+        }
         if let (true, Some(b)) = (parts.bars, &file.bars) {
             if let Some(base) = &file.base {
                 self.set_workspace(Workspace::from_id(base));
@@ -492,6 +639,36 @@ impl App {
             applied.push(PART_APPEARANCE);
         }
         applied
+    }
+
+    /// Put imported preferences into effect: what the editor keeps
+    /// outside the preferences, the colour engine, the user's palettes,
+    /// the undo levels, tab step and spelling.
+    fn apply_imported_preferences(&mut self, s: crate::settings::Settings) {
+        if s.language != self.settings.language {
+            crate::i18n::set_language(crate::i18n::startup_language_here(&s.language));
+        }
+        self.snap.grid = s.snap.grid;
+        self.snap.guides = s.snap.guides;
+        self.snap.objects = s.snap.objects;
+        self.snap.page = s.snap.page;
+        self.snap.pixels = s.snap.pixels;
+        self.snap.baseline_grid = s.snap.baseline_grid;
+        self.snap.alignment_guides = s.snap.alignment_guides;
+        self.snap.dynamic_guides = s.snap.dynamic_guides;
+        self.snap.off = s.snap.off;
+        self.apply_tool_prefs(&s.tools);
+        self.apply_view_prefs(&s.view);
+        self.apply_panel_prefs(&s.panels);
+        self.nudge_mm = s.nudge_mm;
+        self.duplicate_offset =
+            tracedraw_core::geometry::Vec2::new(s.duplicate_offset_mm[0], s.duplicate_offset_mm[1]);
+        self.units = crate::app::Units::from_id(&s.units);
+        self.settings = s;
+        self.apply_color_settings();
+        self.restore_user_palettes();
+        self.rebuild_palette();
+        self.apply_runtime_settings();
     }
 
     /// Write the chosen parts of the workspace to `path`.
@@ -614,7 +791,7 @@ mod tests {
         assert_eq!(file.parts(), WorkspaceParts::ALL);
         let mut to = App::headless();
         let applied = to.import_workspace(&file, WorkspaceParts::ALL);
-        assert_eq!(applied.len(), 4);
+        assert_eq!(applied.len(), 5);
         assert_eq!(to.settings.shortcuts, from.settings.shortcuts);
         assert_eq!(to.settings.bars, from.settings.bars);
         assert_eq!(to.shown_bars(), from.shown_bars());
@@ -687,6 +864,7 @@ mod tests {
             bars: false,
             palette: false,
             appearance: true,
+            preferences: false,
         };
         let bytes = from.export_workspace(parts).to_bytes();
         let file = WorkspaceFile::from_bytes(&bytes).expect("reads back");
@@ -717,6 +895,7 @@ mod tests {
         let parts = WorkspaceParts {
             bars: false,
             appearance: false,
+            preferences: false,
             ..WorkspaceParts::ALL
         };
         let file = from.export_workspace(parts);
@@ -730,6 +909,7 @@ mod tests {
             bars: false,
             palette: false,
             appearance: false,
+            preferences: false,
         };
         let applied = to.import_workspace(&file, only_shortcuts);
         assert_eq!(applied, vec![PART_SHORTCUTS]);
@@ -835,6 +1015,87 @@ mod tests {
         // A missing file is a message, not a panic.
         app.import_workspace_from(Path::new("/no/such/dir/x.tdws"), WorkspaceParts::ALL, false);
         assert!(app.status.contains("x.tdws"));
+    }
+
+    /// A workspace carries every other preference, such as the colour
+    /// mode of new drawings and the document defaults, and none of this
+    /// computer's own (#3721).
+    #[test]
+    fn a_workspace_carries_the_other_preferences() {
+        let mut from = App::headless();
+        from.settings.color.primary_color_mode = "RGB".into();
+        from.settings.new_document.values.rgb = true;
+        from.settings.document_defaults.page_spacing = Some(12.0);
+        from.settings.default_dpi = 150.0;
+        from.settings.undo_levels = 42;
+        from.units = crate::app::Units::from_id("in");
+        from.nudge_mm = 0.5;
+        from.settings.recent_files = vec![PathBuf::from("/here/only.tdraw")];
+        from.settings.window_size = [123.0, 456.0];
+        let file =
+            WorkspaceFile::from_bytes(&from.export_workspace(WorkspaceParts::ALL).to_bytes())
+                .expect("reads back");
+        let prefs = file.preferences.as_ref().expect("preferences part");
+        for key in [
+            "recent_files",
+            "window_size",
+            "github",
+            "ai",
+            "shortcuts",
+            "ui_size",
+        ] {
+            assert!(!prefs.contains_key(key), "{key} carried");
+        }
+        let mut to = App::headless();
+        let applied = to.import_workspace(&file, WorkspaceParts::ALL);
+        assert!(applied.contains(&PART_PREFERENCES));
+        assert_eq!(to.settings.color.primary_color_mode, "RGB");
+        assert!(to.settings.new_document.values.rgb);
+        assert_eq!(to.settings.document_defaults.page_spacing, Some(12.0));
+        assert_eq!(to.settings.default_dpi, 150.0);
+        assert_eq!(to.settings.undo_levels, 42);
+        assert_eq!(to.units, from.units);
+        assert_eq!(to.nudge_mm, 0.5);
+        assert!(to.settings.recent_files.is_empty());
+        assert_ne!(to.settings.window_size, [123.0, 456.0]);
+        // It stays through the next save of the preferences.
+        to.sync_settings();
+        assert_eq!(to.settings.units, from.units.id());
+
+        // A hand-written file: a value of the wrong shape keeps the one
+        // there is, the others come across; this computer's own are
+        // never taken.
+        let json = serde_json::json!({
+            "kind": KIND,
+            "version": 1,
+            "preferences": {
+                "color": { "primary_color_mode": "RGB" },
+                "default_dpi": "lots",
+                "undo_levels": 7,
+                "recent_files": ["/elsewhere/a.tdraw"],
+                "no_such_preference": true
+            }
+        });
+        let file = WorkspaceFile::from_bytes(json.to_string().as_bytes()).expect("reads");
+        let mut app = App::headless();
+        let dpi = app.settings.default_dpi;
+        let applied = app.import_workspace(&file, WorkspaceParts::ALL);
+        assert_eq!(applied, vec![PART_PREFERENCES]);
+        assert_eq!(app.settings.color.primary_color_mode, "RGB");
+        assert_eq!(app.settings.default_dpi, dpi);
+        assert_eq!(app.settings.undo_levels, 7);
+        assert!(app.settings.recent_files.is_empty());
+        // Not chosen: nothing changes.
+        let mut other = App::headless();
+        let only = WorkspaceParts {
+            preferences: false,
+            ..WorkspaceParts::ALL
+        };
+        assert!(other.import_workspace(&file, only).is_empty());
+        assert_eq!(
+            other.settings.undo_levels,
+            App::headless().settings.undo_levels
+        );
     }
 
     #[test]

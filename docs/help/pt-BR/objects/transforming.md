@@ -94,6 +94,17 @@ linha alvo; os cliques se encaixam em nós e outros pontos de encaixe. O objeto
 gira em torno do primeiro ponto clicado, e a linha base fica com o ângulo da
 linha alvo. Um clique direito cancela.
 
+## Transformar cada objeto {#transform-each}
+
+[[menu.object > menu.object.transformations > menu.object.transform_each]]
+muda a escala, move e gira cada objeto selecionado pelas mesmas quantidades,
+cada um em torno do próprio centro, num só passo de desfazer. Com **Aleatório**
+ligado, cada objeto recebe uma quantidade própria entre nenhuma e a definida,
+para variar de uma vez uma fileira de cópias. O diálogo guarda as quantidades
+para a próxima vez.
+
+![A caixa de diálogo Transformar cada um](../../img/objects-transforming-transform-each.png)
+
 ## Desfazer transformações {#clear}
 
 [[menu.object > menu.object.clear_transformations]] devolve os objetos

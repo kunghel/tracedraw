@@ -112,3 +112,13 @@ Hold <kbd>Alt</kbd> while you drag to take the parts away instead: they
 are cut out and nothing new is made. A click on a part makes it an object
 of its own. The objects stay selected, with the new one, so you can go on
 building.
+
+Tick **Use guidelines** on the property bar to let the guidelines shown
+on the page cut the objects into parts too, as if each were a line drawn
+across them. The guidelines stay where they are. It is off by default.
+
+![The part under the Shape Builder pointer is hatched](../../img/lines-shapes-cut-and-erase-shape-builder-1.png)
+
+![A drag across three parts lights each one up](../../img/lines-shapes-cut-and-erase-shape-builder-2.png)
+
+![The parts crossed became one new object](../../img/lines-shapes-cut-and-erase-shape-builder-3.png)

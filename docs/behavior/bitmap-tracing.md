@@ -363,9 +363,17 @@ can be undone.
    a colour found in another's holes (with no page showing in the hole)
    above it, the head under its eyes and cheeks; among the colours free
    to go next the darkest; colours in each other's holes (black eyes in
-   a yellow head inside a black outline) darkest first. Unless Remove
-   object overlap is on, every hole of a region (4-connected) that holds
-   only regions stacked above it is filled: the region is drawn whole
+   a yellow head inside a black outline) darkest first, unless one of
+   them holds at least four times as many pixels of the other as the
+   other holds of it: that one is the one around. A few blots of the
+   ground left between two colours of the art (a compressed picture, the
+   blend at a thin gap) no longer put the ground over the outline it
+   holds, where the two would meet cut to the same edge with the page
+   showing between them as a light line (#3727). A hole smaller than
+   half a pixel of the art is no hole. Unless Remove
+   object overlap is on, every hole of a region (4-connected) whose
+   regions stacked below it cover at most one part in twenty of it is
+   filled (those blots go under it, hidden): the region is drawn whole
    under them, so its curve is its outline alone and the edges inside
    are drawn once, by the regions on top (a black outline drawing
    becomes one silhouette under its colours, a head one ring under its
