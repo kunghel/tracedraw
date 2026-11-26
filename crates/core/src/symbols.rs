@@ -217,12 +217,16 @@ pub fn plan_graphics(
 /// The shape that replaces a matched group: an instance placed at the
 /// graphics' corner, or, when the group carried labels, a group of the
 /// instance and those labels, keeping the group's transform and name.
-/// `inst_id` and `group_id` come from the executor's id source.
+/// The group's own transparency and shadow go on what replaces it, so a
+/// copy draws as it did (#3497). `inst_id` and `group_id` come from the
+/// executor's id source.
 pub fn replacement(m: &Match, index: usize, inst_id: ShapeId, group_id: ShapeId) -> Shape {
     let place = Affine::translate((m.at.x, m.at.y));
     let mut inst = Shape::new(inst_id, ShapeKind::SymbolInstance { index });
     if m.texts.is_empty() {
         inst.transform = m.group.transform * place;
+        inst.opacity = m.group.opacity;
+        inst.shadow = m.group.shadow;
         return inst;
     }
     inst.transform = place;
@@ -233,6 +237,8 @@ pub fn replacement(m: &Match, index: usize, inst_id: ShapeId, group_id: ShapeId)
     grouped.name = m.group.name.clone();
     grouped.fill = Fill::None;
     grouped.stroke = None;
+    grouped.opacity = m.group.opacity;
+    grouped.shadow = m.group.shadow;
     grouped
 }
 
@@ -438,5 +444,36 @@ mod tests {
         assert_eq!(again.index, 0);
         assert_eq!(again.name, "Symbol 1", "the existing name stays");
         assert_eq!(again.matches.len(), 1, "only the new copy matches");
+    }
+    /// A copy keeps how it drew as a whole: the group's transparency and
+    /// shadow go on the instance that replaces it, or on the group of the
+    /// instance and its labels (#3497).
+    #[test]
+    fn the_replacement_keeps_the_groups_opacity_and_shadow() {
+        let mut group = Shape::new(
+            ShapeId(1),
+            ShapeKind::Group {
+                children: vec![rect(2, 0.0, 0.0, red())],
+            },
+        );
+        group.opacity = 0.4;
+        group.shadow = Some(crate::Shadow::default());
+        let m = Match {
+            group: group.clone(),
+            texts: Vec::new(),
+            at: Point::new(0.0, 0.0),
+        };
+        let inst = replacement(&m, 0, ShapeId(10), ShapeId(11));
+        assert!(matches!(inst.kind, ShapeKind::SymbolInstance { index: 0 }));
+        assert_eq!(inst.opacity, 0.4);
+        assert_eq!(inst.shadow, group.shadow);
+        let labelled = Match {
+            texts: vec![rect(3, 0.0, 8.0, blue())],
+            ..m
+        };
+        let grouped = replacement(&labelled, 0, ShapeId(12), ShapeId(13));
+        assert!(matches!(grouped.kind, ShapeKind::Group { .. }));
+        assert_eq!(grouped.opacity, 0.4);
+        assert_eq!(grouped.shadow, group.shadow);
     }
 }

@@ -86,3 +86,15 @@ dari sana kembali ke bilah tombol yang telah Anda hapus.
   [[options.palette_context_menu]].
 
 Lihat [Palet warna](../color/palettes.md).
+
+## Menu konteks {#context-menus}
+
+Di Personalisasi, pilih [[options.context_menus]] untuk mengelola 32 lokasi menu konteks secara terpisah. Pilih lokasi dengan [[options.context_menu_scene]], lalu gunakan [[options.context_menu_search]] untuk mencari operasi dan hapus centang kotaknya untuk menyembunyikannya di lokasi tersebut. Operasi tetap ada dalam daftar ini meskipun pilihan saat ini tidak dapat menggunakannya.
+
+Semua operasi ditampilkan secara default. Setiap lokasi memiliki pilihan sendiri: menyembunyikan operasi objek di kanvas tidak menyembunyikannya di panel Objek. Daftar dinamis seperti lapisan target serta koleksi font dikelola sebagai satu operasi, sehingga perubahan nama tidak mengatur ulang pilihan Anda.
+
+[[options.context_menu_reset]] memulihkan menu yang dipilih dan [[options.context_menu_reset_all]] memulihkan semua menu. [[dialog.ok]] menyimpan pilihan ke pengaturan aplikasi; [[dialog.cancel]], Escape, atau tombol tutup memulihkan pilihan saat Opsi dibuka. Menu utama, pintasan, dan pencarian perintah tetap menyediakan perintah aslinya.
+
+Perluas submenu untuk melihat item anak yang menjorok ke dalam. Seret pegangan baris, atau gunakan [[options.context_menu_move_up]] dan [[options.context_menu_move_down]], untuk mengurutkan item pada tingkat yang sama. Memindahkan menu induk juga memindahkan semua anaknya; item tidak dapat dipindahkan ke induk lain. Pencarian tetap menampilkan jalur induk item yang cocok. Memulihkan menu mengatur ulang visibilitas dan urutan; membatalkan Opsi mengembalikan keduanya ke keadaan saat dialog dibuka.
+
+Menu sampel palet dokumen dan entrinya di Pengelola Palet memiliki pengaturan terpisah. Target dinamis mempertahankan urutannya sendiri; daftar gaya dokumen tetap berada di antara tindakan statis dalam Gaya Objek. Operasi baru yang ditambahkan oleh versi berikutnya tetap terlihat dan ditempatkan setelah item tersimpan pada tingkat yang sama.

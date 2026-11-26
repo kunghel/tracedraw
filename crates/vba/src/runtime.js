@@ -24,6 +24,10 @@ const MSG = {
   453: "Specified DLL function not found",
   457: "This key is already associated with an element of this collection",
   32811: "Element not found",
+  52: "Bad file name or number", 53: "File not found", 54: "Bad file mode",
+  55: "File already open", 57: "Device I/O error", 58: "File already exists",
+  62: "Input past end of file", 67: "Too many files", 70: "Permission denied",
+  75: "Path/File access error", 76: "Path not found",
 };
 function msgOf(n) { return MSG[n] || "Application-defined or object-defined error"; }
 
@@ -112,6 +116,28 @@ V.seterr = function (e) {
   V.Err.Number = ve.vbNumber;
   V.Err.Description = ve.vbDescription;
   V.Err.Source = ve.vbSource || (ve.vbLoc ? ve.vbLoc.m : "");
+};
+
+// Keep going (`Options::keep_going`): the errors a statement is skipped
+// for, as they come from what TraceDraw cannot do; the "object required"
+// errors only after such a skip, since they follow from it.
+V.skipped = [];
+let skippedAny = false;
+V.skip = function (e, f) {
+  if (e === V.END) return false;
+  const ve = V.toVbError(e);
+  const n = ve.vbNumber;
+  const msg = String(ve.vbDescription);
+  const ok = n === 445 || n === 438 || n === 429 || n === 453
+    || /not (available|supported) in TraceDraw/i.test(msg)
+    || (skippedAny && (n === 91 || n === 424));
+  if (!ok) return false;
+  skippedAny = true;
+  const loc = f || {};
+  const same = V.skipped.find((s) => s.n === n && s.d === msg && s.m === loc.m && s.l === loc.l);
+  if (same) same.c++;
+  else if (V.skipped.length < 500) V.skipped.push({ n: n, d: msg, m: loc.m || "", p: loc.p || "", l: loc.l || 0, c: 1 });
+  return true;
 };
 
 // ----- Frames: where the program is, for error messages ------------------
@@ -487,6 +513,10 @@ V.typeOf = function (x, t) {
   if (x instanceof VbObject) return String(x.__cls).toLowerCase() === key;
   if (x instanceof Collection) return key === "collection";
   if (x instanceof Dictionary) return key === "dictionary";
+  if (x instanceof Fso) return key === "filesystemobject";
+  if (x instanceof FsoFile) return key === "file";
+  if (x instanceof FsoFolder) return key === "folder";
+  if (x instanceof FsoTextStream) return key === "textstream";
   let p = Object.getPrototypeOf(x);
   while (p && p !== Object.prototype) {
     if (p.constructor && String(p.constructor.name).toLowerCase() === key) return true;
@@ -695,6 +725,11 @@ V.g = function (name) {
     for (const n of Object.getOwnPropertyNames(G)) if (n.toLowerCase() === l) { k = { p: n }; break; }
     if (k === null && Array.isArray(G.__host_names)) {
       for (const n of G.__host_names) if (String(n).toLowerCase() === l) { k = { e: String(n) }; break; }
+    }
+    // A global the host knows by another name (`__member_alias`).
+    if (k === null && typeof G.__member_alias === "function") {
+      const a = G.__member_alias(name);
+      if (typeof a === "string" && a in G) k = { p: a };
     }
     globalCache.set(l, k);
   }
@@ -1535,12 +1570,14 @@ B.cos = (x) => Math.cos(V.num(x));
 B.createobject = function (name) {
   const n = V.cstr(name).toLowerCase();
   if (n === "scripting.dictionary") return new Dictionary();
+  if (n === "scripting.filesystemobject") return new Fso();
+  if (n === "wscript.shell") return new WshShell();
+  if (n === "wscript.network") return new WshNetwork();
   if (n === "vba.collection") return new Collection();
   V.raise(429, V.cstr(name));
 };
 B.csng = V.csng;
 B.cstr = V.cstr;
-B.curdir = () => "";
 B.cvar = (x) => x;
 B.cvdate = V.cdate;
 B.cverr = (n) => new VbError(V.clng(n), msgOf(V.clng(n)));
@@ -1612,24 +1649,13 @@ B.dateserial = (y, m, d) => {
 };
 B.datevalue = (s) => new VDate(Math.floor(V.cdate(s).v));
 B.day = (d) => partsOf(V.cdate(d).v).d;
-// Dir(PathName): a file's name when it exists, else "" (the host looks;
-// without one it is not available). Calls without a path, which go on
-// through a folder listing, are not.
-B.dir = (path) => {
-  if (miss(path)) V.unsupported("Dir without a path");
-  if (typeof G.__host_dir !== "function") V.unsupported("Dir");
-  return String(G.__host_dir(V.cstr(path)));
-};
 // LoadPicture(path): a picture for a control's Picture (the file is read
 // when the control gets it); without a path, no picture.
 B.loadpicture = (path) => (miss(path) || V.cstr(path) === "" ? null : { __picture: V.cstr(path) });
 B.doevents = () => 0;
-B.environ = () => "";
-B.eof = () => V.unsupported("EOF");
 B.erl = () => 0;
 B.error = (n) => msgOf(miss(n) ? V.Err.Number : V.clng(n));
 B.exp = (x) => Math.exp(V.num(x));
-B.filelen = () => V.unsupported("FileLen");
 B.filter = function (arr, match, include, compare) {
   const m = V.cstr(match);
   const inc = miss(include) ? true : V.cbool(include);
@@ -1657,7 +1683,6 @@ B.formatdatetime = function (d, kind) {
   const f = ["", "dddd, mmmm d, yyyy", "m/d/yyyy", "h:nn:ss AM/PM", "hh:nn"][k] || generalDateFormat(v);
   return fmtDate(v, f);
 };
-B.freefile = () => V.unsupported("FreeFile");
 B.getobject = (p, c) => V.raise(429, miss(c) ? V.cstr(p) : V.cstr(c));
 // The registry settings of a program (GetSetting and the like): the host
 // keeps them (`__host_setting`); without one they last for this run.
@@ -1775,7 +1800,6 @@ B.mid = (s, start, n) => {
 };
 B.mid.__params = ["string", "start", "length"];
 B.len = (s) => (isNull(s) ? V.Null : V.cstr(s).length);
-B.lof = () => V.unsupported("LOF");
 B.log = (x) => { const v = V.num(x); if (v <= 0) V.raise(5); return Math.log(v); };
 B.ltrim = (s) => (isNull(s) ? V.Null : V.cstr(s).replace(/^ +/, ""));
 B.rtrim = (s) => (isNull(s) ? V.Null : V.cstr(s).replace(/ +$/, ""));
@@ -1966,6 +1990,490 @@ B.weekdayname = (n, abbr, first) => {
 };
 B.year = (d) => partsOf(V.cdate(d).v).y;
 
+// ----- Files ----------------------------------------------------------------
+//
+// Text files and the file system, as the VBA file statements (Open,
+// Print #, Input #, Line Input #, Close, Kill, MkDir, FileCopy, Name...),
+// the file functions (Dir, EOF, LOF, FreeFile, FileLen, FileDateTime,
+// GetAttr, CurDir, Environ) and the FileSystemObject reach them. The host
+// does the reading and writing (`__host_fs(op, a, b, c)`, a string back;
+// "\u0001" and a VBA error number when it fails); without one, files are
+// not available.
+
+function hostFs(op, a, b, c) {
+  if (typeof G.__host_fs !== "function") V.unsupported("files");
+  const r = String(G.__host_fs(op, a === undefined ? "" : String(a), b === undefined ? "" : String(b), c === undefined ? "" : String(c)));
+  if (r.charCodeAt(0) === 1) V.raise(Number(r.slice(1)) || 75);
+  return r;
+}
+V.hostFs = hostFs;
+function hasFs() { return typeof G.__host_fs === "function"; }
+
+// The current folder (CurDir, ChDir): kept by the run, starting in the
+// folder the host gives (the user's documents).
+let cwd = null;
+function curDir() {
+  if (cwd === null) cwd = hasFs() ? hostFs("cwd") : "";
+  return cwd;
+}
+function isAbs(p) {
+  return /^([A-Za-z]:|[\\/])/.test(p);
+}
+// A path as given, made absolute against the current folder.
+function fullPath(p) {
+  p = V.cstr(p);
+  if (p === "" || isAbs(p) || /^[a-z]+:\/\//i.test(p)) return p;
+  const d = curDir();
+  if (d === "") return p;
+  return d.replace(/[\\/]+$/, "") + (d.indexOf("\\") >= 0 ? "\\" : "/") + p;
+}
+V.fullPath = fullPath;
+function sepOf(p) { return p.indexOf("\\") >= 0 || /^[A-Za-z]:/.test(p) ? "\\" : "/"; }
+function splitPath(p) {
+  const i = Math.max(p.lastIndexOf("/"), p.lastIndexOf("\\"));
+  return i < 0 ? ["", p] : [p.slice(0, i + 1), p.slice(i + 1)];
+}
+
+const openFiles = new Map();
+function fileOf(n) {
+  const f = openFiles.get(V.clng(n));
+  if (!f) V.raise(52);
+  return f;
+}
+function needInput(f) { if (f.text === null) V.raise(54); }
+function needOutput(f) { if (!f.write) V.raise(54); }
+
+V.fopen = function (path, mode, n, reclen) {
+  const num = V.clng(n);
+  if (num < 1 || num > 511) V.raise(52);
+  if (openFiles.has(num)) V.raise(55);
+  const p = fullPath(path);
+  if (p === "") V.raise(75);
+  const f = { path: p, mode: mode, text: null, pos: 0, write: false };
+  if (mode === "input") {
+    f.text = hostFs("read", p);
+  } else if (mode === "output") {
+    hostFs("write", p, "", "");
+    f.write = true;
+  } else if (mode === "append") {
+    hostFs("write", p, "", "1");
+    f.write = true;
+  } else {
+    // Binary and Random: read what is there, and write after it.
+    f.text = hostFs("exists", p) === "f" ? hostFs("read", p) : (hostFs("write", p, "", "1"), "");
+    f.write = true;
+  }
+  openFiles.set(num, f);
+};
+V.fclose = function (nums) {
+  if (!nums.length) { openFiles.clear(); return; }
+  for (const n of nums) openFiles.delete(V.clng(n));
+};
+V.fcloseAll = function () { openFiles.clear(); };
+
+function fput(f, s) {
+  hostFs("write", f.path, s, "1");
+  if (f.text !== null) f.text += s;
+}
+// Print #: as Debug.Print, but numbers get the space before (for the
+// sign) and after them that VBA writes.
+V.fprint = function (n, items) {
+  const f = fileOf(n);
+  needOutput(f);
+  let s = f.col || "";
+  for (const [e, sep] of items) {
+    const x = dv(e);
+    if (typeof x === "number") s += (x < 0 ? "" : " ") + fmtNum(x) + " ";
+    else s += isNull(x) ? "Null" : V.cstr(x);
+    if (sep === ",") s += " ".repeat(14 - (s.length % 14));
+  }
+  const last = items.length ? items[items.length - 1][1] : "";
+  const line = last === ";" || last === "," ? s : s + "\r\n";
+  const prev = f.col || "";
+  f.col = last === ";" || last === "," ? s : "";
+  fput(f, line.slice(prev.length));
+};
+// Write #: values separated by commas, text in quotes, so Input # reads
+// them back.
+function writeValue(x) {
+  x = dv(x);
+  if (x === undefined) return "";
+  if (isNull(x)) return "#NULL#";
+  if (typeof x === "boolean") return x ? "#TRUE#" : "#FALSE#";
+  if (typeof x === "number") return fmtNum(x);
+  if (x instanceof VDate) {
+    const p = partsOf(x.v);
+    const d2 = (v) => (v < 10 ? "0" : "") + v;
+    return "#" + p.y + "-" + d2(p.m) + "-" + d2(p.d) + (x.v % 1 ? " " + d2(p.h) + ":" + d2(p.n) + ":" + d2(p.s) : "") + "#";
+  }
+  return '"' + V.cstr(x) + '"';
+}
+V.fwrite = function (n, items) {
+  const f = fileOf(n);
+  needOutput(f);
+  const vals = items.filter((it, i) => !(it[0] === "" && it[1] && i > 0 && items[i - 1][1]));
+  let s = vals.map((it) => writeValue(it[0])).join(",");
+  const last = items.length ? items[items.length - 1][1] : "";
+  if (last === ";" || last === ",") s += ","; else s += "\r\n";
+  fput(f, s);
+};
+// Input #: the next field, up to a comma or the end of the line; quoted
+// text as written; numbers and #TRUE#-style values as values.
+V.finput = function (n) {
+  const f = fileOf(n);
+  needInput(f);
+  const t = f.text;
+  let i = f.pos;
+  while (i < t.length && (t[i] === " " || t[i] === "\t")) i++;
+  if (i >= t.length) V.raise(62);
+  let v, quoted = false;
+  if (t[i] === '"') {
+    const j = t.indexOf('"', i + 1);
+    const end = j < 0 ? t.length : j;
+    v = t.slice(i + 1, end);
+    i = end + 1;
+    quoted = true;
+    while (i < t.length && t[i] !== "," && t[i] !== "\r" && t[i] !== "\n") i++;
+  } else {
+    let j = i;
+    while (j < t.length && t[j] !== "," && t[j] !== "\r" && t[j] !== "\n") j++;
+    v = t.slice(i, j).replace(/[ \t]+$/, "");
+    i = j;
+  }
+  if (t[i] === ",") i++;
+  else if (t[i] === "\r") { i++; if (t[i] === "\n") i++; }
+  else if (t[i] === "\n") i++;
+  f.pos = i;
+  if (quoted) return v;
+  const u = v.toUpperCase();
+  if (u === "#TRUE#") return true;
+  if (u === "#FALSE#") return false;
+  if (u === "#NULL#") return V.Null;
+  if (/^#.*#$/.test(v)) return V.cdate(v.slice(1, -1));
+  if (v !== "" && /^[-+]?(\d+\.?\d*|\.\d+)([eE][-+]?\d+)?$/.test(v)) return Number(v);
+  return v;
+};
+V.flineinput = function (n) {
+  const f = fileOf(n);
+  needInput(f);
+  const t = f.text;
+  if (f.pos >= t.length) V.raise(62);
+  let j = f.pos;
+  while (j < t.length && t[j] !== "\r" && t[j] !== "\n") j++;
+  const line = t.slice(f.pos, j);
+  if (t[j] === "\r") j++;
+  if (t[j] === "\n") j++;
+  f.pos = j;
+  return line;
+};
+V.fkill = function (p) {
+  if (hostFs("kill", fullPath(p)) === "0") V.raise(53);
+};
+V.fmkdir = (p) => { hostFs("mkdir", fullPath(p)); };
+V.frmdir = (p) => { hostFs("rmdir", fullPath(p)); };
+V.fchdir = function (p) {
+  const d = fullPath(p);
+  if (hostFs("exists", d) !== "d") V.raise(76);
+  cwd = d;
+};
+V.fchdrive = () => undefined;
+V.fcopy = (a, b) => { hostFs("copy", fullPath(a), fullPath(b), "1"); };
+V.fname = function (a, b) {
+  const to = fullPath(b);
+  if (hostFs("exists", to) !== "") V.raise(58);
+  hostFs("move", fullPath(a), to);
+};
+
+// Input(Number, #FileNumber): that many characters of the file.
+B.input = function (count, n) {
+  const f = fileOf(n);
+  needInput(f);
+  const k = V.clng(count);
+  if (f.pos + k > f.text.length) V.raise(62);
+  const s = f.text.substr(f.pos, k);
+  f.pos += k;
+  return s;
+};
+B.freefile = function () {
+  for (let n = 1; n <= 511; n++) if (!openFiles.has(n)) return n;
+  V.raise(67);
+};
+B.eof = function (n) {
+  const f = fileOf(n);
+  return f.text === null ? true : f.pos >= f.text.length;
+};
+B.lof = function (n) {
+  const f = fileOf(n);
+  return Number(hostFs("size", f.path));
+};
+B.loc = function (n) {
+  const f = fileOf(n);
+  return f.text === null ? 0 : Math.ceil(f.pos / 128);
+};
+B.filelen = (p) => Number(hostFs("size", fullPath(p)));
+B.filedatetime = (p) => new VDate(Number(hostFs("mtime", fullPath(p))));
+// GetAttr: 16 for a folder, 32 (archive) for a file, plus 1 when read only.
+B.getattr = (p) => Number(hostFs("attr", fullPath(p)));
+B.setattr = () => undefined;
+B.curdir = () => (hasFs() ? curDir() : "");
+B.environ = function (name) {
+  if (miss(name) || !hasFs()) return "";
+  if (typeof dv(name) === "number") return "";
+  return hostFs("env", V.cstr(name));
+};
+
+// Dir(PathName, Attributes): the first file matching the name (`*` and
+// `?` in the last part), and with no arguments the next one; folders
+// too when Attributes has vbDirectory (16). "" when there are no more.
+let dirList = null;
+function listFolder(folder) {
+  return JSON.parse(hostFs("list", folder));
+}
+function wild(pattern, name) {
+  const re = new RegExp("^" + pattern.replace(/[.+^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*").replace(/\?/g, ".") + "$", "i");
+  return re.test(name);
+}
+B.dir = function (path, attrs) {
+  if (miss(path)) {
+    if (dirList === null) V.raise(5);
+    return dirList.length ? dirList.shift() : "";
+  }
+  if (!hasFs()) {
+    if (typeof G.__host_dir !== "function") V.unsupported("Dir");
+    return String(G.__host_dir(V.cstr(path)));
+  }
+  const a = miss(attrs) ? 0 : V.clng(attrs);
+  let p = fullPath(path);
+  if (p === "") p = curDir() + sepOf(curDir());
+  let [folder, name] = splitPath(p);
+  if (name === "") name = "*";
+  if (a === 8) { dirList = []; return ""; }
+  if (folder === "") folder = curDir();
+  let found;
+  if (name.indexOf("*") < 0 && name.indexOf("?") < 0) {
+    const k = hostFs("exists", p);
+    found = k === "f" || (k === "d" && (a & 16)) ? [name] : [];
+  } else {
+    let items = [];
+    try { items = listFolder(folder); } catch (e) { items = []; }
+    found = items
+      .filter((it) => (it.d ? (a & 16) !== 0 : true) && (name === "*.*" || wild(name, it.n)))
+      .map((it) => it.n);
+    if (a & 16) found = [".", ".."].concat(found);
+  }
+  dirList = found;
+  return dirList.length ? dirList.shift() : "";
+};
+B.dir.__params = ["pathname", "attributes"];
+
+// ----- FileSystemObject -----------------------------------------------------
+
+function dateOf(serial) { return new VDate(Number(serial)); }
+
+class FsoTextStream {
+  constructor(path, text, write) {
+    this._path = path; this._t = text; this._pos = 0; this._write = write; this._line = 1;
+  }
+  get AtEndOfStream() { return this._t === null || this._pos >= this._t.length; }
+  get AtEndOfLine() {
+    const c = this._t === null ? "" : this._t[this._pos];
+    return c === undefined || c === "\r" || c === "\n";
+  }
+  get Line() { return this._line; }
+  ReadLine() {
+    if (this.AtEndOfStream) V.raise(62);
+    const t = this._t;
+    let j = this._pos;
+    while (j < t.length && t[j] !== "\r" && t[j] !== "\n") j++;
+    const line = t.slice(this._pos, j);
+    if (t[j] === "\r") j++;
+    if (t[j] === "\n") j++;
+    this._pos = j;
+    this._line++;
+    return line;
+  }
+  ReadAll() {
+    if (this._t === null) V.raise(54);
+    const s = this._t.slice(this._pos);
+    this._pos = this._t.length;
+    return s;
+  }
+  Read(n) {
+    if (this._t === null) V.raise(54);
+    const s = this._t.substr(this._pos, V.clng(n));
+    this._pos += s.length;
+    return s;
+  }
+  SkipLine() { this.ReadLine(); }
+  Skip(n) { this._pos += V.clng(n); }
+  Write(s) { if (!this._write) V.raise(54); hostFs("write", this._path, V.cstr(s), "1"); }
+  WriteLine(s) { this.Write((miss(s) ? "" : V.cstr(s)) + "\r\n"); }
+  WriteBlankLines(n) { this.Write("\r\n".repeat(V.clng(n))); }
+  Close() { this._t = null; this._write = false; }
+}
+
+class FsoFile {
+  constructor(path) { this._p = path; }
+  get Path() { return this._p; }
+  get Name() { return splitPath(this._p)[1]; }
+  get ShortName() { return this.Name; }
+  get ShortPath() { return this._p; }
+  get ParentFolder() { return new FsoFolder(splitPath(this._p)[0].replace(/[\\/]$/, "")); }
+  get Size() { return Number(hostFs("size", this._p)); }
+  get DateLastModified() { return dateOf(hostFs("mtime", this._p)); }
+  get DateCreated() { return this.DateLastModified; }
+  get DateLastAccessed() { return this.DateLastModified; }
+  get Attributes() { return Number(hostFs("attr", this._p)); }
+  set Attributes(v) {}
+  get Type() { const e = Fso.prototype.GetExtensionName(this._p); return e ? e.toUpperCase() + " File" : "File"; }
+  Delete() { hostFs("kill", this._p); }
+  Copy(dest, overwrite) { hostFs("copy", this._p, fsoTarget(dest, this.Name), miss(overwrite) || V.cbool(overwrite) ? "1" : ""); }
+  Move(dest) { const t = fsoTarget(dest, this.Name); hostFs("move", this._p, t); this._p = t; }
+  OpenAsTextStream(mode) { return Fso.prototype.OpenTextFile(this._p, miss(mode) ? 1 : mode); }
+}
+
+class FsoFolder {
+  constructor(path) { this._p = path; }
+  get Path() { return this._p; }
+  get Name() { return splitPath(this._p.replace(/[\\/]+$/, ""))[1]; }
+  get ShortName() { return this.Name; }
+  get ParentFolder() { return new FsoFolder(splitPath(this._p.replace(/[\\/]+$/, ""))[0].replace(/[\\/]$/, "")); }
+  get IsRootFolder() { return /^([A-Za-z]:)?[\\/]?$/.test(this._p); }
+  get DateLastModified() { return dateOf(hostFs("mtime", this._p)); }
+  get DateCreated() { return this.DateLastModified; }
+  get Attributes() { return 16; }
+  get Size() {
+    return listFolder(this._p).reduce((t, it) => t + (it.d ? new FsoFolder(this._child(it.n)).Size : it.s), 0);
+  }
+  _child(n) { return this._p.replace(/[\\/]+$/, "") + sepOf(this._p) + n; }
+  _items(dirs) {
+    const c = new Collection();
+    for (const it of listFolder(this._p)) {
+      if (!!it.d !== dirs) continue;
+      const p = this._child(it.n);
+      c.Add(dirs ? new FsoFolder(p) : new FsoFile(p), it.n);
+    }
+    return c;
+  }
+  get Files() { return this._items(false); }
+  get SubFolders() { return this._items(true); }
+  CreateTextFile(name, overwrite) { return Fso.prototype.CreateTextFile(this._child(V.cstr(name)), overwrite); }
+  Delete() { hostFs("rmdir", this._p, "1"); }
+  Copy(dest) { hostFs("copy", this._p, fsoTarget(dest, this.Name), "1"); }
+  Move(dest) { const t = fsoTarget(dest, this.Name); hostFs("move", this._p, t); this._p = t; }
+}
+
+// A Copy or Move destination: a folder (ending with a separator, or one
+// that exists) takes the item's name.
+function fsoTarget(dest, name) {
+  const d = fullPath(dest);
+  if (/[\\/]$/.test(d)) return d + name;
+  return hostFs("exists", d) === "d" ? d + sepOf(d) + name : d;
+}
+
+class Fso {
+  FileExists(p) { return hostFs("exists", fullPath(p)) === "f"; }
+  FolderExists(p) { return hostFs("exists", fullPath(p)) === "d"; }
+  DriveExists(p) { return /^[A-Za-z]:?\\?$/.test(V.cstr(p)) || V.cstr(p) === "/"; }
+  GetFile(p) {
+    const f = fullPath(p);
+    if (hostFs("exists", f) !== "f") V.raise(53);
+    return new FsoFile(f);
+  }
+  GetFolder(p) {
+    const f = fullPath(p);
+    if (hostFs("exists", f) !== "d") V.raise(76);
+    return new FsoFolder(f);
+  }
+  GetFileName(p) { return splitPath(V.cstr(p).replace(/[\\/]+$/, ""))[1]; }
+  GetBaseName(p) { const n = this.GetFileName(p); const i = n.lastIndexOf("."); return i <= 0 ? n : n.slice(0, i); }
+  GetExtensionName(p) { const n = splitPath(V.cstr(p))[1]; const i = n.lastIndexOf("."); return i < 0 ? "" : n.slice(i + 1); }
+  GetParentFolderName(p) { return splitPath(V.cstr(p).replace(/[\\/]+$/, ""))[0].replace(/[\\/]+$/, ""); }
+  GetDriveName(p) { const m = /^[A-Za-z]:/.exec(V.cstr(p)); return m ? m[0] : ""; }
+  GetAbsolutePathName(p) { return fullPath(p); }
+  GetTempName() { return "rad" + Math.floor(Math.random() * 0xfffff).toString(16).toUpperCase() + ".tmp"; }
+  BuildPath(p, n) {
+    const a = V.cstr(p), b = V.cstr(n);
+    if (a === "") return b;
+    return /[\\/]$/.test(a) ? a + b : a + sepOf(a) + b;
+  }
+  // GetSpecialFolder: 0 Windows, 1 System, 2 the temporary folder.
+  GetSpecialFolder(k) { return new FsoFolder(hostFs("special", String(V.clng(k)))); }
+  CreateFolder(p) {
+    const f = fullPath(p);
+    if (hostFs("exists", f) !== "") V.raise(58);
+    hostFs("mkdir", f);
+    return new FsoFolder(f);
+  }
+  DeleteFile(p) { if (hostFs("kill", fullPath(p)) === "0") V.raise(53); }
+  DeleteFolder(p) { hostFs("rmdir", fullPath(p), "1"); }
+  CopyFile(a, b, overwrite) { fsoCopy(a, b, overwrite, false); }
+  CopyFolder(a, b, overwrite) { fsoCopy(a, b, overwrite, true); }
+  MoveFile(a, b) { hostFs("move", fullPath(a), fsoTarget(b, this.GetFileName(a))); }
+  MoveFolder(a, b) { hostFs("move", fullPath(a), fsoTarget(b, this.GetFileName(a))); }
+  // OpenTextFile: 1 reading, 2 writing (emptied), 8 appending.
+  OpenTextFile(p, mode, create) {
+    const f = fullPath(p);
+    const m = miss(mode) ? 1 : V.clng(mode);
+    const exists = hostFs("exists", f) === "f";
+    if (m === 1) {
+      if (!exists) V.raise(53);
+      return new FsoTextStream(f, hostFs("read", f), false);
+    }
+    if (!exists && !miss(create) && !V.cbool(create)) V.raise(53);
+    hostFs("write", f, "", m === 8 ? "1" : "");
+    return new FsoTextStream(f, null, true);
+  }
+  CreateTextFile(p, overwrite) {
+    const f = fullPath(p);
+    if (!miss(overwrite) && !V.cbool(overwrite) && hostFs("exists", f) !== "") V.raise(58);
+    hostFs("write", f, "", "");
+    return new FsoTextStream(f, null, true);
+  }
+  get Drives() { return new Collection(); }
+}
+function fsoCopy(a, b, overwrite, folder) {
+  const src = fullPath(a);
+  const [dir, name] = splitPath(src);
+  const ow = miss(overwrite) || V.cbool(overwrite) ? "1" : "";
+  if (name.indexOf("*") >= 0 || name.indexOf("?") >= 0) {
+    for (const it of listFolder(dir)) {
+      if (!!it.d === folder && wild(name, it.n)) hostFs("copy", dir + it.n, fsoTarget(b, it.n), ow);
+    }
+    return;
+  }
+  hostFs("copy", src, fsoTarget(b, name), ow);
+}
+Fso.prototype.OpenTextFile.__params = ["filename", "iomode", "create", "format"];
+Fso.prototype.CreateTextFile.__params = ["filename", "overwrite", "unicode"];
+Fso.prototype.CopyFile.__params = ["source", "destination", "overwritefiles"];
+Fso.prototype.CopyFolder.__params = ["source", "destination", "overwritefiles"];
+V.Fso = Fso;
+
+// WScript.Shell: the special folders and environment strings macros
+// build paths from, and Popup as a message box. Running programs is not
+// available.
+class WshShell {
+  SpecialFolders(name) { return hasFs() ? hostFs("special", V.cstr(name)) : ""; }
+  ExpandEnvironmentStrings(s) {
+    return V.cstr(s).replace(/%([^%]+)%/g, (m, n) => { const v = B.environ(n); return v === "" ? m : v; });
+  }
+  Popup(text, secs, title, type) { return B.msgbox(text, miss(type) ? 0 : type, miss(title) ? "" : title); }
+  Run(cmd) { V.unsupported("WScript.Shell.Run"); }
+  Exec(cmd) { V.unsupported("WScript.Shell.Exec"); }
+  RegRead(k) { V.raise(5); }
+  get CurrentDirectory() { return curDir(); }
+  set CurrentDirectory(v) { V.fchdir(v); }
+}
+WshShell.prototype.Popup.__params = ["text", "secondstowait", "title", "type"];
+V.WshShell = WshShell;
+// WScript.Network: the user's and the computer's names.
+class WshNetwork {
+  get UserName() { return B.environ("USERNAME") || B.environ("USER"); }
+  get ComputerName() { return B.environ("COMPUTERNAME") || B.environ("HOSTNAME"); }
+  get UserDomain() { return B.environ("USERDOMAIN"); }
+}
+
 // Constants.
 const C = {
   vbabort: 3, vbabortretryignore: 2, vbapplicationmodal: 0, vbarray: 8192, vbback: "\b",
@@ -1986,6 +2494,8 @@ const C = {
   vbusedefault: -2, vbusesystem: 0, vbusesystemdayofweek: 0, vbvariant: 12,
   vbverticaltab: "\v", vbwednesday: 4, vbwhite: 0xFFFFFF, vbyellow: 0x00FFFF, vbyes: 6,
   vbyesno: 4, vbyesnocancel: 3,
+  vbnormal: 0, vbreadonly: 1, vbhidden: 2, vbsystem: 4, vbvolume: 8, vbdirectory: 16,
+  vbarchive: 32, vbalias: 64,
 };
 for (const k of Object.keys(C)) B[k] = C[k];
 

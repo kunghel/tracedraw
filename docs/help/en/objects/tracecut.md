@@ -85,6 +85,37 @@ before the outline around them.
 outside cuts so the parts do not move when they come free; set how many,
 how wide and how thick. Apply shows the toolpaths, OK saves the .nc file.
 
+## Laser Output {#laser-output}
+
+Turns the selection into a G-code program for a laser cutter or engraver
+run by **GRBL** or **Marlin**. The objects are sorted into laser layers by
+the colour of their outline (the fill's when they have none) or by the
+document layer they are on, and each laser layer gets a **mode**:
+
+- **Cut** and **Score** follow the outlines; Score is for lines marked,
+  not cut through, with its own power and speed;
+- **Engrave** fills the shapes with lines, leaving holes and the inside
+  of letters clear;
+- **Skip** leaves the layer out.
+
+Set each layer's **power** (a share of full power), **speed** in
+millimetres per second, **passes**, the **line interval** for engraving
+and **air assist**. Engraving runs first, then scoring, then cutting, so
+a part comes free only when everything on it is done, and holes are cut
+before the outline around them. **Full power (S)** is the controller's
+largest S value (1000 for GRBL, 255 for Marlin); **dynamic power** keeps
+corners from burning deeper. **Overscan** runs each engraving line a
+little past its ends with the beam off.
+
+The program goes to a file, a port (wait for each line's ok, as the
+controllers need) or the network. **Frame** runs the head round the job
+first so you can place the material. **Run material test** burns a grid
+of squares, power rising to the right and speed downwards, with the
+values scored beside it, to find the settings for a new material. **Save
+DXF for laser** writes the lines that burn as a clean DXF, one polyline
+per outline, repeats left out, a DXF layer per laser layer. Save each
+material's settings as a preset.
+
 ## Weeding {#weeding}
 
 Adds weeding lines from each object to its neighbours, or a box around each

@@ -24,6 +24,12 @@ back.
    The settings sit in a panel at the right; under it **Reset** puts every
    setting back to its default, and the two arrows undo and redo the changes
    made in the dialog box.
+   With **Settings in the Effects panel** ticked, effects open in the Effects panel
+   beside the drawing instead: pick the effect from the list at its top, set
+   the sliders while the drawing shows the result, then click
+   **Apply** (one undo step) or **Cancel**. Untick the box there to
+   go back to the dialog box. Image Adjustments and Tone Curve keep their
+   dialog boxes.
 
 ![A bitmap effect dialog box](../../img/effects-bitmap-effects.png)
 
@@ -73,8 +79,11 @@ The change to the whole selection is one undo step. With a bitmap selected,
 ## Editing the effects of an object {#fx-section}
 
 The [[docker.fx]] section of the [[docker.properties]] panel lists the
-effects of the selected object, first applied at the top. Each row has a
-check box to show or hide the effect, **Edit** (opens its dialog box),
+effects of the selected object, first applied at the top: the live effects
+of its stack (contour, envelope, extrusion, shadows, glows and the others of
+the Effects panel) above its bitmap effects. Each row has an eye that shows or
+hides the effect (a hidden effect keeps its place and settings), **Edit**
+(opens its dialog box, or for a live effect the panel that sets it),
 **Move up**, **Move down** and **Delete**. **Add effect** opens the effect
 groups.
 

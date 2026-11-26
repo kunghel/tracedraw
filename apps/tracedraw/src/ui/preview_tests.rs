@@ -581,3 +581,33 @@ fn the_preview_background_follows_the_desktop_until_one_is_picked() {
     app.settings.preview_background = [30, 30, 30];
     assert_eq!(app.preview_background_color(), egui::Color32::from_rgb(30, 30, 30));
 }
+
+/// Options > Display > Full-screen preview > Fit the page to the screen
+/// (#4239): F9 shows the whole page as large as the screen lets it, its
+/// middle in the screen's, whatever the zoom in the window; a zoom in
+/// the preview takes over from there. Off, the zoom of the window stays.
+#[test]
+fn the_preview_can_fill_the_screen_with_the_page() {
+    let (ctx, mut app) = setup();
+    app.settings.preview_fit_page = true;
+    app.view.zoom = 9.0;
+    let screen = egui::vec2(1920.0, 1080.0);
+    frame(&ctx, &mut app, WINDOW, false, vec![key(Key::F9, true)]);
+    frame(&ctx, &mut app, screen, true, vec![key(Key::F9, false)]);
+    let page = app.page_rect();
+    let session = app.preview_session.as_ref().expect("previewing");
+    let fit = (1920.0 / page.width()).min(1080.0 / page.height());
+    assert!((session.zoom - fit).abs() < 1e-9, "{} {fit}", session.zoom);
+    let shown = frame_bounds(&app, screen);
+    assert!((shown.center() - page.center()).hypot() < 1e-9);
+    assert!(shown.width() >= page.width() - 1e-9 && shown.height() >= page.height() - 1e-9);
+    assert!(
+        (shown.width() - page.width()).abs() < 1e-6 || (shown.height() - page.height()).abs() < 1e-6,
+        "the page touches two edges of the screen"
+    );
+    // A zoom in the preview keeps on from the fitted page.
+    apply_preview_keys(&mut app, &[PreviewInput::Zoom(2.0)], screen);
+    frame(&ctx, &mut app, screen, true, Vec::new());
+    let session = app.preview_session.as_ref().expect("previewing");
+    assert!((session.zoom - fit * 2.0).abs() < 1e-9);
+}

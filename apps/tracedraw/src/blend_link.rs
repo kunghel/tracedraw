@@ -456,6 +456,32 @@ mod tests {
         tracedraw_core::live::evaluate(&s).above
     }
 
+    /// #4389: three objects picked blend one into the next, in the order
+    /// picked, in one undo step.
+    #[test]
+    fn three_objects_blend_as_a_chain() {
+        let mut app = App::headless();
+        let a = square(&mut app, 0.0, Color::BLACK);
+        let b = square(&mut app, 100.0, Color::WHITE);
+        let c = square(&mut app, 200.0, Color::BLACK);
+        app.selection = vec![a, b, c];
+        let depth = app.engine.history_labels().0.len();
+        app.blend_selection(4, 0.0, 0.0, 0.0);
+        assert_eq!(app.engine.history_labels().0.len(), depth + 1);
+        let end_of = |app: &App, id| {
+            app.doc().find_shape(id).and_then(|s| {
+                s.effects.iter().find_map(|e| match e {
+                    Effect::Blend { end_id, .. } => *end_id,
+                    _ => None,
+                })
+            })
+        };
+        assert_eq!(end_of(&app, a), Some(b));
+        assert_eq!(end_of(&app, b), Some(c));
+        assert_eq!(end_of(&app, c), None);
+        assert_eq!(app.selection, vec![a]);
+    }
+
     /// A double click on a blend grouped and bent by the group's
     /// envelope opens the blend's options: the group in focus, the start
     /// object selected, the Blend panel shown; a change of the blend
@@ -780,6 +806,89 @@ mod tests {
         let e = ev(&app);
         assert!(e.below.is_empty());
         assert_eq!(e.above.len(), 3);
+    }
+
+    /// A missing range-page endpoint is kept as a hidden local reference.
+    /// Refreshing a duplicated page must not move its steps across the start.
+    #[test]
+    fn range_output_missing_blends_keep_their_order_after_refresh() {
+        use tracedraw_core::{Document, Layer, MasterScope, Page, PageRanges, Size};
+
+        for below in [false, true] {
+            let mut doc = Document::new("range", Size::new(100.0, 100.0));
+            let page = Page {
+                id: doc.ids_mut().page(),
+                name: String::new(),
+                size: Size::new(100.0, 100.0),
+                layers: vec![Layer::new(doc.ids_mut().layer(), "Page")],
+                guides: Vec::new(),
+                background: None,
+            };
+            doc.pages.push(page);
+            let mut start = Shape::new(
+                doc.ids_mut().shape(),
+                ShapeKind::Rect {
+                    rect: Rect::new(10.0, 10.0, 20.0, 20.0),
+                    radius: 0.0,
+                    corners: None,
+                },
+            );
+            let mut end = start.with_fresh_ids(&mut || doc.ids_mut().shape());
+            end.transform_by(Affine::translate((30.0, 0.0)));
+            start.effects.push(Effect::Blend {
+                end: Box::new(end.clone()),
+                steps: 3,
+                accel_objects: 0.0,
+                accel_colors: 0.0,
+                rotation: 0.0,
+                path: None,
+                rotate_on_path: false,
+                end_id: Some(end.id),
+                options: tracedraw_core::live::BlendOptions {
+                    steps_below: below,
+                    ..Default::default()
+                },
+            });
+            let mut range = Layer::master(doc.ids_mut().layer(), "Range", MasterScope::All);
+            range.page_range = Some(PageRanges::parse("2").expect("start range"));
+            range.shapes.push(start);
+            let mut endpoint = Layer::master(doc.ids_mut().layer(), "End", MasterScope::All);
+            endpoint.page_range = Some(PageRanges::parse("1").expect("endpoint range"));
+            endpoint.shapes.push(end);
+            doc.master.extend([range, endpoint]);
+
+            let output = doc.with_master_layers_on_pages(&[1]);
+            let loaded =
+                Document::from_json(&output.to_json().expect("save output")).expect("read output");
+            let wrapper = loaded.pages[0]
+                .layers
+                .iter()
+                .find(|layer| layer.name == "Range")
+                .expect("materialized range")
+                .shapes[0]
+                .id;
+            let mut app = App::headless();
+            app.open_document(loaded, None);
+            app.select_all();
+            assert_eq!(app.selection, vec![wrapper], "selectable output blend");
+            let blends = app.all_blends();
+            assert_eq!(blends.len(), 1);
+            let start = blends[0].0;
+            app.run(Command::SetFill {
+                shapes: vec![start],
+                fill: Fill::Solid(Color::BLACK),
+            });
+            app.refresh_blends();
+
+            let start = app.doc().find_shape(start).expect("output start");
+            let [Effect::Blend { options, .. }] = start.effects.as_slice() else {
+                panic!("output blend")
+            };
+            assert_eq!(options.steps_below, below);
+            let evaluated = tracedraw_core::live::evaluate(start);
+            assert_eq!(evaluated.below.len(), if below { 3 } else { 0 });
+            assert_eq!(evaluated.above.len(), if below { 0 } else { 3 });
+        }
     }
 
     /// A blend made with the tool's defaults has 20 steps, enough for the

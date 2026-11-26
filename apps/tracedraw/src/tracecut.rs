@@ -10,7 +10,8 @@
 use crate::app::App;
 use crate::i18n::{tr, trf};
 use crate::tracecut_cut::{
-    BridgeSettings, Changes, CutContourSettings, Job, MarksSettings, OrderSettings, PlotterSettings,
+    BridgeSettings, Changes, CutContourSettings, Job, LaserSettings, MarksSettings, OrderSettings,
+    PlotterSettings,
 };
 use crate::tracecut_nest::{
     CostSettings, RectNestSettings, Report, ShapeNestSettings, TimeSettings,
@@ -65,6 +66,7 @@ pub enum ToolId {
     #[default]
     PlotterOutput,
     CncToolpath,
+    LaserOutput,
     Weeding,
     Bridges,
     CutOrder,
@@ -84,9 +86,10 @@ pub enum ToolId {
 }
 
 impl ToolId {
-    pub const ALL: [ToolId; 18] = [
+    pub const ALL: [ToolId; 19] = [
         ToolId::PlotterOutput,
         ToolId::CncToolpath,
+        ToolId::LaserOutput,
         ToolId::Weeding,
         ToolId::Bridges,
         ToolId::CutOrder,
@@ -121,6 +124,7 @@ impl ToolId {
         match self {
             ToolId::PlotterOutput => "plotter_output",
             ToolId::CncToolpath => "cnc_toolpath",
+            ToolId::LaserOutput => "laser_output",
             ToolId::Weeding => "weeding",
             ToolId::Bridges => "bridges",
             ToolId::CutOrder => "cut_order",
@@ -164,6 +168,7 @@ impl ToolId {
         match self {
             ToolId::PlotterOutput => "tracecut.plotter_output",
             ToolId::CncToolpath => "tracecut.cnc_toolpath",
+            ToolId::LaserOutput => "tracecut.laser_output",
             ToolId::Weeding => "tracecut.weeding",
             ToolId::Bridges => "tracecut.bridges",
             ToolId::CutOrder => "tracecut.cut_order",
@@ -262,6 +267,7 @@ pub const TOLERANCE_RANGE: (f64, f64) = (0.001, 10.0);
 pub struct ToolSettings {
     pub plotter: PlotterSettings,
     pub cnc: CncSpec,
+    pub laser: LaserSettings,
     pub weeding: WeedSpec,
     pub bridges: BridgeSettings,
     pub order: OrderSettings,
@@ -294,6 +300,10 @@ macro_rules! with_settings {
             }
             ToolId::CncToolpath => {
                 let $v = &mut $s.cnc;
+                $body
+            }
+            ToolId::LaserOutput => {
+                let $v = &mut $s.laser;
                 $body
             }
             ToolId::Weeding => {
@@ -519,6 +529,11 @@ pub enum Outcome {
         program: Box<Program>,
         summary: String,
     },
+    /// A laser program and its line for the status strip.
+    Laser {
+        program: Box<tracedraw_tracecut::laser::Program>,
+        summary: String,
+    },
     /// Changes of the drawing a Cut tool worked out.
     Changes(Box<Changes>),
     /// A result to read; OK changes nothing.
@@ -536,7 +551,9 @@ impl Outcome {
     /// The line under the preview that says what was found.
     pub fn summary(&self) -> String {
         match self {
-            Outcome::Job { summary, .. } | Outcome::Gcode { summary, .. } => summary.clone(),
+            Outcome::Job { summary, .. }
+            | Outcome::Gcode { summary, .. }
+            | Outcome::Laser { summary, .. } => summary.clone(),
             Outcome::Changes(c) => c.summary.clone(),
             Outcome::Report(r) => r.lines.first().cloned().unwrap_or_default(),
             Outcome::Duplicates(d) if d.is_empty() => tr("tracecut.no_duplicates"),
@@ -583,6 +600,10 @@ pub struct TraceCutState {
     pub views: Vec<(ToolId, PreviewView)>,
     /// The targets the views were set on: another selection fits again.
     pub view_targets: Vec<ShapeId>,
+    /// Laser Output: the laser layers of the selection (name and colour)
+    /// and the drawing revision, settings and targets they were found on.
+    pub laser_keys: Vec<(String, [u8; 3])>,
+    pub laser_keys_of: Option<(u64, tracedraw_tracecut::laser::GroupBy, Vec<ShapeId>)>,
 }
 
 /// A zoomed or panned preview: interface points per millimetre and the
@@ -728,6 +749,14 @@ impl App {
                 let program = self.tracecut_cnc(&settings.cnc);
                 let summary = self.tracecut_cnc_summary(&program);
                 Outcome::Gcode {
+                    program: Box::new(program),
+                    summary,
+                }
+            }
+            ToolId::LaserOutput => {
+                let program = self.tracecut_laser(&settings.laser);
+                let summary = self.tracecut_laser_summary(&program);
+                Outcome::Laser {
                     program: Box::new(program),
                     summary,
                 }
@@ -990,6 +1019,11 @@ impl App {
                     scene.marked = program.toolpaths.iter().map(|t| t.path()).collect();
                     scene.moves = program.rapids.clone();
                 }
+                Outcome::Laser { program, .. } => {
+                    scene.marked = program.cuts.clone();
+                    scene.scored = program.marked.clone();
+                    scene.moves = program.moves.clone();
+                }
                 Outcome::Report(_) => {}
                 Outcome::Changes(c) => {
                     if c.hide_objects {
@@ -1042,6 +1076,19 @@ impl App {
                     return false;
                 }
                 self.tracecut_save_gcode(program);
+                true
+            }
+            Outcome::Laser { program, summary } => {
+                if program.layers == 0 {
+                    self.status = summary.clone();
+                    return false;
+                }
+                self.tracecut_laser_output(
+                    &settings.laser,
+                    program.gcode.clone(),
+                    "laser.gcode",
+                    ctx,
+                );
                 true
             }
             Outcome::Changes(c) => self.tracecut_apply_changes(c),

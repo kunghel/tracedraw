@@ -9,6 +9,7 @@
 //! - Roughen: Frequency (spikes per 10 mm), Spike size and the Edge
 //!   (Jagged, Thorns, Petals, Crumple).
 
+use crate::ui::btn_icons::IconUi;
 use crate::app::App;
 use crate::i18n::tr;
 use crate::theme::Tokens;
@@ -167,14 +168,14 @@ pub fn brush_bar(app: &mut App, ui: &mut Ui) {
                 &mut b.twirl_speed,
             );
             if ui
-                .selectable_label(!b.twirl_clockwise, tr("toolbar.counterclockwise"))
+                .iselectable(!b.twirl_clockwise, "toolbar.counterclockwise")
                 .rich_tip(crate::ui::tips::keyed("toolbar.counterclockwise"))
                 .clicked()
             {
                 b.twirl_clockwise = false;
             }
             if ui
-                .selectable_label(b.twirl_clockwise, tr("toolbar.clockwise"))
+                .iselectable(b.twirl_clockwise, "toolbar.clockwise")
                 .rich_tip(crate::ui::tips::keyed("toolbar.clockwise"))
                 .clicked()
             {
@@ -189,14 +190,14 @@ pub fn brush_bar(app: &mut App, ui: &mut Ui) {
                 &mut b.attract_speed,
             );
             if ui
-                .selectable_label(!b.repel, tr("toolbar.attract"))
+                .iselectable(!b.repel, "toolbar.attract")
                 .rich_tip(tr("toolbar.attract_tip"))
                 .clicked()
             {
                 b.repel = false;
             }
             if ui
-                .selectable_label(b.repel, tr("toolbar.repel"))
+                .iselectable(b.repel, "toolbar.repel")
                 .rich_tip(tr("toolbar.attract_tip"))
                 .clicked()
             {

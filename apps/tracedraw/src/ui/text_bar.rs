@@ -11,6 +11,7 @@
 //! editing, else the whole text; the paragraphs at the caret, else every
 //! paragraph. See docs/behavior/toolbars.md, Text tool bar.
 
+use crate::ui::btn_icons::IconUi;
 use crate::app::App;
 use crate::i18n::tr;
 use crate::ui::field::NumField;
@@ -313,7 +314,8 @@ pub fn optional_part(app: &mut App, ui: &mut Ui) {
                 });
             }
             "tabs" | "columns" => {
-                let b = egui::Button::new(&tip);
+                let key = if id == "tabs" { "menu.text.tabs" } else { "menu.text.columns" };
+                let b = crate::ui::btn_icons::Ib::with_text(key, &tip);
                 let enabled = if id == "tabs" { is_text } else { is_para };
                 if ui.add_enabled(enabled, b).rich_tip(&tip).clicked() {
                     app.dialog = if id == "tabs" {
@@ -393,7 +395,7 @@ fn customize_button(app: &mut App, ui: &mut Ui) {
             }
         }
         ui.separator();
-        if ui.button(tr("options.reset_to_default")).clicked() {
+        if ui.ibutton("options.reset_to_default").clicked() {
             reset(app);
             ui.close();
         }

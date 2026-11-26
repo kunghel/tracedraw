@@ -1106,6 +1106,11 @@ pub(crate) struct Txsm {
     /// Versions 7 to 15: the first frame's columns when it has several
     /// (their number and the gutter after the first, in file units).
     pub columns: Option<(u32, f64)>,
+    /// Version 16+: the numbers (`spnd`) of the paragraph frames the text
+    /// runs through, in order, the frame holding the record first. A text
+    /// that continues in other frames lists them all; those frames keep
+    /// no text record of their own (#4104, #2018).
+    pub frame_ids: Vec<u32>,
 }
 
 /// How a text fitted to a path sits on it: the 40 bytes after the
@@ -1209,6 +1214,7 @@ fn early_paragraphs(chars: &[u8], size_pt: Option<f64>) -> Txsm {
         layout: None,
         frame_text_styles: Vec::new(),
         columns: None,
+        frame_ids: Vec::new(),
     }
 }
 
@@ -1378,6 +1384,7 @@ fn read_txsm_7_frames(
         layout: None,
         frame_text_styles: Vec::new(),
         columns: out_columns,
+        frame_ids: Vec::new(),
     };
     for _ in 0..np {
         let style_id = r.u32()?;
@@ -1719,8 +1726,9 @@ fn read_txsm_16(d: &[u8], v: u16, charset: u8, warn: &mut dyn FnMut(String)) -> 
     let mut any_on_path = false;
     let mut path_settings = None;
     let mut frame_style = None;
+    let mut frame_ids = Vec::with_capacity(nf);
     for _ in 0..nf {
-        let _frame_id = r.u32()?;
+        frame_ids.push(r.u32()?);
         r.skip(48);
         let on_path = r.u32()?;
         if on_path != 0 {
@@ -1754,6 +1762,7 @@ fn read_txsm_16(d: &[u8], v: u16, charset: u8, warn: &mut dyn FnMut(String)) -> 
         layout: Some(layout),
         frame_text_styles: Vec::new(),
         columns: None,
+        frame_ids,
     };
     let mut graphics = 0;
     for _ in 0..np {
@@ -1948,6 +1957,26 @@ pub(crate) fn drop_leading_chars(spans: &mut Vec<tracedraw_core::TextSpan>, mut 
         n -= k;
     }
     spans.retain(|s| !s.text.is_empty());
+}
+
+/// A paragraph's carriage returns (not part of a CR LF pair) as line
+/// separators (U+2028), the line break inside a paragraph: in version
+/// 16+ paragraph text each paragraph is a record of its own, so a
+/// carriage return inside one breaks the line only (#4162).
+pub(crate) fn soft_line_breaks(text: &str) -> String {
+    if !text.contains('\r') {
+        return text.to_string();
+    }
+    let mut out = String::with_capacity(text.len());
+    let mut it = text.chars().peekable();
+    while let Some(c) = it.next() {
+        if c == '\r' && it.peek() != Some(&'\n') {
+            out.push('\u{2028}');
+        } else {
+            out.push(c);
+        }
+    }
+    out
 }
 
 /// Text with its paragraph ends as `\n`: files end lines with a carriage
@@ -2288,6 +2317,10 @@ fn apply_style_key(s: &mut RunStyle, key: &str, value: &Json) {
                 }
             }
         }
+    } else if k.contains("axes") {
+        // `font_axes`: the axes of a variable font, not a font's name
+        // (#1238: read as the name, every such text lost its font and
+        // the missing fonts box listed the axes instead). Not read.
     } else if k.contains("font") || k.contains("family") || k.contains("face") {
         match value {
             Json::Num(n) if *n >= 0.0 && *n <= u16::MAX as f64 => s.font_id = Some(*n as u16),
@@ -2517,8 +2550,10 @@ pub(crate) fn object_transparency_is_uniform_fill(style: &str) -> bool {
 }
 
 /// The `type` of the `fill` of an object's version 16+ style string
-/// `transparency` section: 0 or 1 uniform, 2 fountain, others patterns
-/// and textures, as in fill sections (#2960).
+/// `transparency` section: 1 uniform, 2 fountain, others patterns and
+/// textures, as in fill sections (#2960). 0 in an object without the
+/// transparency argument is a transparency taken off, whose amounts are
+/// leftovers (#1238).
 pub(crate) fn object_transparency_fill_type(style: &str) -> Option<i64> {
     let t = style.trim_matches(|c: char| c == '\0' || c.is_whitespace());
     let json = parse_json(t)?;
@@ -2551,11 +2586,10 @@ pub(crate) fn object_transparency_is_empty(style: &str) -> bool {
 }
 
 /// The merge mode code of an object's version 16+ style string
-/// transparency (`transparency` > `mode`), when it is not 0. Every
-/// file seen so far holds 0 there (#1666: 126 files attached to issues,
-/// versions 16 to 27, all with Normal merging), so the other codes are
-/// not known yet; the reader names the code in a warning and draws the
-/// object as Normal.
+/// transparency (`transparency` > `mode`), when it is not 0. The codes
+/// are the merge modes of the scripting interface (#1238: 7 Add, 8
+/// Subtract, 9 Multiply and 29 Overlay in a version 27 drawing, told by
+/// its reference picture); `parse::style_merge_mode` maps them.
 pub(crate) fn object_transparency_merge_code(style: &str) -> Option<i64> {
     let t = style.trim_matches(|c: char| c == '\0' || c.is_whitespace());
     let json = parse_json(t);
@@ -2807,6 +2841,9 @@ fn inline_outline(outline: &Json) -> Option<Option<tracedraw_core::Stroke>> {
     let flag = |key: &str| get(key).and_then(Json::num).is_some_and(|n| n != 0.0);
     st.behind_fill = flag("behindFill");
     st.scale_with_object = flag("scaleWithObject");
+    // Where the outline lies on the letters (#4356): 0 centred, 1 inside,
+    // 2 outside; any other value, or none, centred.
+    st.position = outline_position(get("justification").and_then(Json::num));
     st.join = match get("joinType").and_then(Json::num) {
         Some(1.0) => LineJoin::Round,
         Some(2.0) => LineJoin::Bevel,
@@ -2827,6 +2864,28 @@ fn inline_outline(outline: &Json) -> Option<Option<tracedraw_core::Stroke>> {
         );
     }
     Some(Some(st))
+}
+
+/// The place of a character outline from its style string's
+/// `justification` (#4356): 0 centred on the letters' edges, 1 inside,
+/// 2 outside; others centred.
+pub(crate) fn outline_position(code: Option<f64>) -> tracedraw_core::OutlinePosition {
+    use tracedraw_core::OutlinePosition;
+    match code {
+        Some(1.0) => OutlinePosition::Inside,
+        Some(2.0) => OutlinePosition::Outside,
+        _ => OutlinePosition::Center,
+    }
+}
+
+/// The `justification` code [`outline_position`] reads for `position`.
+pub(crate) fn outline_position_code(position: tracedraw_core::OutlinePosition) -> u8 {
+    use tracedraw_core::OutlinePosition;
+    match position {
+        OutlinePosition::Center => 0,
+        OutlinePosition::Inside => 1,
+        OutlinePosition::Outside => 2,
+    }
 }
 
 /// A colour written `MODEL,PALETTE,v1,v2,...` in version 16+ style strings.
@@ -3448,6 +3507,28 @@ mod tests {
             "a\nb\u{2028}c\nd\ne"
         );
         assert_eq!(line_breaks("plain"), "plain");
+        assert_eq!(soft_line_breaks("a\rb\r\nc"), "a\u{2028}b\r\nc");
+        assert_eq!(soft_line_breaks("plain"), "plain");
+    }
+
+    /// #1238: version 27 style strings hold the axes of a variable font
+    /// in `font_axes` after `font`; read as a font name it replaced the
+    /// real one, so the text was drawn with a substitute and the missing
+    /// fonts box named the axes.
+    #[test]
+    fn font_axes_are_not_a_font_name() {
+        for axes in [
+            "<10>2003265652<29>2003265652 0 400 200 700 400 ",
+            "",
+            "7",
+            "<",
+        ] {
+            let s = parse_style_string(&format!(
+                r#"{{"character":{{"latin":{{"charset":"0","font":"Example Serif","font_axes":"{axes}","italic":"0","size":"136823"}}}}}}"#
+            ));
+            assert_eq!(s.family.as_deref(), Some("Example Serif"), "{axes:?}");
+            assert_eq!(s.font_id, None, "{axes:?}");
+        }
     }
 
     #[test]

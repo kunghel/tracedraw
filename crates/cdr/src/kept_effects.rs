@@ -19,9 +19,10 @@
 //!
 //! So does an object holding what the writer cannot write yet
 //! ([`not_held`]): a fill other than a solid colour or a plain fountain
-//! (written as one colour or as the nearest plain fountain), an outline
-//! with a fill of its own, arrowheads (written as curves beside the
-//! line) or overprint. It opens here as it was saved.
+//! (written as one colour or as the nearest plain fountain), a spot or
+//! registration colour (written as process colour), an outline with a
+//! fill of its own, arrowheads (written as curves beside the line) or
+//! overprint. It opens here as it was saved.
 
 use std::collections::HashMap;
 
@@ -209,8 +210,9 @@ pub(crate) fn clip_contents_kept(contents: &[Shape]) -> bool {
 /// object: a fill other than none, a solid colour or a fountain that is
 /// already plain (patterns, textures, PostScript and mesh fills go out as
 /// one colour; repeats, inversion, the shaped kind, midpoints, blend
-/// settings and free nodes as the nearest plain fountain), an outline
-/// with a fill of its own, arrowheads, or overprint. Containers draw no
+/// settings and free nodes as the nearest plain fountain), a spot or
+/// registration colour in the fill or outline, an outline with a fill
+/// of its own, arrowheads, or overprint. Containers draw no
 /// fill or outline of their own and are not counted.
 pub(crate) fn not_held(s: &Shape) -> bool {
     if matches!(
@@ -222,16 +224,36 @@ pub(crate) fn not_held(s: &Shape) -> bool {
     ) {
         return false;
     }
+    // A painted bitmap has a plain picture as its stand-in. Keep the
+    // original alpha and editable fill for TraceDraw.
+    if s.bitmap_alpha_fill && matches!(s.kind, ShapeKind::Bitmap { .. }) {
+        return true;
+    }
     let fill = match &s.fill {
-        Fill::None | Fill::Solid(_) => false,
-        Fill::Fountain(f) => f.handles.is_some() || f.to_plain(64) != *f,
+        Fill::None => false,
+        Fill::Solid(c) => colour_not_held(c),
+        Fill::Fountain(f) => {
+            f.handles.is_some()
+                || f.to_plain(64) != *f
+                || f.stops.iter().any(|st| colour_not_held(&st.color))
+        }
         _ => true,
     };
     fill || s.overprint_fill
         || s.overprint_outline
         || s.stroke
             .as_ref()
-            .is_some_and(|st| st.fill.is_some() || has_arrowheads(st))
+            .is_some_and(|st| st.fill.is_some() || has_arrowheads(st) || colour_not_held(&st.color))
+}
+
+/// A colour the writer has no record for: a spot ink (written as its
+/// process tint, no layout for the files' inks being known) or the
+/// registration colour (written as 100% of each process ink).
+fn colour_not_held(c: &tracedraw_core::Color) -> bool {
+    matches!(
+        c,
+        tracedraw_core::Color::Spot { .. } | tracedraw_core::Color::Registration
+    )
 }
 
 /// An outline with a head at either end.

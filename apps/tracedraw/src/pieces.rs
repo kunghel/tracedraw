@@ -233,6 +233,28 @@ impl App {
     /// chosen in the Effects panel, which opens. The objects stay as
     /// they are inside the group.
     pub fn combine_live(&mut self) {
+        self.combine_live_as(CombineMode::Weld);
+    }
+
+    /// Combine Live can act: two objects or more selected, or one group.
+    pub fn combine_live_ready(&self) -> bool {
+        self.selection.len() >= 2
+            || (self.selection.len() == 1
+                && self
+                    .selected_shapes()
+                    .first()
+                    .is_some_and(|s| matches!(s.kind, ShapeKind::Group { .. })))
+    }
+
+    /// Combine Live in `mode` (#4266): the selected objects grouped (or
+    /// the one selected group) and drawn as one curve, welded, cut or
+    /// intersected as `mode` says, while every object stays as it is
+    /// inside the group and can still be moved and edited. Taking the
+    /// effect away (Effects or Properties) gives the objects back.
+    pub fn combine_live_as(&mut self, mode: CombineMode) {
+        if !self.combine_live_ready() {
+            return;
+        }
         let sel = self.selected_shapes();
         let one_group = sel.len() == 1 && matches!(sel[0].kind, ShapeKind::Group { .. });
         if sel.len() >= 2 {
@@ -240,12 +262,7 @@ impl App {
         } else if !one_group {
             return;
         }
-        self.push_effect(
-            tracedraw_core::live::Effect::Combine {
-                mode: CombineMode::Weld,
-            },
-            true,
-        );
+        self.push_effect(tracedraw_core::live::Effect::Combine { mode }, true);
         self.open_docker(crate::app::DockerTab::Effects);
     }
 }

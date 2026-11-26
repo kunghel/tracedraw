@@ -209,6 +209,11 @@ pub struct Fountain {
     /// placed round the middle (see [`Fountain::point_places`]).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub points: Vec<Point>,
+    /// Colour points: how far each stop's colour reaches (#3947), 1 by
+    /// default, from [`Fountain::MIN_SPREAD`] to [`Fountain::MAX_SPREAD`];
+    /// a stop without one has 1 (see [`Fountain::point_spread`]).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub spreads: Vec<f64>,
 }
 
 /// The nodes of a fountain fill placed freely (see [`Fountain::handles`]),
@@ -296,6 +301,7 @@ impl Fountain {
             handles: None,
             dither: false,
             points: Vec::new(),
+            spreads: Vec::new(),
         }
     }
 
@@ -398,19 +404,35 @@ impl Fountain {
             .collect()
     }
 
+    /// The smallest and largest spread of a colour point (#3947).
+    pub const MIN_SPREAD: f64 = 0.1;
+    pub const MAX_SPREAD: f64 = 10.0;
+
+    /// How far colour point `i` reaches: its spread, 1 when it has none.
+    pub fn point_spread(&self, i: usize) -> f64 {
+        self.spreads
+            .get(i)
+            .copied()
+            .filter(|s| s.is_finite())
+            .unwrap_or(1.0)
+            .clamp(Self::MIN_SPREAD, Self::MAX_SPREAD)
+    }
+
     /// The colour and opacity of a Points fill at the page point `p` for
-    /// the object's box `b`: every point's colour weighed by one over its
-    /// squared distance, so the nearest point counts the most; on a point,
-    /// its own colour.
+    /// the object's box `b`: every point's colour weighed by its spread
+    /// squared over its squared distance, so the nearest point counts the
+    /// most and a point with twice the spread reaches as far as one with
+    /// 1 at half the distance (#3947); on a point, its own colour.
     pub fn points_sample(&self, places: &[Point], b: Rect, p: Point) -> (Color, f32) {
         let scale = b.width().hypot(b.height()).max(1e-9);
         let (mut rgb, mut op, mut sum) = ([0.0f64; 3], 0.0f64, 0.0f64);
-        for (stop, r) in self.stops.iter().zip(places) {
+        for (i, (stop, r)) in self.stops.iter().zip(places).enumerate() {
             let d = Self::rel_to_page(b, *r).distance(p) / scale;
             if d < 1e-6 {
                 return (stop.color, stop.opacity);
             }
-            let w = 1.0 / (d * d);
+            let k = self.point_spread(i);
+            let w = k * k / (d * d);
             let c = stop.color.to_rgb8();
             for k in 0..3 {
                 rgb[k] += w * f64::from(c[k]);
@@ -945,6 +967,7 @@ impl Fountain {
             handles: None,
             dither: self.dither,
             points: Vec::new(),
+            spreads: Vec::new(),
         }
     }
 }

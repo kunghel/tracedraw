@@ -88,3 +88,30 @@ a click gives the command that one, in the menus and on the toolbars;
   (at first) or open the [[options.palette_context_menu]].
 
 See [Color palettes](../color/palettes.md).
+
+## Context Menus {#context-menus}
+
+Choose [[options.context_menus]] under Customization to manage 32 right-click
+menu locations independently. Select a location with [[options.context_menu_scene]], then use
+[[options.context_menu_search]] to find an operation and clear its checkbox
+to hide it there. Operations remain in this list when the current selection
+cannot use them.
+
+All operations are visible by default. Each location has its own choices:
+hiding an object operation on the canvas does not hide it in the Objects panel.
+Dynamic lists such as target layers and font collections are managed as one
+operation, so changing their names does not reset your choices.
+
+[[options.context_menu_reset]] restores the selected menu;
+[[options.context_menu_reset_all]] restores all menus. [[dialog.ok]] saves the
+choices with application settings; [[dialog.cancel]], Escape or the close
+button restores the choices from when Options opened. Main menus, shortcuts and command
+search continue to offer the original commands.
+
+Expand a submenu to see its indented children. Drag a row's handle, or use [[options.context_menu_move_up]] and [[options.context_menu_move_down]], to reorder items at the same level. Moving a parent carries its children with it; items cannot move into another parent. Search keeps the parents of matching items visible. Restoring a menu resets both visibility and order, and cancelling Options restores both to their values when the dialog opened.
+
+The document palette's swatch menu and its entry in Palette Manager have
+separate settings. Dynamic targets retain their own order; in Object Styles,
+the list of document styles keeps its position between the static actions.
+New operations added by a later version remain visible and follow saved
+items in a customized sibling list.

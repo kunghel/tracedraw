@@ -1,7 +1,8 @@
 //! A large `.tdraw` file read on a worker thread, with a window that
 //! shows how far it got and can cancel it. A packed drawing of hundreds
 //! of megabytes takes seconds to decompress and read, and the interface
-//! froze meanwhile (#2849).
+//! froze meanwhile (#2849). A `.cdr` or `.cmx` goes to the worker the
+//! same way.
 
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -15,17 +16,40 @@ pub const BACKGROUND_FROM: u64 = 8 * 1024 * 1024;
 /// sooner opens without it flashing up.
 pub const WINDOW_AFTER: std::time::Duration = std::time::Duration::from_millis(500);
 
-/// What a finished read gives: the drawing and its format version.
-pub type OpenRead = Result<(tracedraw_core::Document, u32), String>;
+/// What a finished read gives.
+pub enum OpenedFile {
+    /// A `.tdraw` drawing and its format version.
+    Tdraw(tracedraw_core::Document, u32),
+    /// A `.cdr` or `.cmx` drawing and what the reader reported.
+    Cdr(tracedraw_core::Document, Box<tracedraw_cdr::ParseReport>),
+    /// A `.cdr` the reader refused as damaged: the error, and why, for
+    /// the window that offers to open it anyway (#4332).
+    Damaged { message: String, why: String },
+}
 
-/// A `.tdraw` file being read on a worker thread.
+/// What a finished read gives.
+pub type OpenRead = Result<OpenedFile, String>;
+
+/// Whether the file is read by the `.cdr` reader (a `.cdr`, `.cmx`,
+/// `.cdt`, `.cdrt` or `.csl` file).
+fn is_cdr(path: &Path) -> bool {
+    path.extension().is_some_and(|e| {
+        e.eq_ignore_ascii_case("cdr")
+            || e.eq_ignore_ascii_case("cmx")
+            || e.eq_ignore_ascii_case("cdt")
+            || e.eq_ignore_ascii_case("cdrt")
+            || e.eq_ignore_ascii_case("csl")
+    })
+}
+
+/// A drawing being read on a worker thread.
 pub struct Opening {
     pub path: PathBuf,
     pub password: String,
     /// The file's size and the bytes of it read so far.
     pub size: u64,
     pub done_bytes: Arc<AtomicU64>,
-    /// The text is read: the drawing is being built from it.
+    /// The file is read: the drawing is being built from it.
     pub building: Arc<AtomicBool>,
     cancel: Arc<AtomicBool>,
     pub started: web_time::Instant,
@@ -36,11 +60,16 @@ pub struct Opening {
 /// a desktop or phone (never in a browser, whose files are in memory,
 /// nor in the tests, which open files at once).
 pub fn wants_background(path: &Path) -> Option<u64> {
+    wants_background_from(path, BACKGROUND_FROM)
+}
+
+/// [`wants_background`] with an explicit byte threshold `from`.
+pub fn wants_background_from(path: &Path, from: u64) -> Option<u64> {
     if crate::files::WEB || cfg!(test) {
         return None;
     }
     let size = std::fs::metadata(path).ok()?.len();
-    (size >= BACKGROUND_FROM).then_some(size)
+    (size >= from).then_some(size)
 }
 
 impl Opening {
@@ -55,8 +84,13 @@ impl Opening {
             building.clone(),
             cancel.clone(),
         );
+        let cdr = is_cdr(&path);
         std::thread::spawn(move || {
-            let read = read_tdraw(&p, &d, &b, &c);
+            let read = if cdr {
+                read_cdr(&p, &d, &b, &c)
+            } else {
+                read_tdraw(&p, &d, &b, &c)
+            };
             let _ = tx.send(read);
         });
         Opening {
@@ -184,7 +218,118 @@ fn read_tdraw(
     let version = tracedraw_core::document::tdraw_text_version(&text)
         .min(tracedraw_core::document::TDRAW_FORMAT_VERSION);
     let doc = tracedraw_core::Document::from_json(&text).map_err(|e| e.to_string())?;
-    Ok((doc, version))
+    Ok(OpenedFile::Tdraw(doc, version))
+}
+
+/// Read a `.cdr` or `.cmx` file, counting its bytes in `done`, then
+/// parsing it (the bar then says the drawing is being built). The free
+/// RAM is told to the reader first, so a large picture is sampled.
+fn read_cdr(
+    path: &Path,
+    done: &Arc<AtomicU64>,
+    building: &AtomicBool,
+    cancel: &Arc<AtomicBool>,
+) -> OpenRead {
+    let bytes = read_bytes(path, done, cancel).map_err(|e| e.to_string())?;
+    if cancel.load(Ordering::Relaxed) {
+        return Err("cancelled".into());
+    }
+    building.store(true, Ordering::Relaxed);
+    let free = free_ram();
+    tracedraw_cdr::set_open_ram(free);
+    let title = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("Untitled")
+        .to_string();
+    tracedraw_cdr::open_bytes(&bytes, &title)
+        .map(|(mut doc, report)| {
+            // Clones saved by TraceDraw follow their masters again (#2879).
+            crate::object_clone::rebase_clone_links(&mut doc);
+            OpenedFile::Cdr(doc, Box::new(report))
+        })
+        .or_else(|e| match e {
+            tracedraw_cdr::Error::Damaged(ref why) => Ok(OpenedFile::Damaged {
+                message: e.to_string(),
+                why: why.clone(),
+            }),
+            e => Err(e.to_string()),
+        })
+}
+
+/// Free physical RAM in bytes; 0 when the OS will not say.
+pub(crate) fn free_ram() -> u64 {
+    #[cfg(windows)]
+    {
+        #[link(name = "kernel32")]
+        extern "system" {
+            fn GlobalMemoryStatusEx(lpBuffer: *mut MEMORYSTATUSEX) -> i32;
+        }
+        #[repr(C)]
+        struct MEMORYSTATUSEX {
+            dw_length: u32,
+            dw_memory_load: u32,
+            ull_total_phys: u64,
+            ull_avail_phys: u64,
+            ull_total_page_file: u64,
+            ull_avail_page_file: u64,
+            ull_total_virtual: u64,
+            ull_avail_virtual: u64,
+            ull_avail_extended_virtual: u64,
+        }
+        let mut s: MEMORYSTATUSEX = unsafe { std::mem::zeroed() };
+        s.dw_length = std::mem::size_of::<MEMORYSTATUSEX>() as u32;
+        if unsafe { GlobalMemoryStatusEx(&mut s) } != 0 {
+            s.ull_avail_phys
+        } else {
+            0
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        // Linux: MemAvailable of /proc/meminfo, in KiB.
+        #[cfg(target_os = "linux")]
+        {
+            let text = std::fs::read_to_string("/proc/meminfo").unwrap_or_default();
+            for line in text.lines() {
+                if let Some(rest) = line.strip_prefix("MemAvailable:") {
+                    let kib: u64 = rest
+                        .trim()
+                        .trim_end_matches("kB")
+                        .trim()
+                        .parse()
+                        .unwrap_or(0);
+                    return kib.saturating_mul(1024);
+                }
+            }
+            0
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            0
+        }
+    }
+}
+
+/// The bytes of `path`, counted in `done` and stopped when cancelled.
+fn read_bytes(
+    path: &Path,
+    done: &Arc<AtomicU64>,
+    cancel: &Arc<AtomicBool>,
+) -> std::io::Result<Vec<u8>> {
+    let file = std::fs::File::open(path)?;
+    let cap = file.metadata().map(|m| m.len() as usize).unwrap_or(0);
+    let mut r = std::io::BufReader::with_capacity(
+        1 << 20,
+        Counting {
+            inner: file,
+            done: done.clone(),
+            cancel: cancel.clone(),
+        },
+    );
+    let mut out = Vec::with_capacity(cap.min(512 << 20));
+    r.read_to_end(&mut out)?;
+    Ok(out)
 }
 
 /// The JSON text of a `.tdraw` file (decompressed when packed).
@@ -230,7 +375,9 @@ mod tests {
                 }
                 std::thread::sleep(std::time::Duration::from_millis(5));
             };
-            let (back, v) = read.expect("reads");
+            let OpenedFile::Tdraw(back, v) = read.expect("reads") else {
+                panic!("a .tdraw read gives a .tdraw drawing");
+            };
             assert_eq!(v, version);
             assert_eq!(back.pages.len(), doc.pages.len());
             assert_eq!(job.fraction(), 1.0, "{name}");
@@ -242,6 +389,48 @@ mod tests {
         let building = AtomicBool::new(false);
         assert!(read_tdraw(&dir.join("packed.tdraw"), &done, &building, &cancel).is_err());
         assert!(!building.load(Ordering::Relaxed));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A `.cdr` file is read on the worker as well: the drawing comes
+    /// back with the reader's report, every byte counted.
+    #[test]
+    fn a_cdr_file_is_read_on_a_worker() {
+        let dir = std::env::temp_dir().join(format!("td-opening-cdr-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let mut doc = tracedraw_core::Document::new(
+            "from cdr",
+            tracedraw_core::geometry::Size::new(80.0, 60.0),
+        );
+        let id = doc.ids_mut().shape();
+        let mut r = tracedraw_core::Shape::new(
+            id,
+            tracedraw_core::ShapeKind::Rect {
+                rect: tracedraw_core::Rect::new(10.0, 10.0, 40.0, 30.0),
+                radius: 0.0,
+                corners: None,
+            },
+        );
+        r.fill = tracedraw_core::Fill::Solid(tracedraw_core::Color::rgb8(200, 40, 40));
+        doc.pages[0].layers[0].shapes.push(r);
+        let path = dir.join("drawing.cdr");
+        let bytes = tracedraw_cdr::write::document_to_cdr(&doc);
+        std::fs::write(&path, &bytes).expect("write");
+        let job = Opening::start(path, String::new(), bytes.len() as u64);
+        let read = loop {
+            if let Some(r) = job.poll() {
+                break r;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        };
+        let OpenedFile::Cdr(back, report) = read.expect("reads") else {
+            panic!("a .cdr read gives a .cdr drawing");
+        };
+        assert_eq!(back.pages.len(), 1);
+        assert_eq!(report.shapes, 1);
+        assert_eq!(report.pages, 1);
+        assert_eq!(job.fraction(), 1.0);
+        assert!(job.building.load(Ordering::Relaxed));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

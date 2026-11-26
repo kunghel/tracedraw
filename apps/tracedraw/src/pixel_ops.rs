@@ -340,12 +340,16 @@ impl Placement {
 }
 
 /// The box the Pick tool's numbers work on: the selection's, else the
-/// layer's pixels that are not clear, else the whole picture.
+/// layer's pixels that are not clear, else the whole picture. (With no
+/// selection the box was always the whole picture, so a pasted piece had
+/// its handles at the picture's corners, #4261.)
 pub fn pick_box(pi: &PixelImage) -> Dirty {
-    if let Some(b) = pi.sel_bounds() {
-        return b;
-    }
     let (w, h) = pi.img.dimensions();
+    if pi.sel.is_some() {
+        if let Some(b) = pi.sel_bounds() {
+            return b;
+        }
+    }
     let (mut x0, mut y0, mut x1, mut y1) = (w, h, 0, 0);
     for (x, y, q) in pi.img.enumerate_pixels() {
         if q[3] > 0 {
@@ -363,14 +367,49 @@ pub fn pick_box(pi: &PixelImage) -> Dirty {
 }
 
 /// The selected pixels of the layer in use (all of them with nothing
-/// selected) moved, scaled, turned and flipped about the middle of their
-/// box; the selection goes with them.
-pub fn place(pi: &mut PixelImage, p: &Placement) -> Option<Dirty> {
+/// selected) moved, scaled, turned and flipped about the middle of box
+/// `b` (see `pick_box`); the selection goes with them.
+pub fn place_in(pi: &mut PixelImage, b: Dirty, p: &Placement) -> Option<Dirty> {
+    let (img, sel) = place_image(&pi.img, pi.sel.as_ref(), b, p)?;
+    let (w, h) = img.dimensions();
+    pi.img = img;
+    if sel.is_some() {
+        pi.sel = sel;
+    }
+    Some([0, 0, w, h])
+}
+
+/// Whether the placement only moves by whole pixels.
+fn whole_pixel_move(p: &Placement) -> bool {
+    p.sx == 1.0
+        && p.sy == 1.0
+        && p.angle == 0.0
+        && !p.flip_h
+        && !p.flip_v
+        && p.dx.fract() == 0.0
+        && p.dy.fract() == 0.0
+}
+
+/// The pixels of `img` that `sel` takes (all with no selection) placed
+/// about the middle of box `b`, and the selection moved with them.
+pub fn place_image(
+    img: &RgbaImage,
+    sel: Option<&GrayImage>,
+    b: Dirty,
+    p: &Placement,
+) -> Option<(RgbaImage, Option<GrayImage>)> {
     if p.is_identity() || p.sx.abs() < 1e-3 || p.sy.abs() < 1e-3 {
         return None;
     }
-    let (w, h) = pi.img.dimensions();
-    let b = pick_box(pi);
+    let (w, h) = img.dimensions();
+    // A move by whole pixels of the whole layer: the pixels as they are,
+    // shifted (quick enough to follow the pointer on a large picture).
+    if sel.is_none() && whole_pixel_move(p) {
+        return Some((
+            crate::pixel_edit::offset_image(img, p.dx as i64, p.dy as i64),
+            None,
+        ));
+    }
     let c = ((b[0] + b[2]) as f32 / 2.0, (b[1] + b[3]) as f32 / 2.0);
     let (sin, cos) = p.angle.to_radians().sin_cos();
     let sx = if p.flip_h { -p.sx } else { p.sx };
@@ -382,19 +421,17 @@ pub fn place(pi: &mut PixelImage, p: &Placement) -> Option<Dirty> {
         let (u, v) = (u * cos + v * sin, -u * sin + v * cos);
         (c.0 + u / sx, c.1 + v / sy)
     };
-    let sel = pi.sel.clone();
     let weight = |x: u32, y: u32| -> f32 {
-        sel.as_ref()
-            .map(|m| m.get_pixel(x, y)[0] as f32 / 255.0)
+        sel.map(|m| m.get_pixel(x, y)[0] as f32 / 255.0)
             .unwrap_or(1.0)
     };
     // The pixels that move (lifted out of the layer) and what stays.
-    let mut lifted = pi.img.clone();
-    let mut stays = pi.img.clone();
+    let mut lifted = img.clone();
+    let mut stays = img.clone();
     for y in 0..h {
         for x in 0..w {
             let k = weight(x, y);
-            let q = *pi.img.get_pixel(x, y);
+            let q = *img.get_pixel(x, y);
             lifted.put_pixel(x, y, Rgba([q[0], q[1], q[2], (q[3] as f32 * k).round() as u8]));
             stays.put_pixel(
                 x,
@@ -403,17 +440,28 @@ pub fn place(pi: &mut PixelImage, p: &Placement) -> Option<Dirty> {
             );
         }
     }
+    let whole = whole_pixel_move(p);
     let mut out = stays;
-    let mut new_sel = sel.as_ref().map(|_| GrayImage::new(w, h));
+    let mut new_sel = sel.map(|_| GrayImage::new(w, h));
     for y in 0..h {
         for x in 0..w {
             let (u, v) = back(x as f32 + 0.5, y as f32 + 0.5);
-            let q = bilinear(&lifted, u - 0.5, v - 0.5, true);
+            let q = if whole {
+                // A move by whole pixels takes them as they are.
+                let (mx, my) = (u - 0.5, v - 0.5);
+                if mx >= 0.0 && my >= 0.0 && (mx as u32) < w && (my as u32) < h {
+                    *lifted.get_pixel(mx as u32, my as u32)
+                } else {
+                    Rgba([0, 0, 0, 0])
+                }
+            } else {
+                bilinear(&lifted, u - 0.5, v - 0.5, true)
+            };
             if q[3] > 0 {
                 let under = *out.get_pixel(x, y);
                 out.put_pixel(x, y, crate::pixel_edit::over(&under, [q[0], q[1], q[2], q[3]], 1.0));
             }
-            if let (Some(ns), Some(m)) = (new_sel.as_mut(), sel.as_ref()) {
+            if let (Some(ns), Some(m)) = (new_sel.as_mut(), sel) {
                 let (mx, my) = ((u - 0.5).round(), (v - 0.5).round());
                 if mx >= 0.0 && my >= 0.0 && (mx as u32) < w && (my as u32) < h {
                     ns.put_pixel(x, y, *m.get_pixel(mx as u32, my as u32));
@@ -421,11 +469,220 @@ pub fn place(pi: &mut PixelImage, p: &Placement) -> Option<Dirty> {
             }
         }
     }
-    pi.img = out;
-    if new_sel.is_some() {
-        pi.sel = new_sel;
+    Some((out, new_sel))
+}
+
+/// Where the pixel at (`x`, `y`) after placement `p` about box `b` came
+/// from (see [`place_image`]).
+fn placed_from(b: Dirty, p: &Placement, x: f32, y: f32) -> (f32, f32) {
+    let c = ((b[0] + b[2]) as f32 / 2.0, (b[1] + b[3]) as f32 / 2.0);
+    let (sin, cos) = p.angle.to_radians().sin_cos();
+    let sx = if p.flip_h { -p.sx } else { p.sx };
+    let sy = if p.flip_v { -p.sy } else { p.sy };
+    let (u, v) = (x - c.0 - p.dx, y - c.1 - p.dy);
+    let (u, v) = (u * cos + v * sin, -u * sin + v * cos);
+    (c.0 + u / sx, c.1 + v / sy)
+}
+
+/// A whole layer `src` with the Move tool's placements `steps` applied
+/// one after another, each pixel read once from `src`: what one step
+/// took past the picture's edge comes back when a later step brings it
+/// in again (#4374), instead of the pixels cut at every step.
+pub fn place_chain(src: &RgbaImage, steps: &[(Dirty, Placement)]) -> Option<RgbaImage> {
+    if steps
+        .iter()
+        .any(|(_, p)| p.sx.abs() < 1e-3 || p.sy.abs() < 1e-3)
+    {
+        return None;
     }
-    Some([0, 0, w, h])
+    let (w, h) = src.dimensions();
+    let whole = steps.iter().all(|(_, p)| whole_pixel_move(p));
+    let mut out = RgbaImage::new(w, h);
+    for y in 0..h {
+        for x in 0..w {
+            let (mut u, mut v) = (x as f32 + 0.5, y as f32 + 0.5);
+            for (b, p) in steps.iter().rev() {
+                (u, v) = placed_from(*b, p, u, v);
+            }
+            let q = if whole {
+                let (mx, my) = ((u - 0.5).round(), (v - 0.5).round());
+                if mx >= 0.0 && my >= 0.0 && (mx as u32) < w && (my as u32) < h {
+                    *src.get_pixel(mx as u32, my as u32)
+                } else {
+                    Rgba([0, 0, 0, 0])
+                }
+            } else {
+                bilinear(src, u - 0.5, v - 0.5, true)
+            };
+            out.put_pixel(x, y, q);
+        }
+    }
+    Some(out)
+}
+
+/// A handle of the box the Move tool shows round what it moves.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BoxHandle {
+    /// Inside the box, or anywhere away from the handles: moves.
+    Move,
+    /// The round handle above the box, or just outside a corner: turns.
+    Rotate,
+    /// A corner or the middle of a side: -1, 0 or 1 across and down.
+    Scale(i8, i8),
+}
+
+/// The box's turn and its middle once placed.
+fn frame(b: Dirty, p: &Placement) -> ((f32, f32), f32, f32) {
+    let c = ((b[0] + b[2]) as f32 / 2.0 + p.dx, (b[1] + b[3]) as f32 / 2.0 + p.dy);
+    let (sin, cos) = p.angle.to_radians().sin_cos();
+    (c, sin, cos)
+}
+
+/// The point (u, v) of the box's own frame (from its middle, scaled) on
+/// the picture.
+fn to_picture(b: Dirty, p: &Placement, u: f32, v: f32) -> (f32, f32) {
+    let (c, sin, cos) = frame(b, p);
+    (c.0 + u * cos - v * sin, c.1 + u * sin + v * cos)
+}
+
+/// The point (x, y) of the picture in the box's own frame.
+fn to_frame(b: Dirty, p: &Placement, x: f32, y: f32) -> (f32, f32) {
+    let (c, sin, cos) = frame(b, p);
+    let (u, v) = (x - c.0, y - c.1);
+    (u * cos + v * sin, -u * sin + v * cos)
+}
+
+/// Half the box's width and height once scaled.
+fn half(b: Dirty, p: &Placement) -> (f32, f32) {
+    (
+        (b[2] - b[0]) as f32 / 2.0 * p.sx.abs(),
+        (b[3] - b[1]) as f32 / 2.0 * p.sy.abs(),
+    )
+}
+
+/// The placed box's corners: top left, top right, bottom right, bottom
+/// left.
+pub fn placed_corners(b: Dirty, p: &Placement) -> [(f32, f32); 4] {
+    let (hx, hy) = half(b, p);
+    [(-hx, -hy), (hx, -hy), (hx, hy), (-hx, hy)].map(|(u, v)| to_picture(b, p, u, v))
+}
+
+/// The scale handles: the corners and the middles of the sides.
+pub fn scale_handles(b: Dirty, p: &Placement) -> Vec<(BoxHandle, (f32, f32))> {
+    let (hx, hy) = half(b, p);
+    let mut out = Vec::with_capacity(8);
+    for iy in -1i8..=1 {
+        for ix in -1i8..=1 {
+            if ix != 0 || iy != 0 {
+                let at = to_picture(b, p, ix as f32 * hx, iy as f32 * hy);
+                out.push((BoxHandle::Scale(ix, iy), at));
+            }
+        }
+    }
+    out
+}
+
+/// The turning handle: `above` pixels over the middle of the top side,
+/// and that middle.
+pub fn rotate_handle(b: Dirty, p: &Placement, above: f32) -> ((f32, f32), (f32, f32)) {
+    let (_, hy) = half(b, p);
+    (to_picture(b, p, 0.0, -hy - above), to_picture(b, p, 0.0, -hy))
+}
+
+/// Which handle a press at (x, y) takes: `grab` is how near (in pixels)
+/// a handle must be, `above` how far the turning handle stands over the
+/// box.
+pub fn box_hit(b: Dirty, p: &Placement, x: f32, y: f32, grab: f32, above: f32) -> BoxHandle {
+    let near = |q: (f32, f32)| (q.0 - x).hypot(q.1 - y) <= grab;
+    if near(rotate_handle(b, p, above).0) {
+        return BoxHandle::Rotate;
+    }
+    if let Some((h, _)) = scale_handles(b, p)
+        .into_iter()
+        .filter(|(_, q)| near(*q))
+        .min_by(|a, c| {
+            let d = |q: (f32, f32)| (q.0 - x).hypot(q.1 - y);
+            d(a.1).total_cmp(&d(c.1))
+        })
+    {
+        return h;
+    }
+    // Just outside a corner turns.
+    let (hx, hy) = half(b, p);
+    let (u, v) = to_frame(b, p, x, y);
+    let out_x = u.abs() > hx;
+    let out_y = v.abs() > hy;
+    if out_x && out_y && (u.abs() - hx).max(v.abs() - hy) <= grab * 3.0 {
+        return BoxHandle::Rotate;
+    }
+    BoxHandle::Move
+}
+
+/// The placement after a drag of handle `h` from `from` to `to` that
+/// began on `start`: moves go by whole pixels; `keep` keeps the width
+/// to the height on a corner; `snap` turns in steps of 15 degrees.
+pub fn drag_box(
+    b: Dirty,
+    start: &Placement,
+    h: BoxHandle,
+    from: (f32, f32),
+    to: (f32, f32),
+    keep: bool,
+    snap: bool,
+) -> Placement {
+    let mut p = *start;
+    match h {
+        BoxHandle::Move => {
+            p.dx = (start.dx + to.0 - from.0).round();
+            p.dy = (start.dy + to.1 - from.1).round();
+        }
+        BoxHandle::Rotate => {
+            let (c, _, _) = frame(b, start);
+            let a0 = (from.1 - c.1).atan2(from.0 - c.0);
+            let a1 = (to.1 - c.1).atan2(to.0 - c.0);
+            let mut a = start.angle + (a1 - a0).to_degrees();
+            if snap {
+                a = (a / 15.0).round() * 15.0;
+            }
+            // Within -180..180.
+            a = (a + 180.0).rem_euclid(360.0) - 180.0;
+            p.angle = if a.abs() < 1e-3 { 0.0 } else { a };
+        }
+        BoxHandle::Scale(ix, iy) => {
+            let (bw, bh) = ((b[2] - b[0]) as f32, (b[3] - b[1]) as f32);
+            if bw < 1.0 || bh < 1.0 {
+                return p;
+            }
+            let (hx, hy) = half(b, start);
+            let f = to_frame(b, start, from.0, from.1);
+            let t = to_frame(b, start, to.0, to.1);
+            // The new size along one side, the opposite side staying.
+            let side = |i: i8, h: f32, d: f32, len: f32| -> f32 {
+                if i == 0 {
+                    return 2.0 * h;
+                }
+                let i = i as f32;
+                ((i * h + d) * i + h).max(1.0).min(len * 400.0)
+            };
+            let mut nw = side(ix, hx, t.0 - f.0, bw);
+            let mut nh = side(iy, hy, t.1 - f.1, bh);
+            if keep && ix != 0 && iy != 0 {
+                let k = (nw / (2.0 * hx).max(1e-3)).max(nh / (2.0 * hy).max(1e-3));
+                nw = (2.0 * hx * k).max(1.0);
+                nh = (2.0 * hy * k).max(1.0);
+            }
+            // The middle moves so the opposite side stays where it was.
+            let cu = if ix == 0 { 0.0 } else { ix as f32 * (nw / 2.0 - hx) };
+            let cv = if iy == 0 { 0.0 } else { iy as f32 * (nh / 2.0 - hy) };
+            let (c, sin, cos) = frame(b, start);
+            let moved = (c.0 + cu * cos - cv * sin, c.1 + cu * sin + cv * cos);
+            p.sx = nw / bw;
+            p.sy = nh / bh;
+            p.dx = start.dx + moved.0 - c.0;
+            p.dy = start.dy + moved.1 - c.1;
+        }
+    }
+    p
 }
 
 #[cfg(test)]
@@ -434,6 +691,60 @@ mod tests {
 
     fn pic(w: u32, h: u32, c: [u8; 4]) -> PixelImage {
         PixelImage::new(RgbaImage::from_pixel(w, h, Rgba(c)))
+    }
+
+    #[test]
+    fn the_move_box_handles_move_scale_and_turn() {
+        // #4261: the box of 10 x 20 pixels at (10, 10).
+        let b = [10, 10, 20, 30];
+        let p = Placement::default();
+        assert_eq!(placed_corners(b, &p)[0], (10.0, 10.0));
+        assert_eq!(placed_corners(b, &p)[2], (20.0, 30.0));
+        assert_eq!(box_hit(b, &p, 20.0, 30.0, 2.0, 5.0), BoxHandle::Scale(1, 1));
+        assert_eq!(box_hit(b, &p, 15.0, 30.0, 2.0, 5.0), BoxHandle::Scale(0, 1));
+        assert_eq!(box_hit(b, &p, 15.0, 5.0, 2.0, 5.0), BoxHandle::Rotate);
+        assert_eq!(box_hit(b, &p, 22.5, 32.5, 2.0, 5.0), BoxHandle::Rotate);
+        assert_eq!(box_hit(b, &p, 15.0, 20.0, 2.0, 5.0), BoxHandle::Move);
+        // A move goes by whole pixels.
+        let m = drag_box(b, &p, BoxHandle::Move, (15.0, 15.0), (18.4, 13.6), true, false);
+        assert_eq!((m.dx, m.dy), (3.0, -1.0));
+        // The right side dragged 10 pixels out: twice as wide, the left
+        // side where it was.
+        let s = drag_box(b, &p, BoxHandle::Scale(1, 0), (20.0, 20.0), (30.0, 20.0), true, false);
+        assert!((s.sx - 2.0).abs() < 1e-4 && (s.sy - 1.0).abs() < 1e-4, "{s:?}");
+        let c = placed_corners(b, &s);
+        assert!((c[0].0 - 10.0).abs() < 1e-3 && (c[1].0 - 30.0).abs() < 1e-3, "{c:?}");
+        // A corner keeps the width to the height; Shift (keep off) not.
+        let k = drag_box(b, &p, BoxHandle::Scale(1, 1), (20.0, 30.0), (30.0, 30.0), true, false);
+        assert!((k.sx - 2.0).abs() < 1e-4 && (k.sy - 2.0).abs() < 1e-4, "{k:?}");
+        let f = drag_box(b, &p, BoxHandle::Scale(1, 1), (20.0, 30.0), (30.0, 30.0), false, false);
+        assert!((f.sx - 2.0).abs() < 1e-4 && (f.sy - 1.0).abs() < 1e-4, "{f:?}");
+        let c = placed_corners(b, &k);
+        assert!((c[0].0 - 10.0).abs() < 1e-3 && (c[0].1 - 10.0).abs() < 1e-3, "{c:?}");
+        // The top left corner dragged in never turns the box inside out.
+        let tiny = drag_box(b, &p, BoxHandle::Scale(-1, -1), (10.0, 10.0), (60.0, 60.0), false, false);
+        assert!(tiny.sx > 0.0 && tiny.sy > 0.0);
+        // A quarter turn round the middle (15, 20); Shift snaps it.
+        let r = drag_box(b, &p, BoxHandle::Rotate, (15.0, 5.0), (30.0, 20.0), true, false);
+        assert!((r.angle - 90.0).abs() < 1e-3, "{r:?}");
+        let r = drag_box(b, &p, BoxHandle::Rotate, (15.0, 5.0), (30.0, 19.0), true, true);
+        assert!((r.angle - 90.0).abs() < 1e-3, "{r:?}");
+        // The handles follow the turn.
+        assert_eq!(box_hit(b, &r, 25.0, 20.0, 2.0, 5.0), BoxHandle::Scale(0, -1));
+    }
+
+    #[test]
+    fn a_whole_pixel_move_keeps_the_pixels_sharp() {
+        let mut pi = pic(10, 10, [0, 0, 0, 0]);
+        pi.img.put_pixel(2, 2, Rgba([10, 20, 30, 255]));
+        pi.sel = Some(GrayImage::from_pixel(10, 10, Luma([255])));
+        let p = Placement { dx: 3.0, dy: 1.0, ..Placement::default() };
+        place_in(&mut pi, [0, 0, 10, 10], &p).unwrap();
+        assert_eq!(*pi.img.get_pixel(5, 3), Rgba([10, 20, 30, 255]));
+        assert_eq!(pi.img.get_pixel(2, 2)[3], 0);
+        // No selection: the box is the pixels that show.
+        pi.sel = None;
+        assert_eq!(pick_box(&pi), [5, 3, 6, 4]);
     }
 
     #[test]
@@ -538,7 +849,8 @@ mod tests {
             dx: 4.0,
             ..Default::default()
         };
-        place(&mut pi, &p).unwrap();
+        let b = pick_box(&pi);
+        place_in(&mut pi, b, &p).unwrap();
         assert_eq!(pi.img.get_pixel(9, 5)[3], 255);
         assert_eq!(pi.img.get_pixel(5, 5)[3], 0);
         // A half turn about the middle of the picture's box.
@@ -548,7 +860,8 @@ mod tests {
             angle: 180.0,
             ..Default::default()
         };
-        place(&mut pi, &p).unwrap();
+        let b = pick_box(&pi);
+        place_in(&mut pi, b, &p).unwrap();
         assert_eq!(pi.img.get_pixel(8, 8)[0], 255);
     }
 

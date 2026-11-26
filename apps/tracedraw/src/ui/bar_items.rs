@@ -356,7 +356,19 @@ pub fn drop_overlay(app: &mut App, ctx: &egui::Context) {
 }
 
 fn drag_frame(app: &mut App, ctx: &egui::Context, slots: &[Slot], drag: &ItemDrag) {
-    let (pointer, down) = ctx.input(|i| (i.pointer.latest_pos(), i.pointer.primary_down()));
+    let (now, down) = ctx.input(|i| (i.pointer.latest_pos(), i.pointer.primary_down()));
+    // A finger lifted from a touch screen leaves no pointer in the frame
+    // it is lifted: the drop goes where it was last (#4259), or a button
+    // dragged with a finger or a pen never reached a bar.
+    let last_id = egui::Id::new("bar_item_drag_last");
+    let pointer = now.or_else(|| ctx.data(|d| d.get_temp::<Pos2>(last_id)));
+    if down {
+        if let Some(p) = now {
+            ctx.data_mut(|d| d.insert_temp(last_id, p));
+        }
+    } else {
+        ctx.data_mut(|d| d.remove::<Pos2>(last_id));
+    }
     let target = pointer.and_then(|p| drop_target(slots, p));
     let painter = ctx.layer_painter(egui::LayerId::new(
         egui::Order::Tooltip,
@@ -501,6 +513,41 @@ mod tests {
         reset(&mut app);
         assert_eq!(items(&app, ItemBar::Zoom), first);
         assert!(app.settings.bar_items.is_empty());
+    }
+
+    /// #4259: a command dragged with a finger reaches the bar it is lifted
+    /// over, though a touch screen leaves no pointer in that frame.
+    #[test]
+    fn a_command_dragged_with_a_finger_joins_the_bar() {
+        let mut app = App::headless();
+        let ctx = egui::Context::default();
+        let slots = vec![slot(ItemBar::Zoom, 2, 40.0)];
+        app.bar_item_drag = Some(ItemDrag {
+            item: "menu.object.group_group".into(),
+            from: None,
+        });
+        let over = Pos2::new(5.0, 50.0);
+        let screen = Rect::from_min_size(Pos2::ZERO, Vec2::new(400.0, 300.0));
+        let frame = |app: &mut App, events: Vec<egui::Event>| {
+            let raw = egui::RawInput {
+                screen_rect: Some(screen),
+                events,
+                ..Default::default()
+            };
+            ctx.run_ui(raw, |ui| drag_frame(app, ui.ctx(), &slots, &app.bar_item_drag.clone().unwrap())).textures_delta.clear();
+        };
+        let button = |pressed| egui::Event::PointerButton {
+            pos: over,
+            button: egui::PointerButton::Primary,
+            pressed,
+            modifiers: egui::Modifiers::NONE,
+        };
+        frame(&mut app, vec![egui::Event::PointerMoved(Pos2::new(200.0, 200.0)), button(true)]);
+        frame(&mut app, vec![egui::Event::PointerMoved(over)]);
+        assert!(app.bar_item_drag.is_some());
+        frame(&mut app, vec![button(false), egui::Event::PointerGone]);
+        assert!(app.bar_item_drag.is_none());
+        assert_eq!(items(&app, ItemBar::Zoom)[0], "menu.object.group_group");
     }
 
     #[test]

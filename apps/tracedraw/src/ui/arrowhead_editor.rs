@@ -8,6 +8,7 @@
 //! with nothing selected, or back into the Outline Pen dialog it was
 //! opened from. See docs/behavior/outline-pen.md.
 
+use crate::ui::btn_icons::IconUi;
 use crate::app::App;
 use crate::i18n::tr;
 use crate::theme::Tokens;
@@ -315,7 +316,7 @@ pub fn dialog(app: &mut App, ctx: &Context, st: &mut ArrowheadEditorState, close
                 st.at_set = true;
             }
             if ui
-                .button(tr("outline_pen.default"))
+                .ibutton("outline_pen.default")
                 .rich_tip(tr("arrowhead_editor.default_tip"))
                 .clicked()
             {

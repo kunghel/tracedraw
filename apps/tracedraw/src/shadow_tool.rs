@@ -583,7 +583,8 @@ impl App {
         }
     }
 
-    /// A colour dropped on the end handle: the shadow takes it (one step).
+    /// A palette colour clicked or dropped on the end handle: the shadow
+    /// takes it (one step).
     pub fn set_shadow_color(&mut self, shape: ShapeId, color: Color) {
         let Some(mut sh) = self.doc().find_shape(shape).and_then(|s| s.shadow) else {
             return;
@@ -662,8 +663,10 @@ impl App {
                 made.push(new_id);
             };
             // The drop shadow, at the back.
-            if s.shadow.is_some_and(|sh| sh.opacity > 0.0) {
-                if let Some(bitmap) = self.shadow_bitmap(&s) {
+            if let Some(shadow) = s.shadow.filter(|sh| sh.opacity > 0.0) {
+                if let Some(mut bitmap) = self.shadow_bitmap(&s) {
+                    bitmap.fill = Fill::Solid(shadow.color);
+                    bitmap.bitmap_alpha_fill = true;
                     place(bitmap, false, &mut cmds);
                     cmds.push(Command::SetShadow {
                         shapes: vec![id],
@@ -728,7 +731,10 @@ impl App {
             _ => None,
         })?;
         let (rect, pm) = tracedraw_render::render_inner_shadow_image(s, BREAK_APART_DPI)?;
-        self.shadow_pixels_bitmap(rect, &pm, color, merge)
+        let mut bitmap = self.shadow_pixels_bitmap(rect, &pm, color, merge)?;
+        bitmap.fill = Fill::Solid(color);
+        bitmap.bitmap_alpha_fill = true;
+        Some(bitmap)
     }
 
     /// The bitmap object that stands for the shadow of `s`.

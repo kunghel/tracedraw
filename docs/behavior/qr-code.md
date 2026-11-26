@@ -13,7 +13,7 @@ With a QR code object selected, Properties shows a QR Code section first
 (its button a small QR picture):
 
 - The kind of content: URL, Email, Phone number, SMS, Contact (vCard),
-  Text or Location, and its fields. What the code holds:
+  Text, Location or Pix payment, and its fields. What the code holds:
   - URL and Text: the text as typed.
   - Email: `MATMSG:TO:address;SUB:subject;BODY:message;;`.
   - Phone number: `tel:number`.
@@ -21,6 +21,19 @@ With a QR code object selected, Properties shows a QR Code section first
   - Contact: a vCard 3.0 with N, FN and, when filled in, ORG, TEL, EMAIL,
     URL and ADR.
   - Location: `geo:latitude,longitude`.
+  - Pix payment (Brazilian instant payments): Pix key, receiver name,
+    city, and optionally amount, reference and message, written as the
+    merchant-presented payment code: tag, two-digit length and value for
+    the payload format (01), the account (`br.gov.bcb.pix`, the key, the
+    message), category 0000, currency 986, the amount with two decimals
+    (a comma or a point typed), country BR, name (25 characters), city
+    (15), the reference (letters and digits, up to 25, `***` when empty)
+    and a CRC-16 (CCITT, start 0xFFFF) of all before it. Accents are
+    taken off names; a key typed as a tax number with dots, dashes or
+    slashes keeps its digits, a phone key its `+` and digits. No code
+    until key, name and city are filled in
+    (`document::tests::pix_codes_are_written_as_banks_read_them`, checked
+    against the layout's published example).
   Changing the kind keeps the fields both kinds share (the phone number
   from Phone number to SMS); the others start empty. A field is applied
   when it loses the focus. A kind whose fields make no content yet (Email

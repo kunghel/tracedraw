@@ -498,6 +498,14 @@ impl App {
     /// the chosen nodes, every chosen node's corner; with `all` (Shift),
     /// every corner of the curve.
     pub fn start_corner_drag(&mut self, w: Widget, p: Point, all: bool) -> bool {
+        self.start_corner_drag_with(w, p, all, false)
+    }
+
+    /// [`App::start_corner_drag`]; with `own_only` the drag rounds the
+    /// widget's own corner alone, whatever is chosen: Ctrl+drag while
+    /// "Round one corner at a time" is off, when a plain drag rounds
+    /// every corner (#4216).
+    pub fn start_corner_drag_with(&mut self, w: Widget, p: Point, all: bool, own_only: bool) -> bool {
         let Some(s) = self.doc().find_shape(w.shape) else {
             return false;
         };
@@ -565,6 +573,8 @@ impl App {
         let one_at_a_time = self.settings.nodes.corner_one_at_a_time;
         let chosen = if all {
             Vec::new()
+        } else if own_only {
+            own
         } else if !one_at_a_time || w.chosen || own.iter().any(|n| chosen.contains(n)) {
             chosen
         } else {
@@ -1148,6 +1158,45 @@ mod tests {
         drop.close_path();
         out.push(("drop", drop));
         out
+    }
+
+    /// With "Round one corner at a time" off, a drag on a ring rounds every
+    /// corner of a square, and Ctrl+drag (`own_only`) its corner alone
+    /// (#4216).
+    #[test]
+    fn ctrl_drag_rounds_one_corner_when_all_round_together() {
+        let mut sq = BezPath::new();
+        sq.move_to((20.0, 20.0));
+        sq.line_to((60.0, 20.0));
+        sq.line_to((60.0, 60.0));
+        sq.line_to((20.0, 60.0));
+        sq.close_path();
+        let mut app = App::headless();
+        let id = app
+            .new_shape(ShapeKind::Path {
+                path: sq,
+                closed: true,
+            })
+            .expect("a square");
+        app.select(vec![id]);
+        app.tool = Tool::Shape;
+        app.settings.nodes.corner_widgets = true;
+        app.settings.nodes.corner_one_at_a_time = false;
+        let w = app.corner_widgets()[0];
+        let p = app.view.to_page(w.at);
+        assert!(app.start_corner_drag(w, p, false));
+        let Drag::CornerWidget(d) = app.drag.clone() else {
+            panic!("no drag");
+        };
+        assert_eq!(d.only, None, "every corner");
+        assert_eq!(d.points.len(), 4);
+        app.drag = Drag::None;
+        assert!(app.start_corner_drag_with(w, p, false, true));
+        let Drag::CornerWidget(d) = app.drag.clone() else {
+            panic!("no drag");
+        };
+        assert_eq!(d.only.as_ref().map(Vec::len), Some(1), "its corner alone");
+        assert_eq!(d.points.len(), 1);
     }
 
     /// A corner between curved sides rounds, keeps its widget once it is

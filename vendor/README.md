@@ -113,16 +113,19 @@ change marked `TraceDraw:` in a comment.
   and answers no other request, so TraceDraw's own picture read timed
   out, the picture never pasted and the window froze for about 24 s.
   `native/paste_gate.rs` holds `set_paste_text_gate` (exported from the
-  crate root) and `blocks`, which `EpiIntegration::on_window_event`
+  crate root) and `blocked_key`, which `EpiIntegration::on_window_event`
   calls before handing an event to egui-winit: a real paste key press
   (`is_paste_key`, egui-winit's `is_paste_command` with its logical or
-  physical key) is not handed over when the gate answers `false`, so
-  egui-winit neither reads the clipboard nor sends a paste event, as when
-  the clipboard holds no text; the application sees the key's release
-  and pastes by itself. `blocks` also follows the modifier keys from
-  `ModifiersChanged`. With no gate set, nothing changes. TraceDraw's
+  physical key) is added directly to egui's input when the gate answers
+  `false`, so egui-winit does not read the clipboard. The application
+  receives the original press, its modifiers and repeat flag immediately.
+  Waiting for V's release lost the shortcut when Ctrl was released first,
+  so an image paste sometimes required several tries. `blocked_key` also
+  follows the modifier keys from `ModifiersChanged`. With no gate set,
+  nothing changes. TraceDraw's
   gate (`clipboard::paste_may_read_text`) reads the X11 clipboard's
-  types and lets the text be read only when a text type is offered.
+  types and lets the text be read only when a text type is offered; on
+  Windows it inspects the Unicode-text format without opening the clipboard.
   TraceDraw's tests include and run the key test
   (`clipboard::eframe_paste_gate::tests`). When moving to a newer egui,
   check whether egui-winit still reads the text this way.
@@ -151,6 +154,15 @@ change marked `TraceDraw:` in a comment.
   counted as a new drag and the file was imported again at every
   restore. `apps/tracedraw/src/lib.rs` includes the file so that its
   test runs (`eframe_pending_input::tests`).
+- Change: `native/glow_integration.rs`'s `change_gl_context` moves a
+  context that is already current to the window's surface in place
+  (`PossiblyCurrentContext::make_current`) instead of making it not
+  current and then current again, and returns whether that worked
+  instead of unwrapping (#3687). Waking from sleep, Windows refused the
+  switch once with os error 0 and the unwrap closed the program while
+  nobody used it; the failed call had also consumed the context. A
+  refused switch now skips that frame (its textures kept) and asks for
+  the next one; the resize and immediate-viewport paths skip theirs.
 - Drop the copy and the `[patch.crates-io]` entry when the workspace moves
   to egui/eframe 0.37 or later: what holds that back is the egui 0.37
   API migration across the app. The fixed-function painter has no

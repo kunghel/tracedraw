@@ -282,6 +282,10 @@ impl ContourSettings {
 pub struct ContourDrag {
     pub id: ShapeId,
     pub start: Point,
+    /// The contour the object had when the drag began, as a distance
+    /// from its outline: out positive, in negative (0 with none). A drag
+    /// goes on from it instead of starting the contour again (#4364).
+    pub base: f64,
 }
 
 fn is_contour(e: &Effect) -> bool {
@@ -390,10 +394,8 @@ impl App {
         let mut ids = Vec::new();
         for s in self.selected_shapes() {
             let has = s.effects.iter().any(is_contour);
-            if (!has && !add)
-                || (add && has)
-                || matches!(s.kind, ShapeKind::Bitmap { .. })
-            {
+            // Pictures take one too, round their opaque pixels (#3245).
+            if (!has && !add) || (add && has) {
                 continue;
             }
             let effects = with_contour(&s.effects, next.clone());
@@ -445,21 +447,86 @@ impl App {
         let Some(id) = self.hit_test_inside(at) else {
             return false;
         };
-        if self
-            .doc()
-            .find_shape(id)
-            .is_none_or(|s| matches!(s.kind, ShapeKind::Bitmap { .. }))
-        {
+        if self.doc().find_shape(id).is_none() {
             return false;
         }
         self.select(vec![id]);
         self.sync_contour_settings();
-        self.contour_drag = Some(ContourDrag { id, start: at });
+        let base = self
+            .doc()
+            .find_shape(id)
+            .and_then(|s| s.effects.iter().find(|e| is_contour(e)).cloned())
+            .map_or(0.0, |e| {
+                let mut st = self.contour;
+                st.take(&e);
+                let d = st.offset * f64::from(st.steps.max(1));
+                if st.direction == ContourDirection::Inside {
+                    -d
+                } else {
+                    d
+                }
+            });
+        self.contour_drag = Some(ContourDrag { id, start: at, base });
         true
+    }
+
+    /// The point of the edge of a visible object other than `id` (a
+    /// member of a group counts on its own) that lies within reach of
+    /// `p`, the nearest one: where a contour dragged there stops.
+    pub fn contour_edge_near(&self, id: ShapeId, p: Point) -> Option<Point> {
+        fn walk(
+            s: &tracedraw_core::Shape,
+            parent: tracedraw_core::geometry::Affine,
+            id: ShapeId,
+            p: Point,
+            tol: f64,
+            best: &mut Option<(Point, f64)>,
+        ) {
+            if !s.visible || s.id == id {
+                return;
+            }
+            let t = parent * s.transform;
+            match &s.kind {
+                ShapeKind::Group { children } => {
+                    for c in children {
+                        walk(c, t, id, p, tol, best);
+                    }
+                }
+                ShapeKind::ClipFrame { frame, .. } => walk(frame, t, id, p, tol, best),
+                _ => {
+                    let mut placed = s.clone();
+                    placed.transform = t;
+                    // Far objects are passed by their box.
+                    if !placed.bounds().inflate(tol, tol).contains(p) {
+                        return;
+                    }
+                    if let Some((q, d)) = crate::canvas::nearest_on_path(&placed.page_path(), p) {
+                        if best.is_none_or(|(_, bd)| d < bd) {
+                            *best = Some((q, d));
+                        }
+                    }
+                }
+            }
+        }
+        let tol = self.object_pick_tol() * 1.5;
+        let mut best = None;
+        for l in self.page_layers().into_iter().filter(|l| l.visible) {
+            for s in &l.shapes {
+                walk(s, tracedraw_core::geometry::Affine::IDENTITY, id, p, tol, &mut best);
+            }
+        }
+        best.filter(|(_, d)| *d <= tol).map(|(q, _)| q)
     }
 
     /// The pointer moved to `p` during a drag.
     pub fn drag_contour(&mut self, p: Point) {
+        self.drag_contour_with(p, false);
+    }
+
+    /// The pointer moved to `p` during a drag; `fine` (Shift held) moves
+    /// the contour a tenth as far as the pointer, for an exact distance
+    /// (#4364).
+    pub fn drag_contour_with(&mut self, p: Point, fine: bool) {
         let Some(dd) = self.contour_drag else {
             return;
         };
@@ -469,9 +536,24 @@ impl App {
         };
         let b = s.bounds();
         let c = b.center();
+        // The distance the pointer went away from the middle (toward it,
+        // negative), added to the contour there was: a second drag moves
+        // the contour on from where the first left it (#4364).
+        let moved = (p - c).hypot() - (dd.start - c).hypot();
+        let mut signed = dd.base + moved * if fine { 0.1 } else { 1.0 };
+        // Near the edge of another object the contour reaches exactly to
+        // it, as far from the object's outline as that edge lies (#4084:
+        // it ran past a neighbour's edge, so two pieces could not be made
+        // to meet).
+        if !fine {
+            if let Some(q) = self.contour_edge_near(dd.id, p) {
+                let d = crate::canvas::distance_to_path(&s.page_path(), q);
+                signed = if signed < 0.0 { -d } else { d };
+            }
+        }
         // Away from the middle: outside; toward it: inside.
-        let away = (p - c).hypot() > (dd.start - c).hypot();
-        let d = (p - dd.start).hypot();
+        let away = signed > 0.0;
+        let d = signed.abs();
         if d < 1e-6 {
             return;
         }
@@ -518,7 +600,8 @@ impl App {
                 self.drag_contour_handle(h, p, begun);
                 self.contour_handle_drag = Some((h, true));
             } else if self.contour_drag.is_some() {
-                self.drag_contour(p);
+                let fine = response.ctx.input(|i| i.modifiers.shift);
+                self.drag_contour_with(p, fine);
             }
         }
         if response.drag_stopped() {
@@ -596,6 +679,75 @@ mod tests {
         assert!(!ev.below.is_empty() && !ev.above.is_empty());
     }
 
+    /// A contour dragged onto the edge of a neighbouring object stops on
+    /// it: it reaches as far as that edge lies from the object (#4084: it
+    /// ran past the edge). Away from any edge the drag sets it as before.
+    #[test]
+    fn a_contour_dragged_to_a_neighbour_stops_on_its_edge() {
+        let mut app = App::headless();
+        let id = square(&mut app);
+        app.new_shape(ShapeKind::Rect {
+            rect: Rect::new(26.0, 0.0, 46.0, 20.0),
+            radius: 0.0,
+            corners: None,
+        })
+        .expect("neighbour");
+        app.select(vec![id]);
+        app.contour.direction = ContourDirection::Outside;
+        app.contour.steps = 1;
+        let tol = app.object_pick_tol();
+        assert!(app.begin_contour(Point::new(19.5, 10.0)));
+        app.drag_contour(Point::new(26.0 + tol * 0.5, 10.3));
+        app.contour_drag = None;
+        let Some(Effect::Contour { offset, outside: true, .. }) = contour_of(&app, id) else {
+            panic!("an outside contour");
+        };
+        assert!((offset - 6.0).abs() < 0.05, "reaches the edge 6 mm away: {offset}");
+        // Off any edge: as far as the pointer moved away from the middle.
+        app.clear_contour();
+        assert!(app.begin_contour(Point::new(10.0, 19.5)));
+        app.drag_contour(Point::new(10.0, 19.5 + tol * 3.0 + 2.0));
+        app.contour_drag = None;
+        let Some(Effect::Contour { offset, .. }) = contour_of(&app, id) else {
+            panic!("a contour");
+        };
+        assert!((offset - (tol * 3.0 + 2.0)).abs() < 0.05, "{offset}");
+    }
+
+    /// A picture takes a contour (#3245), drawn round its opaque pixels;
+    /// before, pictures were left out of Apply and of a drag.
+    #[test]
+    fn a_picture_takes_a_contour() {
+        let mut app = App::headless();
+        let img = image::RgbaImage::from_fn(60, 60, |x, y| {
+            let a = if (15..45).contains(&x) && (15..45).contains(&y) { 255 } else { 0 };
+            image::Rgba([200, 40, 40, a])
+        });
+        let mut png = Vec::new();
+        image::DynamicImage::ImageRgba8(img)
+            .write_to(&mut std::io::Cursor::new(&mut png), image::ImageFormat::Png)
+            .expect("png");
+        let id = app
+            .new_shape(ShapeKind::Bitmap {
+                rect: Rect::new(0.0, 0.0, 60.0, 60.0),
+                width_px: 60,
+                height_px: 60,
+                png: png.into(),
+                fx: None,
+            })
+            .expect("picture");
+        app.select(vec![id]);
+        app.contour.direction = ContourDirection::Outside;
+        app.add_contour();
+        assert!(contour_of(&app, id).is_some(), "the picture has a contour");
+        let shape = app.doc().find_shape(id).expect("picture");
+        let ev = tracedraw_core::live::evaluate(shape);
+        let b = tracedraw_core::geometry::Shape::bounding_box(&ev.below[0].page_path());
+        assert!(b.x0 > 5.0 && b.x1 < 55.0, "round the opaque square: {b:?}");
+        app.clear_contour();
+        assert!(app.begin_contour(Point::new(30.0, 30.0)));
+    }
+
     /// A group takes a contour (#3245): Apply on a selected group puts
     /// the contour on the group, drawn round its objects, and a drag on
     /// the group starts one.
@@ -655,15 +807,46 @@ mod tests {
         assert_eq!(n, 3);
         assert!((offset - 2.0).abs() < 1e-9);
         assert_eq!(corners, Some(Join::Miter));
-        // Toward the middle: inside.
+        // Toward the middle, past where the contour was: inside.
         assert!(app.begin_contour(Point::new(19.0, 10.0)));
-        app.drag_contour(Point::new(13.0, 10.0));
+        app.drag_contour(Point::new(10.5, 10.0));
         app.contour_drag = None;
         assert!(matches!(
             contour_of(&app, id),
             Some(Effect::Contour { outside: false, .. })
         ));
         assert!(!app.begin_contour(Point::new(500.0, 500.0)));
+    }
+
+    /// #4364: a second drag moves the contour on from where the first
+    /// left it, and Shift moves it a tenth as far as the pointer.
+    #[test]
+    fn a_second_drag_goes_on_from_the_contour() {
+        let mut app = App::headless();
+        let id = square(&mut app);
+        let total = |app: &App| match contour_of(app, id) {
+            Some(Effect::Contour {
+                offset,
+                steps,
+                outside,
+                ..
+            }) => offset * f64::from(steps) * if outside { 1.0 } else { -1.0 },
+            _ => f64::NAN,
+        };
+        assert!(app.begin_contour(Point::new(19.0, 10.0)));
+        app.drag_contour(Point::new(25.0, 10.0));
+        app.contour_drag = None;
+        assert!((total(&app) - 6.0).abs() < 1e-9, "{}", total(&app));
+        // One more millimetre out, from anywhere on the object.
+        assert!(app.begin_contour(Point::new(15.0, 10.0)));
+        app.drag_contour(Point::new(16.0, 10.0));
+        app.contour_drag = None;
+        assert!((total(&app) - 7.0).abs() < 1e-9, "{}", total(&app));
+        // Back in by 2 mm with Shift: a fifth of a millimetre.
+        assert!(app.begin_contour(Point::new(15.0, 10.0)));
+        app.drag_contour_with(Point::new(13.0, 10.0), true);
+        app.contour_drag = None;
+        assert!((total(&app) - 6.8).abs() < 1e-9, "{}", total(&app));
     }
 
     /// Break Apart (Ctrl+K, the context menu) on a contour: Break Contour

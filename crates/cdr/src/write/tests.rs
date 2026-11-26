@@ -4,6 +4,8 @@ use tracedraw_core::{
     geometry::Size,
 };
 
+mod page_range_tests;
+
 fn doc_with(shapes: Vec<Shape>) -> Document {
     let mut doc = Document::new("w", Size::new(200.0, 100.0));
     doc.pages[0].layers[0].name = "Ink".into();
@@ -5735,6 +5737,39 @@ fn character_outlines_round_trip() {
     }
 }
 
+/// A character outline centred, inside or outside the letters keeps its
+/// place through a version 16+ save (#4356: every place was written as
+/// centred, and read as centred); the style string's `justification`
+/// is 0, 1 or 2, and a code not known reads centred.
+#[test]
+fn character_outline_places_round_trip() {
+    use tracedraw_core::{OutlinePosition, Stroke};
+    for place in OutlinePosition::ALL {
+        let mut doc = doc_with(Vec::new());
+        let mut ids = doc.ids().clone();
+        let mut rim = Stroke::new(Color::rgb8(255, 0, 0), 1.2);
+        rim.position = place;
+        let mut span = TextSpan::new("Outlined", "Arial", 40.0);
+        span.outline = Some(rim.clone());
+        doc.pages[0].layers[0].shapes = vec![text_shape(&mut ids, vec![span], TextAlign::Left)];
+        doc.set_ids(ids);
+        let code = crate::text::outline_position_code(place);
+        let json = character_outline_json(Ver(24), Some(&rim));
+        assert!(json.contains(&format!(r#""justification":"{code}""#)), "{json}");
+        for v in versions().into_iter().filter(|v| *v >= 16) {
+            let (back, _) =
+                crate::open_bytes(&document_to_cdr_version(&doc, v), "back").expect("reads back");
+            let ShapeKind::Text { spans, .. } = &back.pages[0].layers[0].shapes[0].kind else {
+                panic!("{v}: a text");
+            };
+            let got = spans[0].outline.as_ref().expect("the outline");
+            assert_eq!(got.position, place, "{v}");
+        }
+    }
+    assert_eq!(crate::text::outline_position(Some(7.0)), OutlinePosition::Center);
+    assert_eq!(crate::text::outline_position(None), OutlinePosition::Center);
+}
+
 /// A text of two colours in one line (two runs, each with a colour of
 /// its own) names its font in each run's style the way the paragraph's
 /// default style does, every member included (character set, technology,
@@ -10174,6 +10209,63 @@ fn object_data_and_clone_links_open_again() {
     assert!(all.iter().all(|(_, s)| s.data.is_empty()));
 }
 
+/// The identities another object's data names come back (#4275: a live
+/// fit names its path, objects and copies by them), saved twice; an
+/// object nothing names keeps no saved identity.
+#[test]
+fn identities_named_by_object_data_open_again() {
+    use tracedraw_core::document::Uid;
+    let rect = |id: u64, x: f64, uid: u128| {
+        let mut s = Shape::new(
+            tracedraw_core::ShapeId(id),
+            ShapeKind::Rect {
+                rect: Rect::new(x, 10.0, x + 20.0, 30.0),
+                radius: 0.0,
+                corners: None,
+            },
+        );
+        s.fill = Fill::Solid(Color::rgb8(200, 30, 30));
+        s.uid = Some(Uid(uid));
+        s
+    };
+    let (a, b, free) = (0xa1u128 << 64 | 7, 0xb2u128 << 64 | 9, 0xc3u128 << 64 | 1);
+    let mut guide = rect(201, 10.0, 0xd4u128 << 64 | 3);
+    guide.data = vec![(
+        "fit_path.live".into(),
+        format!("{{\"objects\":[\"{:032x}\"],\"copies\":[\"{:032x}\"]}}", a, b),
+    )];
+    let inner = rect(203, 90.0, b);
+    let group = Shape::new(
+        tracedraw_core::ShapeId(204),
+        ShapeKind::Group {
+            children: vec![inner],
+        },
+    );
+    let mut doc = doc_with(vec![guide, rect(202, 50.0, a), group, rect(205, 130.0, free)]);
+    doc.ids_mut().shape();
+    for v in [14u16, 17, 27] {
+        let mut d = doc.clone();
+        for _ in 0..2 {
+            let bytes = document_to_cdr_version(&d, v);
+            d = crate::open_bytes(&bytes, "back").expect("reads back").0;
+        }
+        let mut all = Vec::new();
+        shapes_on_page(&d.pages[0].layers[0].shapes, Affine::IDENTITY, &mut all);
+        let uid_at = |x: f64| {
+            all.iter()
+                .map(|(_, s)| s)
+                .find(|s| {
+                    (s.bounds().x0 - x).abs() < 0.5 && !matches!(s.kind, ShapeKind::Group { .. })
+                })
+                .unwrap_or_else(|| panic!("v{v}: object at {x}"))
+                .uid
+        };
+        assert_eq!(uid_at(50.0), Some(Uid(a)), "v{v}");
+        assert_eq!(uid_at(90.0), Some(Uid(b)), "v{v}");
+        assert_ne!(uid_at(130.0), Some(Uid(free)), "v{v}");
+    }
+}
+
 /// A rectangle with `fill` saved and opened again, alone on the page.
 fn kept_rect(fill: Fill) -> Document {
     let mut doc = effect_rect(Vec::new());
@@ -10504,6 +10596,7 @@ fn palette_inks_and_styles_open_again() {
         id: 3,
         parts: StyleParts::default(),
         opacity: 1.0,
+        text: None,
     }];
     doc.pages[0].layers[0].shapes[0].style = Some(3);
     for v in [14u16, 16, 27] {
@@ -10673,5 +10766,44 @@ fn a_clipped_object_s_graded_transparency_opens_as_saved() {
             _ => None,
         });
         assert_eq!(kept, Some(handles), "{v}");
+    }
+}
+
+/// A spot ink, which these files get as its process tint, and the
+/// registration colour, which they get as 100% of each process ink, come
+/// back as themselves in TraceDraw from version 14 (the package's own
+/// member keeps the object); other programs see the process colours.
+#[test]
+fn spot_and_registration_colours_open_again_as_saved() {
+    let spot = Color::Spot {
+        ink: 1,
+        tint: 0.6,
+        c: 0.0,
+        m: 0.8,
+        y: 1.0,
+        k: 0.0,
+    };
+    let mut doc = kept_rect(Fill::Solid(spot));
+    doc.pages[0].layers[0].shapes[0].stroke = Some(Stroke::new(Color::Registration, 0.5));
+    for v in versions() {
+        let bytes = document_to_cdr_version(&doc, v);
+        let shown = open_as_drawn(&bytes);
+        let s = &shown.pages[0].layers[0].shapes[0];
+        assert!(
+            matches!(s.fill, Fill::Solid(Color::Cmyk { .. })),
+            "{v}: {:?}",
+            s.fill
+        );
+        if v < 14 {
+            continue;
+        }
+        let (back, _) = crate::open_bytes(&bytes, "back").expect("reads back");
+        let s = &back.pages[0].layers[0].shapes[0];
+        assert_eq!(s.fill, Fill::Solid(spot), "{v}");
+        assert_eq!(
+            s.stroke.as_ref().map(|st| st.color),
+            Some(Color::Registration),
+            "{v}"
+        );
     }
 }

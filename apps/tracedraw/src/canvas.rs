@@ -40,6 +40,48 @@ pub fn flatten(path: &BezPath, view: &View) -> Vec<(Vec<Pos2>, bool)> {
     out
 }
 
+/// The point of a flattened path nearest to `p` and its distance (mm);
+/// `None` for a path with no segment.
+pub fn nearest_on_path(path: &BezPath, p: Point) -> Option<(Point, f64)> {
+    let mut best: Option<(Point, f64)> = None;
+    let mut last: Option<Point> = None;
+    let mut start: Option<Point> = None;
+    let take = |a: Point, b: Point, best: &mut Option<(Point, f64)>| {
+        let ab = b - a;
+        let len2 = ab.hypot2();
+        let t = if len2 > 0.0 {
+            ((p - a).dot(ab) / len2).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        let q = a + ab * t;
+        let d = (p - q).hypot();
+        if best.is_none_or(|(_, bd)| d < bd) {
+            *best = Some((q, d));
+        }
+    };
+    kurbo::flatten(path.elements().iter().copied(), 0.02, &mut |el| match el {
+        PathEl::MoveTo(q) => {
+            last = Some(q);
+            start = Some(q);
+        }
+        PathEl::LineTo(q) => {
+            if let Some(a) = last {
+                take(a, q, &mut best);
+            }
+            last = Some(q);
+        }
+        PathEl::ClosePath => {
+            if let (Some(a), Some(s)) = (last, start) {
+                take(a, s, &mut best);
+            }
+            last = start;
+        }
+        _ => {}
+    });
+    best
+}
+
 /// Distance from a point to the nearest segment of a flattened path (mm).
 pub fn distance_to_path(path: &BezPath, p: Point) -> f64 {
     let mut best = f64::MAX;
@@ -182,6 +224,7 @@ pub fn draw_canvas(app: &App, painter: &Painter, rect: ERect) {
     draw_drop_colour(app, painter);
     draw_symmetry_lines(app, painter, rect);
     draw_grid_handles(app, painter);
+    draw_grid_axis_controls(app, painter);
     draw_anchors(app, painter);
     draw_fountain_handles(app, painter);
     draw_pattern_handles(app, painter);
@@ -197,7 +240,8 @@ pub fn draw_canvas(app: &App, painter: &Painter, rect: ERect) {
     if let Some(pts) = &app.pending_rotate_lines {
         let mut pts = pts.clone();
         if let Some(p) = app.pointer_page {
-            pts.push(app.snap_point(p));
+            let constrain = painter.ctx().input(|i| app.constrain_held(&i.modifiers));
+            pts.push(app.rotate_lines_point(app.snap_point(p), constrain));
         }
         for line in pts.chunks(2) {
             let screen: Vec<Pos2> = line.iter().map(|q| view.to_screen(*q)).collect();
@@ -232,7 +276,12 @@ pub fn draw_canvas(app: &App, painter: &Painter, rect: ERect) {
             Color32::BLACK,
         );
         let mods = painter.ctx().input(|i| i.modifiers);
-        let arc = app.tool == Tool::ThreePointCurve && app.constrain_held(&mods);
+        let arc = match app.tool {
+            Tool::ThreePointCurve => app.constrain_held(&mods),
+            // Ctrl at the third point: the circle on the base (#4086).
+            Tool::ThreePointEllipse => mods.ctrl || mods.command,
+            _ => false,
+        };
         let preview = three_point_preview(app.tool, a, b, c, arc);
         for (pts, closed) in flatten(&preview, view) {
             if pts.len() > 1 {
@@ -1003,6 +1052,10 @@ fn draw_page(app: &App, painter: &Painter, rect: ERect, preview: Option<Affine>)
         }
         app.paint_edited_text_overlay(painter, rect);
     }
+    // A contour or shadow being dragged: the object alone, small, until
+    // the page's picture shows the drag's latest state (D#4226).
+    let shown_rev = app.raster.borrow().shown_revision();
+    crate::effect_drag_preview::paint(app, painter, revision, shown_rev);
 
     if !clean_sheet {
         draw_page_margins(app, painter);
@@ -1012,6 +1065,7 @@ fn draw_page(app: &App, painter: &Painter, rect: ERect, preview: Option<Affine>)
     }
     draw_pixel_grid(app, painter, rect);
     draw_empty_clip_frames(app, painter);
+    draw_edited_clip_frame(app, painter);
     crate::cut_tools::paint_grid_preview(app, painter);
     crate::dialog_preview::paint(app, painter);
 }
@@ -1039,7 +1093,7 @@ fn live_colour_region(app: &App, preview: Option<Affine>) -> Option<Rect> {
     let mut pad = 2.0 / app.view.zoom.max(0.01) as f64;
     let mut region: Option<Rect> = None;
     for s in shapes.iter() {
-        if s.has_live_effects() || holds_a_symbol(s) {
+        if s.has_live_effects() || s.raster_fx.is_some() || holds_a_symbol(s) {
             return None;
         }
         let b = app.visual_bounds(s);
@@ -1368,7 +1422,10 @@ fn three_point_preview(
     let len = base.hypot().max(1e-6);
     let dir = base / len;
     let normal = Vec2::new(-dir.y, dir.x);
-    let height = (c - a).dot(normal);
+    let mut height = (c - a).dot(normal);
+    if tool == Tool::ThreePointEllipse && arc {
+        height = crate::app::circle_on_base_height(len, height);
+    }
     match tool {
         Tool::ThreePointCurve => crate::app::three_point_curve(a, b, c, arc),
         _ => {
@@ -1428,7 +1485,12 @@ fn draw_drop_frame(app: &App, painter: &Painter) {
         return;
     };
     let at = app.view.to_screen(p) + egui::vec2(18.0, 24.0);
-    let lines = drop_frame_hints(app.drop_keys, app.clip_frame_is_empty(frame));
+    let lines = if matches!(s.kind, ShapeKind::ClipFrame { .. }) {
+        drop_frame_hints(app.drop_keys, app.clip_frame_is_empty(frame))
+    } else {
+        // A closed object W was held over: a new clip frame (#4227).
+        vec![("hint.drop_frame_new", true)]
+    };
     let font = egui::FontId::proportional(12.0);
     let galleys: Vec<_> = lines
         .iter()
@@ -1523,13 +1585,11 @@ fn draw_drop_colour(app: &App, painter: &Painter) {
     if action == DropAction::CopyFill && app.drop_frame.is_some() {
         return;
     }
-    draw_drop_style(app, painter, action, target);
+    draw_drop_target(app, painter, action, target);
 }
 
-/// Object `target` outlined in the selection colour and, under the
-/// pointer, what a drop there copies onto it (a left-button move with
-/// Alt, a right-button drag with Shift, Alt or Ctrl; discussion #2066).
-pub(crate) fn draw_drop_style(
+/// Outline the drop target and show the available action by the pointer.
+pub(crate) fn draw_drop_target(
     app: &App,
     painter: &Painter,
     action: crate::drop_menu::DropAction,
@@ -1538,10 +1598,24 @@ pub(crate) fn draw_drop_style(
     let Some(s) = app.doc().find_shape(target) else {
         return;
     };
-    let accent = Tokens::ACCENT;
-    for (pts, _) in flatten(&s.page_path(), &app.view) {
+    let mut path = s.page_path();
+    let fit_text = action == crate::drop_menu::DropAction::FitTextToPath;
+    let width = if fit_text {
+        // An outline being edited inside a container is drawn in page space.
+        if let Some(parent) = app.doc().parent_transform(target) {
+            path.apply_affine(parent);
+        }
+        2.0
+    } else {
+        1.5
+    };
+    let stroke = EStroke::new(width, Tokens::ACCENT);
+    for (mut pts, closed) in flatten(&path, &app.view) {
         if pts.len() >= 2 {
-            painter.add(egui::Shape::line(pts, EStroke::new(1.5, accent)));
+            if let Some(first) = pts.first().copied().filter(|_| fit_text && closed) {
+                pts.push(first);
+            }
+            painter.add(egui::Shape::line(pts, stroke));
         }
     }
     let Some(p) = app.pointer_page else {
@@ -1594,7 +1668,7 @@ fn draw_symmetry_lines(app: &App, painter: &Painter, rect: ERect) {
         }
     }
     for (center, angle, lines) in shown {
-        let n = lines.clamp(1, 12) as usize;
+        let n = lines.clamp(1, tracedraw_core::live::SYMMETRY_MAX_LINES) as usize;
         let far = 100_000.0 / view.zoom.max(0.01) as f64;
         for k in 0..n {
             let a = (angle + 180.0 * k as f64 / n as f64).to_radians();
@@ -2037,6 +2111,56 @@ fn draw_grid_handles(app: &App, painter: &Painter) {
             }
         }
     }
+}
+
+/// The document grid's axis controls (#4395): a round handle at the
+/// origin, a red arrow along the first axis and a green one along the
+/// second, each ending in a square handle; the one held filled.
+fn draw_grid_axis_controls(app: &App, painter: &Painter) {
+    use crate::grid_axis::AxisPart;
+    let handles = app.grid_axis_handles();
+    let Some(&(_, origin, _)) = handles.first() else {
+        return;
+    };
+    let view = &app.view;
+    let o = view.to_screen(origin);
+    let held = |part: AxisPart| matches!(&app.drag, Drag::GridAxis { part: p, .. } if *p == part);
+    for &(part, at, _) in &handles[1..] {
+        let color = if part == AxisPart::First {
+            Color32::from_rgb(0xE0, 0x3C, 0x3C)
+        } else {
+            Color32::from_rgb(0x2E, 0xA0, 0x44)
+        };
+        let q = view.to_screen(at);
+        let d = q - o;
+        let len = d.length();
+        if len < 1.0 {
+            continue;
+        }
+        let u = d / len;
+        let n = egui::vec2(-u.y, u.x);
+        let halo = EStroke::new(3.5, Color32::from_white_alpha(200));
+        painter.line_segment([o, q - u * 9.0], halo);
+        painter.line_segment([o, q - u * 9.0], EStroke::new(1.6, color));
+        let tip = q - u * 5.0;
+        painter.add(egui::Shape::convex_polygon(
+            vec![tip + u * 1.0, tip - u * 8.0 + n * 4.5, tip - u * 8.0 - n * 4.5],
+            color,
+            EStroke::new(1.0, Color32::WHITE),
+        ));
+        let r = ERect::from_center_size(q, egui::vec2(8.0, 8.0));
+        let fill = if held(part) { color } else { Color32::WHITE };
+        painter.rect_filled(r, 0.0, fill);
+        painter.rect_stroke(r, 0.0, EStroke::new(1.5, color), egui::StrokeKind::Outside);
+    }
+    let fill = if held(AxisPart::Origin) {
+        Tokens::SELECTION
+    } else {
+        Color32::WHITE
+    };
+    painter.circle_filled(o, 5.5, fill);
+    painter.circle_stroke(o, 5.5, EStroke::new(1.5, Tokens::SELECTION));
+    painter.circle_filled(o, 1.5, Tokens::SELECTION);
 }
 
 fn draw_offset_shadow_handle(app: &App, painter: &Painter) {
@@ -2712,12 +2836,11 @@ fn draw_selection(app: &App, painter: &Painter, preview: Option<Affine>) {
             }
         }
     }
-    // The first node of each selected object's subpaths, a small hollow
-    // square, as the reference program marks a selection with the Pick
-    // tool: it shows where each outline starts and that the object is
-    // picked (#1145).
+    // Node marks: for one selected shape show every node, so the points
+    // that define its outline are visible. For multiple shapes retain the
+    // first-node marks used to tell the objects apart (#1145).
     if matches!(app.tool, Tool::Pick | Tool::FreeformPick) {
-        for p in pick_node_marks(&shapes) {
+        for p in pick_node_marks(&shapes, app.settings.nodes.mark_every_node) {
             let p = view.to_screen(match preview {
                 Some(t) => t * p,
                 None => p,
@@ -2752,11 +2875,80 @@ fn draw_selection(app: &App, painter: &Painter, preview: Option<Affine>) {
 const PICK_NODE_MARKS_MAX: usize = 1000;
 
 /// Where the Pick tool marks the selected `shapes` (#1145), in page
-/// space: the first node of each subpath of a curve, and the first node
+/// space: [`pick_node_marks_every`] when Options > Nodes and Handles >
+/// "Mark every node of one selected object" is on (#3258), else
+/// [`pick_node_marks_first`], as before.
+pub(crate) fn pick_node_marks(shapes: &[tracedraw_core::Shape], every: bool) -> Vec<Point> {
+    if every {
+        pick_node_marks_every(shapes)
+    } else {
+        pick_node_marks_first(shapes)
+    }
+}
+
+/// The marks with the option on (#3258). A single object shows all its nodes; a multiple selection shows
+/// one first-node mark per object. Bitmaps use their corners and clip
+/// frames use their frame's nodes, without marking their contents. Groups,
+/// texts and other objects without nodes show none; selections with more
+/// than [`PICK_NODE_MARKS_MAX`] marks show none.
+pub(crate) fn pick_node_marks_every(shapes: &[tracedraw_core::Shape]) -> Vec<Point> {
+    let mut out = Vec::new();
+    let limit = if shapes.len() == 1 {
+        PICK_NODE_MARKS_MAX + 1
+    } else {
+        1
+    };
+    for s in shapes {
+        let mut s = s;
+        let mut parent = Affine::IDENTITY;
+        while let ShapeKind::ClipFrame { frame, .. } = &s.kind {
+            parent = parent * s.transform;
+            s = frame;
+        }
+        let transform = parent * s.transform;
+        match &s.kind {
+            ShapeKind::Path { path, .. } if s.spline.is_none() => {
+                out.extend(
+                    tracedraw_core::nodes::nodes(path)
+                        .into_iter()
+                        .take(limit)
+                        .map(|n| transform * n.pos),
+                );
+            }
+            ShapeKind::Bitmap { rect, .. } => {
+                out.extend(
+                    [
+                        Point::new(rect.x0, rect.y1),
+                        Point::new(rect.x1, rect.y1),
+                        Point::new(rect.x0, rect.y0),
+                        Point::new(rect.x1, rect.y0),
+                    ]
+                    .into_iter()
+                    .take(limit)
+                    .map(|p| transform * p),
+                );
+            }
+            _ => {
+                out.extend(
+                    crate::kind_nodes::nodes(s)
+                        .into_iter()
+                        .take(limit)
+                        .map(|(_, p)| parent * p),
+                );
+            }
+        }
+        if out.len() > PICK_NODE_MARKS_MAX {
+            return Vec::new();
+        }
+    }
+    out
+}
+
+/// The default marks (#1145), in page space: the first node of each subpath of a curve, and the first node
 /// of a rectangle (its first corner), an ellipse (its start), a polygon
 /// or a B-spline. Groups, texts, pictures and other objects show none;
 /// nor does a selection of more than [`PICK_NODE_MARKS_MAX`] subpaths.
-pub(crate) fn pick_node_marks(shapes: &[tracedraw_core::Shape]) -> Vec<Point> {
+pub(crate) fn pick_node_marks_first(shapes: &[tracedraw_core::Shape]) -> Vec<Point> {
     let mut out = Vec::new();
     for s in shapes {
         match &s.kind {
@@ -3032,6 +3224,35 @@ fn draw_text_frames(app: &App, painter: &Painter, preview: Option<Affine>) {
     }
 }
 
+/// While a clip frame's contents are edited, its frame's outline shows
+/// all the time in its own colour (orange dashes over white), so the
+/// contents, mostly larger than it, can be placed where it shows them
+/// (#4227).
+fn draw_edited_clip_frame(app: &App, painter: &Painter) {
+    if !app.editing_clip_contents() {
+        return;
+    }
+    let Some(frame) = app
+        .clip_frame_edit
+        .as_ref()
+        .and_then(|(f, _)| app.doc().shape_on_page(*f))
+    else {
+        return;
+    };
+    let orange = Color32::from_rgb(0xFF, 0x7A, 0x00);
+    for (pts, closed) in flatten(&frame.page_path(), &app.view) {
+        if pts.len() < 2 {
+            continue;
+        }
+        let mut pts = pts;
+        if closed {
+            pts.push(pts[0]);
+        }
+        painter.add(egui::Shape::line(pts.clone(), EStroke::new(3.0, Color32::WHITE)));
+        painter.extend(egui::Shape::dashed_line(&pts, EStroke::new(1.5, orange), 6.0, 4.0));
+    }
+}
+
 /// Empty clip frames show two grey diagonals on screen (Options >
 /// Clip Frames > Show lines in empty clip frames).
 fn draw_empty_clip_frames(app: &App, painter: &Painter) {
@@ -3190,22 +3411,29 @@ pub fn grid_positions(a: f64, b: f64, origin: f64, step: f64) -> Vec<f64> {
 /// is faint rather than a shimmering pattern (#2313). Each line or dot
 /// lands on one whole device pixel, also when the interface is scaled
 /// by a fraction (a line one point wide there covers one or two device
-/// pixels by turns, which drew the grid as moire).
+/// pixels by turns, which drew the grid as moire). Subdivisions, gutters
+/// and angled axes (#4395) go through [`draw_grid_general`].
 fn draw_grid(app: &App, painter: &Painter, rect: ERect) {
     let view = &app.view;
-    let meta = &app.doc().metadata;
-    let grid = meta.grid;
-    let origin = app.grid_origin();
+    let grid = app.grid_settings();
+    let geom = app.grid_geom();
+    let origin = geom.origin;
     let zoom = view.zoom as f64;
     let ppp = painter.ctx().pixels_per_point();
     let dots = grid.display == tracedraw_core::document::GridDisplay::Dots;
+    let (major, minor) = grid_colors(&grid, dots);
+    if !geom.plain() {
+        draw_grid_general(app, painter, rect, &geom, dots, major, minor);
+        return;
+    }
     let min_px = if dots { GRID_MIN_DOTS } else { GRID_MIN_LINES };
+    let (spacing_x, spacing_y) = (geom.axes[0].spacing, geom.axes[1].spacing);
     let (fx, fy) = (
-        grid_thinning(grid.spacing_x * zoom, min_px),
-        grid_thinning(grid.spacing_y * zoom, min_px),
+        grid_thinning(spacing_x * zoom, min_px),
+        grid_thinning(spacing_y * zoom, min_px),
     );
-    let sx = grid.spacing_x.max(1e-6) * fx;
-    let sy = grid.spacing_y.max(1e-6) * fy;
+    let sx = spacing_x.max(1e-6) * fx;
+    let sy = spacing_y.max(1e-6) * fy;
     let tl = view.to_page(rect.left_top());
     let br = view.to_page(rect.right_bottom());
     let xs: Vec<f32> = grid_positions(tl.x, br.x, origin.x, sx)
@@ -3225,7 +3453,7 @@ fn draw_grid(app: &App, painter: &Painter, rect: ERect) {
             return;
         }
         let fade = grid_fade((sx * zoom).min(sy * zoom), min_px);
-        let c = GRID_DOT.gamma_multiply(fade);
+        let c = major.gamma_multiply(fade);
         for x in &xs {
             for y in &ys {
                 px.rect(
@@ -3235,8 +3463,8 @@ fn draw_grid(app: &App, painter: &Painter, rect: ERect) {
             }
         }
     } else {
-        let cx = GRID_LINE.gamma_multiply(grid_fade(sx * zoom, min_px));
-        let cy = GRID_LINE.gamma_multiply(grid_fade(sy * zoom, min_px));
+        let cx = major.gamma_multiply(grid_fade(sx * zoom, min_px));
+        let cy = major.gamma_multiply(grid_fade(sy * zoom, min_px));
         for x in &xs {
             px.rect(
                 ERect::from_min_max(Pos2::new(*x, rect.top()), Pos2::new(x + one, rect.bottom())),
@@ -3248,6 +3476,181 @@ fn draw_grid(app: &App, painter: &Painter, rect: ERect) {
                 ERect::from_min_max(Pos2::new(rect.left(), *y), Pos2::new(rect.right(), y + one)),
                 cy,
             );
+        }
+    }
+    px.paint(painter);
+}
+
+/// The grid lines' and subdivision lines' colours (#4395): the colours
+/// chosen in the Grid panel, the usual grey by default (darker for dots),
+/// each with its opacity; subdivisions take the lines' colour while the
+/// two are linked.
+pub fn grid_colors(
+    grid: &tracedraw_core::document::GridSettings,
+    dots: bool,
+) -> (Color32, Color32) {
+    let base = grid
+        .line_color
+        .map(to_color32)
+        .unwrap_or(if dots { GRID_DOT } else { GRID_LINE });
+    let sub = if grid.link_colors {
+        base
+    } else {
+        grid.sub_color.map(to_color32).unwrap_or(base)
+    };
+    let alpha = |v: f64| (if v.is_finite() { v } else { 1.0 }).clamp(0.0, 1.0) as f32;
+    (
+        base.gamma_multiply(alpha(grid.line_opacity)),
+        sub.gamma_multiply(alpha(grid.sub_opacity)),
+    )
+}
+
+/// Most lines of one family drawn, and most dots.
+const GRID_MAX_LINES: usize = 4000;
+const GRID_MAX_DOTS: usize = 200_000;
+/// Fewest screen points between two subdivision lines drawn.
+const GRID_MIN_SUB: f64 = 5.0;
+
+/// A grid with subdivisions, gutters or angled axes (#4395): each family
+/// of lines from one edge of the window to the other, thinned out and
+/// faded like the plain grid; subdivisions in their own colour once they
+/// are far enough apart; an angled grid's third direction when on. Lines
+/// along the window's axes land on whole device pixels.
+fn draw_grid_general(
+    app: &App,
+    painter: &Painter,
+    rect: ERect,
+    geom: &crate::grid_geom::GridGeom,
+    dots: bool,
+    major: Color32,
+    minor: Color32,
+) {
+    let view = &app.view;
+    let zoom = view.zoom as f64;
+    let ppp = painter.ctx().pixels_per_point();
+    let one = 1.0 / ppp;
+    let min_px = if dots { GRID_MIN_DOTS } else { GRID_MIN_LINES };
+    let sin = geom.skew_sine();
+    // The window's corners in grid coordinates: the ranges to cover.
+    let corners: Vec<(f64, f64)> = [
+        rect.left_top(),
+        rect.right_top(),
+        rect.left_bottom(),
+        rect.right_bottom(),
+    ]
+    .into_iter()
+    .map(|c| geom.to_uv(view.to_page(c)))
+    .collect();
+    let lo = |f: fn(&(f64, f64)) -> f64| corners.iter().map(f).fold(f64::INFINITY, f64::min);
+    let hi = |f: fn(&(f64, f64)) -> f64| corners.iter().map(f).fold(f64::NEG_INFINITY, f64::max);
+    let (u0, u1) = (lo(|c| c.0), hi(|c| c.0));
+    let (v0, v1) = (lo(|c| c.1), hi(|c| c.1));
+    // Each family: the line coordinates, thinned to the zoom.
+    let family = |k: usize| {
+        let axis = geom.axes[k];
+        let cell_px = axis.pitch() * sin * zoom;
+        let every = grid_thinning(cell_px, min_px);
+        let sub_px = axis.spacing / f64::from(axis.divisions.max(1)) * sin * zoom;
+        let show_sub = every <= 1.0 && axis.divisions > 1 && sub_px >= GRID_MIN_SUB;
+        let (a, b) = if k == 0 { (u0, u1) } else { (v0, v1) };
+        let lines = axis.lines_between(a, b, every, show_sub, GRID_MAX_LINES);
+        let fade = grid_fade(cell_px * every, min_px);
+        let sub_fade = grid_fade(sub_px, GRID_MIN_SUB * 2.0);
+        (lines, fade, sub_fade)
+    };
+    let fams = [family(0), family(1)];
+    let mut px = crate::ui::rulers::Pixels::default();
+    if dots {
+        // A dot at each crossing of two cell edges.
+        let us: Vec<f64> = fams[0].0.iter().filter(|l| !l.1).map(|l| l.0).collect();
+        let vs: Vec<f64> = fams[1].0.iter().filter(|l| !l.1).map(|l| l.0).collect();
+        if us.len() * vs.len() > GRID_MAX_DOTS {
+            return;
+        }
+        let c = major.gamma_multiply(fams[0].1.min(fams[1].1));
+        for u in &us {
+            for v in &vs {
+                let q = view.to_screen(geom.from_uv(*u, *v));
+                if rect.contains(q) {
+                    let q = Pos2::new(device_pixel(q.x, ppp), device_pixel(q.y, ppp));
+                    px.rect(ERect::from_min_size(q, egui::vec2(one, one)), c);
+                }
+            }
+        }
+        px.paint(painter);
+        return;
+    }
+    let mut seg = |a: Point, b: Point, c: Color32| {
+        let (sa, sb) = (view.to_screen(a), view.to_screen(b));
+        let Some((sa, sb)) = clip_segment(sa, sb, rect) else {
+            return;
+        };
+        if (sa.x - sb.x).abs() < 0.01 {
+            let x = device_pixel(sa.x, ppp);
+            px.rect(
+                ERect::from_min_max(
+                    Pos2::new(x, sa.y.min(sb.y)),
+                    Pos2::new(x + one, sa.y.max(sb.y)),
+                ),
+                c,
+            );
+        } else if (sa.y - sb.y).abs() < 0.01 {
+            let y = device_pixel(sa.y, ppp);
+            px.rect(
+                ERect::from_min_max(
+                    Pos2::new(sa.x.min(sb.x), y),
+                    Pos2::new(sa.x.max(sb.x), y + one),
+                ),
+                c,
+            );
+        } else {
+            painter.line_segment([sa, sb], EStroke::new(one.max(0.8), c));
+        }
+    };
+    // Subdivisions first, under the cell edges.
+    for pass_sub in [true, false] {
+        for (k, (lines, fade, sub_fade)) in fams.iter().enumerate() {
+            let c = if pass_sub {
+                minor.gamma_multiply(*sub_fade)
+            } else {
+                major.gamma_multiply(*fade)
+            };
+            for (t, sub) in lines {
+                if *sub != pass_sub {
+                    continue;
+                }
+                let (a, b) = if k == 0 {
+                    (geom.from_uv(*t, v0), geom.from_uv(*t, v1))
+                } else {
+                    (geom.from_uv(u0, *t), geom.from_uv(u1, *t))
+                };
+                seg(a, b, c);
+            }
+        }
+    }
+    if geom.third {
+        // Lines u/s0 - v/s1 = k through the cell corners.
+        let (s0, s1) = (geom.axes[0].spacing, geom.axes[1].spacing);
+        let ks: Vec<f64> = corners.iter().map(|(u, v)| u / s0 - v / s1).collect();
+        let k0 = ks.iter().copied().fold(f64::INFINITY, f64::min).floor();
+        let k1 = ks.iter().copied().fold(f64::NEG_INFINITY, f64::max).ceil();
+        let dir = geom.axes[0].dir * s0 + geom.axes[1].dir * s1;
+        let len = dir.hypot().max(1e-9);
+        // Distance between two such lines on screen.
+        let gap_px = (s0 * s1 * sin / len) * zoom;
+        let every = grid_thinning(gap_px, min_px);
+        if every.is_finite() && (k1 - k0) / every < GRID_MAX_LINES as f64 {
+            let c = major.gamma_multiply(grid_fade(gap_px * every, min_px));
+            let t0 = (v0 / s1).min(u0 / s0) - (k1 - k0).abs() - 1.0;
+            let t1 = (v1 / s1).max(u1 / s0) + (k1 - k0).abs() + 1.0;
+            let step = every.max(1.0);
+            let mut k = (k0 / step).floor() * step;
+            while k <= k1 {
+                let a = geom.from_uv((k + t0) * s0, t0 * s1);
+                let b = geom.from_uv((k + t1) * s0, t1 * s1);
+                seg(a, b, c);
+                k += step;
+            }
         }
     }
     px.paint(painter);
@@ -3816,6 +4219,11 @@ fn draw_nodes(app: &App, painter: &Painter) {
                     ));
                 }
             }
+            // The nodes, then a rectangle's edge handles: the list of
+            // nodes alone left the edge handles out, so their diamonds
+            // and arcs never showed (#3813).
+            let mut own = own;
+            own.extend(crate::kind_nodes::edge_handles(&s));
             for (node, p) in own {
                 let chosen = matches!(
                     node,
@@ -3877,6 +4285,9 @@ fn draw_nodes(app: &App, painter: &Painter) {
             painter.add(egui::Shape::line(pts, EStroke::new(1.0, outline)));
         }
         let all = nodes::nodes(path);
+        // The nodes whose handles show (#4337): one chosen node and its
+        // neighbours, none while several are chosen.
+        let shown = app.handle_nodes();
         // The direction (#3038, #2578): the first node of every subpath is
         // a triangle pointing the way the curve leaves it, and the last
         // node of an open subpath one pointing the way it arrives, so
@@ -3905,7 +4316,7 @@ fn draw_nodes(app: &App, painter: &Painter) {
             let selected = app.node_selection.contains(&(s.id, n.index))
                 && chosen_segment != Some((s.id, n.index));
             let p = view.to_screen(s.transform * n.pos);
-            if selected {
+            if shown.contains(&(s.id, n.index)) && chosen_segment != Some((s.id, n.index)) {
                 for c in [n.ctrl_in, n.ctrl_out].into_iter().flatten() {
                     let cp = view.to_screen(s.transform * c);
                     draw_control_handle(painter, p, cp, main, prefs.control_head());
@@ -3994,7 +4405,6 @@ fn draw_nodes(app: &App, painter: &Painter) {
 /// A line of `pattern` (on and off lengths in pixels; empty for solid).
 /// Horizontal and vertical lines are drawn on whole pixels.
 fn pattern_line(painter: &Painter, a: Pos2, b: Pos2, color: Color32, pattern: &[f32]) {
-    let stroke = EStroke::new(1.0, color);
     let len = a.distance(b);
     let axis = (a.x - b.x).abs() < 0.01 || (a.y - b.y).abs() < 0.01;
     if axis && len > 0.0 {
@@ -4027,6 +4437,10 @@ fn pattern_line(painter: &Painter, a: Pos2, b: Pos2, color: Color32, pattern: &[
         px.paint(painter);
         return;
     }
+    // A slanted line is smoothed over the pixels it crosses, which drew
+    // it wider and darker than the one-pixel straight guidelines: a
+    // thinner stroke gives it their weight (#4383).
+    let stroke = EStroke::new(0.7, color);
     if pattern.is_empty() || len <= 0.0 {
         painter.line_segment([a, b], stroke);
         return;
@@ -4081,7 +4495,11 @@ fn draw_snapped_guide(
                 );
             }
         }
-        GuideLine::Angled { .. } => {}
+        GuideLine::Angled { .. } => {
+            if let Some((a, b)) = angled_guide_on_screen(&app.view, line, rect) {
+                painter.line_segment([a, b], stroke);
+            }
+        }
     }
 }
 
@@ -4765,9 +5183,9 @@ fn mesh_edge_points(edge: kurbo::CubicBez, view: &View) -> Vec<Pos2> {
     points
 }
 
-/// Effect nodes (perspective, mesh) of the selection with the Shape tool
-/// (and the mesh with the Mesh Fill tool): small blue squares joined by
-/// a frame.
+/// Effect nodes (perspective, blur pins, mesh) of the selection with the
+/// Shape tool (and the mesh with the Mesh Fill tool): small blue squares
+/// joined by a frame, the blur pins round.
 pub fn draw_effect_nodes(app: &App, painter: &Painter) {
     if !matches!(
         app.tool,
@@ -4800,7 +5218,7 @@ pub fn draw_effect_nodes(app: &App, painter: &Painter) {
         // The perspective frame (envelopes: `ui::envelope_ui`).
         let persp: Vec<egui::Pos2> = nodes
             .iter()
-            .filter(|(i, _)| (100..200).contains(i))
+            .filter(|(i, _)| (100..104).contains(i))
             .map(|(_, p)| app.view.to_screen(*p))
             .collect();
         if persp.len() == 4 && !envelope_tool {
@@ -4867,14 +5285,62 @@ pub fn draw_effect_nodes(app: &App, painter: &Painter) {
                 }
             }
         }
+        // The chosen colour point's spread: a ring as far as its colour
+        // reaches, with a handle on it to drag (#3947).
+        if let Some((_, i)) = app.selected_color_point().filter(|(id, _)| *id == s.id) {
+            if let Some((at, r, h)) = crate::color_points::spread_ring(s, i) {
+                let c = app.view.to_screen(at);
+                let rs = r as f32 * app.view.zoom;
+                painter.circle_stroke(c, rs, egui::Stroke::new(1.0, blue));
+                let k = crate::color_points::SPREAD_HANDLE_BASE + i;
+                let held = app.effect_node_drag == Some((s.id, k));
+                painter.circle(
+                    app.view.to_screen(h),
+                    4.0,
+                    if held { blue } else { egui::Color32::WHITE },
+                    egui::Stroke::new(1.0, blue),
+                );
+            }
+        }
         // Every chosen mesh node shows filled (discussion #2387).
         let chosen: Vec<usize> = app
             .selected_mesh_nodes()
             .filter(|(id, _)| *id == s.id)
             .map(|(_, v)| v)
             .unwrap_or_default();
+        // Blur pins: a round handle each, with a thin ring as wide as
+        // its blur radius.
+        let pin_radii: Vec<f64> = s
+            .effects
+            .iter()
+            .find_map(|e| match e {
+                tracedraw_core::live::Effect::GaussianBlur { pins, .. } => {
+                    Some(pins.iter().map(|p| p.radius).collect())
+                }
+                _ => None,
+            })
+            .unwrap_or_default();
         for (i, p) in nodes {
             let sp = app.view.to_screen(p);
+            if let Some(k) = crate::interaction2::blur_pin_of(i) {
+                let held = app.effect_node_drag == Some((s.id, i))
+                    || app.selected_effect_node == Some((s.id, i));
+                let ring = pin_radii.get(k).copied().unwrap_or(0.0) * app.view.zoom as f64;
+                if ring.is_finite() && ring > 5.0 {
+                    painter.circle_stroke(
+                        sp,
+                        ring.min(4000.0) as f32,
+                        egui::Stroke::new(1.0, blue.gamma_multiply(0.6)),
+                    );
+                }
+                painter.circle(
+                    sp,
+                    4.5,
+                    if held { blue } else { egui::Color32::WHITE },
+                    egui::Stroke::new(1.0, blue),
+                );
+                continue;
+            }
             let r = egui::Rect::from_center_size(sp, egui::vec2(7.0, 7.0));
             let selected = app
                 .effect_node_drag
@@ -5122,6 +5588,7 @@ mod tests {
             grab: tracedraw_core::geometry::Vec2::ZERO,
             mods: Default::default(),
             snapped: (false, false),
+            flat: (false, false),
             start_geometry: None,
         };
         let t = app.preview_transform_of(&app.drag).expect("a preview");
@@ -5751,10 +6218,61 @@ mod tests {
         assert_eq!(drop_frame_hints((false, false), false).len(), 3);
     }
 
-    /// #1145: with the Pick tool a selected object marks the first node
+    /// #1145 (default, the option of #3258 off): with the Pick tool a selected object marks the first node
     /// of each of its subpaths (the outer and inner ring of a letter O
     /// each), as the reference program does; an ellipse its start, a
     /// rectangle its first corner; a group nothing.
+    #[test]
+    fn by_default_the_pick_tool_marks_only_where_outlines_start() {
+        use tracedraw_core::ShapeKind;
+        let mut app = App::headless();
+        let mut path = BezPath::new();
+        path.move_to(Point::new(0.0, 0.0));
+        path.line_to(Point::new(50.0, 0.0));
+        path.line_to(Point::new(50.0, 30.0));
+        path.close_path();
+        path.move_to(Point::new(10.0, 5.0));
+        path.line_to(Point::new(40.0, 5.0));
+        path.line_to(Point::new(40.0, 20.0));
+        path.close_path();
+        let curve = app
+            .new_shape(ShapeKind::Path { path, closed: true })
+            .expect("curve");
+        let ring = app
+            .new_shape(ShapeKind::Ellipse {
+                rect: Rect::new(100.0, 0.0, 140.0, 40.0),
+                arc: None,
+            })
+            .expect("ellipse");
+        let rect = app
+            .new_shape(ShapeKind::Rect {
+                rect: Rect::new(200.0, 0.0, 240.0, 40.0),
+                radius: 0.0,
+                corners: None,
+            })
+            .expect("rect");
+        let marks = |app: &App, id| {
+            let s = app.doc().find_shape(id).expect("shape").clone();
+            pick_node_marks_first(&[s])
+        };
+        assert_eq!(
+            marks(&app, curve),
+            vec![Point::new(0.0, 0.0), Point::new(10.0, 5.0)]
+        );
+        assert_eq!(marks(&app, ring).len(), 1);
+        assert_eq!(marks(&app, rect).len(), 1);
+        app.select(vec![curve, ring]);
+        app.group_selection();
+        let group = app.selection[0];
+        assert!(marks(&app, group).is_empty());
+    }
+
+    /// #1906: View > Page > Page Border and Page Shadow are two options:
+    /// each draws its part of the page's edge alone, and both are kept
+    /// with the view's preferences.
+    /// #1145, #3258: a single selected object marks all its nodes; a
+    /// multiple selection marks only each object's first node, even for
+    /// compound paths. A group has no marks.
     #[test]
     fn the_pick_tool_marks_where_the_selected_outlines_start() {
         use tracedraw_core::ShapeKind;
@@ -5786,18 +6304,267 @@ mod tests {
             .expect("rect");
         let marks = |app: &App, id| {
             let s = app.doc().find_shape(id).expect("shape").clone();
-            pick_node_marks(&[s])
+            pick_node_marks_every(&[s])
         };
         assert_eq!(
             marks(&app, curve),
-            vec![Point::new(0.0, 0.0), Point::new(10.0, 5.0)]
+            vec![
+                Point::new(0.0, 0.0),
+                Point::new(50.0, 0.0),
+                Point::new(50.0, 30.0),
+                Point::new(10.0, 5.0),
+                Point::new(40.0, 5.0),
+                Point::new(40.0, 20.0),
+            ]
         );
         assert_eq!(marks(&app, ring).len(), 1);
-        assert_eq!(marks(&app, rect).len(), 1);
+        let rect_marks = marks(&app, rect);
+        assert_eq!(rect_marks.len(), 4);
+        for corner in [
+            Point::new(200.0, 0.0),
+            Point::new(240.0, 0.0),
+            Point::new(240.0, 40.0),
+            Point::new(200.0, 40.0),
+        ] {
+            assert!(rect_marks.contains(&corner), "missing {corner:?}");
+        }
+
         app.select(vec![curve, ring]);
+        let selected = app.selected_rc();
+        assert_eq!(
+            pick_node_marks_every(selected.as_slice()),
+            vec![Point::new(0.0, 0.0), Point::new(120.0, 40.0),]
+        );
         app.group_selection();
         let group = app.selection[0];
         assert!(marks(&app, group).is_empty());
+    }
+
+    /// #3813: with the Shape tool a rectangle shows the arc of each
+    /// edge handle just outside its side.
+    #[test]
+    fn a_rectangle_shows_its_edge_handles_with_the_shape_tool() {
+        use tracedraw_core::document::ShapeKind;
+        let ctx = crate::theme::ui_context();
+        let mut app = App::headless();
+        let id = app
+            .new_shape(ShapeKind::Rect {
+                rect: tracedraw_core::geometry::Rect::new(20.0, 20.0, 80.0, 60.0),
+                radius: 0.0,
+                corners: None,
+            })
+            .expect("rect");
+        app.select(vec![id]);
+        app.tool = crate::tools::Tool::Shape;
+        let input = egui::RawInput {
+            screen_rect: Some(ERect::from_min_size(Pos2::ZERO, egui::vec2(800.0, 600.0))),
+            ..Default::default()
+        };
+        let mut out = ctx.run_ui(input, |ui| {
+            let painter = ui.painter().clone();
+            draw_nodes(&app, &painter);
+        });
+        out.textures_delta.clear();
+        // Each edge's arc is a line of nine points, drawn twice (a white
+        // edge under the node colour) (#3813).
+        fn arcs(s: &egui::Shape) -> usize {
+            match s {
+                egui::Shape::Vec(v) => v.iter().map(arcs).sum(),
+                egui::Shape::Path(p) => usize::from(!p.closed && p.points.len() == 9),
+                _ => 0,
+            }
+        }
+        let n: usize = out.shapes.iter().map(|c| arcs(&c.shape)).sum();
+        assert_eq!(n, 8, "four edge arcs, each drawn twice");
+    }
+
+    #[test]
+    fn the_pick_tool_marks_a_transformed_bitmaps_four_corners() {
+        use tracedraw_core::{Shape, ShapeId};
+        let mut bitmap = Shape::new(
+            ShapeId(1),
+            ShapeKind::Bitmap {
+                rect: Rect::new(10.0, 20.0, 40.0, 60.0),
+                width_px: 1,
+                height_px: 1,
+                png: Vec::new().into(),
+                fx: None,
+            },
+        );
+        // Rotate a quarter turn, scale each axis and translate.
+        bitmap.transform = Affine::new([0.0, 2.0, -3.0, 0.0, 100.0, 200.0]);
+        assert_eq!(
+            pick_node_marks_every(std::slice::from_ref(&bitmap)),
+            vec![
+                Point::new(-80.0, 220.0),
+                Point::new(-80.0, 280.0),
+                Point::new(40.0, 220.0),
+                Point::new(40.0, 280.0),
+            ]
+        );
+        let mut other = bitmap.clone();
+        other.id = ShapeId(2);
+        other.transform = Affine::translate((8.0, -4.0));
+        assert_eq!(
+            pick_node_marks_every(&[bitmap, other]),
+            vec![Point::new(-80.0, 220.0), Point::new(18.0, 56.0)]
+        );
+    }
+
+    #[test]
+    fn the_pick_tool_marks_a_clip_frames_outline_without_its_contents() {
+        use tracedraw_core::{Shape, ShapeId};
+        let mut path = BezPath::new();
+        path.move_to((0.0, 0.0));
+        path.line_to((30.0, 0.0));
+        path.line_to((10.0, 20.0));
+        path.close_path();
+        let mut outline = Shape::new(ShapeId(1), ShapeKind::Path { path, closed: true });
+        outline.transform = Affine::translate((5.0, 7.0));
+        let content = Shape::new(
+            ShapeId(2),
+            ShapeKind::Rect {
+                rect: Rect::new(-100.0, -100.0, 100.0, 100.0),
+                radius: 0.0,
+                corners: None,
+            },
+        );
+        let mut clip = Shape::new(
+            ShapeId(3),
+            ShapeKind::ClipFrame {
+                frame: Box::new(outline),
+                contents: vec![content],
+            },
+        );
+        clip.transform = Affine::new([0.0, 2.0, -3.0, 0.0, 100.0, 200.0]);
+        let expected = vec![
+            Point::new(79.0, 210.0),
+            Point::new(79.0, 270.0),
+            Point::new(19.0, 230.0),
+        ];
+        assert_eq!(pick_node_marks_every(std::slice::from_ref(&clip)), expected);
+        let mut nested = Shape::new(
+            ShapeId(4),
+            ShapeKind::ClipFrame {
+                frame: Box::new(clip),
+                contents: Vec::new(),
+            },
+        );
+        nested.transform = Affine::translate((8.0, -4.0));
+        let other = Shape::new(
+            ShapeId(5),
+            ShapeKind::Ellipse {
+                rect: Rect::new(0.0, 0.0, 40.0, 40.0),
+                arc: None,
+            },
+        );
+        assert_eq!(
+            pick_node_marks_every(&[nested.clone(), other]),
+            vec![Point::new(87.0, 206.0), Point::new(20.0, 40.0)]
+        );
+        assert_eq!(
+            pick_node_marks_every(&[nested]),
+            expected
+                .into_iter()
+                .map(|p| p + tracedraw_core::geometry::Vec2::new(8.0, -4.0))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn the_pick_tool_marks_each_selected_bitmap_and_clip_frame_once() {
+        use tracedraw_core::{Shape, ShapeId};
+        let rect = Shape::new(
+            ShapeId(1),
+            ShapeKind::Rect {
+                rect: Rect::new(10.0, 20.0, 40.0, 60.0),
+                radius: 0.0,
+                corners: None,
+            },
+        );
+        let frame = Shape::new(
+            ShapeId(2),
+            ShapeKind::ClipFrame {
+                frame: Box::new(rect.clone()),
+                contents: Vec::new(),
+            },
+        );
+        let bitmap = Shape::new(
+            ShapeId(3),
+            ShapeKind::Bitmap {
+                rect: Rect::new(50.0, 20.0, 80.0, 60.0),
+                width_px: 1,
+                height_px: 1,
+                png: Vec::new().into(),
+                fx: None,
+            },
+        );
+        assert_eq!(
+            pick_node_marks_every(std::slice::from_ref(&frame)),
+            vec![
+                Point::new(10.0, 60.0),
+                Point::new(40.0, 60.0),
+                Point::new(10.0, 20.0),
+                Point::new(40.0, 20.0),
+            ]
+        );
+        assert_eq!(
+            pick_node_marks_every(&[frame.clone(), bitmap.clone()]),
+            vec![Point::new(10.0, 60.0), Point::new(50.0, 60.0)]
+        );
+        let mut filled = frame.clone();
+        filled.id = ShapeId(4);
+        filled.transform = Affine::translate((100.0, 0.0));
+        if let ShapeKind::ClipFrame { contents, .. } = &mut filled.kind {
+            contents.push(bitmap.clone());
+        }
+        assert_eq!(
+            pick_node_marks_every(&[rect, frame, bitmap, filled]),
+            vec![
+                Point::new(10.0, 60.0),
+                Point::new(10.0, 60.0),
+                Point::new(50.0, 60.0),
+                Point::new(110.0, 60.0),
+            ]
+        );
+    }
+
+    #[test]
+    fn the_pick_tool_limits_marks_for_single_and_multiple_selections() {
+        use tracedraw_core::{Shape, ShapeId};
+        let mut path = BezPath::new();
+        path.move_to((0.0, 0.0));
+        for i in 1..PICK_NODE_MARKS_MAX {
+            path.line_to((i as f64, 0.0));
+        }
+        let mut curve = Shape::new(
+            ShapeId(1),
+            ShapeKind::Path {
+                path,
+                closed: false,
+            },
+        );
+        assert_eq!(
+            pick_node_marks_every(std::slice::from_ref(&curve)).len(),
+            PICK_NODE_MARKS_MAX
+        );
+        if let ShapeKind::Path { path, .. } = &mut curve.kind {
+            path.line_to((PICK_NODE_MARKS_MAX as f64, 0.0));
+        }
+        assert!(pick_node_marks_every(std::slice::from_ref(&curve)).is_empty());
+        let mut selected: Vec<_> = (0..PICK_NODE_MARKS_MAX)
+            .map(|i| {
+                let mut shape = curve.clone();
+                shape.id = ShapeId(i as u64 + 1);
+                shape.transform = Affine::translate((i as f64, 0.0));
+                shape
+            })
+            .collect();
+        let marks = pick_node_marks_every(&selected);
+        assert_eq!(marks.len(), PICK_NODE_MARKS_MAX);
+        assert_eq!(marks.last(), Some(&Point::new(999.0, 0.0)));
+        selected.push(curve);
+        assert!(pick_node_marks_every(&selected).is_empty());
     }
 
     /// #1906: View > Page > Page Border and Page Shadow are two options:

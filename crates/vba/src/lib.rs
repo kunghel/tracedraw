@@ -142,6 +142,14 @@ pub struct Options {
     pub host_names: Vec<String>,
     /// (form module name, its control names).
     pub form_controls: Vec<(String, Vec<String>)>,
+    /// Keep going past what TraceDraw cannot do: a statement that stops
+    /// with "not supported" (445), a member the object lacks (438), an
+    /// object that cannot be made (429) or a DLL function (453), and the
+    /// "object required" errors that follow from one, is skipped when no
+    /// error handler of the procedure takes it, and listed in
+    /// `__v.skipped` (`{n, d, m, p, l}`: number, description, module,
+    /// procedure, line).
+    pub keep_going: bool,
 }
 
 /// Compile a project's modules into one JavaScript program.

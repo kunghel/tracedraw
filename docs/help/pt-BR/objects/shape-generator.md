@@ -88,8 +88,10 @@ o resultado se repete sem emenda.
 
 ### [[shapegen.kind_tessellation]] {#tessellation}
 
-Triângulos, hexágonos, escamas ou chevrons com um [[shapegen.gap]] e uma
-[[shapegen.rotation]].
+Triângulos, hexágonos, escamas, chevrons, [[shapegen.tess_masonry]]
+(tijolos em amarração corrida) ou [[shapegen.tess_pinwheel]] (triângulos
+retângulos girados em ângulos que nunca se repetem) com um
+[[shapegen.gap]] e uma [[shapegen.rotation]].
 
 ![Um mosaico de hexágonos preenchidos com um pequeno espaço entre eles](../../img/objects-shape-generator-tessellation.png)
 
@@ -135,7 +137,12 @@ Uma roda girando por dentro ou por fora de um anel
 ### [[shapegen.kind_guilloche]] {#guilloche}
 
 Anéis curvados por duas ondas, cada um girado pela [[shapegen.guil_twist]]
-para que as linhas se entrelacem, como nas cédulas de dinheiro.
+para que as linhas se entrelacem, como nas cédulas de dinheiro. A
+[[shapegen.guil_layout]] também pode levar as linhas numa
+[[shapegen.guil_band_layout]] atravessando a caixa ou numa
+[[shapegen.guil_frame_layout]] na borda ([[shapegen.guil_band]]), com
+ondas de [[shapegen.guil_period]] e [[shapegen.guil_period2]]: as bordas de
+certificados, diplomas e vales.
 
 ![Uma rosácea de guilhochê com linhas entrelaçadas](../../img/objects-shape-generator-guilloche.png)
 
@@ -166,6 +173,10 @@ quadrados ou hexágonos formados pelo [[shapegen.tile_angle]].
 - [[shapegen.kind_layer_waves]], [[shapegen.kind_blobs]] e
   [[shapegen.kind_soft_gradient]]: fundos preenchidos nas cores que
   você escolher, veja [Fundos](#backgrounds).
+- [[shapegen.kind_circle_packing]], [[shapegen.kind_phyllotaxis]],
+  [[shapegen.kind_quadtree]], [[shapegen.kind_reaction_diffusion]] e
+  [[shapegen.kind_interlace]]: veja
+  [Empacotamentos, nós e padrões orgânicos](#more-patterns).
 
 Os geradores que fazem escolhas aleatórias têm uma [[shapegen.seed]]: a
 mesma semente sempre dá o mesmo resultado, e [[shapegen.new_seed]] escolhe
@@ -371,3 +382,38 @@ As ondas e os blobs são curvas preenchidas comuns e o degradê é um
 preenchimento de malha comum, então podem ser editados, recoloridos e
 exportados como qualquer outro objeto; adicione grão ou desfoque com os
 efeitos, se quiser.
+
+## Empacotamentos, nós e padrões orgânicos {#more-patterns}
+
+- [[shapegen.kind_circle_packing]]: círculos de vários tamanhos preenchem a
+  caixa sem se encostar, do [[shapegen.pack_min]] ao [[shapegen.pack_max]],
+  com um [[shapegen.gap]] entre eles, até [[shapegen.pack_count]] círculos.
+  Escolha uma forma ou texto com [[shapegen.use_selection]] para preenchê-lo
+  no lugar da caixa: bom para arte de laser, fundos e logos.
+- [[shapegen.kind_phyllotaxis]]: [[shapegen.phy_count]] pontos na espiral
+  do miolo de um girassol, cada um girado do anterior pelo
+  [[shapegen.phy_angle]] (o ângulo áureo por padrão). O
+  [[shapegen.cell_shape]], o [[shapegen.cell_size]] e a
+  [[shapegen.scale_ratio]] (pontos de fora comparados aos do centro)
+  definem os pontos.
+- [[shapegen.kind_quadtree]]: a caixa é cortada em quadrados e cada um é
+  dividido em quatro ao acaso ([[shapegen.qt_split]]) até os
+  [[shapegen.qt_depth]]; cada quadrado recebe uma cor de
+  [[shapegen.bg_colors]] e um motivo geométrico em outra cor: um quarto ou
+  meio disco, um disco, um anel, um triângulo, um quadrado menor, uma folha
+  ou barras.
+- [[shapegen.kind_reaction_diffusion]]: padrões orgânicos como pele de
+  animal, labirinto ou coral, formados por dois químicos numa grade e
+  traçados como curvas preenchidas. Escolha o [[shapegen.rd_preset]], o
+  [[shapegen.rd_cells]] (mais deixa as formas menores e demora mais), os
+  [[shapegen.rd_steps]] e o [[shapegen.rd_level]] onde as bordas são
+  traçadas; [[shapegen.rd_invert]] preenche o espaço entre as formas.
+- [[shapegen.kind_interlace]]: fitas que passam por cima e por baixo umas
+  das outras, alternando. [[shapegen.knot_celtic]] desenha nós sobre
+  quadrados, com [[shapegen.knot_breaks]] que fazem os fios voltarem
+  (espelhadas quando [[shapegen.knot_symmetric]]); os padrões de estrelas
+  desenham fitas retas de estrelas de dez pontas (girih), oito ou seis
+  pontas, formadas pelo [[shapegen.tile_angle]]. [[shapegen.knot_ribbon]]
+  desenha cada fio como duas linhas a [[shapegen.knot_width]] de distância,
+  e [[shapegen.knot_gap]] é o espaço deixado onde um fio passa por baixo de
+  outro.

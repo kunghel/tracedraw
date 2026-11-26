@@ -14,6 +14,7 @@
 //! inside the active plane goes onto it, and an object already on it
 //! slides along it, staying the object it was (a text stays text).
 
+use crate::ui::btn_icons::IconUi;
 use crate::app::App;
 use crate::tools::Tool;
 use crate::ui::tips::RichTip;
@@ -1056,7 +1057,7 @@ pub fn show_bar(app: &mut App, ctx: &egui::Context) {
         .show(ctx, |ui| {
             egui::Frame::popup(ui.style()).show(ui, |ui| {
                 ui.horizontal(|ui| {
-                    if ui.button(tr("perspective.finish")).clicked() {
+                    if ui.ibutton("perspective.finish").clicked() {
                         app.perspective = None;
                         return;
                     }
@@ -1112,7 +1113,7 @@ pub fn show_bar(app: &mut App, ctx: &egui::Context) {
                     }
                     let some = !app.selection.is_empty();
                     if ui
-                        .add_enabled(some, egui::Button::new(tr("perspective.put_on_plane")))
+                        .add_enabled(some, crate::ui::btn_icons::Ib::new("perspective.put_on_plane"))
                         .rich_tip(tr("perspective.put_on_plane_tip"))
                         .clicked()
                     {

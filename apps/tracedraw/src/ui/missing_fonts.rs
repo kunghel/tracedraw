@@ -11,6 +11,7 @@
 //! (tests, scripts, the MCP server), which keep the plain note. See
 //! docs/behavior/missing-fonts.md.
 
+use crate::ui::btn_icons::IconUi;
 use crate::app::App;
 use crate::i18n::{tr, trf};
 use crate::ui::dialogs::window;
@@ -220,7 +221,7 @@ pub fn dialog(app: &mut App, ctx: &Context, st: &mut MissingFontsState, close: &
             });
         ui.add_space(4.0);
         if ui
-            .button(tr("missing_fonts.add_font"))
+            .ibutton("missing_fonts.add_font")
             .rich_tip(crate::ui::tips::pair(
                 "missing_fonts.add_font",
                 "missing_fonts.add_font_tip",
@@ -421,17 +422,19 @@ mod tests {
     }
 
     /// For this session only: the drawing keeps its font name, the font
-    /// chosen draws it; Cancel changes nothing.
+    /// chosen draws it; Cancel changes nothing. A family of its own: the
+    /// stand-ins are shared, and another test that ends by dropping the
+    /// stand-in of the same family made this one fail when run beside it.
     #[test]
     fn a_font_chosen_for_the_session_draws_the_text_and_the_drawing_keeps_its_font() {
-        let (mut app, family) = drawing();
+        let (mut app, family) = drawing_in("Nowhere Grotesk 4202");
         let Some(other) = app
             .font_families
             .iter()
             .find(|f| {
                 Some(f.as_str())
                     != tracedraw_text::fonts()
-                        .substitute("Nowhere Grotesk 936")
+                        .substitute("Nowhere Grotesk 4202")
                         .as_deref()
             })
             .cloned()
@@ -446,7 +449,7 @@ mod tests {
         frame(&mut app, &ctx, Vec::new());
         app.dialog = Dialog::None;
         assert!(tracedraw_text::fonts()
-            .chosen_substitute("Nowhere Grotesk 936")
+            .chosen_substitute("Nowhere Grotesk 4202")
             .is_none());
         // Chosen for the session.
         app.show_open_notes("b.tdraw".into(), 0);
@@ -458,16 +461,16 @@ mod tests {
         let st = st.clone();
         app.apply_font_choices(&st);
         assert_eq!(
-            tracedraw_text::fonts().chosen_substitute("Nowhere Grotesk 936"),
+            tracedraw_text::fonts().chosen_substitute("Nowhere Grotesk 4202"),
             Some(other.clone())
         );
         assert_eq!(
             app.doc().font_families_used(),
-            vec!["Nowhere Grotesk 936".to_string()]
+            vec!["Nowhere Grotesk 4202".to_string()]
         );
-        assert_eq!(app.missing_fonts, vec!["Nowhere Grotesk 936".to_string()]);
+        assert_eq!(app.missing_fonts, vec!["Nowhere Grotesk 4202".to_string()]);
         assert!(app.status.contains(&other), "{}", app.status);
-        tracedraw_text::fonts().set_substitute("Nowhere Grotesk 936", None);
+        tracedraw_text::fonts().set_substitute("Nowhere Grotesk 4202", None);
     }
 
     /// The dialog has a choice of its own in Options > Global > Warnings:

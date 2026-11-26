@@ -162,6 +162,13 @@ offsets.
 1. Select a text and a curve or shape.
 2. Choose [[menu.text > menu.text.fit_text_to_path]].
 
+With the [[tool.pick]] tool, you can also drag a single text onto a path
+with the right mouse button. When the outline highlights, release and
+choose [[menu.text.fit_text_to_path]].
+On a closed path, the release point locates the centre of the text along it.
+The text follows later edits to the outline, including after reopening a
+native drawing.
+
 Or click the outline of a path with the [[tool.text]] tool and type. Text on a
 closed shape stands on its outside, centered on its top; clicked on the bottom
 of an ellipse, it starts there.

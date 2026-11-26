@@ -82,7 +82,14 @@ pub struct Warp {
     pub pts: Vec<(f32, f32)>,
     /// The point being dragged.
     pub drag: Option<usize>,
+    /// How far the dragged point lies from the pointer: it keeps that
+    /// distance instead of jumping under the pointer.
+    pub grab: (f32, f32),
 }
+
+/// How near the pointer, in screen points, a grid point is taken: the
+/// nearest one within it (#4116).
+pub const GRAB_RADIUS: f32 = 20.0;
 
 /// Points of the dense grid drawn and rasterized per control cell.
 const DENSE: usize = 12;
@@ -109,6 +116,42 @@ impl Warp {
             rows,
             pts,
             drag: None,
+            grab: (0.0, 0.0),
+        }
+    }
+
+    /// The grid point nearest (x, y) within `radius` (picture pixels), and
+    /// how far it lies from (x, y).
+    pub fn pick(&self, x: f32, y: f32, radius: f32) -> Option<(usize, (f32, f32))> {
+        let (k, d) = self
+            .pts
+            .iter()
+            .enumerate()
+            .map(|(k, p)| (k, (p.0 - x).hypot(p.1 - y)))
+            .min_by(|a, b| a.1.total_cmp(&b.1))?;
+        (d <= radius).then(|| (k, (self.pts[k].0 - x, self.pts[k].1 - y)))
+    }
+
+    /// Take the point nearest (x, y) within `radius` to drag it; false
+    /// when none is that near.
+    pub fn take(&mut self, x: f32, y: f32, radius: f32) -> bool {
+        match self.pick(x, y, radius) {
+            Some((k, off)) => {
+                self.drag = Some(k);
+                self.grab = off;
+                true
+            }
+            None => {
+                self.drag = None;
+                false
+            }
+        }
+    }
+
+    /// The point being dragged follows the pointer at (x, y).
+    pub fn drag_to(&mut self, x: f32, y: f32) {
+        if let Some(p) = self.drag.and_then(|k| self.pts.get_mut(k)) {
+            *p = (x + self.grab.0, y + self.grab.1);
         }
     }
 
@@ -291,6 +334,21 @@ fn tri(
 mod tests {
     use super::*;
     use crate::pixel_edit::rect_mask;
+
+    #[test]
+    fn a_grid_point_is_taken_near_it_and_keeps_its_distance_from_the_pointer() {
+        let mut w = Warp::new(RgbaImage::new(40, 40), [0, 0, 40, 40], 3, 3);
+        // The middle point is at (20, 20): a press 5 px off takes it.
+        assert!(w.take(24.0, 23.0, 8.0));
+        assert_eq!(w.drag, Some(4));
+        w.drag_to(30.0, 23.0);
+        assert_eq!(w.pts[4], (26.0, 20.0));
+        // Too far from every point: nothing is taken.
+        assert!(!w.take(10.0, 10.0, 8.0));
+        assert_eq!(w.drag, None);
+        w.drag_to(0.0, 0.0);
+        assert_eq!(w.pts[0], (0.0, 0.0));
+    }
 
     #[test]
     fn stretch_repeats_the_selections_edge_to_the_picture_edge() {

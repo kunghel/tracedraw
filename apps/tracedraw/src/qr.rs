@@ -7,48 +7,104 @@ use crate::app::App;
 use tracedraw_core::{
     document::ShapeKind,
     geometry::{BezPath, Point, Rect, Shape as _},
-    Command, Fill, QrCode, QrKind, Shape, ShapeId,
+    Command, Fill, QrCode, QrKind, QrSymbol, Shape, ShapeId,
 };
 
 /// Light pixels around the code on every side (its quiet zone), in
 /// pixels: enough for scanners to find the code against what lies around.
 pub const QUIET: usize = 2;
 
-/// The pixel grid of a code holding `payload`: its side and the dark
-/// pixels, row by row from the top.
-pub fn modules(payload: &str) -> Result<(usize, Vec<bool>), String> {
+/// The pixel grid of a code: `cols` by `rows` pixels, the dark ones row
+/// by row from the top.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Grid {
+    pub cols: usize,
+    pub rows: usize,
+    pub dark: Vec<bool>,
+}
+
+/// The pixel grid of a code of the kind `symbol` holding `payload`.
+pub fn modules(payload: &str, symbol: QrSymbol) -> Result<Grid, String> {
     if payload.trim().is_empty() {
         return Err(crate::i18n::tr("dialog.qr_empty"));
     }
-    let code = qrcode::QrCode::new(payload.as_bytes()).map_err(|e| e.to_string())?;
-    let n = code.width();
-    let mut dark = Vec::with_capacity(n * n);
-    for y in 0..n {
-        for x in 0..n {
-            dark.push(code[(x, y)] == qrcode::Color::Dark);
+    match symbol {
+        QrSymbol::Qr => {
+            let code = qrcode::QrCode::new(payload.as_bytes()).map_err(|e| e.to_string())?;
+            let n = code.width();
+            let mut dark = Vec::with_capacity(n * n);
+            for y in 0..n {
+                for x in 0..n {
+                    dark.push(code[(x, y)] == qrcode::Color::Dark);
+                }
+            }
+            Ok(Grid {
+                cols: n,
+                rows: n,
+                dark,
+            })
+        }
+        // Data Matrix (#4228): the smallest square symbol that holds the
+        // text, with ECC 200 error correction.
+        QrSymbol::DataMatrix => {
+            let code = datamatrix::DataMatrix::encode_str(
+                payload,
+                datamatrix::SymbolList::default().enforce_square(),
+            )
+            .map_err(|_| crate::i18n::tr("qr.too_long"))?;
+            let bitmap = code.bitmap();
+            let (cols, rows) = (bitmap.width(), bitmap.height());
+            let mut dark = vec![false; cols * rows];
+            for (x, y) in bitmap.pixels() {
+                if x < cols && y < rows {
+                    dark[y * cols + x] = true;
+                }
+            }
+            Ok(Grid { cols, rows, dark })
+        }
+        // Rectangular micro QR (#4228): the shortest symbol that holds
+        // the text at medium error correction.
+        QrSymbol::Rmqr => {
+            let code = qrcode_generator::rmqr::Encoder::new(
+                qrcode_generator::rmqr::ErrorCorrection::Medium,
+            )
+            .encode_text(payload)
+            .map_err(|_| crate::i18n::tr("qr.too_long"))?;
+            let (cols, rows) = (code.width(), code.height());
+            let mut dark = Vec::with_capacity(cols * rows);
+            for y in 0..rows {
+                for x in 0..cols {
+                    dark.push(code.module(x, y).unwrap_or(false));
+                }
+            }
+            Ok(Grid { cols, rows, dark })
         }
     }
-    Ok((n, dark))
 }
 
-/// The side of the whole object (code and quiet zone) in millimetres.
-pub fn side_mm(n: usize, qr: &QrCode) -> f64 {
-    (n + 2 * QUIET) as f64 * qr.pixel_mm.max(0.01)
+/// The size of the whole object (code and quiet zone) in millimetres.
+pub fn size_mm(g: &Grid, qr: &QrCode) -> (f64, f64) {
+    let p = qr.pixel_mm.max(0.01);
+    (
+        (g.cols + 2 * QUIET) as f64 * p,
+        (g.rows + 2 * QUIET) as f64 * p,
+    )
 }
 
 /// The dark pixels as one path, each row's runs of dark pixels as one
 /// rectangle, with the object's top-left corner at `top_left` (y up).
-pub fn pixels_path(n: usize, dark: &[bool], pixel: f64, top_left: Point) -> BezPath {
+pub fn pixels_path(g: &Grid, pixel: f64, top_left: Point) -> BezPath {
     let mut path = BezPath::new();
-    for y in 0..n {
+    let n = g.cols;
+    for y in 0..g.rows {
         let mut x = 0;
         while x < n {
-            if !dark[y * n + x] {
+            if !g.dark[y * n + x] {
                 x += 1;
                 continue;
             }
             let start = x;
-            while x < n && dark[y * n + x] {
+            while x < n && g.dark[y * n + x] {
                 x += 1;
             }
             let x0 = top_left.x + (start + QUIET) as f64 * pixel;
@@ -61,17 +117,118 @@ pub fn pixels_path(n: usize, dark: &[bool], pixel: f64, top_left: Point) -> BezP
     path
 }
 
+/// The outlines of the dark pixels of a `cols` by `rows` grid (row by
+/// row from the top): each patch of touching dark pixels as one outline
+/// with its holes, its corners only where it turns, so a code has a few
+/// nodes per patch instead of four for every pixel (#4398). One pixel is
+/// `pixel` millimetres; the grid's top-left corner is at `top_left`
+/// (y up). Outer outlines and holes run opposite ways, so either fill
+/// rule fills the dark pixels.
+pub fn grid_outline(cols: usize, rows: usize, dark: &[bool], pixel: f64, top_left: Point) -> BezPath {
+    use std::collections::HashMap;
+    let on = |x: i64, y: i64| {
+        x >= 0
+            && y >= 0
+            && (x as usize) < cols
+            && (y as usize) < rows
+            && dark.get(y as usize * cols + x as usize).copied().unwrap_or(false)
+    };
+    // The edges between a dark and a light pixel, each going round its
+    // dark pixel the same way (grid points, y down).
+    let mut out: HashMap<(i64, i64), Vec<(i64, i64)>> = HashMap::new();
+    let mut edges = 0usize;
+    for y in 0..rows as i64 {
+        for x in 0..cols as i64 {
+            if !on(x, y) {
+                continue;
+            }
+            let mut add = |a: (i64, i64), b: (i64, i64)| {
+                out.entry(a).or_default().push(b);
+                edges += 1;
+            };
+            if !on(x - 1, y) {
+                add((x, y), (x, y + 1));
+            }
+            if !on(x, y + 1) {
+                add((x, y + 1), (x + 1, y + 1));
+            }
+            if !on(x + 1, y) {
+                add((x + 1, y + 1), (x + 1, y));
+            }
+            if !on(x, y - 1) {
+                add((x + 1, y), (x, y));
+            }
+        }
+    }
+    let to_page = |(x, y): (i64, i64)| {
+        Point::new(
+            top_left.x + x as f64 * pixel,
+            top_left.y - y as f64 * pixel,
+        )
+    };
+    let mut starts: Vec<(i64, i64)> = out.keys().copied().collect();
+    starts.sort_unstable_by_key(|&(x, y)| (y, x));
+    let mut path = BezPath::new();
+    for start in starts {
+        while let Some(first) = out.get_mut(&start).and_then(|v| v.pop()) {
+            // Walk the loop, taking the edges as they come.
+            let mut pts = vec![start, first];
+            let mut at = first;
+            let mut guard = 0;
+            while at != start && guard <= edges {
+                let Some(next) = out.get_mut(&at).and_then(|v| v.pop()) else {
+                    break;
+                };
+                pts.push(next);
+                at = next;
+                guard += 1;
+            }
+            pts.pop();
+            // Only the corners: points where the outline turns.
+            let n = pts.len();
+            let corners: Vec<(i64, i64)> = (0..n)
+                .filter(|&i| {
+                    let a = pts[(i + n - 1) % n];
+                    let b = pts[i];
+                    let c = pts[(i + 1) % n];
+                    (b.0 - a.0) * (c.1 - b.1) - (b.1 - a.1) * (c.0 - b.0) != 0
+                })
+                .map(|i| pts[i])
+                .collect();
+            if corners.len() < 3 {
+                continue;
+            }
+            path.move_to(to_page(corners[0]));
+            for &q in &corners[1..] {
+                path.line_to(to_page(q));
+            }
+            path.close_path();
+        }
+    }
+    path
+}
+
 /// The children of a QR code object with its top-left corner at
 /// `top_left`: the background (light fill, no outline) and the dark pixels
 /// (dark fill and the outline).
 fn children(app: &mut App, qr: &QrCode, top_left: Point) -> Result<Vec<Shape>, String> {
-    let (n, dark) = modules(&qr.payload())?;
+    code_children(qr, top_left, &mut || app.engine.new_shape_id())
+}
+
+/// [`children`] with the new objects' ids from `new_id` (Print Merge
+/// makes each record's code with them, #4396).
+pub(crate) fn code_children(
+    qr: &QrCode,
+    top_left: Point,
+    new_id: &mut dyn FnMut() -> tracedraw_core::ShapeId,
+) -> Result<Vec<Shape>, String> {
+    let g = modules(&qr.payload(), qr.symbol)?;
     let pixel = qr.pixel_mm.max(0.01);
-    let side = side_mm(n, qr);
+    let (w, h) = size_mm(&g, qr);
     let mut back = Shape::new(
-        app.engine.new_shape_id(),
+        new_id(),
         ShapeKind::Rect {
-            rect: Rect::new(top_left.x, top_left.y - side, top_left.x + side, top_left.y),
+            rect: Rect::new(top_left.x, top_left.y - h, top_left.x + w, top_left.y),
             radius: 0.0,
             corners: None,
         },
@@ -80,9 +237,9 @@ fn children(app: &mut App, qr: &QrCode, top_left: Point) -> Result<Vec<Shape>, S
     back.stroke = None;
     back.name = Some(crate::i18n::tr("qr.background"));
     let mut pixels = Shape::new(
-        app.engine.new_shape_id(),
+        new_id(),
         ShapeKind::Path {
-            path: pixels_path(n, &dark, pixel, top_left),
+            path: pixels_path(&g, pixel, top_left),
             closed: true,
         },
     );
@@ -93,7 +250,7 @@ fn children(app: &mut App, qr: &QrCode, top_left: Point) -> Result<Vec<Shape>, S
 }
 
 /// Where a QR code object's top-left corner is: its background's.
-fn top_left(s: &Shape) -> Option<Point> {
+pub(crate) fn top_left(s: &Shape) -> Option<Point> {
     match &s.kind {
         ShapeKind::Group { children } => children.iter().find_map(|c| match &c.kind {
             ShapeKind::Rect { rect, .. } => Some(Point::new(rect.x0, rect.y1)),
@@ -109,10 +266,10 @@ impl App {
     pub fn insert_qr_code(&mut self) -> Option<ShapeId> {
         let layer = self.active_layer()?;
         let qr = QrCode::default();
-        let (n, _) = modules(&qr.payload()).ok()?;
-        let side = side_mm(n, &qr);
+        let g = modules(&qr.payload(), qr.symbol).ok()?;
+        let (w, h) = size_mm(&g, &qr);
         let c = self.page_rect().center();
-        let kids = children(self, &qr, Point::new(c.x - side / 2.0, c.y + side / 2.0)).ok()?;
+        let kids = children(self, &qr, Point::new(c.x - w / 2.0, c.y + h / 2.0)).ok()?;
         let id = self.engine.new_shape_id();
         let mut group = Shape::new(id, ShapeKind::Group { children: kids });
         group.fill = Fill::None;
@@ -234,7 +391,7 @@ fn fill_luma(f: &Fill) -> f32 {
 pub fn validate(qr: &QrCode) -> Result<String, String> {
     use crate::i18n::tr;
     let payload = qr.payload();
-    let (n, dark) = modules(&payload)?;
+    let g = modules(&payload, qr.symbol)?;
     let (d, l) = (fill_luma(&qr.dark), fill_luma(&qr.light));
     let to8 = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
     let (dv, lv) = (to8(d), to8(l));
@@ -242,18 +399,36 @@ pub fn validate(qr: &QrCode) -> Result<String, String> {
     if (lv as i32 - dv as i32) < 64 {
         return Err(tr("qr.validate_contrast"));
     }
+    match qr.symbol {
+        QrSymbol::Qr => {}
+        // A Data Matrix is read back from its pixels, as a scanner sees
+        // them once it has found the symbol (#4228).
+        QrSymbol::DataMatrix => {
+            let read = datamatrix::DataMatrix::decode(&g.dark, g.cols)
+                .map_err(|_| tr("qr.validate_not_found"))?;
+            return match String::from_utf8(read) {
+                Ok(text) if text == payload => Ok(text),
+                _ => Err(tr("qr.validate_mismatch")),
+            };
+        }
+        // No reader for rectangular codes here: the contrast is what can
+        // be checked, and the encoder made the symbol to the standard.
+        QrSymbol::Rmqr => return Ok(payload),
+    }
+    let (cols, rows, dark) = (g.cols, g.rows, &g.dark);
     let scale = 6;
-    let side = (n + 2 * QUIET + 4) * scale;
     let pad = QUIET + 2;
-    let img = image::GrayImage::from_fn(side as u32, side as u32, |x, y| {
+    let (w, h) = ((cols + 2 * pad) * scale, (rows + 2 * pad) * scale);
+    let img = image::GrayImage::from_fn(w as u32, h as u32, |x, y| {
         let (mx, my) = (x as usize / scale, y as usize / scale);
         let on = mx >= pad
             && my >= pad
-            && mx - pad < n
-            && my - pad < n
-            && dark[(my - pad) * n + (mx - pad)];
+            && mx - pad < cols
+            && my - pad < rows
+            && dark[(my - pad) * cols + (mx - pad)];
         // Outside the object, paper white.
-        let inside = mx >= 2 && my >= 2 && mx < n + 2 * QUIET + 2 && my < n + 2 * QUIET + 2;
+        let inside =
+            mx >= 2 && my >= 2 && mx < cols + 2 * QUIET + 2 && my < rows + 2 * QUIET + 2;
         image::Luma([if on {
             dv
         } else if inside {
@@ -276,6 +451,40 @@ pub fn validate(qr: &QrCode) -> Result<String, String> {
 
 #[cfg(test)]
 mod tests {
+    /// #4398: the dark pixels' outlines have a node only where they turn,
+    /// and fill exactly the dark pixels, holes included.
+    #[test]
+    fn the_outline_of_dark_pixels_has_few_nodes_and_keeps_holes() {
+        use tracedraw_core::geometry::Shape as _;
+        // A ring of 3 x 3 with a hole, and a pixel touching it at a corner.
+        let dark = [
+            true, true, true, false, //
+            true, false, true, false, //
+            true, true, true, false, //
+            false, false, false, true,
+        ];
+        let path = grid_outline(4, 4, &dark, 1.0, Point::new(0.0, 4.0));
+        let nodes = path
+            .elements()
+            .iter()
+            .filter(|e| !matches!(e, tracedraw_core::geometry::PathEl::ClosePath))
+            .count();
+        // Ring: 4 outer + 4 hole corners; the lone pixel: 4.
+        assert_eq!(nodes, 12, "{path:?}");
+        for y in 0..4 {
+            for x in 0..4 {
+                let p = Point::new(x as f64 + 0.5, 4.0 - y as f64 - 0.5);
+                assert_eq!(path.winding(p) != 0, dark[y * 4 + x], "pixel {x},{y}");
+                assert_eq!(path.winding(p).rem_euclid(2) == 1, dark[y * 4 + x], "even-odd {x},{y}");
+            }
+        }
+        // A real code: far fewer nodes than four a pixel.
+        let g = modules("https://example.org/tracedraw?id=12345", QrSymbol::Qr).unwrap();
+        let path = grid_outline(g.cols, g.rows, &g.dark, 1.0, Point::ZERO);
+        let dark_px = g.dark.iter().filter(|d| **d).count();
+        assert!(path.elements().len() < dark_px * 2, "{} for {dark_px}", path.elements().len());
+    }
+
     use super::*;
     use tracedraw_core::{Color, QrKind};
 
@@ -309,8 +518,8 @@ mod tests {
             panic!("a group");
         };
         assert_eq!(children[1].fill, qr.dark);
-        let (n, _) = modules("tel:+351 220 000 000").expect("modules");
-        let side = side_mm(n, &qr);
+        let g = modules("tel:+351 220 000 000", QrSymbol::Qr).expect("modules");
+        let (side, _) = size_mm(&g, &qr);
         let b = app.visual_bounds(&children[0]);
         assert!((b.width() - side).abs() < 1e-6, "{b:?} {side}");
         // One undo step brings the old code back.
@@ -480,5 +689,38 @@ mod tests {
             .filter(|s| matches!(&s.kind, ShapeKind::Group { children } if children.len() == 2))
             .collect();
         assert_eq!(groups.len(), 1);
+    }
+
+    /// A Data Matrix and a rectangular micro QR code (#4228): the same
+    /// object, its pixels made by the other kind of code; a Data Matrix
+    /// reads back, an rMQR is wider than tall.
+    #[test]
+    fn data_matrix_and_rectangular_codes_are_made_and_checked() {
+        let mut app = App::headless();
+        let id = app.insert_qr_code().expect("placed");
+        let mut qr = app.doc().find_shape(id).and_then(|s| s.qr.as_deref().cloned()).expect("qr");
+        qr.symbol = QrSymbol::DataMatrix;
+        qr.kind = QrKind::Text;
+        qr.fields = vec!["LOT 4228-A".into()];
+        app.set_qr_code(id, qr.clone()).expect("data matrix");
+        let g = modules(&qr.payload(), qr.symbol).expect("grid");
+        assert_eq!(g.cols, g.rows, "square");
+        assert_eq!(validate(&qr), Ok("LOT 4228-A".to_string()));
+        qr.symbol = QrSymbol::Rmqr;
+        app.set_qr_code(id, qr.clone()).expect("rmqr");
+        let g = modules(&qr.payload(), qr.symbol).expect("grid");
+        assert!(g.cols > g.rows * 2, "{} x {}", g.cols, g.rows);
+        let s = app.doc().find_shape(id).cloned().expect("shape");
+        let ShapeKind::Group { children } = &s.kind else {
+            panic!("a group");
+        };
+        let b = app.visual_bounds(&children[0]);
+        let (w, h) = size_mm(&g, &qr);
+        assert!((b.width() - w).abs() < 1e-6 && (b.height() - h).abs() < 1e-6, "{b:?}");
+        assert!(validate(&qr).is_ok());
+        // Saved and read back, the kind of code stays.
+        let json = serde_json::to_string(&qr).expect("json");
+        let back: QrCode = serde_json::from_str(&json).expect("back");
+        assert_eq!(back.symbol, QrSymbol::Rmqr);
     }
 }

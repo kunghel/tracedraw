@@ -146,8 +146,14 @@ fn choose_on(
 ) -> (Option<usize>, Vec<&'static str>) {
     let api = |c: &Candidate| backend_rank(c.backend, windows);
     let software = |c: &Candidate| c.kind == eframe::wgpu::DeviceType::Cpu;
+    // On Windows wgpu's own OpenGL path stops the program inside the
+    // graphics driver when it cannot make its context current (#4368,
+    // Intel HD 4400): a card only OpenGL reaches is left to the OpenGL
+    // renderer, the next one tried, which reports that as an error.
+    let gl_on_windows = |c: &Candidate| windows && c.backend == eframe::wgpu::Backend::Gl;
     let fits = |c: &Candidate| {
         c.surface
+            && !gl_on_windows(c)
             && match mode {
                 Mode::Software => software(c),
                 _ => !software(c),
@@ -175,6 +181,8 @@ fn choose_on(
         .map(|(i, c)| {
             if !c.surface {
                 "rejected: cannot draw on the window"
+            } else if gl_on_windows(c) {
+                "rejected: OpenGL on Windows is left to the OpenGL renderer"
             } else if mode == Mode::Software && !software(c) {
                 "rejected: not a software adapter (hardware acceleration is off)"
             } else if mode != Mode::Software && software(c) {
@@ -208,6 +216,21 @@ pub fn mode_in_use() -> Option<Mode> {
 
 pub fn blind() -> bool {
     BLIND.load(Ordering::SeqCst)
+}
+
+/// Whether an earlier start read the OpenGL renderer back drawn on this
+/// computer (`Settings::gl_drawn`): its frames are not checked again.
+pub fn gl_drawn_before() -> bool {
+    crate::settings::Settings::load().gl_drawn
+}
+
+/// The OpenGL renderer read back drawn: remembered for later starts.
+pub fn note_gl_drawn() {
+    let mut s = crate::settings::Settings::load();
+    if !s.gl_drawn {
+        s.gl_drawn = true;
+        s.save();
+    }
 }
 
 pub fn note_blind() {
@@ -487,7 +510,11 @@ pub fn watch_start(
                         if let Some(d) = &decline {
                             d.store(true, Ordering::SeqCst);
                         }
+                        // The splash says another way is tried and stays
+                        // until the new start shows its own (#4321).
+                        crate::native_splash::set_status(crate::native_splash::Status::TryingAnother);
                         if spawn_with(n, &args) {
+                            std::thread::sleep(crate::native_splash::HAND_OVER);
                             std::process::exit(0);
                         }
                         log::error!("could not start TraceDraw again with {n:?}");
@@ -525,6 +552,9 @@ fn note_presented(mode: Mode) {
         return;
     }
     end_attempt();
+    // The splash drawn by the system goes: the window shows (#4321).
+    #[cfg(not(target_arch = "wasm32"))]
+    crate::native_splash::close();
     let mut s = crate::settings::Settings::load();
     let remember = remembered(mode, Mode::first(&s));
     if s.working_renderer != remember {
@@ -950,17 +980,24 @@ pub fn take_restart_after_exit() -> Option<Mode> {
 }
 
 /// Run TraceDraw again with `next`, the other arguments kept, until it
-/// ends; false when it did not start.
-pub fn restart_with(next: Mode, args: &[String]) -> bool {
+/// ends; false when it did not start. `retry`: the renderer of this start
+/// failed, and the new start's splash says another way is tried, this
+/// start's splash staying up until that one shows (#4321).
+pub fn restart_with(next: Mode, args: &[String], retry: bool) -> bool {
     let Ok(exe) = std::env::current_exe() else {
         return false;
     };
     hand_over();
     let args = crate::instance::with_files_opened_by_system(args);
-    std::process::Command::new(exe)
-        .args(args_with(next, &args))
-        .status()
-        .is_ok()
+    let mut cmd = std::process::Command::new(exe);
+    cmd.args(args_with(next, &args));
+    if retry {
+        cmd.env(crate::native_splash::RETRY_ENV, "1");
+        crate::native_splash::hand_over();
+    } else {
+        cmd.env_remove(crate::native_splash::RETRY_ENV);
+    }
+    cmd.status().is_ok()
 }
 
 /// Start TraceDraw again with `next` without waiting for it; false when
@@ -972,6 +1009,7 @@ fn spawn_with(next: Mode, args: &[String]) -> bool {
     let args = crate::instance::with_files_opened_by_system(args);
     std::process::Command::new(exe)
         .args(args_with(next, &args))
+        .env(crate::native_splash::RETRY_ENV, "1")
         .spawn()
         .is_ok()
 }
@@ -1423,6 +1461,27 @@ mod tests {
         no_surface[2].surface = false;
         assert_eq!(choose_on(Mode::Hardware, "", &no_surface, true).0, Some(0));
         assert_eq!(choose_on(Mode::Software, "", &list, true).0, Some(5));
+    }
+
+    /// The reporter's adapters of #4368: on Windows the built-in Intel HD
+    /// 4400 is offered only through OpenGL, and wgpu's OpenGL path there
+    /// stopped the program inside the driver. Hardware mode then finds no
+    /// card, so the start goes on with the OpenGL renderer; elsewhere the
+    /// card is still taken through wgpu's OpenGL.
+    #[test]
+    fn windows_leaves_opengl_only_cards_to_the_opengl_renderer() {
+        use eframe::wgpu::Backend::{Dx12, Gl};
+        use eframe::wgpu::DeviceType::*;
+        let list = [
+            on(adapter("Microsoft Basic Render Driver", Cpu, true), Dx12),
+            on(adapter("Intel(R) HD Graphics 4400", IntegratedGpu, true), Gl),
+        ];
+        let (pick, notes) = choose_on(Mode::Hardware, "", &list, true);
+        assert_eq!(pick, None);
+        assert!(notes[1].starts_with("rejected: OpenGL on Windows"));
+        assert_eq!(Mode::Hardware.next(Mode::Hardware), Some(Mode::Gl));
+        assert_eq!(choose_on(Mode::Hardware, "", &list, false).0, Some(1));
+        assert_eq!(choose_on(Mode::Software, "", &list, true).0, Some(0));
     }
 
     /// Hardware mode takes the card named in Options, else the fastest

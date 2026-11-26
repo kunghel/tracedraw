@@ -1283,6 +1283,8 @@ class Document {
   set ReferencePoint(v) { __vg.ref = v; }
   get Resolution() { return this._d.dpi || 300; }
   get Pages() { return new Pages(); }
+  get Data() { return new __DocData(); }
+  get Properties() { return new __DocData(); }
   get PageCount() { return this._d.pages.length; }
   get ActivePage() { return new Page(this._d.page); }
   get ActiveLayer() { return this.ActivePage.ActiveLayer; }
@@ -1967,3 +1969,190 @@ class __PdfSettings {
   Reset() { this._s.range = pdfWholeDocument; }
 }
 __def(Document, 'PDFSettings', function () { return new __PdfSettings(); });
+
+// ----- More members published macros call (#4315) --------------------------
+
+// Aligning a range as one: the same as aligning it, which already moves
+// the range as a whole.
+for (const cls of [Shape, ShapeRange, SelectionShape]) {
+  cls.prototype.AlignRangeToPageCenter = function (Type) { this.AlignToPageCenter(Type); };
+  cls.prototype.AlignRangeToPage = function (Type) { this.AlignToPage(Type); };
+  cls.prototype.AlignRangeToShape = function (Type, Shape) { this.AlignToShape(Type, Shape); };
+  cls.prototype.AlignRangeToPoint = function (Type, x, y) { this.AlignToPoint(Type, x, y); };
+  // SetPositionEx(ReferencePoint, x, y): that point of the box goes to (x, y).
+  cls.prototype.SetPositionEx = function (ReferencePoint, x, y) {
+    const p = __refPoint(this._b(), ReferencePoint);
+    __xf(this._ids(), __M.move(__mm(x) - p[0], __mm(y) - p[1]));
+  };
+  // BoundingBox: the box as a rectangle, in the document's unit.
+  __def(cls, 'BoundingBox', function () {
+    const b = this._b();
+    return new Rect(__un(b.x0), __un(b.y0), __un(b.x1 - b.x0), __un(b.y1 - b.y0));
+  });
+}
+// A rectangle (x, y the lower left corner), as BoundingBox gives it and
+// CreateRectangleRect takes it.
+class Rect {
+  constructor(x, y, Width, Height) { this.x = x || 0; this.y = y || 0; this.Width = Width || 0; this.Height = Height || 0; }
+  get Left() { return this.x; }
+  get Bottom() { return this.y; }
+  get Right() { return this.x + this.Width; }
+  get Top() { return this.y + this.Height; }
+  get CenterX() { return this.x + this.Width / 2; }
+  get CenterY() { return this.y + this.Height / 2; }
+  SetPosition(x, y) { this.x = x; this.y = y; }
+  Resize(Width, Height) { this.Width = Width; this.Height = Height; }
+  Inflate(Left, Top, Right, Bottom) {
+    this.x -= Left || 0; this.y -= Bottom || 0;
+    this.Width += (Left || 0) + (Right || 0); this.Height += (Top || 0) + (Bottom || 0);
+  }
+  CopyAssign(r) { this.x = r.x; this.y = r.y; this.Width = r.Width; this.Height = r.Height; }
+  GetCopy() { return new Rect(this.x, this.y, this.Width, this.Height); }
+}
+globalThis.Rect = Rect;
+Application.CreateRect = function (x, y, Width, Height) { return new Rect(x, y, Width, Height); };
+globalThis.CreateRect = Application.CreateRect;
+Layer.prototype.CreateRectangleRect = function (Rect, RadiusUL, RadiusUR, RadiusLR, RadiusLL) {
+  return this.CreateRectangle2(Rect.x, Rect.y, Rect.Width, Rect.Height, RadiusUL || 0, RadiusUR || 0, RadiusLR || 0, RadiusLL || 0);
+};
+// OrderReverse: the range's objects swap their stacking order.
+ShapeRange.prototype.OrderReverse = function () {
+  const ids = this._ids();
+  for (let i = ids.length - 1; i >= 0; i--) __call('vg_order', { ids: [ids[i]], op: 'front' });
+};
+SelectionShape.prototype.OrderReverse = function () { new ShapeRange(this._ids()).OrderReverse(); };
+
+// Page: text found and replaced across the page, objects in a rectangle.
+function __pageTexts(page) {
+  return __find(__call('page_shapes', { page: page.id }).ids, undefined, undefined, true, undefined)
+    .filter(id => __call('vg_info', { id: id }).kind === 'text');
+}
+// TextFind(Text, CaseSensitive): the first text object holding the words
+// is selected (ActiveShape); false when none does.
+Page.prototype.TextFind = function (Text, CaseSensitive) {
+  const want = CaseSensitive ? String(Text) : String(Text).toLowerCase();
+  for (const id of __pageTexts(this)) {
+    const t = new __Story(id).Text;
+    if ((CaseSensitive ? t : t.toLowerCase()).indexOf(want) >= 0) {
+      __call('select', { ids: [id], add: false });
+      return true;
+    }
+  }
+  return false;
+};
+// TextReplace(OldText, NewText, CaseSensitive, WholeWord): in every text
+// object of the page; true when something changed.
+Page.prototype.TextReplace = function (OldText, NewText, CaseSensitive, WholeWord) {
+  const esc = String(OldText).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const re = new RegExp(WholeWord ? '\\b' + esc + '\\b' : esc, CaseSensitive ? 'g' : 'gi');
+  let any = false;
+  for (const id of __pageTexts(this)) {
+    const st = new __Story(id), t = st.Text;
+    const out = t.replace(re, String(NewText));
+    if (out !== t) { st.Text = out; any = true; }
+  }
+  return any;
+};
+// SelectShapesFromRectangle(x1, y1, x2, y2, Touch): the objects of the
+// page inside the rectangle (or touching it) are selected and returned.
+function __shapesInRect(ids, x1, y1, x2, y2, Touch) {
+  const r = { x0: Math.min(__mm(x1), __mm(x2)), x1: Math.max(__mm(x1), __mm(x2)), y0: Math.min(__mm(y1), __mm(y2)), y1: Math.max(__mm(y1), __mm(y2)) };
+  return ids.filter(id => {
+    const b = __call('vg_bounds', { ids: [id] });
+    if (Touch) return b.x0 <= r.x1 && b.x1 >= r.x0 && b.y0 <= r.y1 && b.y1 >= r.y0;
+    return b.x0 >= r.x0 && b.x1 <= r.x1 && b.y0 >= r.y0 && b.y1 <= r.y1;
+  });
+}
+Page.prototype.SelectShapesFromRectangle = function (x1, y1, x2, y2, Touch) {
+  const ids = __shapesInRect(this.SelectableShapes._list, x1, y1, x2, y2, Touch);
+  __call('select', { ids: ids, add: false });
+  return new ShapeRange(ids);
+};
+Layer.prototype.SelectShapesFromRectangle = function (x1, y1, x2, y2, Touch) {
+  const ids = __shapesInRect(__call('shapes', { layer: this.id }).ids, x1, y1, x2, y2, Touch);
+  __call('select', { ids: ids, add: false });
+  return new ShapeRange(ids);
+};
+
+// The guidelines as a layer (GuidesLayer): new guidelines, and the
+// guidelines as shapes, so that `SelectableShapes.All.Delete` removes them.
+// The master page's are on every page.
+class __GuidesRange {
+  constructor(page, list) { this.page = page; this.list = list; }
+  get Count() { return this.list.length; }
+  Item(i) { return new __GuideShape(this.page, this.list[i - 1]); }
+  All() { return this; }
+  Delete() { for (const i of this.list.slice().sort((a, b) => b - a)) __call('vg_delete_guide', { page: this.page, index: i }); this.list = []; }
+  [Symbol.iterator]() { return __iter(this.list.map(i => new __GuideShape(this.page, i))); }
+}
+class __GuidesLayer {
+  constructor(page) { this._l = { page: page }; }
+  get Name() { return 'Guides'; }
+  get IsGuidesLayer() { return true; }
+  get Visible() { return true; }
+  set Visible(v) { }
+  get Editable() { return true; }
+  set Editable(v) { }
+  get Printable() { return false; }
+  get Master() { return this._l.page === 0; }
+  get _all() { return __call('vg_guides', { page: this._l.page }).guides.map((_, i) => i); }
+  get Shapes() { return new __GuidesRange(this._l.page, this._all); }
+  get SelectableShapes() { return new __GuidesRange(this._l.page, this._all); }
+}
+__GuidesLayer.prototype.CreateGuide = Layer.prototype.CreateGuide;
+__GuidesLayer.prototype.CreateGuideAngle = Layer.prototype.CreateGuideAngle;
+__def(Page, 'GuidesLayer', function () { return new __GuidesLayer(this.id); });
+__def(Document, 'GuidesLayer', function () { return new __GuidesLayer(0); });
+__GuideShape.prototype.Delete = function () { __call('vg_delete_guide', { page: this.page, index: this.index }); };
+
+// The version of the format the drawing was opened from: the object
+// model's own.
+__def(Document, 'SourceFileVersion', function () { return Application.VersionMajor; });
+Document.prototype.ClearUndoList = function () { };
+
+// Export options (StructExportOptions): the resolution, the size in
+// pixels and the rest, which Export reads.
+class StructExportOptions {
+  constructor() {
+    this.ResolutionX = 0; this.ResolutionY = 0; this.SizeX = 0; this.SizeY = 0;
+    this.AntiAliasingType = 1; this.ImageType = 4; this.Overwrite = true;
+    this.Transparent = false; this.Dithered = false; this.UseColorProfile = true;
+    this.MaintainAspect = true; this.Compression = 0; this.MaintainLayers = false;
+  }
+}
+globalThis.StructExportOptions = StructExportOptions;
+Application.CreateStructExportOptions = function () { return new StructExportOptions(); };
+globalThis.CreateStructExportOptions = Application.CreateStructExportOptions;
+{
+  const plain = Document.prototype.Export;
+  Document.prototype.Export = function (FileName, Filter, Range, Options, PaletteOptions) {
+    if (!Options || typeof Options !== 'object') return plain.call(this, FileName, Filter, Range, Options, PaletteOptions);
+    __call('vg_export', { path: String(FileName), format: __filterExt[Filter] || '', page: this._d.page,
+      w: Number(Options.SizeX) || 0, h: Number(Options.SizeY) || 0, dpi: Number(Options.ResolutionX) || 0 });
+  };
+  const ex = Document.prototype.ExportEx;
+  Document.prototype.ExportEx = function (FileName, Filter, Range, Options, PaletteOptions) {
+    if (!Options || typeof Options !== 'object') return ex.call(this, FileName, Filter, Range, Options, PaletteOptions);
+    return new ExportFilter({ path: String(FileName), format: __filterExt[Filter] || '', page: this._d.page,
+      w: Number(Options.SizeX) || 0, h: Number(Options.SizeY) || 0, dpi: Number(Options.ResolutionX) || 0 });
+  };
+}
+
+// The script tools of the drawing suites macros are written for, by
+// their other name: a file box that asks which file to open or where to
+// save (GetFileBox), and the folder box (GetFolder); "" when the user
+// cancels. `__filebox(filter, title, mode, file, folder)`, mode 0 open, 1
+// save, 2 a folder, is the app's.
+const __scriptTools = {
+  GetFileBox(Filter, Title, Type, File, Extension, Folder, Button) {
+    return __filebox(String(Filter === undefined ? '' : Filter), String(Title === undefined ? '' : Title),
+      Number(Type) === 1 ? 1 : 0, String(File === undefined ? '' : File), String(Folder === undefined ? '' : Folder));
+  },
+  GetFolder(InitialFolder, Title) {
+    return __filebox('', String(Title === undefined ? '' : Title), 2, '', String(InitialFolder === undefined ? '' : InitialFolder));
+  },
+};
+__scriptTools.GetFileBox.__params = ['filter', 'title', 'type', 'file', 'extension', 'folder', 'button'];
+__scriptTools.GetFolder.__params = ['initialfolder', 'title'];
+globalThis.ScriptTools = __scriptTools;
+__memberAliases.set(458405708, 'ScriptTools');

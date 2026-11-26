@@ -57,9 +57,28 @@ fn leave_slot(op: Shaping) -> Option<usize> {
     }
 }
 
+/// The live combine an operation makes with Keep Live ticked (#4266):
+/// the objects stay, and their group draws as the result.
+fn live_mode(op: Shaping) -> Option<tracedraw_core::shaping::CombineMode> {
+    use tracedraw_core::shaping::CombineMode as M;
+    match op {
+        Shaping::Weld => Some(M::Weld),
+        Shaping::Intersect => Some(M::Intersect),
+        Shaping::FrontMinusBack => Some(M::FrontMinusBack),
+        Shaping::BackMinusFront => Some(M::BackMinusFront),
+        _ => None,
+    }
+}
+
 /// Apply the docker's operation to the selection.
 pub fn apply(app: &mut App) {
     let op = app.shaping_op;
+    if app.settings.shaping_live {
+        if let Some(mode) = live_mode(op) {
+            app.combine_live_as(mode);
+            return;
+        }
+    }
     let (source, target) = leave_slot(op)
         .map(|i| (app.shaping_leave[i][0], app.shaping_leave[i][1]))
         .unwrap_or_else(|| op.default_leave());
@@ -115,7 +134,13 @@ pub fn shaping(app: &mut App, ui: &mut Ui) {
         });
     });
     ui.add_space(6.0);
-    if let Some(i) = leave_slot(op) {
+    let live = app.settings.shaping_live && live_mode(op).is_some();
+    if live_mode(op).is_some() {
+        ui.checkbox(&mut app.settings.shaping_live, tr("docker.shaping_live"))
+            .rich_tip(crate::ui::tips::keyed("docker.shaping_live"));
+        ui.add_space(2.0);
+    }
+    if let Some(i) = leave_slot(op).filter(|_| !live) {
         ui.checkbox(
             &mut app.shaping_leave[i][0],
             tr("docker.leave_original_source"),
@@ -128,11 +153,15 @@ pub fn shaping(app: &mut App, ui: &mut Ui) {
         .rich_tip(crate::ui::tips::keyed("docker.leave_original_target"));
         ui.add_space(6.0);
     }
-    let enough = op.ready(app.selection.len());
-    let width = ui.available_width().min(240.0);
+    let enough = if live {
+        app.combine_live_ready()
+    } else {
+        op.ready(app.selection.len())
+    };
+    let width = crate::ui::docker_form::fit_w(ui, 240.0);
     let clicked = ui
         .add_enabled_ui(enough, |ui| {
-            ui.add_sized([width, 26.0], egui::Button::new(tr(key)))
+            ui.add_sized([width, 26.0], crate::ui::btn_icons::Ib::new(key))
                 .rich_tip_with(|| format!("{}\n{}", tr(key), tr("docker.shaping_apply_desc")))
                 .clicked()
         })
@@ -208,6 +237,38 @@ mod tests {
         let welded = app.selection[0];
         let b = app.doc().shape_on_page(welded).expect("weld").bounds();
         assert!(b.contains(Point::new(29.0, 29.0)) && b.contains(Point::new(1.0, 1.0)));
+    }
+
+    /// #4266: with Keep Live the docker's Back Minus Front groups the
+    /// objects and gives the group a live cut; both objects stay, and
+    /// taking the effect away leaves them as they were.
+    #[test]
+    fn keep_live_makes_a_live_combine_that_keeps_the_objects() {
+        use tracedraw_core::live::Effect;
+        use tracedraw_core::shaping::CombineMode;
+        for (op, mode) in [
+            (Shaping::BackMinusFront, CombineMode::BackMinusFront),
+            (Shaping::FrontMinusBack, CombineMode::FrontMinusBack),
+            (Shaping::Intersect, CombineMode::Intersect),
+            (Shaping::Weld, CombineMode::Weld),
+        ] {
+            let mut app = App::headless();
+            let a = rect(&mut app, 0.0, 0.0, 20.0, 20.0);
+            let b = rect(&mut app, 10.0, 10.0, 30.0, 30.0);
+            app.select(vec![a, b]);
+            app.settings.shaping_live = true;
+            app.shaping_op = op;
+            apply(&mut app);
+            assert!(app.doc().find_shape(a).is_some(), "{op:?} keeps a");
+            assert!(app.doc().find_shape(b).is_some(), "{op:?} keeps b");
+            assert_eq!(count(&app), 1, "one group");
+            let g = app.doc().shape_on_page(app.selection[0]).expect("group");
+            assert!(matches!(g.kind, ShapeKind::Group { .. }));
+            assert_eq!(g.effects, vec![Effect::Combine { mode }], "{op:?}");
+        }
+        // Simplify and Trim have no live form: they cut as before.
+        assert!(live_mode(Shaping::Simplify).is_none());
+        assert!(live_mode(Shaping::Trim).is_none());
     }
 
     #[test]

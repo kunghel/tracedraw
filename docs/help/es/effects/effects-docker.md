@@ -23,6 +23,26 @@ Cada fila de la lista tiene:
 Cada cambio es un paso de deshacer. Cada efecto se sigue editando con su
 propia herramienta o panel.
 
+## Redondear esquinas y Rebanar {#outline-effects}
+
+Dos entradas de los efectos de capa, en lo alto del panel, rehacen el
+contorno tal como se dibuja y el objeto queda como estaba (un texto sigue
+editable):
+
+- **[[effect.round_corners]]** redondea todas las esquinas de una curva, de
+  las curvas de un grupo o de las letras de un texto con un radio. **Hasta**
+  lo limita a las esquinas más agudas que un ángulo (180° las toma todas) y
+  los botones **Esquinas** eligen todas, solo las exteriores o solo las
+  interiores.
+- **[[effect.slice]]** corta el objeto en tiras paralelas: cantidad, ángulo
+  de los cortes y separación; **Desplazamiento** desliza cada tira a lo largo
+  del corte, alterno o aleatorio; **Giro** gira cada tira un poco al azar;
+  **Semilla** elige otra variación; **Redondeo** redondea las esquinas de las
+  tiras.
+
+[[menu.object.convert_to_curves]] (o Separar) convierte el resultado en
+curvas normales.
+
 ## Otros comandos de efectos {#commands}
 
 - [[menu.effects > menu.effects.flatten]] convierte los efectos de los objetos

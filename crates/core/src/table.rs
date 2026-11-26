@@ -211,6 +211,21 @@ pub fn is_top(v: &VerticalAlign) -> bool {
 }
 
 impl Table {
+    /// The cells' texts as rows (#4146, #4143): a merged cell's text in
+    /// its first row and column, the grid positions it covers empty.
+    pub fn text_rows(&self) -> Vec<Vec<String>> {
+        let mut rows = vec![vec![String::new(); self.cols() as usize]; self.rows() as usize];
+        for c in &self.cells {
+            if let Some(slot) = rows
+                .get_mut(c.row as usize)
+                .and_then(|r| r.get_mut(c.col as usize))
+            {
+                *slot = c.text.iter().map(|s| s.text.as_str()).collect();
+            }
+        }
+        rows
+    }
+
     /// Index of the cell anchored at (row, col).
     pub fn cell_index(&self, row: u32, col: u32) -> Option<usize> {
         self.cells.iter().position(|c| c.row == row && c.col == col)

@@ -375,7 +375,7 @@ fn mesh_row(app: &mut App, ui: &mut Ui, selected: bool) {
             .rich_tip(tr("envelope.mesh_rows_desc"));
         app.envelope_mesh = (cols.clamp(1, max), rows.clamp(1, max));
         if ui
-            .add_enabled(selected, egui::Button::new(tr("envelope.add_mesh")))
+            .add_enabled(selected, crate::ui::btn_icons::Ib::new("envelope.add_mesh"))
             .rich_tip(tr("envelope.add_mesh_desc"))
             .clicked()
         {

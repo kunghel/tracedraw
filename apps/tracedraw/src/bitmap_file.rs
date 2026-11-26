@@ -1395,6 +1395,23 @@ mod tests {
         .expect("bitmap")
     }
 
+    /// Edit Bitmap With (#4273): the program picked becomes the image
+    /// editor Edit Bitmap uses, and the picture is written out and
+    /// linked, so the editor's save comes back by itself.
+    #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+    #[test]
+    fn edit_bitmap_with_keeps_the_program_and_links_the_picture() {
+        let mut app = App::headless();
+        let id = rgb_picture(&mut app);
+        app.select(vec![id]);
+        let program = std::path::Path::new("/no/such/image-editor-4273");
+        app.edit_bitmap_in(program);
+        assert_eq!(app.settings.bitmap_editor, program.display().to_string());
+        let link = app.bitmap_link(id).expect("linked");
+        assert!(std::path::Path::new(&link).exists(), "{link}");
+        let _ = std::fs::remove_file(&link);
+    }
+
     fn dir(name: &str) -> std::path::PathBuf {
         let d = std::env::temp_dir().join(format!("tracedraw-1834-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&d);

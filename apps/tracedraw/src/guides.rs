@@ -89,6 +89,78 @@ impl GuidePreset {
     }
 }
 
+/// The guidelines of a modular grid over `area` (page space, y up):
+/// `rows` by `columns` equal fields with `row_gutter` between one row and
+/// the next and `column_gutter` between one column and the next, a line
+/// on every field edge (one line where a gutter is zero). The fields
+/// share what the gutters leave of the area.
+pub fn modular_grid_lines(
+    area: tracedraw_core::geometry::Rect,
+    rows: u32,
+    columns: u32,
+    row_gutter: f64,
+    column_gutter: f64,
+) -> Vec<GuideLine> {
+    fn edges(from: f64, to: f64, n: u32, gutter: f64) -> Vec<f64> {
+        let n = n.clamp(1, 200);
+        let span = (to - from).max(0.0);
+        let gutter = if gutter.is_finite() {
+            gutter.clamp(0.0, span / n.max(1) as f64)
+        } else {
+            0.0
+        };
+        let field = ((span - gutter * (n - 1) as f64) / n as f64).max(0.0);
+        let mut out = vec![from];
+        let mut at = from;
+        for i in 0..n {
+            at += field;
+            out.push(at);
+            if i + 1 < n && gutter > 0.0 {
+                at += gutter;
+                out.push(at);
+            }
+        }
+        out.dedup_by(|a, b| (*a - *b).abs() < 1e-9);
+        out
+    }
+    let mut out = Vec::new();
+    for x in edges(area.x0, area.x1, columns, column_gutter) {
+        out.push(GuideLine::Vertical { x });
+    }
+    // Rows count from the top of the area down.
+    for y in edges(area.y0, area.y1, rows, row_gutter) {
+        out.push(GuideLine::Horizontal {
+            y: area.y1 - (y - area.y0),
+        });
+    }
+    out
+}
+
+impl GuidePreset {
+    /// The lines of a Margins preset with the page edge each keeps its
+    /// distance from (#4268), in the order [`GuidePreset::lines`] gives
+    /// them; `None` for the other presets.
+    pub fn anchors(self) -> Option<[tracedraw_core::document::GuideAnchor; 4]> {
+        use tracedraw_core::document::{GuideAnchor, GuideEdge};
+        let GuidePreset::Margins {
+            top,
+            bottom,
+            left,
+            right,
+        } = self
+        else {
+            return None;
+        };
+        let a = |edge, distance| GuideAnchor { edge, distance };
+        Some([
+            a(GuideEdge::Top, top),
+            a(GuideEdge::Bottom, bottom),
+            a(GuideEdge::Left, left),
+            a(GuideEdge::Right, right),
+        ])
+    }
+}
+
 /// Where a Guides row's Move To sends its guidelines (#3578): to the
 /// guidelines every page shows, or to the own guidelines of the odd or
 /// the even pages (counted from 1).
@@ -1273,6 +1345,151 @@ pub fn transformed_line(line: GuideLine, t: Affine, mid: Point) -> GuideLine {
     }
 }
 
+/// The guidelines that run along the straight sides of `path`: one per
+/// side, sides on one line giving one guideline. A path with no straight
+/// side (a circle, an ellipse, a free curve) gives the four edges of its
+/// bounding box instead (#3954).
+pub fn guide_lines_of_path(path: &tracedraw_core::geometry::BezPath) -> Vec<GuideLine> {
+    use tracedraw_core::geometry::PathEl;
+    let mut out: Vec<GuideLine> = Vec::new();
+    let push = |a: Point, b: Point, out: &mut Vec<GuideLine>| {
+        let (dx, dy) = (b.x - a.x, b.y - a.y);
+        if !(dx.is_finite() && dy.is_finite()) || dx.hypot(dy) < 1e-6 {
+            return;
+        }
+        let mut angle = dy.atan2(dx).to_degrees();
+        angle = angle.rem_euclid(180.0);
+        let line = if angle < 1e-6 || angle > 180.0 - 1e-6 {
+            GuideLine::Horizontal { y: a.y }
+        } else if (angle - 90.0).abs() < 1e-6 {
+            GuideLine::Vertical { x: a.x }
+        } else {
+            GuideLine::Angled {
+                x: a.x,
+                y: a.y,
+                angle,
+            }
+        };
+        if !out.iter().any(|g| same_line(g, &line)) {
+            out.push(line);
+        }
+    };
+    let mut start: Option<Point> = None;
+    let mut at: Option<Point> = None;
+    let mut curved = false;
+    for el in path.elements() {
+        match *el {
+            PathEl::MoveTo(p) => {
+                start = Some(p);
+                at = Some(p);
+            }
+            PathEl::LineTo(p) => {
+                if let Some(a) = at {
+                    push(a, p, &mut out);
+                }
+                at = Some(p);
+            }
+            PathEl::QuadTo(_, p) | PathEl::CurveTo(_, _, p) => {
+                curved = true;
+                at = Some(p);
+            }
+            PathEl::ClosePath => {
+                if let (Some(a), Some(s)) = (at, start) {
+                    push(a, s, &mut out);
+                }
+                at = start;
+            }
+        }
+    }
+    if out.is_empty() && curved {
+        let b = tracedraw_core::geometry::Shape::bounding_box(path);
+        if b.width().is_finite() && b.height().is_finite() && (b.width() > 1e-6 || b.height() > 1e-6) {
+            out.push(GuideLine::Vertical { x: b.x0 });
+            out.push(GuideLine::Vertical { x: b.x1 });
+            out.push(GuideLine::Horizontal { y: b.y0 });
+            out.push(GuideLine::Horizontal { y: b.y1 });
+            out.dedup_by(|a, b| same_line(a, b));
+        }
+    }
+    out
+}
+
+/// Whether two guidelines lie on the same line (within a micron).
+fn same_line(a: &GuideLine, b: &GuideLine) -> bool {
+    const E: f64 = 1e-3;
+    match (a, b) {
+        (GuideLine::Horizontal { y: p }, GuideLine::Horizontal { y: q })
+        | (GuideLine::Vertical { x: p }, GuideLine::Vertical { x: q }) => (p - q).abs() < E,
+        (
+            GuideLine::Angled { angle, .. },
+            GuideLine::Angled {
+                x: x2,
+                y: y2,
+                angle: a2,
+            },
+        ) => {
+            let d = (angle - a2).rem_euclid(180.0);
+            (d < 1e-3 || d > 180.0 - 1e-3) && a.distance(Point::new(*x2, *y2)).abs() < E
+        }
+        _ => false,
+    }
+}
+
+impl App {
+    /// Whether Convert to Guidelines has something to convert: an
+    /// unlocked selected object.
+    pub fn can_convert_to_guides(&self) -> bool {
+        self.selected_shapes().iter().any(|s| !s.locked)
+    }
+
+    /// Convert to Guidelines (#3954): each selected object becomes the
+    /// guidelines along its straight sides (the edges of its bounding box
+    /// for a curved one) and is removed, one undo step. Guidelines already
+    /// on the page are not added twice.
+    pub fn convert_to_guides(&mut self) {
+        let shapes: Vec<_> = self
+            .selected_shapes()
+            .into_iter()
+            .filter(|s| !s.locked)
+            .collect();
+        if shapes.is_empty() {
+            return;
+        }
+        let have = self.page_guides();
+        let mut added: Vec<GuideLine> = Vec::new();
+        for s in &shapes {
+            for line in guide_lines_of_path(&s.page_path()) {
+                let known = have.iter().any(|g| same_line(&g.line, &line))
+                    || added.iter().any(|g| same_line(g, &line));
+                if !known {
+                    added.push(line);
+                }
+            }
+        }
+        let ids: Vec<_> = shapes.iter().map(|s| s.id).collect();
+        let mut cmds = Vec::new();
+        if self.edit_master_guides {
+            if !added.is_empty() {
+                let mut guides = have;
+                guides.extend(added.into_iter().map(Guide::from));
+                cmds.push(Command::SetMasterGuides { guides });
+            }
+        } else {
+            let page = self.page;
+            cmds.extend(added.into_iter().map(|line| Command::AddGuide {
+                page,
+                guide: Guide::from(line),
+            }));
+        }
+        cmds.push(Command::DeleteShapes { shapes: ids });
+        if let Err(e) = self.engine.run_batch("Convert to Guidelines", &cmds) {
+            self.status = e.to_string();
+            return;
+        }
+        self.select(Vec::new());
+    }
+}
+
 pub fn moved_line(line: GuideLine, d: Vec2) -> GuideLine {
     match line {
         GuideLine::Horizontal { y } => GuideLine::Horizontal { y: y + d.y },
@@ -1288,6 +1505,40 @@ pub fn moved_line(line: GuideLine, d: Vec2) -> GuideLine {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #3954: a triangle gives a guideline along each side (the slanted
+    /// one angled), a square's opposite sides two each, and a circle the
+    /// edges of its box.
+    #[test]
+    fn guidelines_run_along_the_straight_sides() {
+        use tracedraw_core::geometry::{BezPath, Circle, Shape as _};
+        let mut tri = BezPath::new();
+        tri.move_to((0.0, 0.0));
+        tri.line_to((10.0, 0.0));
+        tri.line_to((0.0, 10.0));
+        tri.close_path();
+        let lines = guide_lines_of_path(&tri);
+        assert_eq!(lines.len(), 3, "{lines:?}");
+        assert!(lines.contains(&GuideLine::Horizontal { y: 0.0 }));
+        assert!(lines.contains(&GuideLine::Vertical { x: 0.0 }));
+        assert!(lines.iter().any(|l| matches!(l, GuideLine::Angled { angle, .. }
+            if (angle - 135.0).abs() < 1e-9)));
+        // Two sides on one line give one guideline.
+        let mut zig = BezPath::new();
+        zig.move_to((0.0, 0.0));
+        zig.line_to((5.0, 0.0));
+        zig.line_to((5.0, 5.0));
+        zig.move_to((8.0, 0.0));
+        zig.line_to((12.0, 0.0));
+        let lines = guide_lines_of_path(&zig);
+        assert_eq!(lines, [GuideLine::Horizontal { y: 0.0 }, GuideLine::Vertical { x: 5.0 }]);
+        let circle = Circle::new((5.0, 5.0), 3.0).to_path(0.1);
+        let lines = guide_lines_of_path(&circle);
+        assert_eq!(lines.len(), 4, "{lines:?}");
+        assert!(lines.iter().any(|l| matches!(l, GuideLine::Vertical { x } if (x - 2.0).abs() < 1e-6)));
+        assert!(lines.iter().any(|l| matches!(l, GuideLine::Horizontal { y } if (y - 8.0).abs() < 1e-6)));
+        assert!(guide_lines_of_path(&BezPath::new()).is_empty());
+    }
 
     fn app() -> App {
         let mut app = App::headless();
@@ -1796,6 +2047,51 @@ mod tests {
         .lines(Size::new(100.0, 50.0));
         assert_eq!(grid.len(), 5 + 3);
         assert!(grid.contains(&GuideLine::Horizontal { y: 25.0 }));
+    }
+
+    /// A modular grid: fields with gutters between them, inside an area
+    /// (the margins); with no gutters it is the even grid of before.
+    #[test]
+    fn a_modular_grid_has_gutters_between_its_fields() {
+        use tracedraw_core::geometry::Rect;
+        let even = modular_grid_lines(Rect::new(0.0, 0.0, 100.0, 50.0), 2, 4, 0.0, 0.0);
+        let mut before = GuidePreset::Grid {
+            rows: 2,
+            columns: 4,
+        }
+        .lines(Size::new(100.0, 50.0));
+        let key = |l: &GuideLine| match l {
+            GuideLine::Vertical { x } => (0, (x * 1e6).round() as i64),
+            GuideLine::Horizontal { y } => (1, (y * 1e6).round() as i64),
+            _ => (2, 0),
+        };
+        let mut now = even.clone();
+        before.sort_by_key(key);
+        now.sort_by_key(key);
+        assert_eq!(now, before);
+        // 3 columns in 10..190 with 6 mm gutters: fields of 56.
+        let m = modular_grid_lines(Rect::new(10.0, 20.0, 190.0, 280.0), 2, 3, 4.0, 6.0);
+        let xs: Vec<f64> = m
+            .iter()
+            .filter_map(|l| match l {
+                GuideLine::Vertical { x } => Some(*x),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(xs, vec![10.0, 66.0, 72.0, 128.0, 134.0, 190.0]);
+        // 2 rows in 20..280 with a 4 mm gutter, from the top: 280, 152,
+        // 148, 20.
+        let ys: Vec<f64> = m
+            .iter()
+            .filter_map(|l| match l {
+                GuideLine::Horizontal { y } => Some(*y),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(ys, vec![280.0, 152.0, 148.0, 20.0]);
+        // A gutter too wide for the area is held to it; nothing breaks.
+        let wide = modular_grid_lines(Rect::new(0.0, 0.0, 10.0, 10.0), 3, 3, 1e9, f64::NAN);
+        assert!(!wide.is_empty());
     }
 
     /// The Transformations docker turns a guideline in rotate mode about

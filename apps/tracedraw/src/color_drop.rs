@@ -104,7 +104,7 @@ impl App {
     /// nothing took it.
     pub fn drop_color(&mut self, color: Option<Color>, at: Pos2) -> bool {
         if let Some(c) = color {
-            if self.drop_on_fill_line(c, self.view.to_page(at)) {
+            if self.drop_on_fill_line(c, self.view.to_page(at)) || self.drop_on_color_point(c, at) {
                 return true;
             }
         }

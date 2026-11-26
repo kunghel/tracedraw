@@ -408,6 +408,20 @@ fn colors_of(app: &App, which: Row) -> Vec<(String, Color)> {
     }
 }
 
+/// The value the palette itself holds at `i` when an RGB drawing shows
+/// its bar `which` in RGB; `None` otherwise (#4128).
+fn palette_value(app: &App, which: Row, i: usize) -> Option<Color> {
+    if !rgb_drawing(app) || which == Row::Document || shows_document(app, which) {
+        return None;
+    }
+    let own = match which {
+        Row::Main => &app.palette,
+        Row::Extra(k) => &app.extra_palettes.get(k)?.colors,
+        Row::Document => return None,
+    };
+    own.get(i).map(|(_, c)| *c)
+}
+
 /// `palette` as an RGB drawing shows it: the default palette's colours
 /// take the RGB default palette's values, defined directly, found by name
 /// and colour so a palette edited in the Palette Editor keeps them (#620);
@@ -776,10 +790,21 @@ fn row(app: &mut App, ui: &mut Ui, which: Row, vertical: bool) {
         Stroke::NONE,
     ));
     let menu_resp = menu_resp.rich_tip(tr("palette.menu_tip"));
-    egui::Popup::menu(&menu_resp)
-        .id(egui::Id::new(("palette_menu_popup", which.key())))
-        .style(crate::ui::menus::menu_popup_style)
-        .show(|ui| crate::ui::menus::body(ui, |ui| menu(app, ui, which)));
+    crate::ui::context_menus::filter_popup_with(
+        egui::Popup::menu(&menu_resp)
+            .id(egui::Id::new(("palette_menu_popup", which.key())))
+            .style(crate::ui::menus::menu_popup_style),
+        &app.settings.context_menus,
+        menu_location(app, which),
+        &menu_dynamic_items(app, which, menu_location(app, which)),
+    )
+    .show(|ui| {
+        let _scope = crate::ui::context_menus::Scope::new(
+            &app.settings.context_menus,
+            menu_location(app, which),
+        );
+        crate::ui::menus::body(ui, |ui| menu(app, ui, which));
+    });
     // A double click on the row outside the swatches edits its palette
     // (#2138).
     if bg.double_clicked() {
@@ -790,10 +815,21 @@ fn row(app: &mut App, ui: &mut Ui, which: Row, vertical: bool) {
         }
     }
     // A right click on the row outside the swatches opens the same menu.
-    egui::Popup::context_menu(&bg)
-        .id(egui::Id::new(("palette_context_popup", which.key())))
-        .style(crate::ui::menus::menu_popup_style)
-        .show(|ui| crate::ui::menus::body(ui, |ui| menu(app, ui, which)));
+    crate::ui::context_menus::filter_popup_with(
+        egui::Popup::context_menu(&bg)
+            .id(egui::Id::new(("palette_context_popup", which.key())))
+            .style(crate::ui::menus::menu_popup_style),
+        &app.settings.context_menus,
+        menu_location(app, which),
+        &menu_dynamic_items(app, which, menu_location(app, which)),
+    )
+    .show(|ui| {
+        let _scope = crate::ui::context_menus::Scope::new(
+            &app.settings.context_menus,
+            menu_location(app, which),
+        );
+        crate::ui::menus::body(ui, |ui| menu(app, ui, which));
+    });
 
     // The eyedropper: only the document palette takes new colours.
     let drop_rect = ax.rect(34.0, EDGE + 2.0, 18.0, 18.0);
@@ -1069,7 +1105,26 @@ fn swatch(
     }
     let resp = match entry {
         None => resp.rich_tip(tr("palette.no_color_tip")),
-        Some((name, c)) => resp.on_hover_ui(|ui| swatch_tip_ui(ui, name, *c)),
+        Some((name, c)) => {
+            let source = color_index.and_then(|i| palette_value(app, which, i));
+            resp.on_hover_ui(|ui| {
+                swatch_tip_ui(ui, name, *c);
+                // A CMYK palette in an RGB drawing applies RGB: the
+                // palette's own values show too, so it is seen as the
+                // palette chosen (#4128).
+                if let Some(p) = source.filter(|p| p != c) {
+                    let size = ui.style().text_styles[&egui::TextStyle::Small].size;
+                    ui.label(
+                        egui::RichText::new(crate::i18n::trf(
+                            "palette.rgb_drawing_source",
+                            &[("v", &color_values(p))],
+                        ))
+                        .size(size)
+                        .color(Tokens::text_dim()),
+                    );
+                }
+            })
+        }
     };
 
     // Dragging the colour: inside an object it fills it, on its outline
@@ -1179,6 +1234,11 @@ fn swatch(
             }
         }
     }
+    let scene = if shows_document(app, which) {
+        "palette_document_swatch"
+    } else {
+        "palette_swatch"
+    };
     let menu_id = egui::Id::new(("palette_swatch_menu", which.key(), index));
     if app.settings.palette.right_click_outline {
         // A right click sets the outline; held for a second it opens the
@@ -1210,12 +1270,20 @@ fn swatch(
         {
             right_click_outline(app, ui, entry);
         }
-        egui::Popup::menu(&resp)
-            .id(menu_id)
-            .open_memory(hold_open.then_some(egui::SetOpenCommand::Bool(true)))
-            .at_pointer_fixed()
-            .style(crate::ui::menus::menu_popup_style)
-            .show(|ui| crate::ui::menus::body(ui, |ui| swatch_menu(app, ui, which, color_index)));
+        crate::ui::context_menus::filter_popup_with(
+            egui::Popup::menu(&resp)
+                .id(menu_id)
+                .open_memory(hold_open.then_some(egui::SetOpenCommand::Bool(true)))
+                .at_pointer_fixed()
+                .style(crate::ui::menus::menu_popup_style),
+            &app.settings.context_menus,
+            scene,
+            &menu_dynamic_items(app, which, scene),
+        )
+        .show(|ui| {
+            let _scope = crate::ui::context_menus::Scope::new(&app.settings.context_menus, scene);
+            crate::ui::menus::body(ui, |ui| swatch_menu(app, ui, which, color_index));
+        });
     } else {
         // With the menu on a right click, Ctrl or Alt held sets the
         // outline instead, without the menu (#2132).
@@ -1224,10 +1292,18 @@ fn swatch(
             right_click_outline(app, ui, entry);
             return;
         }
-        egui::Popup::context_menu(&resp)
-            .id(menu_id)
-            .style(crate::ui::menus::menu_popup_style)
-            .show(|ui| crate::ui::menus::body(ui, |ui| swatch_menu(app, ui, which, color_index)));
+        crate::ui::context_menus::filter_popup_with(
+            egui::Popup::context_menu(&resp)
+                .id(menu_id)
+                .style(crate::ui::menus::menu_popup_style),
+            &app.settings.context_menus,
+            scene,
+            &menu_dynamic_items(app, which, scene),
+        )
+        .show(|ui| {
+            let _scope = crate::ui::context_menus::Scope::new(&app.settings.context_menus, scene);
+            crate::ui::menus::body(ui, |ui| swatch_menu(app, ui, which, color_index));
+        });
     }
 }
 
@@ -1450,91 +1526,205 @@ fn double_chevron(painter: &egui::Painter, c: Pos2, color: Color32, vertical: bo
     }
 }
 
-/// The palette menu (the arrow button, or a right click on the row).
-pub fn menu(app: &mut App, ui: &mut Ui, which: Row) {
-    menu_of(app, ui, which, false);
+/// The settings location shared by a palette's menu button and right click.
+pub(crate) fn menu_location(app: &App, which: Row) -> &'static str {
+    if shows_document(app, which) {
+        "palette_document"
+    } else {
+        "palette"
+    }
 }
 
-/// The palette menu; under a swatch's own Delete Color (`swatch`), the
-/// document palette's Delete Color of the current colour is left out.
-fn menu_of(app: &mut App, ui: &mut Ui, which: Row, swatch: bool) {
-    use crate::ui::menus::{check, item, sep};
+/// Dynamic rows actually offered by this palette's menu, before it is drawn.
+pub(crate) fn menu_dynamic_items(app: &App, which: Row, scene: &str) -> [(&'static str, bool); 2] {
+    let strip = which != Row::Document;
+    [
+        (
+            "palette.size",
+            strip && crate::settings::swatch_step_of(strip_prefs(app, which).swatch).is_none(),
+        ),
+        (
+            "palette.position",
+            strip
+                && which != Row::Main
+                && app
+                    .settings
+                    .context_menus
+                    .is_visible(scene, "palette.among_toolbars"),
+        ),
+    ]
+}
+
+/// The palette menu (the arrow button, or a right click on the row).
+pub fn menu(app: &mut App, ui: &mut Ui, which: Row) {
+    menu_of(app, ui, which, None);
+}
+
+/// Draw one sibling sequence, including the swatch action when applicable.
+/// The default order stays unchanged; customization can move rows across groups.
+fn menu_of(app: &mut App, ui: &mut Ui, which: Row, color_index: Option<usize>) {
+    use crate::ui::menus::{check, item, item_tip, sep};
     ui.set_min_width(220.0);
     let document = shows_document(app, which);
-    if which == Row::Main || !document {
-        if which == Row::Main && item(ui, "menu.window.palette_open", "", true) {
-            app.open_palette_file();
-        }
-        // Edit Palette...: the Palette Editor on this bar's palette
-        // (#2138).
-        if let Some(i) = palette_index_of(app, which) {
-            if item(ui, "palette.edit", "", true) {
-                app.open_palette_editor(i);
+    let swatch = color_index.is_some();
+    let keys = [
+        if swatch { "palette.delete_color" } else { "" },
+        "menu.window.palette_open",
+        "palette.edit",
+        "menu.window.palette_manager",
+        "palette.auto_update",
+        "palette.add_from_selection",
+        "palette.add_from_document",
+        if document {
+            "palette.add_from_bitmap"
+        } else {
+            ""
+        },
+        if !swatch && document {
+            "palette.delete_color"
+        } else {
+            ""
+        },
+        "palette.palette",
+        "palette.show_document",
+        "palette.show_names",
+        "palette.size",
+        "palette.rows",
+        "palette.position",
+        "palette.open_bar",
+        "palette.new",
+        "palette.fit_selection",
+        "palette.add_selection_to_palette",
+        if !document {
+            "palette.add_from_bitmap"
+        } else {
+            ""
+        },
+        "palette.rename",
+        "palette.close",
+    ];
+    for &key in crate::ui::context_menu_filter::ordered_keys(&keys).iter() {
+        match key {
+            "palette.delete_color" => {
+                if let Some(ci) = color_index {
+                    if document {
+                        let doc = app.has_document() && ci < app.doc().palette.len();
+                        if item(ui, key, "", doc) {
+                            delete_document_color(app, ci);
+                        }
+                        sep(ui);
+                    } else if let Some(i) = palette_index_of(app, which) {
+                        let takes = app.palette_takes_colors(i);
+                        let why = if app.palettes.get(i).is_some_and(|p| p.builtin) {
+                            tr("dialog.builtin_palette_hint")
+                        } else {
+                            tr("dialog.locked_palette_hint")
+                        };
+                        if item_tip(ui, key, "", takes, Some(&why)) {
+                            app.delete_palette_color(i, ci);
+                        }
+                        sep(ui);
+                    }
+                } else if document {
+                    document_item(app, ui, key);
+                }
             }
+            "menu.window.palette_open" => {
+                if which == Row::Main && item(ui, key, "", true) {
+                    app.open_palette_file();
+                }
+            }
+            "palette.edit" => {
+                if document {
+                    if item(ui, key, "", app.has_document()) {
+                        app.open_palette_editor(crate::ui::palette_editor::DOCUMENT);
+                    }
+                } else if let Some(i) = palette_index_of(app, which) {
+                    if item(ui, key, "", true) {
+                        app.open_palette_editor(i);
+                    }
+                }
+            }
+            "menu.window.palette_manager" => {
+                if !document {
+                    if item(ui, key, "", true) {
+                        app.show_dockers = true;
+                        app.docker_tab = crate::app::DockerTab::Palettes;
+                    }
+                    sep(ui);
+                }
+            }
+            "palette.auto_update"
+            | "palette.add_from_selection"
+            | "palette.add_from_document"
+            | "palette.palette" => {
+                if document {
+                    document_item(app, ui, key);
+                }
+            }
+            "palette.show_document" => {
+                if which == Row::Main && check(ui, key, "", app.settings.palette.show_document) {
+                    app.settings.palette.show_document = !app.settings.palette.show_document;
+                    app.settings.save();
+                }
+            }
+            "palette.show_names" => {
+                if check(ui, key, "", app.settings.palette.show_names) {
+                    app.settings.palette.show_names = !app.settings.palette.show_names;
+                    app.settings.save();
+                }
+            }
+            "palette.size" | "palette.rows" | "palette.position" => {
+                if which != Row::Document {
+                    crate::ui::palette_bars::strip_item(app, ui, which, key);
+                }
+            }
+            "palette.open_bar" => crate::ui::palette_bars::open_bar_items(app, ui),
+            "palette.new" => {
+                if item(ui, key, "", true) {
+                    crate::ui::palette_bars::start_new_palette(app);
+                }
+            }
+            "palette.fit_selection" => {
+                if let Some(i) = palette_index_of(app, which) {
+                    let selection = app.has_document() && !app.selection.is_empty();
+                    if item(ui, key, "", selection) {
+                        app.fit_selection_to_palette(i);
+                    }
+                }
+            }
+            "palette.add_selection_to_palette" => {
+                if let Some(i) = user_palette_of(app, which) {
+                    let sel = app.has_document() && !app.selection.is_empty();
+                    if item(ui, key, "", sel) {
+                        app.add_selection_colors_to_palette(i);
+                    }
+                }
+            }
+            "palette.add_from_bitmap" => {
+                if document {
+                    bitmap_colors_items(app, ui, None);
+                } else if let Some(i) = user_palette_of(app, which) {
+                    bitmap_colors_items(app, ui, Some(i));
+                }
+            }
+            "palette.rename" => {
+                if matches!(which, Row::Extra(_)) {
+                    sep(ui);
+                }
+                if which != Row::Document && item(ui, key, "", true) {
+                    crate::ui::palette_bars::start_rename(app, which);
+                }
+            }
+            "palette.close" => {
+                if let Row::Extra(k) = which {
+                    if item(ui, key, "", k < app.settings.palette_bars.len()) {
+                        crate::ui::palette_bars::close_bar(app, k);
+                    }
+                }
+            }
+            _ => {}
         }
-        if item(ui, "menu.window.palette_manager", "", true) {
-            app.show_dockers = true;
-            app.docker_tab = crate::app::DockerTab::Palettes;
-        }
-        sep(ui);
-    }
-    if document {
-        // Edit Palette...: the Palette Editor on the document palette
-        // (#2321).
-        if item(ui, "palette.edit", "", app.has_document()) {
-            app.open_palette_editor(crate::ui::palette_editor::DOCUMENT);
-        }
-        document_items(app, ui, swatch);
-        sep(ui);
-    }
-    if which == Row::Main
-        && check(
-            ui,
-            "palette.show_document",
-            "",
-            app.settings.palette.show_document,
-        )
-    {
-        app.settings.palette.show_document = !app.settings.palette.show_document;
-        app.settings.save();
-    }
-    // Names beside the swatches when the palette opens out (#3512).
-    if check(ui, "palette.show_names", "", app.settings.palette.show_names) {
-        app.settings.palette.show_names = !app.settings.palette.show_names;
-        app.settings.save();
-    }
-    if which != Row::Document {
-        crate::ui::palette_bars::strip_items(app, ui, which);
-    }
-    crate::ui::palette_bars::open_bar_items(app, ui);
-    if item(ui, "palette.new", "", true) {
-        crate::ui::palette_bars::start_new_palette(app);
-    }
-    // The selection's colours changed to this palette's nearest ones
-    // (#3534).
-    if let Some(i) = palette_index_of(app, which) {
-        let sel = app.has_document() && !app.selection.is_empty();
-        if item(ui, "palette.fit_selection", "", sel) {
-            app.fit_selection_to_palette(i);
-        }
-    }
-    if let Some(i) = user_palette_of(app, which) {
-        let sel = app.has_document() && !app.selection.is_empty();
-        if item(ui, "palette.add_selection_to_palette", "", sel) {
-            app.add_selection_colors_to_palette(i);
-        }
-        bitmap_colors_items(app, ui, Some(i));
-    }
-    if let Row::Extra(k) = which {
-        sep(ui);
-        if item(ui, "palette.rename", "", true) {
-            crate::ui::palette_bars::start_rename(app, which);
-        }
-        if item(ui, "palette.close", "", k < app.settings.palette_bars.len()) {
-            crate::ui::palette_bars::close_bar(app, k);
-        }
-    } else if which == Row::Main && item(ui, "palette.rename", "", true) {
-        crate::ui::palette_bars::start_rename(app, which);
     }
 }
 
@@ -1542,28 +1732,152 @@ fn menu_of(app: &mut App, ui: &mut Ui, which: Row, swatch: bool) {
 /// palette's menu. A built-in or locked palette shows Delete Color
 /// greyed, its tooltip saying why.
 pub fn swatch_menu(app: &mut App, ui: &mut Ui, which: Row, color_index: Option<usize>) {
-    use crate::ui::menus::{item, item_tip, sep};
-    if let Some(ci) = color_index {
-        if shows_document(app, which) {
-            let doc = app.has_document() && ci < app.doc().palette.len();
-            if item(ui, "palette.delete_color", "", doc) {
-                delete_document_color(app, ci);
-            }
-            sep(ui);
-        } else if let Some(i) = palette_index_of(app, which) {
-            let takes = app.palette_takes_colors(i);
-            let why = if app.palettes.get(i).is_some_and(|p| p.builtin) {
-                tr("dialog.builtin_palette_hint")
-            } else {
-                tr("dialog.locked_palette_hint")
-            };
-            if item_tip(ui, "palette.delete_color", "", takes, Some(&why)) {
-                app.delete_palette_color(i, ci);
-            }
-            sep(ui);
+    menu_of(app, ui, which, color_index);
+}
+
+#[cfg(test)]
+mod context_menu_order_tests {
+    use super::*;
+
+    #[test]
+    fn context_menu_palette_editor_defaults_match_each_real_menu() {
+        for (scene, which, swatch) in [
+            ("palette", Row::Extra(0), false),
+            ("palette_swatch", Row::Extra(0), true),
+            ("palette_document", Row::Document, false),
+            ("palette_document_swatch", Row::Document, true),
+        ] {
+            let mut app = App::headless();
+            app.palettes.push(crate::palette::Palette {
+                name: "Test palette".to_string(),
+                key: "",
+                colors: Vec::new(),
+                builtin: false,
+                path: Some(std::path::PathBuf::from("test.tdpal")),
+            });
+            app.open_palette_bar("test.tdpal");
+            let ctx = crate::theme::ui_context();
+            crate::ui::menus::ROWS.with(|rows| rows.borrow_mut().clear());
+            let mut output = ctx.run_ui(Default::default(), |ui| {
+                let _scope =
+                    crate::ui::context_menus::Scope::new(&app.settings.context_menus, scene);
+                menu_of(&mut app, ui, which, swatch.then_some(0));
+            });
+            output.textures_delta.clear();
+            let actual = crate::ui::menus::ROWS.with(|rows| {
+                rows.borrow()
+                    .iter()
+                    .map(|(key, _)| key.clone())
+                    .collect::<Vec<_>>()
+            });
+            let expected: Vec<_> = crate::ui::context_menu_branches::siblings(scene, &[])
+                .into_iter()
+                .filter(|key| actual.iter().any(|k| k == key))
+                .collect();
+            assert_eq!(actual, expected, "{scene}");
         }
     }
-    menu_of(app, ui, which, color_index.is_some());
+
+    fn frame(
+        app: &mut App,
+        ctx: &egui::Context,
+        scene: &str,
+        events: Vec<egui::Event>,
+    ) -> Vec<(String, Rect)> {
+        crate::ui::menus::ROWS.with(|rows| rows.borrow_mut().clear());
+        let mut output = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(800.0, 900.0))),
+                events,
+                ..Default::default()
+            },
+            |ui| {
+                let _scope =
+                    crate::ui::context_menus::Scope::new(&app.settings.context_menus, scene);
+                crate::ui::menus::body(ui, |ui| {
+                    if scene == "palette_swatch" {
+                        swatch_menu(app, ui, Row::Main, Some(0));
+                    } else {
+                        menu(app, ui, Row::Main);
+                    }
+                });
+            },
+        );
+        output.textures_delta.clear();
+        crate::ui::menus::ROWS.with(|rows| rows.borrow().clone())
+    }
+
+    #[test]
+    fn context_menu_palette_root_order_moves_real_rows_and_click_targets() {
+        for scene in ["palette", "palette_swatch"] {
+            let mut app = App::headless();
+            let ctx = crate::theme::ui_context();
+            app.settings.context_menus.set_order(
+                scene,
+                "",
+                &["palette.new", "palette.delete_color", "palette.edit"],
+            );
+            frame(&mut app, &ctx, scene, Vec::new());
+            let rows = frame(&mut app, &ctx, scene, Vec::new());
+            assert_eq!(rows.first().map(|row| row.0.as_str()), Some("palette.new"));
+            if scene == "palette_swatch" {
+                assert_eq!(
+                    rows.get(1).map(|row| row.0.as_str()),
+                    Some("palette.delete_color")
+                );
+                assert_eq!(
+                    rows.iter()
+                        .filter(|row| row.0 == "palette.delete_color")
+                        .count(),
+                    1
+                );
+            }
+            let at = rows.first().expect("new palette row").1.center();
+            for pressed in [true, false] {
+                frame(
+                    &mut app,
+                    &ctx,
+                    scene,
+                    vec![
+                        egui::Event::PointerMoved(at),
+                        egui::Event::PointerButton {
+                            pos: at,
+                            button: egui::PointerButton::Primary,
+                            pressed,
+                            modifiers: egui::Modifiers::NONE,
+                        },
+                    ],
+                );
+            }
+            assert!(
+                app.palette_new.is_some(),
+                "the moved row still runs its own action"
+            );
+        }
+    }
+
+    #[test]
+    fn context_menu_document_submenu_uses_its_own_order() {
+        let mut app = App::headless();
+        let ctx = crate::theme::ui_context();
+        app.settings.context_menus.set_order(
+            "palette_document",
+            "palette.palette",
+            &["palette.rename", "palette.reset"],
+        );
+        crate::ui::menus::replay::start(0);
+        let mut output = ctx.run_ui(Default::default(), |ui| {
+            let _scope = crate::ui::context_menus::Scope::new(
+                &app.settings.context_menus,
+                "palette_document",
+            );
+            document_item(&mut app, ui, "palette.palette");
+        });
+        output.textures_delta.clear();
+        let (hit, _) = crate::ui::menus::replay::finish();
+        assert_eq!(hit.as_deref(), Some("palette.rename"));
+        assert!(app.palette_rename.is_some());
+    }
 }
 
 /// Colour `i` leaves the document palette (one undo step).
@@ -1586,67 +1900,76 @@ pub const BITMAP_COLOR_COUNTS: [u32; 4] = [8, 16, 32, 64];
 /// selected picture join the user's palette `palette`, or the document
 /// palette when None; greyed without a picture selected.
 fn bitmap_colors_items(app: &mut App, ui: &mut Ui, palette: Option<usize>) {
-    use crate::ui::menus::{item_label, sub_if};
+    use crate::ui::menus::{item_label_keyed, sub_if};
     let picture = app.has_document() && app.selected_bitmap().is_some();
     sub_if(ui, "palette.add_from_bitmap", picture, |ui| {
         for n in BITMAP_COLOR_COUNTS {
             let label = crate::i18n::trf("palette.count", &[("n", &n.to_string())]);
-            if item_label(ui, &label, "", picture) {
+            if item_label_keyed(ui, "palette.add_from_bitmap", &label, "", picture) {
                 app.add_bitmap_colors_to_palette(palette, n);
             }
         }
     });
 }
 
-/// The document palette's own items.
-fn document_items(app: &mut App, ui: &mut Ui, swatch: bool) {
+/// Draw one document action within the surrounding menu's ordered sequence.
+fn document_item(app: &mut App, ui: &mut Ui, key: &str) {
     use crate::ui::menus::{check, item, sep, sub};
     let doc = app.has_document();
-    if check(
-        ui,
-        "palette.auto_update",
-        "",
-        app.settings.palette.auto_update_document,
-    ) {
-        app.settings.palette.auto_update_document = !app.settings.palette.auto_update_document;
-        app.settings.save();
-    }
-    sep(ui);
-    if item(
-        ui,
-        "palette.add_from_selection",
-        "",
-        doc && !app.selection.is_empty(),
-    ) {
-        app.palette_from_selection();
-    }
-    if item(ui, "palette.add_from_document", "", doc) {
-        app.add_document_colors_to_palette();
-    }
-    bitmap_colors_items(app, ui, None);
-    let current = if doc {
-        app.doc_palette_current
-            .filter(|i| *i < app.doc().palette.len())
-    } else {
-        None
-    };
-    if !swatch && item(ui, "palette.delete_color", "", doc && current.is_some()) {
-        if let Some(i) = current {
-            delete_document_color(app, i);
-            app.doc_palette_current = None;
+    match key {
+        "palette.auto_update" => {
+            if check(ui, key, "", app.settings.palette.auto_update_document) {
+                app.settings.palette.auto_update_document =
+                    !app.settings.palette.auto_update_document;
+                app.settings.save();
+            }
+            sep(ui);
         }
+        "palette.add_from_selection" => {
+            if item(ui, key, "", doc && !app.selection.is_empty()) {
+                app.palette_from_selection();
+            }
+        }
+        "palette.add_from_document" => {
+            if item(ui, key, "", doc) {
+                app.add_document_colors_to_palette();
+            }
+        }
+        "palette.delete_color" => {
+            let current = if doc {
+                app.doc_palette_current
+                    .filter(|i| *i < app.doc().palette.len())
+            } else {
+                None
+            };
+            if item(ui, key, "", doc && current.is_some()) {
+                if let Some(i) = current {
+                    delete_document_color(app, i);
+                    app.doc_palette_current = None;
+                }
+            }
+        }
+        "palette.palette" => {
+            sep(ui);
+            sub(ui, "palette.palette", |ui| {
+                crate::ui::context_menu_filter::ordered_menu! { ui;
+                    "palette.reset" => {
+                        // Ask before removing colours the drawing does not use.
+                        if item(ui, "palette.reset", "", doc) {
+                            app.dialog = crate::ui::dialogs::Dialog::ConfirmResetPalette;
+                        }
+                    },
+                    "palette.rename" => {
+                        if item(ui, "palette.rename", "", true) {
+                            crate::ui::palette_bars::start_rename(app, Row::Document);
+                        }
+                    }
+                }
+            });
+            sep(ui);
+        }
+        _ => {}
     }
-    sep(ui);
-    sub(ui, "palette.palette", |ui| {
-        // Reset Palette takes every colour the drawing does not use out:
-        // asked first, apart from deleting a colour (#2138).
-        if item(ui, "palette.reset", "", doc) {
-            app.dialog = crate::ui::dialogs::Dialog::ConfirmResetPalette;
-        }
-        if item(ui, "palette.rename", "", true) {
-            crate::ui::palette_bars::start_rename(app, Row::Document);
-        }
-    });
 }
 
 /// Pop-ups drawn over the window: a colour's shades and the expanded
@@ -2036,13 +2359,13 @@ mod tests {
             replay::start(target);
             let mut out = ctx.run_ui(egui::RawInput::default(), |ui| menu(&mut probe, ui, which));
             out.textures_delta.clear();
-            let (hit, seen) = replay::finish();
-            if hit.as_deref() == Some(label) {
+            let (hit, shown_label, seen) = replay::finish_labelled();
+            if hit.as_deref() == Some(label) || shown_label.as_deref() == Some(label) {
                 replay::start(target);
                 let mut out = ctx.run_ui(egui::RawInput::default(), |ui| menu(app, ui, which));
                 out.textures_delta.clear();
-                replay::finish();
-                return true;
+                let fired = replay::finish_labelled();
+                return fired.0 == hit && fired.1 == shown_label;
             }
             if target >= seen {
                 break;
@@ -2499,6 +2822,29 @@ mod tests {
         right_click(&mut app, x, egui::Modifiers::NONE);
         assert_eq!(pen(&app), Some(white));
         assert!(egui::Popup::is_any_open(&ctx), "the menu");
+        // Hiding every operation closes an existing popup and suppresses new ones.
+        let definition = crate::ui::context_menus::CATALOG
+            .iter()
+            .find(|menu| menu.id == "palette_swatch")
+            .expect("swatch menu");
+        for key in definition.items {
+            app.settings
+                .context_menus
+                .set_visible("palette_swatch", key, false);
+        }
+        right_click(&mut app, x, egui::Modifiers::NONE);
+        assert!(!egui::Popup::is_any_open(&ctx), "no empty swatch menu");
+        assert_eq!(pen(&app), Some(white));
+        // Direct outline gestures retain their behavior with the popup hidden.
+        app.settings.palette.right_click_outline = true;
+        right_click(&mut app, x, egui::Modifiers::NONE);
+        assert_eq!(pen(&app), Some(swatch));
+        assert!(
+            !egui::Popup::is_any_open(&ctx),
+            "outline click opens no menu"
+        );
+        app.undo();
+        assert_eq!(pen(&app), Some(white));
     }
 
     /// On the Welcome Screen the palette takes no clicks: a click on a
@@ -2866,6 +3212,13 @@ mod tests {
         assert_eq!(rgb[0].0, "Cyan");
         assert_eq!(rgb[0].1, Color::rgb8(0, 255, 255));
         assert_eq!(rgb[1].1, Color::rgb8(10, 20, 30));
+        // The tooltip names the palette's own CMYK value beside the RGB
+        // one applied (#4128); none for the document palette.
+        assert_eq!(
+            palette_value(&app, Row::Main, 0),
+            Some(Color::cmyk_pct(100.0, 0.0, 0.0, 0.0))
+        );
+        assert_eq!(palette_value(&app, Row::Document, 0), None);
     }
 
     /// The default palette in an RGB drawing holds clean RGB values: black
@@ -3438,5 +3791,94 @@ mod tests {
         );
         assert_eq!(app.palette_scroll, 3);
         assert_eq!(fill(&app), fill0);
+    }
+}
+
+#[cfg(test)]
+mod dynamic_root_menu_tests {
+    use super::*;
+
+    fn keep_only(app: &mut App, scene: &str, visible: &[&str]) {
+        let menu = crate::ui::context_menus::CATALOG
+            .iter()
+            .find(|menu| menu.id == scene)
+            .expect("palette scene");
+        for item in menu.items {
+            app.settings
+                .context_menus
+                .set_visible(scene, item, visible.contains(item));
+        }
+    }
+
+    fn has_items(app: &App, which: Row, scene: &str) -> bool {
+        crate::ui::context_menus::has_visible_items_with(
+            &app.settings.context_menus,
+            scene,
+            &menu_dynamic_items(app, which, scene),
+        )
+    }
+
+    #[test]
+    fn a_custom_size_keeps_the_root_only_when_its_dynamic_row_exists() {
+        let mut app = App::headless();
+        for scene in ["palette", "palette_swatch"] {
+            keep_only(&mut app, scene, &["palette.size"]);
+            app.settings.palette.swatch_size = 20;
+            assert!(
+                !has_items(&app, Row::Main, scene),
+                "named size has no dynamic row"
+            );
+            app.settings.palette.swatch_size = 22;
+            assert!(
+                has_items(&app, Row::Main, scene),
+                "custom size is still shown"
+            );
+            app.settings
+                .context_menus
+                .set_visible(scene, "palette.size", false);
+            assert!(
+                !has_items(&app, Row::Main, scene),
+                "hidden parent hides the custom row"
+            );
+        }
+        keep_only(&mut app, "palette_document", &["palette.size"]);
+        app.settings.palette.document_swatch_size = 22;
+        assert!(!has_items(&app, Row::Document, "palette_document"));
+    }
+
+    #[test]
+    fn among_toolbars_keeps_only_a_palette_bar_root_with_a_visible_parent() {
+        let mut app = App::headless();
+        app.settings
+            .palette_bars
+            .push(crate::settings::PaletteBarPrefs::default());
+        for scene in ["palette", "palette_swatch"] {
+            keep_only(
+                &mut app,
+                scene,
+                &["palette.position", "palette.among_toolbars"],
+            );
+            assert!(
+                !has_items(&app, Row::Main, scene),
+                "main strip has no among-toolbars row"
+            );
+            assert!(
+                has_items(&app, Row::Extra(0), scene),
+                "extra bar offers the row"
+            );
+            app.settings
+                .context_menus
+                .set_visible(scene, "palette.position", false);
+            assert!(
+                !has_items(&app, Row::Extra(0), scene),
+                "hidden parent hides its dynamic choice"
+            );
+        }
+        keep_only(
+            &mut app,
+            "palette_document",
+            &["palette.position", "palette.among_toolbars"],
+        );
+        assert!(!has_items(&app, Row::Document, "palette_document"));
     }
 }

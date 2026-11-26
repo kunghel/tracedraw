@@ -246,6 +246,10 @@ fn watch_pasted_files() {
         if files.is_empty() {
             return;
         }
+        if crate::clipboard::handed_awaited() {
+            e.prevent_default();
+            return;
+        }
         let text = data.get_data("text/plain").ok().filter(|t| !t.is_empty());
         crate::clipboard::expect_handed();
         wasm_bindgen_futures::spawn_local(async move {

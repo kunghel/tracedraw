@@ -8,6 +8,7 @@
 //! any of them can be swapped for another one by one (#3609).
 //! See docs/behavior/recolor.md.
 
+use crate::ui::btn_icons::IconUi;
 use crate::app::App;
 use crate::i18n::{tr, trf};
 use crate::ui::dialogs::window;
@@ -27,6 +28,13 @@ pub struct RecolorState {
     /// Each colour of those objects and the colour it becomes (the same
     /// colour until one is picked for it).
     pub colors: Vec<(Color, Color)>,
+    /// The colours picked in the list, to change together (D#4203).
+    pub picked: Vec<bool>,
+    /// The colour Replace Picked gives the picked colours.
+    pub replace_with: Color,
+    /// How close (0 to 100) Pick Similar takes colours to the first one
+    /// picked.
+    pub similar: f32,
     /// What the drawing shows now.
     shown: Option<Recolor>,
 }
@@ -39,6 +47,9 @@ impl RecolorState {
             tint_color: Color::rgb8(30, 110, 220),
             shapes,
             colors: Vec::new(),
+            picked: Vec::new(),
+            replace_with: Color::rgb8(220, 40, 40),
+            similar: 15.0,
             shown: None,
         }
     }
@@ -54,6 +65,41 @@ impl RecolorState {
                 .copied()
                 .collect(),
             ..self.recolor.clone()
+        }
+    }
+}
+
+impl RecolorState {
+    /// Every picked colour becomes `to` (D#4203).
+    pub fn replace_picked(&mut self, to: Color) {
+        for (i, (_, t)) in self.colors.iter_mut().enumerate() {
+            if self.picked.get(i).copied().unwrap_or(false) {
+                *t = to;
+            }
+        }
+    }
+
+    /// Pick every colour within `similar` (0 to 100, as far as black is
+    /// from white) of the first one picked, or of the first colour.
+    pub fn pick_similar(&mut self) {
+        self.picked.resize(self.colors.len(), false);
+        let Some(first) = self
+            .picked
+            .iter()
+            .position(|p| *p)
+            .or((!self.colors.is_empty()).then_some(0))
+        else {
+            return;
+        };
+        let rgb = |c: Color| c.to_rgb_f32();
+        let base = rgb(self.colors[first].0);
+        let reach = self.similar.clamp(0.0, 100.0) / 100.0 * 3f32.sqrt();
+        for (i, (c, _)) in self.colors.iter().enumerate() {
+            let v = rgb(*c);
+            let d = ((v[0] - base[0]).powi(2) + (v[1] - base[1]).powi(2) + (v[2] - base[2]).powi(2)).sqrt();
+            if d <= reach + 1e-6 {
+                self.picked[i] = true;
+            }
         }
     }
 }
@@ -138,8 +184,8 @@ impl App {
 }
 
 /// A swatch of `c` (not clickable), with its values as the tip.
-fn color_chip(ui: &mut egui::Ui, c: Color) {
-    let (rect, resp) = ui.allocate_exact_size(egui::Vec2::new(18.0, 18.0), egui::Sense::hover());
+fn color_chip(ui: &mut egui::Ui, c: Color) -> egui::Response {
+    let (rect, resp) = ui.allocate_exact_size(egui::Vec2::new(18.0, 18.0), egui::Sense::click());
     let [r, g, b] = c.to_rgb8();
     ui.painter()
         .rect_filled(rect, 2.0, egui::Color32::from_rgb(r, g, b));
@@ -149,7 +195,7 @@ fn color_chip(ui: &mut egui::Ui, c: Color) {
         egui::Stroke::new(1.0, crate::theme::Tokens::control_border()),
         egui::StrokeKind::Inside,
     );
-    resp.on_hover_text(crate::ui::palette::swatch_tip("", c));
+    resp.on_hover_text(crate::ui::palette::swatch_tip("", c))
 }
 
 /// A slider row: label, slider, value.
@@ -198,6 +244,7 @@ pub fn dialog(app: &mut App, ctx: &Context, st: &mut RecolorState, close: &mut b
         if !st.colors.is_empty() {
             ui.add_space(6.0);
             ui.strong(tr("recolor.colors"));
+            st.picked.resize(st.colors.len(), false);
             egui::ScrollArea::vertical()
                 .max_height(150.0)
                 .show(ui, |ui| {
@@ -206,7 +253,21 @@ pub fn dialog(app: &mut App, ctx: &Context, st: &mut RecolorState, close: &mut b
                             ui.push_id(("recolor_swap", i), |ui| {
                                 ui.horizontal(|ui| {
                                     ui.spacing_mut().item_spacing.x = 2.0;
-                                    color_chip(ui, *from);
+                                    // A click on the colour picks it to
+                                    // change with others (D#4203).
+                                    let picked = &mut st.picked[i];
+                                    let r = color_chip(ui, *from);
+                                    if r.clicked() {
+                                        *picked = !*picked;
+                                    }
+                                    if *picked {
+                                        ui.painter().rect_stroke(
+                                            r.rect.expand(2.0),
+                                            3.0,
+                                            egui::Stroke::new(2.0, crate::theme::Tokens::ACCENT),
+                                            egui::StrokeKind::Outside,
+                                        );
+                                    }
                                     ui.label(">");
                                     crate::ui::color_picker::color_button(ui, to);
                                 });
@@ -215,13 +276,47 @@ pub fn dialog(app: &mut App, ctx: &Context, st: &mut RecolorState, close: &mut b
                     });
                 });
             ui.label(RichText::new(tr("recolor.colors_note")).weak());
+            // Several colours at once (D#4203): pick them (a click on
+            // each, all, or those close to the first), then give them all
+            // one colour.
+            ui.horizontal_wrapped(|ui| {
+                if ui.ibutton("recolor.pick_all").clicked() {
+                    st.picked.iter_mut().for_each(|p| *p = true);
+                }
+                if ui.ibutton("recolor.pick_none").clicked() {
+                    st.picked.iter_mut().for_each(|p| *p = false);
+                }
+                if ui
+                    .ibutton("recolor.pick_similar")
+                    .on_hover_text(tr("recolor.pick_similar_tip"))
+                    .clicked()
+                {
+                    st.pick_similar();
+                }
+                ui.add(
+                    egui::Slider::new(&mut st.similar, 0.0..=100.0)
+                        .suffix(" %")
+                        .fixed_decimals(0),
+                );
+            });
+            let any = st.picked.iter().any(|p| *p);
+            ui.horizontal(|ui| {
+                ui.add_enabled_ui(any, |ui| {
+                    let mut to = st.replace_with;
+                    crate::ui::color_picker::color_button(ui, &mut to);
+                    st.replace_with = to;
+                    if ui.ibutton("recolor.replace_picked").clicked() {
+                        st.replace_picked(to);
+                    }
+                });
+            });
         }
         ui.add_space(4.0);
         ui.checkbox(&mut st.recolor.spots, tr("recolor.spots"));
         ui.add_space(4.0);
         ui.label(RichText::new(tr("recolor.note")).weak());
         ui.add_space(4.0);
-        reset = ui.button(tr("recolor.reset")).clicked();
+        reset = ui.ibutton("recolor.reset").clicked();
         let (o, h) = crate::ui::dialogs::help_ok_cancel(ui, close);
         ok = o;
         help = h;
@@ -311,6 +406,38 @@ mod tests {
         assert_eq!(app.engine.history_labels().0.len(), steps + 1);
         app.undo();
         assert_eq!(fill_of(&app, a), Some(Fill::Solid(red)));
+    }
+
+    /// D#4203: several colours picked (close reds by Pick Similar) all
+    /// take one colour at once; the far one stays.
+    #[test]
+    fn several_picked_colours_take_one_colour() {
+        let mut app = App::headless();
+        app.show_welcome = false;
+        let red = Color::rgb8(200, 40, 40);
+        let red2 = Color::rgb8(210, 50, 45);
+        let blue = Color::rgb8(40, 40, 200);
+        let ids = vec![rect(&mut app, red), rect(&mut app, red2), rect(&mut app, blue)];
+        app.select(ids.clone());
+        app.recolor_dialog();
+        let Dialog::Recolor(st) = &app.dialog else {
+            panic!("open");
+        };
+        let mut st = st.clone();
+        let at = |c: Color| st.colors.iter().position(|(f, _)| *f == c).expect("listed");
+        let (ir, ir2, ib) = (at(red), at(red2), at(blue));
+        st.picked = vec![false; st.colors.len()];
+        st.picked[ir] = true;
+        st.similar = 10.0;
+        st.pick_similar();
+        assert!(st.picked[ir] && st.picked[ir2] && !st.picked[ib], "{:?}", st.picked);
+        let green = Color::rgb8(40, 160, 40);
+        st.replace_picked(green);
+        app.end_recolor_preview();
+        assert!(app.recolor_shapes(st.shapes.clone(), st.asked()));
+        assert_eq!(fill_of(&app, ids[0]), Some(Fill::Solid(green)));
+        assert_eq!(fill_of(&app, ids[1]), Some(Fill::Solid(green)));
+        assert_eq!(fill_of(&app, ids[2]), Some(Fill::Solid(blue)));
     }
 
     /// The dialog lists each colour of the selection; one swapped for

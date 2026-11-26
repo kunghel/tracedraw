@@ -46,7 +46,7 @@ pub struct Changes {
     /// View > Simulate Overprints as it set it (`ActiveView.Type`).
     pub simulate_overprints: Option<bool>,
     /// Zoom To Fit and the other view steps it took (#4020).
-    pub view_steps: Vec<crate::view_steps::ViewStep>,
+    pub view_steps: Vec<crate::view_steps::Taken>,
 }
 
 /// What the macro asks the app for.
@@ -65,6 +65,17 @@ pub enum Request {
     },
     /// Open a web or mail address with the system (ShellExecute, #2165).
     Open(String),
+    /// The system's file dialog (`ScriptTools.GetFileBox`, #4315): `mode`
+    /// 0 opens a file, 1 saves one, 2 picks a folder; `filter` is
+    /// "Name (*.csv)|*.csv|...". The answer is [`Input::Text`] with the
+    /// path, empty for Cancel.
+    FileBox {
+        filter: String,
+        title: String,
+        mode: u8,
+        file: String,
+        folder: String,
+    },
 }
 
 /// A control's (or the form's) event, from the app to the macro.
@@ -136,6 +147,9 @@ pub struct Finished {
     pub changes: Changes,
     pub error: Option<RunError>,
     pub stopped: bool,
+    /// What the run skipped because TraceDraw cannot do it (keep going,
+    /// `tracedraw_vba::Options::keep_going`), each with how many times.
+    pub skipped: Vec<(RunError, u32)>,
 }
 
 /// A macro running on its thread.
@@ -162,6 +176,7 @@ impl MacroRun {
                 changes: Changes::default(),
                 error: Some(RunError::parse("the macro's thread failed")),
                 stopped: false,
+                skipped: Vec::new(),
             },
         }
     }
@@ -337,6 +352,184 @@ fn native_inputbox(_this: &JsValue, args: &[JsValue], ctx: &mut Context) -> JsRe
             Some(Input::Text(t)) => return Ok(text(t.unwrap_or_default())),
             Some(_) => continue,
         }
+    }
+}
+
+/// `__filebox(filter, title, mode, file, folder)`: the system's file
+/// dialog (#4315); the path chosen, "" for Cancel.
+fn native_filebox(_this: &JsValue, args: &[JsValue], ctx: &mut Context) -> JsResult<JsValue> {
+    let filter = arg_str(args, 0, ctx)?;
+    let title = arg_str(args, 1, ctx)?;
+    let mode = arg_str(args, 2, ctx)?.trim().parse::<u8>().unwrap_or(0);
+    let file = arg_str(args, 3, ctx)?;
+    let folder = arg_str(args, 4, ctx)?;
+    flush(ctx);
+    if let Some(st) = ctx.get_data::<RunState>() {
+        let _ = st.requests.send(Request::FileBox {
+            filter,
+            title,
+            mode,
+            file,
+            folder,
+        });
+    }
+    loop {
+        match wait_input(ctx) {
+            None => return Ok(stop_value()),
+            Some(Input::Text(t)) => return Ok(text(t.unwrap_or_default())),
+            Some(_) => continue,
+        }
+    }
+}
+
+/// `__ask(prompt, title, default)`: the app's input box for a JavaScript
+/// script or plugin (#4139); the text, or null for Cancel. A stopped run
+/// ends with an error.
+fn native_ask(_this: &JsValue, args: &[JsValue], ctx: &mut Context) -> JsResult<JsValue> {
+    let prompt = arg_str(args, 0, ctx)?;
+    let title = arg_str(args, 1, ctx)?;
+    let default = arg_str(args, 2, ctx)?;
+    flush(ctx);
+    if let Some(st) = ctx.get_data::<RunState>() {
+        let _ = st.requests.send(Request::InputBox {
+            prompt,
+            title,
+            default,
+        });
+    }
+    loop {
+        match wait_input(ctx) {
+            None => return Err(js_err("stopped")),
+            Some(Input::Text(Some(t))) => return Ok(text(t)),
+            Some(Input::Text(None)) => return Ok(JsValue::null()),
+            Some(_) => continue,
+        }
+    }
+}
+
+/// What a JavaScript script run on its thread asks the user with: the
+/// app's input box (#4139).
+const SCRIPT_GLUE: &str = r#"
+globalThis.InputBox = function (p, t, d) {
+  const r = __ask(String(p === undefined ? '' : p), String(t === undefined || t === null ? '' : t),
+    String(d === undefined || d === null ? '' : d));
+  return r === null ? '' : r;
+};
+globalThis.prompt = function (m, d) {
+  return __ask(String(m === undefined ? '' : m), '', String(d === undefined || d === null ? '' : d));
+};
+"#;
+
+/// Whether a JavaScript script asks the user for a value (`InputBox` or
+/// `prompt`), so it runs on a thread of its own that can wait for the
+/// answer (#4139).
+pub fn asks_user(src: &str) -> bool {
+    src.contains("InputBox") || src.contains("prompt(")
+}
+
+/// Start a JavaScript script (TraceDraw's object model) on a worker
+/// thread so `InputBox` and `prompt` can wait for the app's input box
+/// (#4139); `call` runs after it (a plugin's command, with `__input`).
+/// Desktop only.
+pub fn start_script(
+    app: &App,
+    src: &str,
+    call: Option<String>,
+    input: Option<String>,
+    name: String,
+) -> Result<MacroRun, String> {
+    let (req_tx, req_rx) = channel();
+    let (in_tx, in_rx) = channel();
+    let stop = Arc::new(AtomicBool::new(false));
+    let forms = Arc::new(Mutex::new(Forms::default()));
+    let snap = Snapshot(super::host_for(app, Trust::User));
+    let src = src.to_string();
+    let stop2 = stop.clone();
+    let forms2 = forms.clone();
+    let handle = std::thread::Builder::new()
+        .name("script".into())
+        .stack_size(64 * 1024 * 1024)
+        .spawn(move || script_thread(snap, src, call, input, req_tx, in_rx, stop2, forms2))
+        .map_err(|e| e.to_string())?;
+    Ok(MacroRun {
+        requests: req_rx,
+        input: in_tx,
+        stop,
+        forms,
+        started: web_time::Instant::now(),
+        name,
+        handle,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn script_thread(
+    snap: Snapshot,
+    src: String,
+    call: Option<String>,
+    input: Option<String>,
+    requests: Sender<Request>,
+    input_rx: Receiver<Input>,
+    stop: Arc<AtomicBool>,
+    forms: Arc<Mutex<Forms>>,
+) -> Finished {
+    let mut ctx = Context::default();
+    ctx.insert_data(Host(RefCell::new(snap.0)));
+    ctx.insert_data(RunState {
+        requests,
+        input: input_rx,
+        stop,
+        forms,
+        models: Vec::new(),
+        flushed: Cell::new(0),
+        stopped: Cell::new(false),
+        folder: None,
+    });
+    let result = (|| -> Result<(), String> {
+        let natives: [(
+            &str,
+            usize,
+            boa_engine::native_function::NativeFunctionPointer,
+        ); 2] = [("__td", 2, dispatch), ("__ask", 3, native_ask)];
+        for (name, n, f) in natives {
+            ctx.register_global_callable(JsString::from(name), n, NativeFunction::from_fn_ptr(f))
+                .map_err(|e| e.to_string())?;
+        }
+        if let Some(input) = &input {
+            ctx.register_global_property(
+                js_string!("__input"),
+                JsValue::from(JsString::from(input.as_str())),
+                boa_engine::property::Attribute::all(),
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        for src in [COMMON, super::PRELUDE, SCRIPT_GLUE] {
+            ctx.eval(Source::from_bytes(src))
+                .map_err(|e| format!("prelude: {e}"))?;
+        }
+        ctx.eval(Source::from_bytes(&src))
+            .map_err(|e| e.to_string())?;
+        if let Some(call) = &call {
+            ctx.eval(Source::from_bytes(call))
+                .map_err(|e| e.to_string())?;
+        }
+        Ok(())
+    })();
+    let stopped = ctx
+        .get_data::<RunState>()
+        .is_some_and(|s| s.stopped.get() || s.stop.load(Ordering::Relaxed));
+    let changes = take_changes(&mut ctx, true);
+    Finished {
+        changes,
+        error: result.err().filter(|_| !stopped).map(|e| RunError {
+            number: 0,
+            description: e,
+            module: String::new(),
+            procedure: String::new(),
+            line: 0,
+        }),
+        stopped,
+        skipped: Vec::new(),
     }
 }
 
@@ -873,8 +1066,10 @@ fn run_thread(
             &str,
             usize,
             boa_engine::native_function::NativeFunctionPointer,
-        ); 17] = [
+        ); 19] = [
             ("__open", 1, native_open),
+            ("__filebox", 5, native_filebox),
+            ("__fs", 4, super::vba_files::native_fs),
             ("__download", 2, native_download),
             ("__setting", 5, native_setting),
             ("__dir", 1, native_dir),
@@ -922,6 +1117,7 @@ fn run_thread(
         }
     }
     let changes = take_changes(&mut ctx, true);
+    let skipped = skipped_steps(&mut ctx);
     Finished {
         changes,
         error: result
@@ -929,7 +1125,37 @@ fn run_thread(
             .filter(|_| !stopped)
             .map(|e| RunError::parse(&e)),
         stopped,
+        skipped,
     }
+}
+
+/// The steps a run kept going past (`__v.skipped`).
+fn skipped_steps(ctx: &mut Context) -> Vec<(RunError, u32)> {
+    let Ok(v) = ctx.eval(Source::from_bytes(
+        "JSON.stringify(typeof __v === 'object' && __v && __v.skipped ? __v.skipped : [])",
+    )) else {
+        return Vec::new();
+    };
+    let Ok(text) = v.to_string(ctx).map(|s| s.to_std_string_escaped()) else {
+        return Vec::new();
+    };
+    let list: Vec<serde_json::Value> = serde_json::from_str(&text).unwrap_or_default();
+    list.iter()
+        .map(|s| {
+            let st = |k: &str| s.get(k).and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let num = |k: &str| s.get(k).and_then(|v| v.as_f64()).unwrap_or(0.0);
+            (
+                RunError {
+                    number: num("n") as i32,
+                    description: st("d"),
+                    module: st("m"),
+                    procedure: st("p"),
+                    line: num("l") as u32,
+                },
+                num("c").max(1.0) as u32,
+            )
+        })
+        .collect()
 }
 
 #[cfg(test)]

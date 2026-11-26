@@ -96,22 +96,32 @@ impl App {
             Tool::BlockShadow => {
                 let color = self.block_shadow_color;
                 let gap = self.block_shadow_gap;
-                // A handle drag keeps the shadow's own colour and gap.
-                let (color, gap) = self
+                let expand = self.block_shadow_expand;
+                // A handle drag keeps the shadow's own colour, gap and
+                // expansion.
+                let (color, gap, expand) = self
                     .selected_shapes()
                     .first()
                     .and_then(|s| {
                         s.effects.iter().find_map(|e| match e {
-                            Effect::BlockShadow { color, gap, .. }
-                                if matches!(self.drag, Drag::OffsetShadow { .. }) =>
-                            {
-                                Some((*color, *gap))
+                            Effect::BlockShadow {
+                                color, gap, expand, ..
+                            } if matches!(self.drag, Drag::OffsetShadow { .. }) => {
+                                Some((*color, *gap, *expand))
                             }
                             _ => None,
                         })
                     })
-                    .unwrap_or((color, gap));
-                self.push_effect(Effect::BlockShadow { offset, color, gap }, true);
+                    .unwrap_or((color, gap, expand));
+                self.push_effect(
+                    Effect::BlockShadow {
+                        offset,
+                        color,
+                        gap,
+                        expand,
+                    },
+                    true,
+                );
             }
             Tool::InnerShadow => {
                 let st = self.selected_inner_shadow().unwrap_or(self.inner_shadow);
@@ -175,6 +185,7 @@ mod tests {
                 offset: Vec2::new(5.0, -5.0),
                 color: Color::BLACK,
                 gap: 0.5,
+                expand: 0.0,
             },
             true,
         );

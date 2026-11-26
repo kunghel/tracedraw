@@ -120,6 +120,13 @@ bleed; see [Printing](../printing/print.md).
   [[guides.grid]] ([[guides.rows]] and [[guides.columns_count]]).
   [[guides.apply_presets]] adds them; a line that is already there is not
   added twice.
+- Apply to: the guidelines being edited (the active page's, or every
+  page's), every page mirrored (for a book: the left and right margins are
+  swapped on the left-hand pages, so the inside margin always lies at the
+  spine), the odd pages only or the even pages only. Each page gets the
+  guidelines laid out on its own size.
+- Margin and bleed guidelines made by a preset keep their distance from the
+  page edges: when the page is resized, they move with its edges.
 
 See [Rulers, grids and guidelines](guidelines-and-grid.md) for working with
 guidelines on the page.

@@ -3,6 +3,7 @@
 //! pages' total area (`crate::sizes`), with Copy for a quote or an order
 //! and Add Dimensions to Each Object to label the objects' sizes.
 
+use crate::ui::btn_icons::IconUi;
 use crate::app::App;
 use crate::i18n::tr;
 use crate::sizes;
@@ -57,7 +58,7 @@ pub fn dialog(app: &mut App, ctx: &Context, tab: &mut SizesTab, close: &mut bool
         ui.add_space(6.0);
         ui.horizontal(|ui| {
             if ui
-                .button(tr("sizes.copy"))
+                .ibutton("sizes.copy")
                 .rich_tip_always(crate::ui::tips::pair("sizes.copy", "sizes.copy_tip"))
                 .clicked()
             {
@@ -68,7 +69,7 @@ pub fn dialog(app: &mut App, ctx: &Context, tab: &mut SizesTab, close: &mut bool
                 && ui
                     .add_enabled(
                         !app.selection.is_empty(),
-                        egui::Button::new(tr("menu.object.add_dimensions_each")),
+                        crate::ui::btn_icons::Ib::new("menu.object.add_dimensions_each"),
                     )
                     .rich_tip(crate::ui::tips::pair(
                         "menu.object.add_dimensions_each",

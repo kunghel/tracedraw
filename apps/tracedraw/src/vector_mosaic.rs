@@ -155,6 +155,16 @@ impl Default for VectorMosaicSettings {
     }
 }
 
+impl VectorMosaicSettings {
+    /// Every setting back to its default; the tile curve picked stays.
+    pub fn reset(&mut self) {
+        *self = Self {
+            custom: self.custom.take(),
+            ..Self::default()
+        };
+    }
+}
+
 /// One tile: its centre (mm, page space), size (mm) and colour.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Tile {

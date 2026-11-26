@@ -96,8 +96,14 @@ step count, side and end colours, and the steps the file stores go
   inside one (To centre and Both stay as they are); the distance from the start
   is `steps * offset` (the steps kept, the offset following). The
   contour is drawn live while dragging; one undo step.
-- A click selects the object under the pointer (or nothing). Bitmaps get
-  no contour.
+- A click selects the object under the pointer (or nothing).
+- A picture takes a contour (#3245): with see-through pixels the steps go
+  round its opaque pixels (read at most 512 cells along its longer side,
+  a cell opaque when any pixel in it is at least half opaque, steps
+  straightened within 0.75 of a cell, specks under 4 cells left out),
+  otherwise round its box; they are filled from white toward the last
+  step's colour (`live::tests::a_picture_takes_its_contour_round_what_shows`,
+  `contour_tool::tests::a_picture_takes_a_contour`).
 - A group takes a contour (#3245): the steps go round the area its
   objects cover as one (their union, so overlapping objects make one
   outline), in the fill and outline of the first object in it that has a

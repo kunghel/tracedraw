@@ -4,6 +4,7 @@
 //! bitmap (`before_after.rs`) at the left and its settings at the right.
 //! OK converts every selected bitmap in one undo step.
 
+use crate::ui::btn_icons::IconUi;
 use crate::app::App;
 use crate::bitmap_modes::{
     black_and_white, build_palette, duotone, paletted, BwMethod, BwSettings, Dither,
@@ -302,7 +303,7 @@ fn duotone_settings(ui: &mut Ui, app: &mut App, st: &mut DuotoneState) {
         before_after::rule(ui);
         ui.horizontal(|ui| {
             if ui
-                .button(tr("dialog.load"))
+                .ibutton("dialog.load")
                 .rich_tip(crate::ui::tips::pair(
                     "dialog.load",
                     "dialog.duotone_load_desc",
@@ -314,7 +315,7 @@ fn duotone_settings(ui: &mut Ui, app: &mut App, st: &mut DuotoneState) {
                     .pick_into("duotone_inks");
             }
             if ui
-                .button(tr("dialog.save"))
+                .ibutton("dialog.save")
                 .rich_tip(crate::ui::tips::pair(
                     "dialog.save",
                     "dialog.duotone_save_desc",
@@ -1090,7 +1091,7 @@ fn bg_brushes(ui: &mut Ui, st: &mut BgRemoveState) {
         crate::ui::Slider::new(&mut st.brush_size, 0.5..=25.0).suffix(" %"),
     );
     let any = !st.settings.strokes.is_empty();
-    let clear = ui.add_enabled(any, egui::Button::new(tr("dialog.bg_brush_clear")));
+    let clear = ui.add_enabled(any, crate::ui::btn_icons::Ib::new("dialog.bg_brush_clear"));
     before_after::mark(ui, "bg_brush_clear", clear.rect);
     if clear
         .rich_tip(crate::ui::tips::pair(

@@ -51,7 +51,7 @@ pub fn is_mesh_handle(index: usize) -> bool {
 /// The mesh node an effect node number stands for, if it is a node's
 /// (not a handle's or a perspective node's).
 pub fn mesh_node_of(index: usize) -> Option<usize> {
-    if is_mesh_handle(index) {
+    if is_mesh_handle(index) || crate::interaction2::blur_pin_of(index).is_some() {
         return None;
     }
     index.checked_sub(MESH_NODE_BASE)

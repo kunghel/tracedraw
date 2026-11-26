@@ -210,7 +210,74 @@ pub enum StmtKind {
     RaiseEvent(String, Vec<Arg>),
     Unload(Expr),
     Load(Expr),
+    /// A file statement the runtime carries out: `args` as the statement
+    /// gives them (Open: path, mode, number[, record length]; Close: the
+    /// numbers, none for all), `items` what `Print #` and `Write #`
+    /// write, `targets` what `Input #` and `Line Input #` read into.
+    File {
+        op: FileOp,
+        args: Vec<Expr>,
+        items: Vec<(Expr, Option<char>)>,
+        targets: Vec<Expr>,
+    },
     Unsupported(String),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FileOp {
+    Open,
+    Close,
+    Print,
+    Write,
+    Input,
+    LineInput,
+    Kill,
+    MkDir,
+    RmDir,
+    ChDir,
+    ChDrive,
+    FileCopy,
+    Name,
+}
+
+impl FileOp {
+    /// The statement as VBA writes it.
+    pub fn word(self) -> &'static str {
+        match self {
+            FileOp::Open => "Open",
+            FileOp::Close => "Close",
+            FileOp::Print => "Print #",
+            FileOp::Write => "Write #",
+            FileOp::Input => "Input #",
+            FileOp::LineInput => "Line Input #",
+            FileOp::Kill => "Kill",
+            FileOp::MkDir => "MkDir",
+            FileOp::RmDir => "RmDir",
+            FileOp::ChDir => "ChDir",
+            FileOp::ChDrive => "ChDrive",
+            FileOp::FileCopy => "FileCopy",
+            FileOp::Name => "Name",
+        }
+    }
+
+    /// The runtime function (`__v.<name>`) that carries it out.
+    pub fn runtime(self) -> &'static str {
+        match self {
+            FileOp::Open => "fopen",
+            FileOp::Close => "fclose",
+            FileOp::Print => "fprint",
+            FileOp::Write => "fwrite",
+            FileOp::Input => "finput",
+            FileOp::LineInput => "flineinput",
+            FileOp::Kill => "fkill",
+            FileOp::MkDir => "fmkdir",
+            FileOp::RmDir => "frmdir",
+            FileOp::ChDir => "fchdir",
+            FileOp::ChDrive => "fchdrive",
+            FileOp::FileCopy => "fcopy",
+            FileOp::Name => "fname",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

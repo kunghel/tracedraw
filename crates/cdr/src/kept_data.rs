@@ -15,7 +15,10 @@
 use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
-use tracedraw_core::{document::Shape, Document, ShapeId, ShapeKind};
+use tracedraw_core::{
+    document::{Shape, Uid},
+    Document, ShapeId, ShapeKind,
+};
 
 /// The package member holding the data.
 pub const MEMBER: &str = "tracedraw/data.json";
@@ -42,6 +45,11 @@ pub(crate) struct KeptData {
     /// have none.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub style: Option<u32>,
+    /// Its stable identity, kept for the objects another object's data
+    /// names by it (#4275: the path, objects and copies of a live Fit
+    /// Objects to Path); older members have none.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub uid: Option<Uid>,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -84,10 +92,22 @@ fn all_shapes(doc: &Document) -> Vec<&Shape> {
     out
 }
 
+/// The 32-hex-digit words of `text`: the identities it may name.
+fn named_uids(text: &str, out: &mut std::collections::HashSet<u128>) {
+    for word in text.split(|c: char| !c.is_ascii_hexdigit()) {
+        if word.len() == 32 {
+            if let Ok(v) = u128::from_str_radix(word, 16) {
+                out.insert(v);
+            }
+        }
+    }
+}
+
 /// The member's bytes for the objects of `doc` written with the static
-/// ids `static_ids`: those with data or an object style, and the
-/// masters their clones name (with no data of their own, so a clone
-/// finds its master again). None when no object has data or a style.
+/// ids `static_ids`: those with data or an object style, the masters
+/// their clones name (with no data of their own, so a clone finds its
+/// master again), and the objects whose identity some object's data
+/// names (#4275). None when no object has data or a style.
 pub(crate) fn encode(doc: &Document, static_ids: &HashMap<ShapeId, u32>) -> Option<Vec<u8>> {
     let shapes = all_shapes(doc);
     let masters: Vec<u64> = shapes
@@ -95,15 +115,28 @@ pub(crate) fn encode(doc: &Document, static_ids: &HashMap<ShapeId, u32>) -> Opti
         .filter_map(|s| s.data.iter().find(|(k, _)| k == CLONE_MASTER))
         .filter_map(|(_, v)| v.parse().ok())
         .collect();
+    let mut named = std::collections::HashSet::new();
+    for s in &shapes {
+        for (_, v) in &s.data {
+            named_uids(v, &mut named);
+        }
+    }
+    let is_named = |s: &Shape| s.uid.is_some_and(|u| named.contains(&u.0));
     let mut objects: Vec<KeptData> = shapes
         .iter()
-        .filter(|s| !s.data.is_empty() || s.style.is_some() || masters.contains(&s.id.raw()))
+        .filter(|s| {
+            !s.data.is_empty()
+                || s.style.is_some()
+                || masters.contains(&s.id.raw())
+                || is_named(s)
+        })
         .filter_map(|s| {
             static_ids.get(&s.id).map(|&usdn| KeptData {
                 usdn,
                 id: s.id.raw(),
                 data: s.data.clone(),
                 style: s.style,
+                uid: s.uid.filter(|_| is_named(s)),
             })
         })
         .collect();
@@ -146,6 +179,34 @@ pub(crate) fn restore(doc: &mut Document, kept: &[KeptData], ids: &HashMap<u32, 
         .iter()
         .filter_map(|k| ids.get(&k.usdn).map(|&id| (k.id, id)))
         .collect();
+    // Identities first (#4275), each given once and never one an object
+    // of the drawing read already has.
+    let mut taken: std::collections::HashSet<Uid> =
+        all_shapes(doc).iter().filter_map(|s| s.uid).collect();
+    let mut seen = std::collections::HashSet::new();
+    let doubled: std::collections::HashSet<Uid> = kept
+        .iter()
+        .filter_map(|k| k.uid)
+        .filter(|u| !seen.insert(*u))
+        .collect();
+    for k in kept {
+        let Some(uid) = k.uid.filter(|u| u.0 != 0 && !doubled.contains(u)) else {
+            continue;
+        };
+        let Some(&id) = ids.get(&k.usdn) else {
+            continue;
+        };
+        if taken.contains(&uid) {
+            continue;
+        }
+        let Some(s) = doc.find_shape_mut(id) else {
+            continue;
+        };
+        if let Some(old) = s.uid.replace(uid) {
+            taken.remove(&old);
+        }
+        taken.insert(uid);
+    }
     let mut n = 0;
     for k in kept
         .iter()

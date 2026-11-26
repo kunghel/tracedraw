@@ -206,6 +206,14 @@ pub struct ScatterSettings {
     pub seed: u64,
     /// Keep the objects filled; off, they are removed.
     pub keep_container: bool,
+    /// The brush: a drag over the selected group changes the objects
+    /// under the nib (`symbol_brush`).
+    pub brush_on: bool,
+    pub brush: crate::symbol_brush::SymbolBrush,
+    /// The nib's radius, mm.
+    pub brush_radius: f64,
+    /// How much a stroke does, 1 to 100 %.
+    pub brush_strength: f64,
 }
 
 impl Default for ScatterSettings {
@@ -223,7 +231,24 @@ impl Default for ScatterSettings {
             one_color: Color::BLACK,
             seed: 1,
             keep_container: true,
+            brush_on: false,
+            brush: crate::symbol_brush::SymbolBrush::Move,
+            brush_radius: 10.0,
+            brush_strength: 50.0,
         }
+    }
+}
+
+impl ScatterSettings {
+    /// Every setting back to its default; the symbols picked stay.
+    pub fn reset(&mut self) {
+        *self = Self {
+            source: self.source,
+            builtin: self.builtin,
+            picked: std::mem::take(&mut self.picked),
+            brush_on: self.brush_on,
+            ..Self::default()
+        };
     }
 }
 

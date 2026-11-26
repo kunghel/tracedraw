@@ -238,7 +238,7 @@ management converts. A CMYK drawing keeps them CMYK (#483, #620,
 
 | Action | Result |
 |---|---|
-| Click a swatch | Uniform fill of the selection (with nothing selected: the default fill for new objects); every click counts: one whose pointer slipped a few pixels but was let go on the same swatch, and the first click after a hold that opened the shades (#1336, `pick_drag_tests::every_click_on_a_palette_colour_applies_it`) |
+| Click a swatch | Uniform fill of the selection (with nothing selected: the default fill for new objects). A drop shadow takes the colour while edited with the Drop Shadow tool or selected on its own with Pick. Every click counts: one whose pointer slipped a few pixels but was let go on the same swatch, and the first click after a hold that opened the shades (#1336, `pick_drag_tests::every_click_on_a_palette_colour_applies_it`) |
 | Right click | Outline colour (Options > Customization > Color Palette can make it open the palette menu instead); a right click that slipped a few pixels on the swatch counts too (#1336) |
 | Ctrl+click | A tenth of the colour mixes into the selection's uniform fill (CMYK with CMYK, else in RGB) |
 | A finger (touch screen): tap, hold, hold longer | A tap is a click (the fill). Held 0.5 s and let go: the outline colour, as the right click (when Options make the right click open the menu, a finger held 0.8 s opens it, egui's long press). Held 1 s: the shades pop-up, whose tap fills and whose long press colours the outline; the release then changes nothing. A finger that slides off the row (towards the drawing) drags the colour; one that slides along a row longer than its room scrolls the row with the finger, a swatch for every swatch's width, and fills nothing when it lifts (#1611, #1707, #1997, `ui::palette::tests::a_finger_held_on_a_swatch_sets_the_outline`, `ui::palette::tests::a_finger_dragged_along_the_palette_scrolls_it`) |
@@ -528,6 +528,7 @@ update the document palette (on).
   selected bar, the list's eye, duplicate, move, delete and filter, the
   colour model)
 - `pick_drag_tests::every_click_on_a_palette_colour_applies_it`
+- `pick_drag_tests::a_palette_click_recolours_the_chosen_drop_shadow`
 - `ui::dockers::tests::a_fill_dragged_in_the_picker_is_one_step_and_one_palette_colour`
 - `color_drop::tests` (fill inside, outline on the edge, No Color, an
   object without a fill, the document palette)

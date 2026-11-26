@@ -27,6 +27,7 @@
 //! no text selected the font, style, size, underline and alignment become
 //! those of new text.
 
+use crate::ui::btn_icons::IconUi;
 use crate::app::App;
 use crate::i18n::tr;
 use crate::theme::Tokens;
@@ -75,8 +76,8 @@ fn ticked(app: &App, key: &str) -> bool {
 
 /// The box at the right of a row (when shown): ticked rows are what
 /// "Apply to default text" takes.
-fn row_check(app: &mut App, ui: &mut Ui, key: &str) {
-    if !app.settings.text_docker_checks {
+fn row_check_when(app: &mut App, ui: &mut Ui, key: &str, show_checks: bool) {
+    if !show_checks || !app.settings.text_docker_checks {
         return;
     }
     let mut on = ticked(app, key);
@@ -632,9 +633,9 @@ pub fn text_docker(app: &mut App, ui: &mut Ui) {
         if open {
             ui.add_space(4.0);
             match i {
-                0 => character(app, ui, first.as_ref()),
-                1 => paragraph(app, ui, first.as_ref()),
-                _ => frame(app, ui, first.as_ref()),
+                0 => character_panel(app, ui, first.as_ref(), "docker", true, false),
+                1 => paragraph_panel(app, ui, first.as_ref(), "docker", true, false),
+                _ => frame_panel(app, ui, first.as_ref(), "docker", true, false),
             }
             ui.add_space(6.0);
         }
@@ -697,7 +698,7 @@ fn fill_row(
 /// between is the family named with its weight, so the list shows
 /// "SemiBold" for "Titillium Web SemiBold", never Bold (#892). True when
 /// the style changed.
-fn style_list(app: &mut App, ui: &mut Ui) -> bool {
+fn style_list(app: &mut App, ui: &mut Ui, salt: &str) -> bool {
     let font = app.text_font.clone();
     let base = tracedraw_text::split_weight(&font).map_or(font.as_str(), |(b, _)| b);
     let faces = app
@@ -712,7 +713,7 @@ fn style_list(app: &mut App, ui: &mut Ui) -> bool {
         .collect();
     let shown = style_name(&picks, &now);
     let mut changed = false;
-    crate::ui::keynav::ComboBox::from_id_salt("docker_text_style")
+    crate::ui::keynav::ComboBox::from_id_salt(format!("{salt}_text_style"))
         .width(110.0)
         .selected_text(shown)
         .show_ui(ui, |ui| {
@@ -799,30 +800,42 @@ pub(crate) fn char_width_icon(ui: &mut Ui) -> egui::Response {
 /// The character widths a field takes (#2190), percent.
 pub(crate) const CHAR_WIDTH_RANGE: std::ops::RangeInclusive<f64> = 1.0..=1000.0;
 
-fn character(app: &mut App, ui: &mut Ui, first: Option<&tracedraw_core::Shape>) {
+pub(crate) fn character_panel(
+    app: &mut App,
+    ui: &mut Ui,
+    first: Option<&tracedraw_core::Shape>,
+    salt: &str,
+    show_checks: bool,
+    force_expanded: bool,
+) {
     // The character at the caret, the first one chosen with the Shape
     // tool, else the text's first (#1662).
     let span = first.and_then(|t| app.shown_span(t));
     let mut changed = false;
     ui.horizontal(|ui| {
         let w = ui.available_width()
-            - if app.settings.text_docker_checks {
+            - if show_checks && app.settings.text_docker_checks {
                 CHECK_W + 6.0
             } else {
                 0.0
             };
         changed |= crate::ui::tips::tip_over(ui, crate::ui::tips::keyed("toolbar.font"), |ui| {
-            crate::ui::font_list::text_font_list(app, ui, "docker_text_font", w.max(120.0))
+            crate::ui::font_list::text_font_list(
+                app,
+                ui,
+                &format!("{salt}_text_font"),
+                w.max(120.0),
+            )
         });
-        row_check(app, ui, "font");
+        row_check_when(app, ui, "font", show_checks);
     });
     ui.horizontal(|ui| {
-        changed |= style_list(app, ui);
-        row_check(app, ui, "style");
+        changed |= style_list(app, ui, salt);
+        row_check_when(app, ui, "style", show_checks);
         changed |= crate::ui::toolbar::text_size_list(app, ui);
         // The axes of a variable font, beside its size (#870).
-        font_axes_button(app, ui, "docker");
-        row_check(app, ui, "size");
+        font_axes_button(app, ui, salt);
+        row_check_when(app, ui, "size", show_checks);
     });
     if changed {
         app.apply_text_style();
@@ -840,7 +853,7 @@ fn character(app: &mut App, ui: &mut Ui, first: Option<&tracedraw_core::Shape>) 
         if kc {
             edit_spans(app, move |sp| sp.tracking_pct = kern);
         }
-        row_check(app, ui, "kerning");
+        row_check_when(app, ui, "kerning", show_checks);
         // The underline style (#1209); with no text selected, the list
         // sets whether new text is underlined.
         let style = span
@@ -851,7 +864,9 @@ fn character(app: &mut App, ui: &mut Ui, first: Option<&tracedraw_core::Shape>) 
                 "toolbar.underline",
                 "toolbar.underline_desc",
             ));
-        if let Some(picked) = line_style_list(ui, "docker_underline", style, "toolbar.underline") {
+        if let Some(picked) =
+            line_style_list(ui, &format!("{salt}_underline"), style, "toolbar.underline")
+        {
             app.text_underline = picked.is_on();
             if span.is_some() {
                 edit_spans(app, move |sp| sp.underline = picked);
@@ -877,7 +892,7 @@ fn character(app: &mut App, ui: &mut Ui, first: Option<&tracedraw_core::Shape>) 
                 edit_spans(app, move |sp| sp.strikethrough = s);
             }
         }
-        row_check(app, ui, "underline");
+        row_check_when(app, ui, "underline", show_checks);
     });
     // Character width (#2190): the letters narrowed or widened, their
     // height kept.
@@ -902,7 +917,7 @@ fn character(app: &mut App, ui: &mut Ui, first: Option<&tracedraw_core::Shape>) 
     ui.horizontal(|ui| {
         if let Some(f) = fill_row(
             ui,
-            "docker_text_fill",
+            &format!("{salt}_text_fill"),
             "A",
             &tr("docker.text_fill"),
             text_fill.as_ref(),
@@ -910,14 +925,14 @@ fn character(app: &mut App, ui: &mut Ui, first: Option<&tracedraw_core::Shape>) 
         ) {
             set_text_fill(app, f);
         }
-        row_check(app, ui, "fill");
+        row_check_when(app, ui, "fill", show_checks);
     });
     let mut more_bg = false;
     let bg = span.as_ref().and_then(|s| s.background.clone());
     ui.horizontal(|ui| {
         if let Some(f) = fill_row(
             ui,
-            "docker_text_background",
+            &format!("{salt}_text_background"),
             "ab",
             &tr("docker.text_background"),
             bg.as_ref(),
@@ -925,18 +940,26 @@ fn character(app: &mut App, ui: &mut Ui, first: Option<&tracedraw_core::Shape>) 
         ) {
             edit_spans(app, move |sp| sp.background = f.clone());
         }
-        row_check(app, ui, "background");
+        row_check_when(app, ui, "background", show_checks);
     });
     if more_fill || more_bg {
         app.open_fill_editor();
     }
-    ui.horizontal(|ui| {
+    ui.horizontal_wrapped(|ui| {
         ui.label(egui::RichText::new("A").strong().color(Tokens::text_dim()))
             .rich_tip(tr("docker.text_outline"));
-        let stroke = first.and_then(|t| t.stroke.clone());
-        let pt = stroke.as_ref().map_or(0.0, |s| s.width * 72.0 / 25.4);
-        crate::ui::keynav::ComboBox::from_id_salt("docker_text_outline")
-            .width(120.0)
+        let char_scoped = app.text_selection_active() || app.chosen_chars_active();
+        let stroke = if char_scoped {
+            match span.as_ref().and_then(|s| s.outline.clone()) {
+                Some(o) => (o.width > 0.0).then_some(o),
+                None => first.and_then(|t| t.stroke.clone()),
+            }
+        } else {
+            first.and_then(|t| t.stroke.clone())
+        };
+        let mut pt = stroke.as_ref().map_or(0.0, |s| s.width * 72.0 / 25.4);
+        crate::ui::keynav::ComboBox::from_id_salt(format!("{salt}_text_outline"))
+            .width(108.0)
             .selected_text(if stroke.is_some() {
                 width_name((pt * 1000.0).round() / 1000.0)
             } else {
@@ -961,12 +984,27 @@ fn character(app: &mut App, ui: &mut Ui, first: Option<&tracedraw_core::Shape>) 
                 "docker.text_outline",
                 "docker.text_outline_width_desc",
             ));
-        let mut c = stroke.as_ref().map_or(Color::BLACK, |s| s.color);
-        ui.add_enabled_ui(stroke.is_some(), |ui| {
-            if crate::ui::color_picker::color_button(ui, &mut c) {
-                app.apply_outline_color(Some(c));
+        if ui
+            .add(
+                egui::DragValue::new(&mut pt)
+                    .range(0.0..=40.0)
+                    .speed(0.05)
+                    .max_decimals(2)
+                    .suffix(" pt"),
+            )
+            .rich_tip(tr("docker.text_outline_width_desc"))
+            .changed()
+        {
+            if pt <= 0.0 && !char_scoped {
+                app.apply_outline_color(None);
+            } else {
+                app.apply_outline_width(pt * 25.4 / 72.0);
             }
-        });
+        }
+        let mut c = stroke.as_ref().map_or(app.current_colors.1, |s| s.color);
+        if crate::ui::color_picker::color_button(ui, &mut c) {
+            app.apply_outline_color(Some(c));
+        }
         if ui
             .small_button("\u{2022}\u{2022}\u{2022}")
             .rich_tip(tr("docker.more_settings"))
@@ -974,9 +1012,9 @@ fn character(app: &mut App, ui: &mut Ui, first: Option<&tracedraw_core::Shape>) 
         {
             app.open_outline_editor();
         }
-        row_check(app, ui, "outline");
+        row_check_when(app, ui, "outline", show_checks);
     });
-    if !expander(ui, "character") {
+    if !force_expanded && !expander(ui, "character") {
         return;
     }
     let Some(sp) = span else {
@@ -987,7 +1025,7 @@ fn character(app: &mut App, ui: &mut Ui, first: Option<&tracedraw_core::Shape>) 
     ui.horizontal_wrapped(|ui| {
         crate::ui::propbar::char_offset_part(app, ui);
     });
-    character_styles(app, ui, &sp, first);
+    character_styles(app, ui, &sp, first, salt);
     feature_buttons(app, ui, &sp);
     font_axes(app, ui, &sp);
 }
@@ -1234,12 +1272,12 @@ fn record_style_control(_ui: &Ui, _name: &str, _rect: Rect) {}
 /// boxes. Each change is one undo step on the selected text; an overprint
 /// box set as the object's overprint leaves the characters following
 /// the object.
-fn character_styles(app: &mut App, ui: &mut Ui, sp: &TextSpan, first: Option<&Shape>) {
+fn character_styles(app: &mut App, ui: &mut Ui, sp: &TextSpan, first: Option<&Shape>, salt: &str) {
     ui.horizontal(|ui| {
         ui.label(tr("docker.strikethrough"));
         if let Some(picked) = line_style_list(
             ui,
-            "docker_strikethrough",
+            &format!("{salt}_strikethrough"),
             sp.strikethrough,
             "docker.strikethrough",
         ) {
@@ -1354,7 +1392,7 @@ fn font_axes(app: &mut App, ui: &mut Ui, sp: &TextSpan) {
         if ui
             .add_enabled(
                 !sp.variations.is_empty(),
-                egui::Button::new(tr("docker.font_axes_reset")).small(),
+                crate::ui::btn_icons::Ib::new("docker.font_axes_reset").small(),
             )
             .clicked()
         {
@@ -1552,7 +1590,14 @@ fn set_text_fill(app: &mut App, fill: Option<Fill>) {
     app.apply_fill(fill.unwrap_or(Fill::None));
 }
 
-fn paragraph(app: &mut App, ui: &mut Ui, first: Option<&tracedraw_core::Shape>) {
+pub(crate) fn paragraph_panel(
+    app: &mut App,
+    ui: &mut Ui,
+    first: Option<&tracedraw_core::Shape>,
+    salt: &str,
+    show_checks: bool,
+    force_expanded: bool,
+) {
     ui.horizontal(|ui| {
         ui.spacing_mut().item_spacing.x = 2.0;
         for (a, pic, key) in [
@@ -1582,7 +1627,7 @@ fn paragraph(app: &mut App, ui: &mut Ui, first: Option<&tracedraw_core::Shape>) 
                 set_align(app, a);
             }
         }
-        row_check(app, ui, "align");
+        row_check_when(app, ui, "align", show_checks);
     });
     let Some(t) = first else {
         return;
@@ -1628,7 +1673,7 @@ fn paragraph(app: &mut App, ui: &mut Ui, first: Option<&tracedraw_core::Shape>) 
                     K::High => "docker.kashida_high",
                 })
             };
-            crate::ui::keynav::ComboBox::from_id_salt("docker_kashida")
+            crate::ui::keynav::ComboBox::from_id_salt(format!("{salt}_kashida"))
                 .width(120.0)
                 .selected_text(name(p.kashida))
                 .show_ui(ui, |ui| {
@@ -1666,7 +1711,7 @@ fn paragraph(app: &mut App, ui: &mut Ui, first: Option<&tracedraw_core::Shape>) 
                 LeadingUnit::PercentPointSize => "docker.leading_point_size",
             })
         };
-        crate::ui::keynav::ComboBox::from_id_salt("docker_leading_unit")
+        crate::ui::keynav::ComboBox::from_id_salt(format!("{salt}_leading_unit"))
             .width(120.0)
             .selected_text(unit_name(p.leading_unit))
             .show_ui(ui, |ui| {
@@ -1694,9 +1739,9 @@ fn paragraph(app: &mut App, ui: &mut Ui, first: Option<&tracedraw_core::Shape>) 
                     }
                 }
             });
-        row_check(app, ui, "leading");
+        row_check_when(app, ui, "leading", show_checks);
     });
-    egui::Grid::new("text_paragraph")
+    egui::Grid::new(format!("{salt}_text_paragraph"))
         .num_columns(4)
         .spacing([4.0, 4.0])
         .show(ui, |ui| {
@@ -1719,7 +1764,7 @@ fn paragraph(app: &mut App, ui: &mut Ui, first: Option<&tracedraw_core::Shape>) 
     ui.horizontal(|ui| {
         let tip = crate::ui::tips::pair("dialog.tab_stops", "docker.tabs_tip");
         ui.label(tr("dialog.tab_stops")).rich_tip(&tip);
-        if ui.button(tr("menu.text.tabs")).rich_tip(&tip).clicked() {
+        if ui.ibutton("menu.text.tabs").rich_tip(&tip).clicked() {
             app.dialog = crate::ui::dialogs::Dialog::TextTabs;
         }
         ui.add(
@@ -1730,8 +1775,8 @@ fn paragraph(app: &mut App, ui: &mut Ui, first: Option<&tracedraw_core::Shape>) 
         )
         .rich_tip(&tip);
     });
-    if expander(ui, "paragraph") {
-        egui::Grid::new("text_paragraph_more")
+    if force_expanded || expander(ui, "paragraph") {
+        egui::Grid::new(format!("{salt}_text_paragraph_more"))
             .num_columns(2)
             .spacing([6.0, 4.0])
             .show(ui, |ui| {
@@ -1852,7 +1897,14 @@ pub(crate) fn convert_leading(v: f64, from: LeadingUnit, to: LeadingUnit, size_p
     (out * 10.0).round() / 10.0
 }
 
-fn frame(app: &mut App, ui: &mut Ui, first: Option<&tracedraw_core::Shape>) {
+pub(crate) fn frame_panel(
+    app: &mut App,
+    ui: &mut Ui,
+    first: Option<&tracedraw_core::Shape>,
+    salt: &str,
+    show_checks: bool,
+    force_expanded: bool,
+) {
     let para_text = first.and_then(|t| match &t.kind {
         ShapeKind::Text { frame: Some(_), .. } => app.paragraph_style_of(t).map(|(_, p)| (t.id, p)),
         _ => None,
@@ -1888,7 +1940,7 @@ fn frame(app: &mut App, ui: &mut Ui, first: Option<&tracedraw_core::Shape>) {
                 pc = true;
             }
         });
-        row_check(app, ui, "frame_fill");
+        row_check_when(app, ui, "frame_fill", show_checks);
         // Vertical alignment, a list.
         let (rect, resp) = ui.allocate_exact_size(Vec2::new(28.0, 26.0), Sense::click());
         if resp.hovered() {
@@ -1902,7 +1954,7 @@ fn frame(app: &mut App, ui: &mut Ui, first: Option<&tracedraw_core::Shape>) {
         );
         let resp = resp.rich_tip(tr("docker.vertical_align"));
         egui::Popup::menu(&resp)
-            .id(egui::Id::new("docker_valign"))
+            .id(egui::Id::new(format!("{salt}_valign")))
             .show(|ui| {
                 for (v, key) in [
                     (VerticalAlign::Top, "docker.valign_top"),
@@ -1938,7 +1990,7 @@ fn frame(app: &mut App, ui: &mut Ui, first: Option<&tracedraw_core::Shape>) {
         .checkbox(&mut p.type_block, tr("docker.type_block"))
         .rich_tip(crate::ui::tips::keyed("docker.type_block"))
         .changed();
-    egui::Grid::new("text_frame")
+    egui::Grid::new(format!("{salt}_text_frame"))
         .num_columns(2)
         .spacing([6.0, 4.0])
         .show(ui, |ui| {
@@ -1953,7 +2005,7 @@ fn frame(app: &mut App, ui: &mut Ui, first: Option<&tracedraw_core::Shape>) {
             });
             ui.end_row();
         });
-    if expander(ui, "frame") {
+    if force_expanded || expander(ui, "frame") {
         ui.horizontal(|ui| {
             if pic_button(ui, Pic::Bullets, &tr("menu.text.bullets"), true, p.bullets).clicked() {
                 app.dialog = crate::ui::dialogs::Dialog::TextBullets;
@@ -1969,7 +2021,7 @@ fn frame(app: &mut App, ui: &mut Ui, first: Option<&tracedraw_core::Shape>) {
             {
                 app.dialog = crate::ui::dialogs::Dialog::TextDropCap;
             }
-            if ui.button(tr("menu.text.columns")).clicked() {
+            if ui.ibutton("menu.text.columns").clicked() {
                 app.dialog = crate::ui::dialogs::Dialog::TextColumns;
             }
         });
@@ -2253,6 +2305,12 @@ mod tests {
         use tracedraw_core::TextPosition;
         let quicksand = include_bytes!("../../../../crates/text/testdata/Quicksand-VF.ttf");
         let _ = tracedraw_text::fonts().add_fonts(vec![quicksand.to_vec()]);
+        // Register Selawik even when this test runs in a separate shard.
+        let selawik = include_bytes!("../../assets/fonts/Selawik-Regular.ttf");
+        let _ = tracedraw_text::fonts().add_document_fonts(&[tracedraw_core::DocumentFont::new(
+            "Selawik",
+            selawik.to_vec(),
+        )]);
         let mut app = App::headless();
         let id = app
             .new_shape(ShapeKind::Text {

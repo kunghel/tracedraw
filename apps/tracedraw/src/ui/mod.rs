@@ -18,6 +18,7 @@ pub mod benchmark;
 pub mod bitmap_dialogs;
 pub mod bitmap_preview;
 pub mod brand;
+pub mod btn_icons;
 pub mod brush_bars;
 pub mod callout_bar;
 pub mod chrome;
@@ -30,6 +31,10 @@ pub mod command_search;
 pub mod comments_docker;
 pub mod connector_bar;
 pub mod context;
+pub mod context_menu_branches;
+pub mod context_menu_editor;
+pub mod context_menu_filter;
+pub mod context_menus;
 pub mod contour_bar;
 pub mod convert_colors;
 pub mod coords_docker;
@@ -59,9 +64,11 @@ pub mod flare;
 pub mod fill_tool_bars;
 pub mod focus_bar;
 pub mod font_list;
-pub mod formula_dialog;
+pub mod chart_dialog;
 pub mod font_manager;
 pub mod font_sampler;
+pub mod formula_dialog;
+pub mod pins_dialog;
 pub mod fountain_place;
 pub mod fx_icons;
 pub mod github_dialogs;
@@ -81,6 +88,7 @@ pub mod menu_glyphs;
 pub mod menu_pics;
 pub mod menus;
 pub mod missing_fonts;
+pub mod fx_panel;
 pub mod objects_docker;
 pub mod options;
 pub mod options_global;
@@ -109,6 +117,7 @@ pub mod replace_color;
 pub mod rulers;
 pub mod save_as;
 pub mod screen_margins;
+pub mod select_same_docker;
 pub mod shaping_docker;
 pub mod shelf_docker;
 pub mod sizes;
@@ -117,12 +126,16 @@ pub mod status;
 pub mod straighten_dialog;
 pub mod stretch_zones_dialog;
 pub mod pixel_bar;
+pub mod pixel_canvas;
+pub mod pixel_layers;
 pub mod pixel_cmds;
 pub mod pixel_icons;
 pub mod pixel_menu_icons;
 pub mod pixel_mode;
+pub mod pixel_styles;
 pub mod pixel_lights;
 pub mod symmetry_bar;
+pub mod font_size_popup;
 pub mod tab_focus;
 pub mod table_bar;
 pub mod tabs;
@@ -151,8 +164,11 @@ pub mod transform_docker;
 pub mod transform_each;
 pub mod transparency_docker;
 pub mod shape_gen_docker;
+pub mod grid_docker;
+pub mod math_shapes_docker;
 pub mod symbol_scatter_docker;
 pub mod frame_gen_docker;
+pub mod mockup_docker;
 pub mod shape3d_docker;
 pub mod vector_mosaic_docker;
 pub mod welcome;
@@ -953,6 +969,7 @@ fn root_frame(app: &mut App, ui: &mut Ui) {
 
     if app.has_document() && !app.show_welcome {
         symmetry_bar::show(app, &ctx);
+        font_size_popup::show(app, &ctx);
         pixel_bar::show(app);
         clip_bar::show(app, &ctx);
         focus_bar::show(app, &ctx);
@@ -1317,7 +1334,9 @@ pub(crate) fn drawing_window(app: &mut App, ui: &mut Ui, full: egui::Rect) {
             } else if mods.ctrl && notches != 0.0 {
                 app.view.zoom_at(anchor, zoom_factor);
             } else if scroll != egui::Vec2::ZERO {
-                app.view.pan(if mods.shift {
+                // Shift+wheel sideways; a system (Windows) that sends it
+                // sideways already is not turned back up and down (#4114).
+                app.view.pan(if mods.shift && scroll.y != 0.0 {
                     egui::vec2(scroll.y, scroll.x)
                 } else {
                     scroll
@@ -1411,7 +1430,8 @@ pub(crate) fn drawing_window(app: &mut App, ui: &mut Ui, full: egui::Rect) {
     canvas::draw_live_guides(app, &painter, canvas_rect);
     canvas::draw_snap_mark(app, &painter);
     crate::brushes::draw_resize(app, &painter);
-    app.draw_right_drag(&painter);
+    let text_drop_target = app.right_drag_text_target(mods);
+    app.draw_right_drag(&painter, mods, text_drop_target);
     crate::touch_modifiers::keys_on_drawing(app, ui, canvas_rect);
     crate::touch_bars::bars_on_drawing(app, ui, canvas_rect);
     context::context_menu(app, ui, &response);
@@ -1438,7 +1458,11 @@ pub(crate) fn drawing_window(app: &mut App, ui: &mut Ui, full: egui::Rect) {
                 i.pointer.hover_pos().or(i.pointer.latest_pos()),
             )
         });
-        let cursor = cursors::for_tool_with_ctrl(app, shift, ctrl, primary, middle, pos);
+        let cursor = if text_drop_target.is_some() {
+            cursors::ToolCursor::System(egui::CursorIcon::PointingHand)
+        } else {
+            cursors::for_tool_with_ctrl(app, shift, ctrl, primary, middle, pos)
+        };
         cursors::show(ui.ctx(), cursor, pos);
         if app.settings.crosshair_to_edges {
             if let Some(p) = pos.filter(|p| canvas_rect.contains(*p)) {

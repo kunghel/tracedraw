@@ -463,6 +463,37 @@ impl App {
         });
     }
 
+    /// The Interactive Fill bar's Reverse (#4274): every selected object
+    /// with a gradient gets its colours the other way round (each its own
+    /// gradient, nodes and midpoints mirrored), one undo step. The number
+    /// of objects changed.
+    pub fn reverse_selection_gradients(&mut self) -> usize {
+        let changes: Vec<(tracedraw_core::ShapeId, Fill)> = self
+            .selected_shapes()
+            .iter()
+            .filter_map(|s| match &s.fill {
+                Fill::Fountain(f) if f.stops.len() > 1 => {
+                    let mut f = f.clone();
+                    crate::ui::edit_fill::reverse(&mut f);
+                    Some((s.id, Fill::Fountain(f)))
+                }
+                _ => None,
+            })
+            .collect();
+        if changes.is_empty() {
+            return 0;
+        }
+        let mark = self.engine.begin_group();
+        for (id, fill) in &changes {
+            self.run(Command::SetFill {
+                shapes: vec![*id],
+                fill: fill.clone(),
+            });
+        }
+        self.engine.end_group(mark, "Reverse Gradient");
+        changes.len()
+    }
+
     /// The transparency of each object the Transparency part changes.
     pub fn selection_transparency(&self) -> Vec<ShapeTransparency> {
         self.selected_shapes()
@@ -744,6 +775,46 @@ mod tests {
 
     fn stroke_of(app: &App, id: tracedraw_core::ShapeId) -> Stroke {
         app.doc().find_shape(id).unwrap().stroke.clone().unwrap()
+    }
+
+    /// Reverse on the Interactive Fill bar turns each selected gradient
+    /// round on its own (#4274): blue to white becomes white to blue,
+    /// red to black black to red; an object without a gradient stays as
+    /// it is; one undo step puts all back.
+    #[test]
+    fn reverse_turns_each_selected_gradient_round() {
+        let mut app = App::headless();
+        let (a, b) = two_rects(&mut app);
+        let red = Color::rgb8(255, 0, 0);
+        app.run(Command::SetFill {
+            shapes: vec![a],
+            fill: Fill::linear(BLUE, Color::WHITE, 0.0),
+        });
+        app.run(Command::SetFill {
+            shapes: vec![b],
+            fill: Fill::linear(red, Color::BLACK, 0.0),
+        });
+        let c = app
+            .new_shape(ShapeKind::Rect {
+                rect: Rect::new(60.0, 0.0, 80.0, 20.0),
+                radius: 0.0,
+                corners: None,
+            })
+            .unwrap();
+        let plain = app.doc().find_shape(c).unwrap().fill.clone();
+        app.select(vec![a, b, c]);
+        assert_eq!(app.reverse_selection_gradients(), 2);
+        let ends = |app: &App, id| match &app.doc().find_shape(id).unwrap().fill {
+            Fill::Fountain(f) => (f.stops[0].color, f.stops[f.stops.len() - 1].color),
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(ends(&app, a), (Color::WHITE, BLUE));
+        assert_eq!(ends(&app, b), (Color::BLACK, red));
+        assert_eq!(app.doc().find_shape(c).unwrap().fill, plain);
+        assert_eq!(app.engine.undo_label(), Some("Reverse Gradient"));
+        app.undo();
+        assert_eq!(ends(&app, a), (BLUE, Color::WHITE));
+        assert_eq!(ends(&app, b), (red, Color::BLACK));
     }
 
     #[test]

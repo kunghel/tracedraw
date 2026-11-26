@@ -98,6 +98,23 @@ fn profile(preset: usize, t: f64) -> f64 {
     .max(0.02)
 }
 
+/// Whether `s` is a brush stroke: an open path with a brush outline
+/// (widths along it or a calligraphic nib) or objects sprayed or tiled
+/// along it.
+pub fn is_media_stroke(s: &Shape) -> bool {
+    let outline = s
+        .stroke
+        .as_ref()
+        .is_some_and(|st| !st.widths.is_empty() || st.stretch == CALLIGRAPHIC_STRETCH);
+    let along = s.effects.iter().any(|e| {
+        matches!(
+            e,
+            tracedraw_core::live::Effect::Spray { .. } | tracedraw_core::live::Effect::Tiles { .. }
+        )
+    });
+    outline || along
+}
+
 impl App {
     /// Geometry for a stroke in the current media mode. Returns shapes to
     /// add (several for the sprayer).
@@ -378,6 +395,60 @@ impl App {
         }
     }
 
+    /// The Brush Strokes settings changed on the property bar with brush
+    /// strokes selected: those strokes take the new settings, as a stroke
+    /// just drawn would (#4385); other selected objects stay as they are.
+    pub fn restyle_selected_media(&mut self) {
+        let mut cmds = Vec::new();
+        for c in self.selected_shapes() {
+            if !matches!(c.kind, ShapeKind::Path { .. }) || !is_media_stroke(&c) {
+                continue;
+            }
+            let along = c.effects.iter().find_map(|e| match e {
+                tracedraw_core::live::Effect::Spray { color, .. }
+                | tracedraw_core::live::Effect::Tiles { color, .. } => Some(*color),
+                _ => None,
+            });
+            let color = c
+                .stroke
+                .as_ref()
+                .map(|st| st.color)
+                .or(along)
+                .unwrap_or(Color::BLACK);
+            let mut effects = c.effects.clone();
+            effects.retain(|e| {
+                !matches!(
+                    e,
+                    tracedraw_core::live::Effect::Spray { .. }
+                        | tracedraw_core::live::Effect::Tiles { .. }
+                )
+            });
+            let pts = tracedraw_core::effects::resample(&c.page_path(), 120);
+            let stroke = self.media_stroke(&pts, color);
+            match self.media_mode {
+                MediaMode::Sprayer => effects.push(self.spray_effect(color)),
+                MediaMode::Tiles => effects.push(self.tiles_effect(color)),
+                _ if stroke.is_none() => continue,
+                _ => {}
+            }
+            if c.stroke != stroke {
+                cmds.push(Command::SetStroke {
+                    shapes: vec![c.id],
+                    stroke,
+                });
+            }
+            if effects != c.effects {
+                cmds.push(Command::SetEffects {
+                    shape: c.id,
+                    effects,
+                });
+            }
+        }
+        if !cmds.is_empty() {
+            let _ = self.engine.run_batch("Brush Strokes", &cmds);
+        }
+    }
+
     /// Brush Strokes docker > Apply to curve: use the selected curves as
     /// the path of a stroke in the current mode.
     pub fn apply_media_to_selection(&mut self) {
@@ -466,6 +537,52 @@ mod tests {
                 .collect();
         }
         texts
+    }
+
+    /// #4385: changing the Brush Strokes bar with a brush stroke selected
+    /// restyles that stroke; a plain curve selected with it stays plain.
+    #[test]
+    fn the_bar_restyles_selected_brush_strokes() {
+        let mut app = App::headless();
+        app.tool = crate::tools::Tool::BrushStrokes;
+        let mut line = BezPath::new();
+        line.move_to((10.0, 10.0));
+        line.line_to((80.0, 20.0));
+        let stroke = app
+            .new_shape(ShapeKind::Path {
+                path: line.clone(),
+                closed: false,
+            })
+            .expect("curve");
+        let plain = app
+            .new_shape(ShapeKind::Path {
+                path: line,
+                closed: false,
+            })
+            .expect("curve");
+        app.media_mode = MediaMode::Preset;
+        app.media_width = 2.0;
+        app.select(vec![stroke]);
+        app.apply_media_to_selection();
+        let widest = |app: &App, id| {
+            app.doc()
+                .find_shape(id)
+                .and_then(|s| s.stroke.clone())
+                .map(|st| st.widths.iter().map(|w| w.left + w.right).fold(0.0, f64::max))
+        };
+        let thin = widest(&app, stroke).expect("brush outline");
+        app.select(vec![stroke, plain]);
+        app.media_width = 8.0;
+        app.restyle_selected_media();
+        let wide = widest(&app, stroke).expect("brush outline");
+        assert!(wide > thin * 3.0, "{thin} -> {wide}");
+        let p = app.doc().find_shape(plain).unwrap();
+        assert!(!is_media_stroke(p));
+        // Sprayer: the stroke becomes objects sprayed along the path.
+        app.media_mode = MediaMode::Sprayer;
+        app.restyle_selected_media();
+        let s = app.doc().find_shape(stroke).unwrap();
+        assert!(s.stroke.is_none() && is_media_stroke(s));
     }
 
     /// The Brush Strokes property bar has the mode list the hint speaks

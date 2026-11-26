@@ -35,6 +35,8 @@ struct HistoryEntry {
 #[derive(Debug)]
 pub struct Engine {
     doc: Arc<Document>,
+    /// Result of the latest read-only selection command, consumed by its view.
+    selection_result: Option<Vec<ShapeId>>,
     undo: Vec<HistoryEntry>,
     redo: Vec<HistoryEntry>,
     /// Counts applied commands, so views can cache per revision.
@@ -97,6 +99,9 @@ struct PreviewMark {
     /// Steps redone from `redo` during the preview, which withdrawing it
     /// puts back there.
     redone: Vec<u64>,
+    /// The id the first step recorded during the preview gets: steps
+    /// older than it are never withdrawn (#4102).
+    first_new: u64,
     saved: bool,
     at_step: bool,
 }
@@ -179,6 +184,7 @@ impl Engine {
     pub fn new(doc: Document) -> Self {
         let mut e = Engine {
             doc: Arc::new(doc),
+            selection_result: None,
             undo: Vec::new(),
             redo: Vec::new(),
             revision: 0,
@@ -205,6 +211,12 @@ impl Engine {
 
     pub fn document(&self) -> &Document {
         &self.doc
+    }
+
+    /// Consume the latest Select Same result. An empty vector is a successful
+    /// query with no matches; `None` means no unconsumed successful query.
+    pub fn take_selection_result(&mut self) -> Option<Vec<ShapeId>> {
+        self.selection_result.take()
     }
 
     /// The drawing as it stands, shared: for a render on another thread,
@@ -292,6 +304,7 @@ impl Engine {
 
     /// Replace the document (open file, new document). Clears history.
     pub fn replace(&mut self, doc: Document) {
+        self.selection_result = None;
         self.doc = Arc::new(doc);
         self.ids_ahead = None;
         let uid_state = &mut self.uid_state;
@@ -317,6 +330,23 @@ impl Engine {
 
     /// Like [`run`](Self::run) with a custom history label.
     pub fn run_with_label(&mut self, cmd: &Command, label: &'static str) -> Result<()> {
+        self.selection_result = None;
+        if let Command::SelectSame {
+            page,
+            references,
+            active_layer,
+            options,
+        } = cmd
+        {
+            self.selection_result = Some(crate::select_same::matching_ids(
+                &self.doc,
+                *page,
+                references,
+                *active_layer,
+                options,
+            )?);
+            return Ok(());
+        }
         if cmd.outside_history() {
             // No step, no redo loss, no revision: views and the unsaved
             // marker do not change for it.
@@ -378,6 +408,13 @@ impl Engine {
 
     /// Apply several commands as one undo step.
     pub fn run_batch(&mut self, label: &'static str, cmds: &[Command]) -> Result<()> {
+        self.selection_result = None;
+        if cmds
+            .iter()
+            .any(|cmd| matches!(cmd, Command::SelectSame { .. }))
+        {
+            return Err(Error::SelectionQueryInBatch);
+        }
         let before = Arc::clone(&self.doc);
         for c in cmds {
             if let Err(e) = c.apply(self.doc_mut()) {
@@ -406,6 +443,10 @@ impl Engine {
     /// applied), so one Undo takes both back. Recorded as a step of its own
     /// when anything else happened since.
     pub fn amend(&mut self, cmd: &Command) -> Result<()> {
+        if matches!(cmd, Command::SelectSame { .. }) {
+            return self.run(cmd);
+        }
+        self.selection_result = None;
         if cmd.outside_history() {
             return cmd.apply(self.doc_mut());
         }
@@ -478,6 +519,13 @@ impl Engine {
     /// recorded, or make a step of their own named `label` when anything
     /// else happened since. A failing command leaves the drawing as it was.
     pub fn amend_batch(&mut self, label: &'static str, cmds: &[Command]) -> Result<()> {
+        self.selection_result = None;
+        if cmds
+            .iter()
+            .any(|cmd| matches!(cmd, Command::SelectSame { .. }))
+        {
+            return Err(Error::SelectionQueryInBatch);
+        }
         if cmds.is_empty() {
             return Ok(());
         }
@@ -566,6 +614,7 @@ impl Engine {
     /// [`Self::swap_in`] with the copy in `slot`, which then holds the
     /// drawing it replaced.
     fn swap_slot(&mut self, slot: &mut Arc<Document>) {
+        self.selection_result = None;
         let ids = self.ids_ahead.take().unwrap_or_else(|| self.doc.ids().clone());
         let tracker = self.doc.time_tracker.clone();
         let saved_view = self.doc.saved_view;
@@ -589,6 +638,7 @@ impl Engine {
     /// outside the history, which should still be saved).
     pub fn mark_changed(&mut self) {
         self.single_shape_run = None;
+        self.selection_result = None;
         self.revision += 1;
     }
 
@@ -633,6 +683,7 @@ impl Engine {
             redo: std::mem::take(&mut self.redo),
             redo_cleared: false,
             redone: Vec::new(),
+            first_new: self.next_step,
             saved: !self.is_dirty(),
             at_step: self.at_recorded_step(),
         });
@@ -652,7 +703,18 @@ impl Engine {
         // Each step goes back as Undo takes it (swaps, no copies); one
         // redone from the held stack returns there, newest first, so the
         // stack comes out as it was.
-        while !self.undo.is_empty() && self.last_step_id() != m.last_step {
+        // Only steps recorded or redone during the preview go: when a step
+        // that was there before it was undone meanwhile (typing that
+        // collapses into one step undoes the last one), the mark is never
+        // met again, and walking on took back the whole history, the
+        // object drawn first included (#4102).
+        while self.last_step_id() != m.last_step {
+            let Some(top) = self.undo.last() else {
+                break;
+            };
+            if top.id < m.first_new && !m.redone.contains(&top.id) {
+                break;
+            }
             let Some(mut e) = self.undo.pop() else {
                 break;
             };
@@ -1540,6 +1602,38 @@ mod tests {
         e.keep_preview();
         assert!(!e.in_preview());
         assert_eq!(e.history_labels().0.len(), undo.len() + 2);
+    }
+
+    /// A step from before a preview undone during it (typing that
+    /// collapses into one step) does not make withdrawing the preview take
+    /// back the whole history (#4102): the steps older than the preview
+    /// stay.
+    #[test]
+    fn withdrawing_a_preview_never_takes_back_steps_older_than_it() {
+        use crate::document::{Shape, ShapeKind};
+        use crate::geometry::Rect;
+        let mut e = Engine::default();
+        let layer = e.document().pages[0].layers[0].id;
+        let add = |e: &mut Engine| {
+            let id = e.new_shape_id();
+            let shape = Shape::new(
+                id,
+                ShapeKind::Rect {
+                    rect: Rect::new(0.0, 0.0, 10.0, 10.0),
+                    radius: 0.0,
+                    corners: None,
+                },
+            );
+            e.run(&Command::AddShape { layer, shape }).unwrap();
+        };
+        add(&mut e);
+        add(&mut e);
+        e.begin_preview();
+        e.undo().unwrap();
+        add(&mut e);
+        e.withdraw_preview();
+        assert_eq!(e.history_labels().0.len(), 1, "the first object stays");
+        assert_eq!(e.document().pages[0].layers[0].shapes.len(), 1);
     }
 
     /// An undo step shares the pictures with the drawing instead of

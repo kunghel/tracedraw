@@ -11,6 +11,7 @@
 //! Under the sliders a harmony list and a row of swatches offer colours
 //! that go with the one picked; a click on a swatch picks it (#1498).
 
+use crate::ui::btn_icons::IconUi;
 use crate::i18n::tr;
 use crate::theme::Tokens;
 use crate::ui::tips::RichTip;
@@ -267,7 +268,7 @@ pub fn model_list(ui: &mut Ui, id: Id, c: &mut Color) -> bool {
             ui.separator();
             let reg = shown == REGISTRATION;
             if ui
-                .selectable_label(reg, tr("docker.registration"))
+                .iselectable(reg, "docker.registration")
                 .rich_tip(tr("docker.registration_tip"))
                 .clicked()
                 && !reg

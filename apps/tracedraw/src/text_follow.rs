@@ -181,7 +181,7 @@ pub fn refit_kind(text: &Shape, curve: &Shape, share: Option<f64>) -> Option<Sha
     };
     // On a closed path the start keeps its share of the outline.
     let start = share.and_then(|f| point_at_share(&outline, f)).or(start);
-    let (page_path, _) = crate::ops2::path_for_text_at(&outline, start);
+    let (page_path, _) = tracedraw_core::text_path::path_for_text_at(&outline, start);
     if page_path.elements().is_empty() {
         return None;
     }

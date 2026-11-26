@@ -4,6 +4,7 @@
 //! the harmony wheel, shade into a gradient; and the harmony rules. The
 //! work is in `color_styles.rs`; see `docs/behavior/color-styles.md`.
 
+use crate::ui::btn_icons::IconUi;
 use crate::app::App;
 use crate::color_styles::{self as cs, Change};
 use crate::i18n::{tr, trf};
@@ -89,7 +90,7 @@ pub fn show(app: &mut App, ui: &mut Ui) {
 fn new_row(app: &mut App, ui: &mut Ui, styles: &[ColorStyle]) {
     ui.horizontal_wrapped(|ui| {
         if ui
-            .button(tr("docker.new_from_selection"))
+            .ibutton("docker.new_from_selection")
             .rich_tip(pair(
                 "docker.new_from_selection",
                 "docker.cs_new_from_selection_desc",
@@ -111,14 +112,14 @@ fn new_row(app: &mut App, ui: &mut Ui, styles: &[ColorStyle]) {
             app.run(Command::SetColorStyles { styles: st });
         }
         if ui
-            .button(tr("docker.new_color_style"))
+            .ibutton("docker.new_color_style")
             .rich_tip(keyed("docker.new_color_style"))
             .clicked()
         {
             crate::ui::dockers2::add_color_style(app, app.mixer_color);
         }
         if ui
-            .button(tr("docker.cs_from_document"))
+            .ibutton("docker.cs_from_document")
             .rich_tip(keyed("docker.cs_from_document"))
             .clicked()
         {
@@ -138,7 +139,7 @@ fn more_menu(app: &mut App, ui: &mut Ui) {
     let styles = app.doc().color_styles.clone();
     let picked = picked_or_all(app, &styles);
     let item = |ui: &mut Ui, key: &str, on: bool| {
-        ui.add_enabled(on, egui::Button::new(tr(key)))
+        ui.add_enabled(on, crate::ui::btn_icons::Ib::new(key))
             .rich_tip(keyed(key))
             .clicked()
     };
@@ -427,7 +428,7 @@ fn picked_actions(app: &mut App, ui: &mut Ui) {
     );
     ui.horizontal_wrapped(|ui| {
         let button = |ui: &mut Ui, key: &str, on: bool| {
-            ui.add_enabled(on, egui::Button::new(tr(key)).small())
+            ui.add_enabled(on, crate::ui::btn_icons::Ib::new(key).small())
                 .rich_tip_always(keyed(key))
                 .clicked()
         };
@@ -616,7 +617,7 @@ fn gradient_row(app: &mut App, ui: &mut Ui) {
             .and_then(|&i| app.doc().color_styles.get(i).map(|s| s.color))
             .unwrap_or(app.mixer_color);
         if ui
-            .button(tr("docker.cs_new_gradient"))
+            .ibutton("docker.cs_new_gradient")
             .rich_tip(keyed("docker.cs_new_gradient"))
             .clicked()
         {
@@ -647,7 +648,7 @@ fn harmony_editor(app: &mut App, ui: &mut Ui) {
     ui.horizontal_wrapped(|ui| {
         for h in crate::palette::Harmony::ALL {
             if ui
-                .button(tr(h.key()))
+                .ibutton(h.key())
                 .rich_tip_with(|| format!("{}\n{}", tr(h.key()), tr(&format!("{}_desc", h.key()))))
                 .clicked()
             {

@@ -16,6 +16,7 @@ use crate::container::Version;
 use crate::riff::{Chunk, Tree};
 use crate::text::{self, RunStyle, StyleRec};
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use tracedraw_core::{
     document::{
         Corners, EllipseArc, Layer, LeadingUnit, Page, ParagraphStyle, Shape, ShapeKind, TextAlign,
@@ -68,6 +69,56 @@ const FILE_BLEND_STEPS: u32 = 100_000;
 /// pages of 20 m and more, and a larger value means a misread record. The
 /// CMX reader takes the same bound.
 const MAX_PAGE_MM: f64 = 100_000.0;
+
+/// Free physical RAM the app saw before opening, bytes; 0 = unknown.
+pub static FREE_RAM: AtomicU64 = AtomicU64::new(0);
+
+pub fn set_free_ram(bytes: u64) {
+    FREE_RAM.store(bytes, Ordering::Relaxed);
+}
+
+/// How much the file's pictures may shrink so they fit the RAM the caller
+/// saw and the 32 768 px pixmap side. 1.0 = draw as stored.
+fn plan_bitmap_scale(datas: &[&[u8]], v: u16, free_ram: u64) -> f64 {
+    let mut px = 0u64;
+    let mut max_side = 0u64;
+    let mut n = 0usize;
+    for d in datas {
+        if let Some(h) = bitmap_header(d, v) {
+            n += 1;
+            px = px.saturating_add(h.width as u64 * h.height as u64);
+            max_side = max_side.max(h.width.max(h.height) as u64);
+        }
+    }
+    if px == 0 {
+        return 1.0;
+    }
+    // Unknown RAM: assume 2 GiB free (a small desktop).
+    let free = if free_ram >= 512 << 20 {
+        free_ram
+    } else {
+        2 << 30
+    };
+    // Pictures together may take 35% of free RAM, 96 MiB at least,
+    // 1536 MiB at most.
+    let budget = (free * 35 / 100).clamp(96 << 20, 1536 << 20);
+    let rgba = px.saturating_mul(4);
+    let mut k = if rgba > budget {
+        (budget as f64 / rgba as f64).sqrt()
+    } else {
+        1.0
+    };
+    // The renderer's pixmap limit is 32 768 on a side (8192 is only the
+    // screen window of the Pixels view, not the stored bitmap).
+    if max_side as f64 * k > 32_768.0 {
+        k = 32_768.0 / max_side as f64;
+    }
+    let k = k.clamp(0.02, 1.0);
+    if k < 1.0 {
+        log::warn!("bitmaps: {n} picture(s), {px} px, sampling to {k:.2} (free {free} bytes)");
+    }
+    k
+}
 /// CDR coordinate unit (version 6 and later) to millimetres.
 const UNIT_MM: f64 = 25.4 / 254000.0;
 /// Coordinate unit of versions before 6 (1/1000 inch) to millimetres.
@@ -104,6 +155,8 @@ pub(crate) const KNOWN_ARGS: &[u32] = &[
     ARG_PAGE_SIZE,
     ARG_PAGE_BACKGROUND,
     ARG_HIDDEN,
+    ARG_WRAP_STYLE,
+    ARG_WRAP_OFFSET,
     ARG_MESH,
     ARG_GUIDE_LINE,
     ARG_BLEND_STEPS,
@@ -142,6 +195,12 @@ pub(crate) const ARG_SYMBOL: u32 = 19201;
 const ARG_PAGE_BACKGROUND: u32 = 17000;
 /// Object argument 16016: 1 hides the object (version 21).
 const ARG_HIDDEN: u32 = 16016;
+/// Object argument 13001: the paragraph text wrap style around the
+/// object (u32; 1 to 3 along its outline, 4 to 7 along its box), and
+/// 13000: the room kept free around it (u32, coordinate units). Seen on
+/// a rectangle of a version 20 file (#4142).
+const ARG_WRAP_STYLE: u32 = 13001;
+const ARG_WRAP_OFFSET: u32 = 13000;
 /// Byte 0 of an object's `flgs`: the object is locked (#2347).
 pub(crate) const OBJECT_LOCKED: u8 = 0x10;
 
@@ -312,8 +371,53 @@ const OBJ_MESH: u32 = 0x20;
 /// The mesh of an [`OBJ_MESH`] object: its grid lines and node colours
 /// (see [`Ctx::read_mesh`]).
 const ARG_MESH: u32 = 19150;
+/// The merge mode a version 16+ style string's transparency `mode` names.
+/// The codes are those of the merge modes of the scripting interface
+/// (`cdrMergeMode` in `vg_model.js`), which the transparency record of
+/// versions 13 to 15 shares (9 multiplies there, #3222). In the car
+/// drawing of #1238 (version 27) the highlights hold 7 and 29, and the
+/// shades 8 and 9, and drawn so they match its reference picture, where
+/// drawn as Normal they lay over the paint as flat grey patches.
+fn style_merge_mode(code: i64) -> Option<tracedraw_core::live::MergeMode> {
+    use tracedraw_core::live::MergeMode as M;
+    Some(match code {
+        0 => M::Normal,
+        1 => M::And,
+        2 => M::Or,
+        3 => M::Xor,
+        6 => M::Invert,
+        7 => M::Add,
+        8 => M::Subtract,
+        9 => M::Multiply,
+        10 => M::Divide,
+        11 => M::IfLighter,
+        12 => M::IfDarker,
+        13 => M::Texturize,
+        14 => M::Color,
+        15 => M::Hue,
+        16 => M::Saturation,
+        17 => M::Lightness,
+        18 => M::Red,
+        19 => M::Green,
+        20 => M::Blue,
+        24 => M::Difference,
+        27 => M::Behind,
+        28 => M::Screen,
+        29 => M::Overlay,
+        30 => M::SoftLight,
+        31 => M::HardLight,
+        33 => M::ColorDodge,
+        34 => M::ColorBurn,
+        36 => M::Exclusion,
+        _ => return None,
+    })
+}
+
 /// The largest mesh read, in nodes.
 const MESH_MAX_NODES: usize = 250_000;
+/// The mark of mesh records whose node colours are sized records (150 in
+/// version 27 files; 100 in the older layout).
+const MESH_SIZED_COLOURS: u32 = 150;
 /// The tag of records added by version 24 and later at the start of fill
 /// records (a 16-byte id), which files saved for older versions carry too.
 const NEWER_RECORD_TAG: u32 = 2400;
@@ -585,10 +689,23 @@ struct Ctx<'a> {
     /// (`spnd`), and the file's identities (`spid`) of each.
     spnd_shapes: HashMap<u32, tracedraw_core::ShapeId>,
     spids: HashMap<tracedraw_core::ShapeId, tracedraw_core::document::Uid>,
+    /// Paragraph text running through several frames (version 16+): each
+    /// frame's number (`spnd`) to the number of the frame holding the
+    /// text and its place in the run (#4104, #2018).
+    text_chains: HashMap<u32, (u32, usize)>,
+    /// The paragraph frames read, with their numbers, to mark the runs
+    /// once every frame is read.
+    frame_shapes: Vec<(u32, tracedraw_core::ShapeId)>,
+    /// The number of the paragraph frame being read.
+    pending_frame_number: Option<u32>,
 
     /// The node types a curve's node bytes give where its handles read
     /// otherwise, for the shape being read.
     pending_node_types: std::collections::BTreeMap<usize, tracedraw_core::nodes::NodeType>,
+    /// The corners of the rectangle being read whose radius the file
+    /// gives as a length (version 15+), by corner: a length the corner
+    /// measures on the page, not in the rectangle's own space (#4126).
+    pending_length_corners: [bool; 4],
     /// The CMYK profile the file carries, for CMYK bitmaps.
     cmyk_profile: Option<tracedraw_core::icc::Profile>,
     /// CMYK to RGB through that profile, built for the first CMYK bitmap.
@@ -667,8 +784,12 @@ impl<'a> Ctx<'a> {
             links: HashMap::new(),
             spnd_shapes: HashMap::new(),
             spids: HashMap::new(),
+            text_chains: HashMap::new(),
+            frame_shapes: Vec::new(),
+            pending_frame_number: None,
 
             pending_node_types: Default::default(),
+            pending_length_corners: [false; 4],
             cmyk_profile: None,
             cmyk_lut: None,
             static_ids: None,
@@ -903,17 +1024,20 @@ pub(crate) fn parse_document_kept_data(
                 layer.locked = f[0] & 0x10 != 0;
                 layer.printable = f[0] & 0x08 == 0;
             }
-            // Guides and grid layers hold no drawable content.
+            let mut ids = std::mem::take(doc.ids_mut());
+            layer.shapes = ctx.read_objects(lc, &mut ids, size, 0);
+            doc.set_ids(ids);
+            // Guides and grid layers do not print. Empty, they are hidden;
+            // a guides layer holding artwork (a part of the drawing put
+            // there, one face of a cube in a version 16 file, #4331)
+            // shows as the file has it, as its preview draws it.
             match ctx.layer_type(lc) {
                 Some(t) if t & 0x0f == 0x0a => {
-                    layer.visible = false;
+                    layer.visible = !layer.shapes.is_empty() && !ctx.layer_hidden(lc);
                     layer.printable = false;
                 }
                 _ => layer.visible = !ctx.layer_hidden(lc),
             }
-            let mut ids = std::mem::take(doc.ids_mut());
-            layer.shapes = ctx.read_objects(lc, &mut ids, size, 0);
-            doc.set_ids(ids);
             // Guides, grid and desktop layers, and the master page's layers
             // each page lists again, are no drawing of their own when
             // empty.
@@ -977,43 +1101,108 @@ pub(crate) fn parse_document_kept_data(
             p.name = format!("Page {}", i + 1);
         }
     }
-    // Facing pages measure objects from the spine of their spread, half a
-    // page to the left or right of the page's centre: pages take turns on
-    // the right and left of the spine, from the first page alone on the
-    // right (or on the left starting a spread). Which of the two the
-    // file starts with is the one that puts more of the objects on their
-    // pages, and every page then goes by its place in the spreads, the
-    // turns breaking only where many pages after hold their objects
-    // better the other way (a page lost or added, #2833). Each
-    // page took the side holding more of its own objects before, and a
-    // page with objects reaching across the spine took the wrong one,
-    // mixing it with the page beside it; the pages showed one by one,
-    // not in spreads (#1660).
-    if ctx.facing_pages {
-        // Each page's share of its objects that lands on it from the right
-        // of the spine and from the left; then the sides, taking turns
-        // with as few breaks as those shares allow (#2833).
-        let shares: Vec<(f64, f64)> = doc
-            .pages
-            .iter()
-            .map(|p| {
-                let w = p.size.width;
-                let n = p.layers.iter().map(|l| l.shapes.len()).sum::<usize>();
-                if n == 0 {
-                    return (0.0, 0.0);
-                }
-                let on = |right: bool| centres_on_page(&p.layers, w, spine_shift(w, right));
-                (on(true) as f64 / n as f64, on(false) as f64 / n as f64)
-            })
-            .collect();
-        let sides = facing_sides(&shares);
-        let starts_right = sides.first().copied().unwrap_or(true);
-        for (p, right) in doc.pages.iter_mut().zip(sides) {
-            let dx = spine_shift(p.size.width, right);
-            for s in p.layers.iter_mut().flat_map(|l| l.shapes.iter_mut()) {
-                s.transform = Affine::translate((dx, 0.0)) * s.transform;
+    // Frames one text runs through are marked with their run and place,
+    // as a PDF import marks its paragraph frames, so the app links them
+    // and lets the text flow on from the first (#4104, #2018).
+    let frames = std::mem::take(&mut ctx.frame_shapes);
+    for (n, id) in frames {
+        if let Some((head, place)) = ctx.text_chains.get(&n).copied() {
+            if let Some(s) = doc.find_shape_mut(id) {
+                s.data.retain(|(k, _)| k != FLOW_KEY);
+                s.data.push((FLOW_KEY.to_string(), format!("{head}:{place}")));
             }
         }
+    }
+    // A book on facing pages keeps one page record per spread, its
+    // objects measured from the spine between its two pages: the first
+    // record is the first page alone on the right of the spine (or a
+    // whole spread when the book starts on the left), every record after
+    // it a left and a right page, and the last one the last page alone
+    // on the left when nothing of it is on the right. Each record is
+    // split into its pages here, the objects left of the spine to the
+    // left page and the others to the right one, each moved from the
+    // spine onto its page. Read as one page each, a book of 248 pages
+    // opened as 125, every spread's two pages on top of each other
+    // (#4104, also #2609, #2584, #2018, #3035).
+    if ctx.facing_pages {
+        let records = std::mem::take(&mut doc.pages);
+        let n = records.len();
+        // Whether the objects' centres of a record sit left of the spine,
+        // right of it, or both.
+        // Objects are placed from the record's left edge here, so the
+        // spine is half a page in.
+        let sides = |p: &Page| {
+            let spine = p.size.width / 2.0;
+            let (mut left, mut right) = (false, false);
+            for b in p
+                .layers
+                .iter()
+                .flat_map(|l| l.shapes.iter())
+                .map(|s| s.bounds())
+                .filter(|b| b.x0.is_finite() && b.x1.is_finite())
+            {
+                if (b.x0 + b.x1) / 2.0 < spine - SPINE_SLACK_MM {
+                    left = true;
+                } else {
+                    right = true;
+                }
+            }
+            (left, right)
+        };
+        let starts_right = records.first().is_none_or(|p| !sides(p).0);
+        let mut pages: Vec<Page> = Vec::with_capacity(n * 2);
+        for (i, mut record) in records.into_iter().enumerate() {
+            // The name the record was given for its place, not its own.
+            if record.name == format!("Page {}", i + 1) {
+                record.name.clear();
+            }
+            let right_of_spine = sides(&record).1;
+            let (has_left, has_right) = if i == 0 {
+                (!starts_right, true)
+            } else if i + 1 == n {
+                (true, right_of_spine)
+            } else {
+                (true, true)
+            };
+            for (k, on_left) in [(0, true), (1, false)] {
+                if (on_left && !has_left) || (!on_left && !has_right) {
+                    continue;
+                }
+                let first = k == 0 || !has_left;
+                let alone = !(has_left && has_right);
+                let w = record.size.width;
+                let dx = spine_shift(w, !on_left);
+                let mut page = record.clone();
+                if !first {
+                    page.id = doc.ids_mut().page();
+                    page.name.clear();
+                    page.guides.clear();
+                }
+                for l in page.layers.iter_mut() {
+                    if !first {
+                        l.id = doc.ids_mut().layer();
+                    }
+                    // A page alone keeps everything of its record.
+                    if !alone {
+                        l.shapes.retain(|s| {
+                            let b = s.bounds();
+                            let c = (b.x0 + b.x1) / 2.0;
+                            (c.is_finite() && c < w / 2.0 - SPINE_SLACK_MM) == on_left
+                        });
+                    }
+                    for s in l.shapes.iter_mut() {
+                        s.transform = Affine::translate((dx, 0.0)) * s.transform;
+                    }
+                }
+                pages.push(page);
+            }
+        }
+        for (i, p) in pages.iter_mut().enumerate() {
+            if p.name.is_empty() {
+                p.name = format!("Page {}", i + 1);
+            }
+        }
+        doc.pages = pages;
         doc.metadata.facing_pages = doc.pages.len() > 1;
         doc.metadata.facing_start = if starts_right {
             tracedraw_core::spreads::PageSide::Right
@@ -2365,9 +2554,50 @@ impl<'a> Ctx<'a> {
                 txsm = Some(c);
             }
         });
+        let frame_number = (kind_code == OBJ_PARAGRAPH_TEXT)
+            .then(|| {
+                oc.children
+                    .iter()
+                    .find(|k| k.is(b"spnd"))
+                    .and_then(|k| self.reader(self.data(k)).u32())
+            })
+            .flatten();
+        self.pending_frame_number = frame_number;
         let Some(tc) = txsm else {
-            self.report
-                .warn("text object without a txsm chunk; skipped");
+            // A frame the text of another frame continues in keeps no text
+            // record: it opens empty, and the text flows into it once the
+            // frames are linked (#4104, #2018). So does a paragraph frame
+            // left empty (#4330): an empty text box, not an object that
+            // could not be read.
+            if kind_code == OBJ_PARAGRAPH_TEXT {
+                if frame.is_none() {
+                    if let Some((o, size)) = self.frame_from_hints(&hints) {
+                        origin = o;
+                        frame = Some(size);
+                    }
+                }
+                if let Some((t, o, s)) =
+                    frame.and_then(|f| unscaled_frame(hints.transform, origin, f))
+                {
+                    origin = o;
+                    frame = Some(s);
+                    self.pending_text_transform = Some(t);
+                }
+                if frame.is_some() {
+                    return Some(ShapeKind::Text {
+                        spans: Vec::new(),
+                        origin,
+                        frame,
+                        align: TextAlign::Left,
+                        para: ParagraphStyle::default(),
+                        on_path: None,
+                    });
+                }
+            }
+            // Text with no text record holds no letters: it draws
+            // nothing, and nothing of the drawing is lost (#4330).
+            log::debug!("text object without a txsm chunk: no text, draws nothing");
+            self.last_drew_nothing = true;
             return None;
         };
         let td = self.data(tc);
@@ -2377,6 +2607,11 @@ impl<'a> Ctx<'a> {
             self.report.warn(w);
         }
         let parsed = parsed?;
+        if let (Some(head), true) = (frame_number, parsed.frame_ids.len() > 1) {
+            for (place, n) in parsed.frame_ids.iter().enumerate() {
+                self.text_chains.insert(*n, (head, place));
+            }
+        }
         self.pending_on_path = parsed.on_path.then_some(OnPathText {
             settings: parsed.path_settings,
             page_box: None,
@@ -2467,7 +2702,18 @@ impl<'a> Ctx<'a> {
             own.push((chars, own_align, fmt));
             for (k, run) in para.runs.iter().enumerate() {
                 let style = run.style.over(&base);
-                let mut text = text::line_breaks(&self.run_text(run, &style));
+                let raw = self.run_text(run, &style);
+                // A carriage return inside a paragraph of paragraph text
+                // (version 16+, whose paragraphs are records of their
+                // own) is the line break inside the paragraph
+                // (Shift+Enter): the lines of a verse kept together, the
+                // space between paragraphs only after the verse (#4162).
+                let raw = if kind_code == OBJ_PARAGRAPH_TEXT && self.v >= 16 {
+                    text::soft_line_breaks(&raw)
+                } else {
+                    raw
+                };
+                let mut text = text::line_breaks(&raw);
                 if i + 1 < n && k + 1 == para.runs.len() {
                     text.push('\n');
                 }
@@ -2540,7 +2786,21 @@ impl<'a> Ctx<'a> {
             }
         }
         if spans.is_empty() {
-            self.report.warn("text object with no content; skipped");
+            // An empty text box (#4330): a paragraph frame opens as an
+            // empty frame to type in; artistic text with no letters draws
+            // nothing. Neither is an object that could not be read.
+            if kind_code == OBJ_PARAGRAPH_TEXT && frame.is_some() {
+                return Some(ShapeKind::Text {
+                    spans: Vec::new(),
+                    origin,
+                    frame,
+                    align: TextAlign::Left,
+                    para: ParagraphStyle::default(),
+                    on_path: None,
+                });
+            }
+            log::debug!("text object with no content: draws nothing");
+            self.last_drew_nothing = true;
             return None;
         }
         // 0 none, 1 left, 2 centre, 3 right, 4 full and 5 forced justify
@@ -3284,6 +3544,9 @@ impl<'a> Ctx<'a> {
                     }
                     Some(_) => {}
                     None => {
+                        // An empty cell's text draws nothing: no mark left
+                        // for the next object read (#4330).
+                        self.last_drew_nothing = false;
                         let empty = "text object with no content; skipped";
                         if self.report.warnings.len() > warned
                             && self.report.warnings.last().map(String::as_str) == Some(empty)
@@ -4000,7 +4263,8 @@ impl<'a> Ctx<'a> {
     /// through them and their handles from the control points next to
     /// them on those lines, so the cells keep the lines' curves. Also the
     /// mesh's edge (the first and last row and column lines), the
-    /// object's outline.
+    /// object's outline. A record marked 150 instead of 100 (version 27,
+    /// #1238) holds the colours as sized records.
     fn read_mesh(
         &mut self,
         d: &'a [u8],
@@ -4011,7 +4275,7 @@ impl<'a> Ctx<'a> {
         // The record's own length: the argument may run a little past it.
         let len = r.u32()? as usize;
         let end = arg.off.checked_add(len)?.min(arg.end);
-        let _tag = r.u32()?;
+        let tag = r.u32()?;
         let cols = r.u32()? as usize;
         let rows = r.u32()? as usize;
         if cols < 2 || rows < 2 || cols.saturating_mul(rows) > MESH_MAX_NODES {
@@ -4081,19 +4345,40 @@ impl<'a> Ctx<'a> {
             }
             lines.push((build_path(&pts, &types).0, first > last));
         }
-        // The colour grid closes the record.
-        let grid = end.checked_sub(12 + rows * cols * 12)?;
-        if grid < r.pos {
-            return None;
-        }
-        let mut g = self.reader_at(data, grid);
-        let _tag = g.u32()?;
-        if g.u32()? as usize != rows || g.u32()? as usize != cols {
-            return None;
-        }
         let mut colours = Vec::with_capacity(rows * cols);
-        for _ in 0..rows * cols {
-            colours.push(self.read_color(&mut g)?);
+        if tag >= MESH_SIZED_COLOURS {
+            // Records marked 150: the transform (six f64), the mark and the
+            // counts follow the lines, then each node's colour as a sized
+            // record (see `read_mesh_sized_colour`); 12 bytes close it.
+            r.skip(48);
+            let _tag = r.u32()?;
+            if r.u32()? as usize != rows || r.u32()? as usize != cols {
+                return None;
+            }
+            for _ in 0..rows * cols {
+                let size = r.u32()? as usize;
+                let at = r.pos;
+                if at.checked_add(size)? > end {
+                    return None;
+                }
+                let mut c = self.reader_at(data, at);
+                colours.push(self.read_mesh_sized_colour(&mut c, size)?);
+                r.skip(size);
+            }
+        } else {
+            // The colour grid closes the record.
+            let grid = end.checked_sub(12 + rows * cols * 12)?;
+            if grid < r.pos {
+                return None;
+            }
+            let mut g = self.reader_at(data, grid);
+            let _tag = g.u32()?;
+            if g.u32()? as usize != rows || g.u32()? as usize != cols {
+                return None;
+            }
+            for _ in 0..rows * cols {
+                colours.push(self.read_color(&mut g)?);
+            }
         }
         let mut nodes = Vec::with_capacity(rows * cols);
         for (i, handles) in handles.into_iter().enumerate() {
@@ -4142,6 +4427,20 @@ impl<'a> Ctx<'a> {
             },
             edge,
         ))
+    }
+
+    /// A mesh node's colour in a record marked 150: byte 1, the colour's
+    /// length (12) and the colour as everywhere else; what follows (byte 7,
+    /// a length of 16 and 16 bytes, zeros in the samples) is not read.
+    fn read_mesh_sized_colour(&mut self, r: &mut Reader, size: usize) -> Option<Color> {
+        if size < 17 {
+            return None;
+        }
+        let _kind = r.u8()?;
+        if r.u32()? != 12 {
+            return None;
+        }
+        self.read_color(r)
     }
 
     fn read_polygon_info(&mut self, d: &'a [u8], arg: Arg) -> Option<PolygonInfo> {
@@ -4360,6 +4659,8 @@ impl<'a> Ctx<'a> {
         self.pending_clip = None;
         self.pending_on_path = None;
         self.pending_text_transform = None;
+        self.pending_frame_number = None;
+        self.pending_length_corners = [false; 4];
         let mut v3_envelope_of: Option<(Affine, Rect, tracedraw_core::envelope::Frame, Affine)> =
             None;
         let chain = trfd
@@ -4402,6 +4703,8 @@ impl<'a> Ctx<'a> {
         let mut stroke: Option<Stroke> = None;
         let mut name: Option<String> = None;
         let mut hidden = false;
+        let mut wrap_style: Option<u32> = None;
+        let mut wrap_offset: Option<u32> = None;
         let mut coords: Option<Arg> = None;
         let mut polygon: Option<PolygonInfo> = None;
         let mut style_id: Option<u32> = None;
@@ -4487,6 +4790,8 @@ impl<'a> Ctx<'a> {
                 ARG_POLYGON => polygon = self.read_polygon_info(d, *arg),
                 ARG_CLIP_CONTENTS => self.pending_clip = self.reader_at(d, arg.off).u32(),
                 ARG_HIDDEN => hidden = self.reader_at(d, arg.off).u32().is_some_and(|h| h != 0),
+                ARG_WRAP_STYLE => wrap_style = self.reader_at(d, arg.off).u32(),
+                ARG_WRAP_OFFSET => wrap_offset = self.reader_at(d, arg.off).u32(),
                 ARG_MESH if kind_code == OBJ_MESH => mesh = Some(*arg),
                 _ => {}
             }
@@ -4547,6 +4852,9 @@ impl<'a> Ctx<'a> {
                     .report
                     .warn("a mesh fill could not be read; the object keeps a plain fill"),
             }
+        }
+        if let (Some(n), Some(_)) = (self.pending_frame_number.take(), &kind) {
+            self.frame_shapes.push((n, id));
         }
         let mut kind = match kind {
             Some(k) => k,
@@ -4713,29 +5021,38 @@ impl<'a> Ctx<'a> {
             s.miter_limit = a;
         }
 
-        // A merge mode the reader does not know yet (#1666) is named, so
-        // a report can say which code the file uses.
-        if let Some(code) = style_string
-            .as_deref()
-            .and_then(text::object_transparency_merge_code)
-        {
-            self.report.warn(format!(
-                "transparency merge mode {code} not read; object merged as Normal"
-            ));
-        }
         // Version 16+: a graded transparency in the object's style string
         // becomes a mask; otherwise its uniform transparency an opacity.
-        let mut mask = v11_mask.or_else(|| {
-            style_string
-                .as_deref()
-                .and_then(text::object_transparency_mask)
-        });
-        // A pattern transparency in the style string (a fill type other
-        // than uniform or fountain) is the pattern its record names, not
-        // the mean of its two amounts (#2960).
         let style_fill_type = style_string
             .as_deref()
             .and_then(text::object_transparency_fill_type);
+        // A transparency section whose fill is of type 0 (none, as in fill
+        // sections) on an object without a transparency record is a
+        // transparency that was taken off: its amounts are leftovers
+        // (#1238: a version 27 mesh object left with "uniformTransparency 1"
+        // is drawn whole in its reference picture).
+        let transparency_off = self.v >= 16
+            && style_fill_type == Some(0)
+            && !l.args.iter().any(|a| a.ty == ARG_OPACITY);
+        let style_transparency = style_string.as_deref().filter(|_| !transparency_off);
+        // Version 16+: how the transparency mixes with what lies beneath
+        // is the style string's `mode` (see `style_merge_mode`); a code
+        // without a mode here is named, so a report can say which one
+        // the file uses (#1666).
+        if let Some(code) = style_transparency.and_then(text::object_transparency_merge_code) {
+            match style_merge_mode(code) {
+                Some(m) => record_merge = m,
+                None => self.report.warn(format!(
+                    "transparency merge mode {code} not read; object merged as Normal"
+                )),
+            }
+        }
+        let style_merges = self.v >= 16 && record_merge != tracedraw_core::live::MergeMode::Normal;
+        let mut mask =
+            v11_mask.or_else(|| style_transparency.and_then(text::object_transparency_mask));
+        // A pattern transparency in the style string (a fill type other
+        // than uniform or fountain) is the pattern its record names, not
+        // the mean of its two amounts (#2960).
         if mask.is_none() && style_fill_type.is_some_and(|t| !matches!(t, 0..=2)) {
             if let Some(RecordTransparency::Mask(m @ (Fill::Pattern(_), _))) = &record_transparency
             {
@@ -4752,7 +5069,7 @@ impl<'a> Ctx<'a> {
             }
         }
         if opacity >= 1.0 && mask.is_none() {
-            if let Some(o) = style_string.as_deref().and_then(text::object_opacity) {
+            if let Some(o) = style_transparency.and_then(text::object_opacity) {
                 opacity = o;
             } else if let Some(o) = record_opacity.filter(|_| {
                 style_string
@@ -4812,11 +5129,11 @@ impl<'a> Ctx<'a> {
                     (Some(u), Some(t)) => (u.bounding_box(), recenter * t),
                     _ => (local.bounding_box(), shape.transform),
                 };
-                // The bands run square to the fill's axis in the object's
-                // own space (its box not stretched to a square).
+                // The bands run along the fill frame's second axis, in
+                // units of the object's box like the first.
                 let start = Fountain::rel_to_page(lb, h.start);
                 let end = Fountain::rel_to_page(lb, h.end);
-                let skew = start + (end - start).turn_90();
+                let skew = Fountain::rel_to_page(lb, h.skew);
                 let place = |p: Point| Fountain::page_to_rel(pb, m * p);
                 let placed = tracedraw_core::style::FountainHandles {
                     start: place(start),
@@ -4830,12 +5147,62 @@ impl<'a> Ctx<'a> {
         // rectangle its preview leaves out, over the page's dark
         // background) is kept but not drawn.
         shape.visible = !hidden;
+        // Paragraph text keeps away from an object that wraps it (#4142):
+        // the text ran under such objects.
+        if let Some(code) = wrap_style.filter(|&c| c != 0) {
+            use tracedraw_core::text_flow::{TextWrap, WrapMode, WrapSide};
+            // 1 to 3 along the outline, 4 to 7 along the bounding box;
+            // round both sides, then the left, then the right, then above
+            // and below (1, 2 and 4 seen, #4142 and #4162).
+            let (mode, side) = match code {
+                1 => (WrapMode::Contour, WrapSide::Straddle),
+                2 => (WrapMode::Contour, WrapSide::Left),
+                3 => (WrapMode::Contour, WrapSide::Right),
+                4 => (WrapMode::Square, WrapSide::Straddle),
+                5 => (WrapMode::Square, WrapSide::Left),
+                6 => (WrapMode::Square, WrapSide::Right),
+                7 => (WrapMode::Square, WrapSide::AboveBelow),
+                _ => {
+                    self.report.warn(format!(
+                        "text wrap style {code} not read; the text wraps round both sides"
+                    ));
+                    (WrapMode::Contour, WrapSide::Straddle)
+                }
+            };
+            shape.wrap_text = true;
+            shape.wrap_style = TextWrap {
+                mode,
+                side,
+                offset: wrap_offset
+                    .map(|o| f64::from(o) * UNIT_MM)
+                    .unwrap_or(TextWrap::default().offset),
+            };
+        }
         shape.fill = fill;
         shape.stroke = stroke;
         // A drawn embedded object's objects carry their own colours.
         if matches!(shape.kind, ShapeKind::Group { .. }) {
             shape.fill = Fill::None;
             shape.stroke = None;
+        }
+        // A corner the file gives as a length measures that on the page,
+        // whatever the rectangle's transform scales it by: a rectangle
+        // enlarged with its corners kept opened with corners enlarged
+        // with it (#4126).
+        let lengths = std::mem::take(&mut self.pending_length_corners);
+        if lengths.contains(&true) {
+            let (sx, sy) = tracedraw_core::document::axis_scale(shape.transform);
+            let k = sx.min(sy);
+            if let (Some((rect, mut c)), true) = (shape.kind.rect_corners(), k > 1e-12) {
+                if !c.fixed {
+                    for (r, length) in c.radii.iter_mut().zip(lengths) {
+                        if length {
+                            *r /= k;
+                        }
+                    }
+                    shape.kind = ShapeKind::rect_with_corners(rect, c);
+                }
+            }
         }
         // Rounded corners keep their size when the rectangle is resized,
         // as new rectangles do, rather than stretch with it (#619); after
@@ -4900,7 +5267,9 @@ impl<'a> Ctx<'a> {
                     merge: record_merge,
                     target,
                 });
-        } else if record_merge != tracedraw_core::live::MergeMode::Normal && shape.opacity < 1.0 {
+        } else if record_merge != tracedraw_core::live::MergeMode::Normal
+            && (shape.opacity < 1.0 || style_merges)
+        {
             // A uniform transparency that does not merge as Normal: a
             // mask of one grey, whose lightness is the opacity.
             let grey = Color::Gray {
@@ -5056,15 +5425,15 @@ impl<'a> Ctx<'a> {
     /// numbered `clip` drawn inside it (the container's fill under them,
     /// its outline over them). A number naming no group leaves the shape.
     ///
-    /// A transparency read on the container is the whole container's
-    /// (#2515): the clip frame takes its amount and its mask, so the
-    /// contents fade with the frame and the property bar shows it. Left
-    /// on the frame inside, the amount was not drawn at all (a clip frame
-    /// is drawn at its own opacity) and a mask faded the frame's fill
-    /// alone: a picture in a see-through container opened opaque.
+    /// A transparency read on the container is the frame's alone
+    /// (#4360): the clip frame takes its amount, so the property bar
+    /// shows it, and is marked so that the objects inside keep their own
+    /// opacity, as the program that saves the files draws them; a graded
+    /// transparency stays on the frame inside and fades its fill. (Taken
+    /// at first, without a file, as the whole container's, #2515.)
     fn with_clip_contents(
         &mut self,
-        mut shape: Shape,
+        shape: Shape,
         clip: u32,
         ids: &mut tracedraw_core::id::IdSource,
         page_size: Size,
@@ -5105,11 +5474,15 @@ impl<'a> Ctx<'a> {
         // The frame keeps the amount as well, as a frame made in the
         // application does, so Extract Contents gives it back.
         outer.opacity = shape.opacity;
-        let (faded, kept) = std::mem::take(&mut shape.effects)
-            .into_iter()
-            .partition(|e| matches!(e, tracedraw_core::live::Effect::Transparency { .. }));
-        outer.effects = faded;
-        shape.effects = kept;
+        // The amount fades the frame's own fill and outline, not the
+        // objects inside, which keep their own (#4360); a graded
+        // transparency stays on the frame for the same reason.
+        if outer.opacity < 1.0 {
+            outer.data.push((
+                tracedraw_core::document::CLIP_CONTENTS_OPAQUE.into(),
+                "1".into(),
+            ));
+        }
         outer.kind = ShapeKind::ClipFrame {
             frame: Box::new(shape),
             contents,
@@ -6007,16 +6380,21 @@ impl<'a> Ctx<'a> {
                     // Each radius is followed by 16 bytes of corner data
                     // (corner type and unknown fields) except the last.
                     let mut radii = Vec::new();
+                    let mut lengths = Vec::new();
                     for gap in [16usize, 16, 16, 0] {
                         let Some(raw) = r.f64() else { break };
                         if raw.is_finite() {
-                            radii.push(if raw > RADIUS_LENGTH_FROM {
-                                raw * UNIT_MM
-                            } else {
-                                raw * half
-                            });
+                            let length = raw > RADIUS_LENGTH_FROM;
+                            radii.push(if length { raw * UNIT_MM } else { raw * half });
+                            lengths.push(if length { 1.0 } else { 0.0 });
                         }
                         r.skip(gap);
+                    }
+                    // A length is the corner's size on the page: a
+                    // rectangle the file scales keeps it (#4126).
+                    if lengths.contains(&1.0) {
+                        let mask = file_corners(&lengths, w, h);
+                        self.pending_length_corners = mask.radii.map(|m| m > 0.5);
                     }
                     (w, h, radii)
                 };
@@ -6264,7 +6642,8 @@ impl<'a> Ctx<'a> {
             });
         }
         let lut = self.cmyk_lut.as_ref();
-        for decoded in parallel_map(&datas, |d| decode_bitmap(d, v, lut)) {
+        let scale = plan_bitmap_scale(&datas, v, FREE_RAM.load(Ordering::Relaxed));
+        for decoded in parallel_map(&datas, |d| decode_bitmap(d, v, lut, scale)) {
             match decoded {
                 Some(Ok((id, def))) => {
                     self.bitmaps.insert(id, def);
@@ -6347,10 +6726,25 @@ fn decode_bitmap(
     d: &[u8],
     v: u16,
     lut: Option<&tracedraw_core::icc::CmykLut>,
+    scale: f64,
 ) -> Option<Result<(u32, BitmapDef), String>> {
     let h = bitmap_header(d, v)?;
     let (image_id, width, height, bpp) = (h.id, h.width, h.height, h.bpp);
-    if width == 0 || height == 0 || width > 32_768 || height > 32_768 {
+    if width == 0 || height == 0 {
+        return Some(Err(format!(
+            "bitmap {image_id}: size {width}x{height} rejected"
+        )));
+    }
+    // A scale under 1 samples the picture down as it is read, so a
+    // 1600 mm scan does not allocate its full RGBA first. Large sources
+    // are then allowed: the output is the smaller one.
+    let scale = if scale.is_finite() && scale > 0.0 {
+        scale.min(1.0)
+    } else {
+        1.0
+    };
+    let full = scale >= 1.0;
+    if full && (width > 32_768 || height > 32_768) {
         return Some(Err(format!(
             "bitmap {image_id}: size {width}x{height} rejected"
         )));
@@ -6388,68 +6782,184 @@ fn decode_bitmap(
         )));
     }
     let cmyk = h.model == BITMAP_CMYK && bpp == 32;
-    let mut rgba = Vec::with_capacity(width as usize * height as usize * 4);
+    let out_w = if full {
+        width
+    } else {
+        ((width as f64 * scale).ceil() as u32).clamp(1, width)
+    };
+    let out_h = if full {
+        height
+    } else {
+        ((height as f64 * scale).ceil() as u32).clamp(1, height)
+    };
+    let step_x = width as f64 / out_w as f64;
+    let step_y = height as f64 / out_h as f64;
+    let (w_out, h_out) = (out_w as usize, out_h as usize);
+    let total_px = w_out.checked_mul(h_out)?;
+    let mut rgba = vec![0u8; total_px.checked_mul(4)?];
     // A CMYK image's inks, plane after plane (cyan, magenta, yellow,
-    // black), for separations (#1659).
-    let plane = width as usize * height as usize;
-    let mut planes = if cmyk {
-        vec![0u8; plane * 4]
+    // black), for separations (#1659). Sampled pictures skip the planes.
+    let plane = (width as usize).checked_mul(height as usize)?;
+    let mut planes = if cmyk && full {
+        vec![0u8; plane.checked_mul(4)?]
     } else {
         Vec::new()
     };
-    for row in 0..height as usize {
-        // Bottom-up rows.
-        let src = &pixels[(height as usize - 1 - row) * stride..][..stride];
-        for x in 0..width as usize {
-            let px: [u8; 4] = match bpp {
-                32 if cmyk => {
-                    let ink = [src[x * 4], src[x * 4 + 1], src[x * 4 + 2], src[x * 4 + 3]];
-                    let at = row * width as usize + x;
-                    for (i, v) in ink.iter().enumerate() {
-                        if let Some(p) = planes.get_mut(i * plane + at) {
-                            *p = *v;
+    let xs: Vec<usize> = (0..w_out)
+        .map(|ox| if full { ox } else { (ox as f64 * step_x) as usize })
+        .collect();
+    let palette_ref = &palette[..];
+    let xs_ref = &xs[..];
+    let fill_band = |y_start: usize,
+                     band_rgba: &mut [u8],
+                     mut band_planes: Option<[&mut [u8]; 4]>| {
+        let row_bytes = w_out * 4;
+        let rows = band_rgba.len() / row_bytes;
+        let w_src = width as usize;
+        for local_y in 0..rows {
+            let oy = y_start + local_y;
+            let sy = if full { oy } else { (oy as f64 * step_y) as usize };
+            // Bottom-up rows.
+            let src = &pixels[(height as usize - 1 - sy) * stride..][..stride];
+            let dst_row = &mut band_rgba[local_y * row_bytes..(local_y + 1) * row_bytes];
+            for (ox, (&x, dst)) in xs_ref
+                .iter()
+                .zip(dst_row.chunks_exact_mut(4))
+                .enumerate()
+            {
+                let px: [u8; 4] = match bpp {
+                    32 if cmyk => {
+                        let ink = [src[x * 4], src[x * 4 + 1], src[x * 4 + 2], src[x * 4 + 3]];
+                        if let Some(planes) = band_planes.as_mut() {
+                            let at = local_y * w_src + ox;
+                            for (plane_slice, &v) in planes.iter_mut().zip(ink.iter()) {
+                                if let Some(p) = plane_slice.get_mut(at) {
+                                    *p = v;
+                                }
+                            }
+                        }
+                        cmyk_pixel(ink, lut)
+                    }
+                    32 => [src[x * 4 + 2], src[x * 4 + 1], src[x * 4], 255],
+                    24 => [src[x * 3 + 2], src[x * 3 + 1], src[x * 3], 255],
+                    8 => {
+                        let i = src[x] as usize;
+                        match palette_ref.get(i) {
+                            Some(c) => [c[0], c[1], c[2], 255],
+                            None => [src[x], src[x], src[x], 255],
                         }
                     }
-                    cmyk_pixel(ink, lut)
-                }
-                32 => [src[x * 4 + 2], src[x * 4 + 1], src[x * 4], 255],
-                24 => [src[x * 3 + 2], src[x * 3 + 1], src[x * 3], 255],
-                8 => {
-                    let i = src[x] as usize;
-                    match palette.get(i) {
-                        Some(c) => [c[0], c[1], c[2], 255],
-                        None => [src[x], src[x], src[x], 255],
-                    }
-                }
-                _ => {
-                    let bit = (src[x / 8] >> (7 - (x % 8))) & 1;
-                    match palette.get(bit as usize) {
-                        Some(c) => [c[0], c[1], c[2], 255],
-                        None => {
-                            let g = if bit == 0 { 0 } else { 255 };
-                            [g, g, g, 255]
+                    _ => {
+                        let bit = (src[x / 8] >> (7 - (x % 8))) & 1;
+                        match palette_ref.get(bit as usize) {
+                            Some(c) => [c[0], c[1], c[2], 255],
+                            None => {
+                                let g = if bit == 0 { 0 } else { 255 };
+                                [g, g, g, 255]
+                            }
                         }
                     }
+                };
+                dst.copy_from_slice(&px);
+            }
+        }
+    };
+    #[cfg(not(target_arch = "wasm32"))]
+    let bands = if total_px >= 4_000_000 && h_out >= 4 {
+        std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(4)
+            .clamp(4, 8)
+            .min(h_out)
+    } else {
+        1
+    };
+    #[cfg(target_arch = "wasm32")]
+    let bands = 1usize;
+    #[cfg(not(target_arch = "wasm32"))]
+    if bands > 1 {
+        let band_rows = h_out.div_ceil(bands);
+        let row_bytes = w_out * 4;
+        if cmyk && full {
+            let w_src = width as usize;
+            let (cp, rest) = planes.split_at_mut(plane);
+            let (mp, rest) = rest.split_at_mut(plane);
+            let (yp, kp) = rest.split_at_mut(plane);
+            std::thread::scope(|scope| {
+                for (bi, ((((r_band, c_band), m_band), y_band), k_band)) in rgba
+                    .chunks_mut(band_rows * row_bytes)
+                    .zip(cp.chunks_mut(band_rows * w_src))
+                    .zip(mp.chunks_mut(band_rows * w_src))
+                    .zip(yp.chunks_mut(band_rows * w_src))
+                    .zip(kp.chunks_mut(band_rows * w_src))
+                    .enumerate()
+                {
+                    let y0 = bi * band_rows;
+                    scope.spawn(move || {
+                        fill_band(y0, r_band, Some([c_band, m_band, y_band, k_band]));
+                    });
                 }
-            };
-            rgba.extend_from_slice(&px);
+            });
+        } else {
+            std::thread::scope(|scope| {
+                for (bi, r_band) in rgba.chunks_mut(band_rows * row_bytes).enumerate() {
+                    let y0 = bi * band_rows;
+                    scope.spawn(move || {
+                        fill_band(y0, r_band, None);
+                    });
+                }
+            });
+        }
+    } else if cmyk && full {
+        let (cp, rest) = planes.split_at_mut(plane);
+        let (mp, rest) = rest.split_at_mut(plane);
+        let (yp, kp) = rest.split_at_mut(plane);
+        fill_band(0, &mut rgba, Some([cp, mp, yp, kp]));
+    } else {
+        fill_band(0, &mut rgba, None);
+    }
+    #[cfg(target_arch = "wasm32")]
+    {
+        let _ = bands;
+        if cmyk && full {
+            let (cp, rest) = planes.split_at_mut(plane);
+            let (mp, rest) = rest.split_at_mut(plane);
+            let (yp, kp) = rest.split_at_mut(plane);
+            fill_band(0, &mut rgba, Some([cp, mp, yp, kp]));
+        } else {
+            fill_band(0, &mut rgba, None);
         }
     }
-    if let Some(alpha) = bitmap_mask(d, width, height) {
-        for (px, a) in rgba.chunks_exact_mut(4).zip(alpha) {
-            px[3] = a;
+    if full {
+        if let Some(alpha) = bitmap_mask(d, width, height) {
+            for (px, a) in rgba.chunks_exact_mut(4).zip(alpha) {
+                px[3] = a;
+            }
+        }
+    } else if let Some(alpha) = bitmap_mask(d, width, height) {
+        for oy in 0..out_h as usize {
+            let sy = (oy as f64 * step_y) as usize;
+            for ox in 0..out_w as usize {
+                let x = (ox as f64 * step_x) as usize;
+                let at = (oy * out_w as usize + ox) * 4 + 3;
+                if let Some(a) = alpha.get(sy * width as usize + x) {
+                    if let Some(slot) = rgba.get_mut(at) {
+                        *slot = *a;
+                    }
+                }
+            }
         }
     }
-    let png = encode_png(width, height, &rgba);
-    let inks = cmyk.then(|| {
+    let png = encode_png(out_w, out_h, &rgba);
+    let inks = (cmyk && full).then(|| {
         let planes = encode_gray_png(width, height.saturating_mul(4), &planes);
         tracedraw_core::picture_inks::PictureInks::cmyk(&png, planes.into())
     });
     Some(Ok((
         image_id,
         BitmapDef {
-            width_px: width,
-            height_px: height,
+            width_px: out_w,
+            height_px: out_h,
             png: png.into(),
             cmyk,
             inks,
@@ -7398,12 +7908,11 @@ fn radial_frame(d: &[u8]) -> Option<tracedraw_core::style::FountainHandles> {
 /// b, d, f; the offsets zero) in units of the object box's width and
 /// height from its centre, y upwards. The fill runs along the matrix's x
 /// axis `(a, b)`, from the centre less half of it (the first colour) to
-/// the centre plus half of it (the last); the bands run square to that
-/// axis in the object's own space, which `Ctx::read_object` works
-/// out when it places the fill on the object. As
+/// the centre plus half of it (the last); the bands run along its y axis
+/// `(c, d)`, which a skewed fill turns away from square (#1238). As
 /// [`FountainHandles`](tracedraw_core::style::FountainHandles) in the
-/// object's box (half sizes), the skew handle a placeholder; None when the
-/// tail is shorter or the axis has no length.
+/// object's box (half sizes), the skew handle one y axis from the start;
+/// None when the tail is shorter or the x axis has no length.
 fn linear_frame(d: &[u8]) -> Option<tracedraw_core::style::FountainHandles> {
     let f = |k: usize| {
         let b = d.get(8 * k..8 * k + 8)?;
@@ -7411,10 +7920,11 @@ fn linear_frame(d: &[u8]) -> Option<tracedraw_core::style::FountainHandles> {
         v.is_finite().then_some(v)
     };
     let (ox, oy, a, b) = (f(0)?, f(1)?, f(2)?, f(5)?);
-    // The matrix's other entries are read only to know the tail is whole.
-    f(3)?;
+    // The matrix's y axis: the way the bands run. One that is not a
+    // number counts as one of no length.
+    let (c, d2) = (f(3).unwrap_or(0.0), f(6).unwrap_or(0.0));
+    // The offsets are read only to know the tail is whole.
     f(4)?;
-    f(6)?;
     f(7)?;
     let len = a.hypot(b);
     if !(1e-6..=1e3).contains(&len) || ox.abs() > 1e3 || oy.abs() > 1e3 {
@@ -7423,10 +7933,16 @@ fn linear_frame(d: &[u8]) -> Option<tracedraw_core::style::FountainHandles> {
     // Half sizes: twice the box units.
     let start = Point::new(2.0 * ox - a, 2.0 * oy - b);
     let end = Point::new(2.0 * ox + a, 2.0 * oy + b);
+    // A y axis without length (not seen) leaves the bands square.
+    let along = if (1e-6..=1e3).contains(&c.hypot(d2)) {
+        (c, d2)
+    } else {
+        (-b, a)
+    };
     Some(tracedraw_core::style::FountainHandles {
         start,
         end,
-        skew: Point::new(start.x - b, start.y + a),
+        skew: Point::new(start.x + along.0, start.y + along.1),
     })
 }
 
@@ -8192,76 +8708,14 @@ fn spine_shift(width: f64, right: bool) -> f64 {
     }
 }
 
-/// What a break in the turns of a book's pages costs, in pages' worth of
-/// objects: more than one page whose objects reach across the spine can
-/// win (two breaks, in and out, cost three), less than the pages after a
-/// page the file lost or added, which all sit on the other side.
-const SIDE_BREAK: f64 = 1.5;
+/// The object data key marking a paragraph frame as part of a run of
+/// linked frames, "run:place" (the key a PDF import marks its frames
+/// with, so the app links both the same way).
+pub const FLOW_KEY: &str = "pdf.flow";
 
-/// The side of the spine each facing page sits on (true: right), from
-/// `shares`, each page's share of its objects that lands on it from the
-/// right and from the left. Pages take turns on the right and left, and
-/// the turns may break (two pages on one side running) where the pages
-/// after hold their objects better that way, each break costing
-/// [`SIDE_BREAK`]: the sides that put most objects on their pages for
-/// the fewest breaks (Viterbi's way through the pages). With no break
-/// worth it, this is the strict turns from the better start (#1660); a
-/// page the file lost or added in a long book no longer throws every
-/// page after it half a page across, onto the page beside it (#2833).
-/// On a tie the first page is on the right, and turns go on.
-fn facing_sides(shares: &[(f64, f64)]) -> Vec<bool> {
-    let n = shares.len();
-    if n == 0 {
-        return Vec::new();
-    }
-    // best[i][s]: the most score for pages 0..=i with page i on side s
-    // (0 right, 1 left); from[i][s]: page i - 1's side on that way.
-    let mut best = vec![[0.0f64; 2]; n];
-    let mut from = vec![[0usize; 2]; n];
-    let score = |i: usize, s: usize| if s == 0 { shares[i].0 } else { shares[i].1 };
-    // A tiny lean to the right for the first page and to taking turns,
-    // so equal ways keep the strict turns from the right.
-    const LEAN: f64 = 1e-9;
-    best[0] = [score(0, 0) + LEAN, score(0, 1)];
-    for i in 1..n {
-        for s in 0..2 {
-            let turn = best[i - 1][1 - s] + LEAN;
-            let stay = best[i - 1][s] - SIDE_BREAK;
-            let (b, f) = if turn >= stay {
-                (turn, 1 - s)
-            } else {
-                (stay, s)
-            };
-            best[i][s] = b + score(i, s);
-            from[i][s] = f;
-        }
-    }
-    let mut s = if best[n - 1][0] >= best[n - 1][1] {
-        0
-    } else {
-        1
-    };
-    let mut sides = vec![true; n];
-    for i in (0..n).rev() {
-        sides[i] = s == 0;
-        if i > 0 {
-            s = from[i][s];
-        }
-    }
-    sides
-}
-
-/// How many of the objects' centres moved `dx` across land on a page
-/// `width` across.
-fn centres_on_page(layers: &[Layer], width: f64, dx: f64) -> usize {
-    layers
-        .iter()
-        .flat_map(|l| l.shapes.iter())
-        .map(|s| s.bounds())
-        .filter(|b| b.x0.is_finite() && b.x1.is_finite())
-        .filter(|b| (0.0..=width).contains(&((b.x0 + b.x1) / 2.0 + dx)))
-        .count()
-}
+/// How far left of the spine (mm) an object's centre must be to belong to
+/// the left page of a spread: one sitting on the spine goes right.
+const SPINE_SLACK_MM: f64 = 0.01;
 
 /// A paragraph's line spacing, space before and after and indents from
 /// its resolved style, the values of `base` where it says nothing.
@@ -8314,7 +8768,13 @@ fn paragraph_spacing(style: &text::RunStyle, base: &ParagraphStyle) -> Paragraph
     }
     // Space before: the distance from the paragraph before, so only what
     // goes past the line spacing is extra room (100 % of the character
-    // height, the default, is none). Space after: all extra room.
+    // height, the default, is none). Space after in points: all extra
+    // room. In the character height, the larger of the space after and
+    // the space before parts two paragraphs: what the space after goes
+    // past the space before is extra room. Paragraphs of 160 % before
+    // and after, and verses of 150 % both, lie about half a character
+    // height apart in the program that saved them; added up they opened
+    // two character heights apart (#4162).
     if method <= 2 {
         let baseline_mm = p.line_step(line_mm, size_mm);
         if let Some(b) = style.para_before {
@@ -8330,6 +8790,11 @@ fn paragraph_spacing(style: &text::RunStyle, base: &ParagraphStyle) -> Paragraph
                 (method == 0 && b.is_finite()).then(|| (b * 100.0).clamp(0.0, 10000.0));
         }
         if let Some(a) = style.para_after {
+            let a = if method == 0 {
+                (a - style.para_before.unwrap_or(1.0).max(1.0)).max(0.0)
+            } else {
+                a
+            };
             p.space_after = to_mm(a).clamp(0.0, 1000.0);
             p.space_after_pct =
                 (method == 0 && a.is_finite()).then(|| (a * 100.0).clamp(0.0, 10000.0));
@@ -8569,13 +9034,28 @@ pub(crate) mod tests {
         let p = paragraph_spacing(&st, &ParagraphStyle::default());
         let line_mm = st.size_pt.unwrap_or(12.0) * 25.4 / 72.0 * 1.15;
         assert!((p.space_before - line_mm).abs() < 1e-9, "{p:?}");
-        assert!((p.space_after - line_mm / 2.0).abs() < 1e-9, "{p:?}");
+        // The space after is less than the space before: no more room
+        // (#4162).
+        assert_eq!(p.space_after, 0.0, "{p:?}");
         // Kept in percent of the character height too (#2613).
         assert_eq!(
             (p.space_before_pct, p.space_after_pct),
-            (Some(200.0), Some(50.0))
+            (Some(200.0), Some(0.0))
         );
         assert!((p.leading_pct - 120.0).abs() < 1e-9);
+        // A space after past the space before adds what goes past it;
+        // the same space before and after adds none (#4162).
+        let more = text::parse_style_string(
+            r#"{"paragraph":{"beforeParaSpacing":"1500000","afterParaSpacing":"2000000"}}"#,
+        );
+        let p = paragraph_spacing(&more, &ParagraphStyle::default());
+        assert!((p.space_after_pct.unwrap() - 50.0).abs() < 1e-9, "{p:?}");
+        let same = text::parse_style_string(
+            r#"{"paragraph":{"beforeParaSpacing":"1500000","afterParaSpacing":"1500000"}}"#,
+        );
+        let p = paragraph_spacing(&same, &ParagraphStyle::default());
+        assert_eq!(p.space_after_pct, Some(0.0), "{p:?}");
+        assert!((p.space_before_pct.unwrap() - 150.0).abs() < 1e-9, "{p:?}");
         // The defaults files hold: no extra room.
         let d = text::parse_style_string(
             r#"{"paragraph":{"beforeParaSpacing":"1000000","afterParaSpacing":"0"}}"#,
@@ -9023,6 +9503,33 @@ pub(crate) mod tests {
         for (r, g, b) in [(255, 0, 0), (0, 0, 255), (0, 255, 0), (255, 255, 255)] {
             body.extend(color_bgr(r, g, b));
         }
+        // #1238: a record marked 150 (a version 27 file) holds each
+        // colour in a sized record and 12 bytes after the last.
+        let sized = |colours: usize, size: u32| {
+            let lines = body.len() - 4 * 12 - 12;
+            let mut b = u32s(&[150]);
+            b.extend_from_slice(&body[4..lines]);
+            b.extend(u32s(&[150, 2, 2]));
+            for (r, g, bl) in [(255, 0, 0), (0, 0, 255), (0, 255, 0), (255, 255, 255)]
+                .into_iter()
+                .take(colours)
+            {
+                let mut rec = vec![1u8];
+                rec.extend(u32s(&[12]));
+                rec.extend(color_bgr(r, g, bl));
+                rec.push(7);
+                rec.extend(u32s(&[16]));
+                rec.resize(43, 0);
+                b.extend(u32s(&[size]));
+                b.extend(rec);
+            }
+            b.extend(u32s(&[1, 9, 5]));
+            let mut mesh = u32s(&[b.len() as u32 + 4]);
+            mesh.extend(b);
+            mesh
+        };
+        let (mesh_150, mesh_150_short, mesh_150_wide) =
+            (sized(4, 43), sized(3, 43), sized(4, u32::MAX));
         let mut mesh = u32s(&[body.len() as u32 + 4]);
         mesh.extend(body);
         // The coordinates' curve: a triangle far from the mesh.
@@ -9116,6 +9623,24 @@ pub(crate) mod tests {
         // Every shorter cut opens without a panic.
         for cut in 0..mesh.len() {
             let _ = doc_of(obj(mesh[..cut].to_vec()));
+        }
+        // The record marked 150 gives the same colours.
+        let (doc, rep) = doc_of(obj(mesh_150.clone()));
+        let Fill::Mesh(m150) = &first_shape(&doc).fill else {
+            panic!("{:?}", rep.warnings)
+        };
+        for (r, c) in [(0, 0), (0, 1), (1, 0), (1, 1)] {
+            assert_eq!(m150.node(r, c).map(|n| n.color), at(r, c).map(|n| n.1));
+        }
+        // One colour short, or a colour sized past the record: the curve
+        // with a warning, and no cut panics.
+        for bad in [mesh_150_short, mesh_150_wide] {
+            let (doc, rep) = doc_of(obj(bad));
+            assert!(rep.warnings.iter().any(|w| w.contains("mesh")));
+            assert!(!matches!(first_shape(&doc).fill, Fill::Mesh(_)));
+        }
+        for cut in 0..mesh_150.len() {
+            let _ = doc_of(obj(mesh_150[..cut].to_vec()));
         }
     }
 
@@ -10205,6 +10730,107 @@ pub(crate) mod tests {
         assert!((read(22, 20000.0) - 2.0).abs() < 1e-9);
     }
 
+    /// An object the file has paragraph text wrap round (arguments 13001
+    /// and 13000, a version 20 file of #4142) wraps it, with the room the
+    /// file keeps free; an object without them does not.
+    #[test]
+    fn text_wrap_round_an_object_is_read() {
+        let read = |wrap: Option<(u32, u32)>| {
+            let mut c = f64s(&[254000.0, 127000.0]);
+            c.extend_from_slice(&f64s(&[1.0, 1.0]));
+            c.extend_from_slice(&[0; 8]);
+            for gap in [16usize, 16, 16, 0] {
+                c.extend_from_slice(&f64s(&[0.0]));
+                c.extend_from_slice(&vec![0u8; gap]);
+            }
+            let mut args = vec![(ARG_COORDS, c)];
+            if let Some((style, offset)) = wrap {
+                args.push((ARG_WRAP_STYLE, style.to_le_bytes().to_vec()));
+                args.push((ARG_WRAP_OFFSET, offset.to_le_bytes().to_vec()));
+            }
+            let obj = list(
+                b"obj ",
+                &[
+                    chunk(b"loda", &loda(OBJ_RECT, &args)),
+                    chunk(b"trfd", &trfd(20, [1.0, 0.0, 0.0, 0.0, 1.0, 0.0])),
+                ]
+                .concat(),
+            );
+            let body = [
+                chunk(b"mcfg", &mcfg(20, 2_540_000, 2_540_000)),
+                list(b"page", &list(b"layr", &obj)),
+            ]
+            .concat();
+            let (doc, rep) = parse(&riff(b"CDRK", &body), 20);
+            assert_eq!(rep.shapes, 1, "{:?}", rep.warnings);
+            let s = first_shape(&doc);
+            (s.wrap_text, s.wrap_style)
+        };
+        let (on, style) = read(Some((1, 20000)));
+        assert!(on);
+        assert!((style.offset - 2.0).abs() < 1e-9, "{style:?}");
+        assert_eq!(style.side, tracedraw_core::text_flow::WrapSide::Straddle);
+        assert_eq!(style.mode, tracedraw_core::text_flow::WrapMode::Contour);
+        // 2 keeps to the outline on the object's left, 4 to the box
+        // (#4162).
+        let (_, two) = read(Some((2, 25400)));
+        assert_eq!(
+            (two.mode, two.side),
+            (
+                tracedraw_core::text_flow::WrapMode::Contour,
+                tracedraw_core::text_flow::WrapSide::Left
+            )
+        );
+        let (_, four) = read(Some((4, 14000)));
+        assert_eq!(four.mode, tracedraw_core::text_flow::WrapMode::Square);
+        assert!((four.offset - 1.4).abs() < 1e-9);
+        assert!(!read(None).0);
+        assert!(!read(Some((0, 20000))).0);
+    }
+
+    /// A radius the file gives as a length is the corner's size on the
+    /// page: a rectangle enlarged three times by its transform with its
+    /// 2 mm corners kept opens with 2 mm corners, not 6 mm ones, while a
+    /// radius given as a share grows with the rectangle (#4126).
+    #[test]
+    fn length_radii_keep_their_size_on_a_scaled_rectangle() {
+        let read = |raw: f64| {
+            let mut c = f64s(&[254000.0, 127000.0]);
+            c.extend_from_slice(&f64s(&[3.0, 3.0]));
+            c.push(1);
+            c.extend_from_slice(&[0; 7]);
+            for gap in [16usize, 16, 16, 0] {
+                c.extend_from_slice(&f64s(&[raw]));
+                c.extend_from_slice(&vec![0u8; gap]);
+            }
+            let obj = list(
+                b"obj ",
+                &[
+                    chunk(b"loda", &loda(OBJ_RECT, &[(ARG_COORDS, c)])),
+                    chunk(b"trfd", &trfd(22, [3.0, 0.0, 0.0, 0.0, 3.0, 0.0])),
+                ]
+                .concat(),
+            );
+            let body = [
+                chunk(b"mcfg", &mcfg(22, 2_540_000, 2_540_000)),
+                list(b"page", &list(b"layr", &obj)),
+            ]
+            .concat();
+            let (doc, rep) = parse(&riff(b"CDRM", &body), 22);
+            assert_eq!(rep.shapes, 1, "{:?}", rep.warnings);
+            let page = first_shape(&doc).page_corners().expect("a rectangle");
+            assert!(page.radii.iter().all(|r| (r - page.radii[0]).abs() < 1e-9));
+            page.radii[0]
+        };
+        // 20000 units: 2 mm on the page.
+        let got = read(20000.0);
+        assert!((got - 2.0).abs() < 1e-9, "{got}");
+        // A share of 0.4: 2.54 mm in the rectangle's own space, 7.62 mm
+        // on the page.
+        let got = read(0.4);
+        assert!((got - 7.62).abs() < 1e-9, "{got}");
+    }
+
     #[test]
     fn rectangle_radii_per_corner() {
         // Width, height, then four radii from the corner at (width, 0)
@@ -10336,16 +10962,20 @@ pub(crate) mod tests {
         }
     }
 
-    /// A book on facing pages (version 21, `mcfg` byte 26) opens in
-    /// spreads, each page's objects moved from the spine by the page's
-    /// place in them: the first page alone on the right, then left and
-    /// right. An object at the spine on the left page 2 stays at the
-    /// spine; the side holding more of its objects took it to the page's
-    /// far edge (#1660).
+    /// A book on facing pages (version 21, `mcfg` byte 26) keeps one
+    /// page record per spread, its objects measured from the spine: the
+    /// first record is page 1 alone on the right, each record after it a
+    /// left and a right page, and the last one the last page alone on the
+    /// left when nothing of it is on the right. Each record opens as its
+    /// pages, every object on its own page; read as one page per record,
+    /// a book of 248 pages opened as 125 with each spread's two pages on
+    /// top of each other (#4104).
     #[test]
-    fn a_book_on_facing_pages_opens_in_spreads() {
-        let rect = || {
-            let mut c = f64s(&[254000.0, 127000.0]);
+    fn a_book_on_facing_pages_opens_each_spread_as_two_pages() {
+        // A rectangle from the spine `x` mm across (left of it when
+        // negative), 10 mm high.
+        let square = |x: f64| {
+            let mut c = f64s(&[x * 10000.0, 100000.0]);
             c.extend_from_slice(&f64s(&[1.0, 1.0]));
             c.push(0);
             c.extend_from_slice(&[0; 7]);
@@ -10353,118 +10983,64 @@ pub(crate) mod tests {
                 c.extend_from_slice(&f64s(&[0.0]));
                 c.extend_from_slice(&vec![0u8; gap]);
             }
-            list(
-                b"page",
-                &list(
-                    b"layr",
-                    &list(
-                        b"obj ",
-                        &chunk(b"loda", &loda(OBJ_RECT, &[(ARG_COORDS, c)])),
-                    ),
-                ),
-            )
+            list(b"obj ", &chunk(b"loda", &loda(OBJ_RECT, &[(ARG_COORDS, c)])))
         };
-        let open = |facing: u8| {
+        let record = |xs: &[f64]| {
+            let objs: Vec<u8> = xs.iter().flat_map(|&x| square(x)).collect();
+            list(b"page", &list(b"layr", &objs))
+        };
+        let open = |facing: u8, records: &[Vec<u8>]| {
             // 100 x 150 mm pages.
             let mut m = mcfg(21, 1_000_000, 1_500_000);
             m.resize(32, 0);
             m[26] = facing;
-            let body = [chunk(b"mcfg", &m), rect(), rect(), rect()].concat();
-            let (doc, rep) = parse(&riff(b"CDRL", &body), 21);
-            assert_eq!(rep.shapes, 3, "{:?}", rep.warnings);
-            doc
+            let mut body = chunk(b"mcfg", &m);
+            for r in records {
+                body.extend_from_slice(r);
+            }
+            parse(&riff(b"CDRL", &body), 21).0
         };
-        let doc = open(1);
+        // Page 1 alone; pages 2 and 3; pages 4 and 5 (5 empty but there,
+        // as it is not the last); page 6 alone on the left.
+        let records = [
+            record(&[20.0]),
+            record(&[-80.0, 30.0]),
+            record(&[-50.0]),
+            record(&[-90.0]),
+        ];
+        let doc = open(1, &records);
         assert!(doc.metadata.facing_pages);
         assert!(doc.metadata.facing_start.is_right());
-        assert_eq!(doc.pages.len(), 3);
-        let left_of = |i: usize| doc.pages[i].layers[0].shapes[0].bounds().x0;
-        // Page 1 on the right of the spine: the rectangle at its left edge.
-        assert!(left_of(0).abs() < 1e-6, "{}", left_of(0));
-        // Page 2 on the left: at its right edge, the spine, reaching over.
-        assert!((left_of(1) - 100.0).abs() < 1e-6, "{}", left_of(1));
-        // Page 3 on the right again.
-        assert!(left_of(2).abs() < 1e-6, "{}", left_of(2));
-        // Without facing pages: single pages, objects from their centres.
-        let doc = open(0);
-        assert!(!doc.metadata.facing_pages);
-        let x0 = doc.pages[1].layers[0].shapes[0].bounds().x0;
-        assert!((x0 - 50.0).abs() < 1e-6, "{x0}");
-    }
-
-    /// The sides of facing pages: strict turns from the better start,
-    /// one page whose objects reach across the spine does not break them,
-    /// and a run of pages that all sit the other way (after a page the
-    /// file lost or added) does, once (#2833).
-    #[test]
-    fn facing_sides_take_turns_and_follow_a_lost_page() {
-        let r = (1.0, 0.0);
-        let l = (0.0, 1.0);
-        let e = (0.0, 0.0);
-        assert_eq!(facing_sides(&[r, l, r, l]), vec![true, false, true, false]);
-        assert_eq!(facing_sides(&[l, r, l]), vec![false, true, false]);
-        // Nothing to go by: from the right.
-        assert_eq!(facing_sides(&[e, e, e]), vec![true, false, true]);
-        // Page 3 reads the wrong way: it keeps its turn.
-        assert_eq!(
-            facing_sides(&[r, l, l, l, r, l]),
-            vec![true, false, true, false, true, false]
-        );
-        // From page 4 every page sits the other way: one break.
-        assert_eq!(
-            facing_sides(&[r, l, r, r, l, r, l]),
-            vec![true, false, true, true, false, true, false]
-        );
-    }
-
-    /// A book of 300 facing pages (#2833, a 1 GB file of almost 300
-    /// pages whose pages overlapped): from page 151 on, the pages sit on
-    /// the other side of the spine than strict turns from the first page
-    /// give, as when the file holds one page more or less there. Every
-    /// page's object lands on its own page; page 11, whose object reads
-    /// from the wrong side, keeps its turn.
-    #[test]
-    fn a_long_book_whose_turns_break_keeps_every_page_on_its_side() {
-        // A 25.4 mm square from the spine, to the right or the left.
-        let page = |right: bool| {
-            let w = if right { 254000.0 } else { -254000.0 };
-            let mut c = f64s(&[w, 127000.0]);
-            c.extend_from_slice(&f64s(&[1.0, 1.0]));
-            c.push(0);
-            c.extend_from_slice(&[0; 7]);
-            for gap in [16usize, 16, 16, 0] {
-                c.extend_from_slice(&f64s(&[0.0]));
-                c.extend_from_slice(&vec![0u8; gap]);
-            }
-            list(
-                b"page",
-                &list(
-                    b"layr",
-                    &list(
-                        b"obj ",
-                        &chunk(b"loda", &loda(OBJ_RECT, &[(ARG_COORDS, c)])),
-                    ),
-                ),
-            )
+        assert_eq!(doc.pages.len(), 6);
+        let lefts = |i: usize| -> Vec<f64> {
+            doc.pages[i]
+                .layers
+                .iter()
+                .flat_map(|l| &l.shapes)
+                .map(|s| (s.bounds().x0 * 10.0).round() / 10.0)
+                .collect()
         };
-        let true_side = |i: usize| if i < 150 { i % 2 == 0 } else { i % 2 == 1 };
-        let mut m = mcfg(21, 1_000_000, 1_500_000);
-        m.resize(32, 0);
-        m[26] = 1;
-        let mut body = chunk(b"mcfg", &m);
-        for i in 0..300 {
-            // Page 11's object is drawn from the other side.
-            let right = if i == 10 { !true_side(i) } else { true_side(i) };
-            body.extend_from_slice(&page(right));
-        }
-        let (doc, rep) = parse(&riff(b"CDRL", &body), 21);
-        assert_eq!(doc.pages.len(), 300, "{:?}", rep.warnings);
-        assert!(doc.metadata.facing_pages);
-        for (i, p) in doc.pages.iter().enumerate() {
-            let b = p.layers[0].shapes[0].bounds();
-            let on = b.x0 >= -1e-6 && b.x1 <= 100.0 + 1e-6;
-            assert_eq!(on, i != 10, "page {}: {:?}", i + 1, b);
-        }
+        // From each page's left edge: right pages start at the spine,
+        // left pages end at it.
+        assert_eq!(lefts(0), vec![0.0]);
+        assert_eq!(lefts(1), vec![20.0]);
+        assert_eq!(lefts(2), vec![0.0]);
+        assert_eq!(lefts(3), vec![50.0]);
+        assert!(lefts(4).is_empty());
+        assert_eq!(lefts(5), vec![10.0]);
+        let ids: std::collections::HashSet<_> = doc.pages.iter().map(|p| p.id).collect();
+        assert_eq!(ids.len(), 6, "every page its own id");
+        // A book starting on the left: its first record is a spread.
+        let doc = open(1, &[record(&[-80.0, 30.0]), record(&[-50.0, 10.0])]);
+        assert!(!doc.metadata.facing_start.is_right());
+        assert_eq!(doc.pages.len(), 4);
+        // Without facing pages: one page per record, objects from their
+        // centres.
+        let doc = open(0, &records);
+        assert!(!doc.metadata.facing_pages);
+        assert_eq!(doc.pages.len(), 4);
+        let x0 = doc.pages[0].layers[0].shapes[0].bounds().x0;
+        assert!((x0 - 50.0).abs() < 1e-6, "{x0}");
     }
 
     #[test]
@@ -10664,6 +11240,48 @@ pub(crate) mod tests {
         assert_eq!(doc.pages.len(), 1, "{:?}", rep.warnings);
         assert_eq!(doc.pages[0].layers[0].name, "Ink");
         assert_eq!(doc.pages[0].layers[0].shapes.len(), 1);
+    }
+
+    /// Artwork on a page's guides layer (#4331): the layer opens visible,
+    /// as the file shows it, and does not print; an empty guides layer
+    /// is left out as before.
+    #[test]
+    fn artwork_on_the_guides_layer_shows() {
+        let rect_obj = list(
+            b"obj ",
+            &chunk(
+                b"loda",
+                &loda(OBJ_RECT, &[(ARG_COORDS, i32s(&[254000, 254000, 0]))]),
+            ),
+        );
+        let layer = |flags: [u8; 4], objs: &[u8]| {
+            list(b"layr", &[chunk(b"flgs", &flags), objs.to_vec()].concat())
+        };
+        let page = list(
+            b"page",
+            &[
+                chunk(b"flgs", &[0, 0, 0, 0x90]),
+                list(
+                    b"gobj",
+                    &[
+                        layer([0x0a, 0, 0, 0x98], &rect_obj),
+                        layer([0, 0, 0, 0x98], &rect_obj),
+                    ]
+                    .concat(),
+                ),
+            ]
+            .concat(),
+        );
+        let body = [chunk(b"mcfg", &mcfg(12, 2_100_000, 2_970_000)), page].concat();
+        let (doc, rep) = parse(&riff(b"CDRC", &body), 12);
+        let layers = &doc.pages[0].layers;
+        assert_eq!(layers.len(), 2, "{:?}", rep.warnings);
+        let guides = layers
+            .iter()
+            .find(|l| !l.printable)
+            .expect("the guides layer is kept");
+        assert_eq!(guides.shapes.len(), 1);
+        assert!(guides.visible, "artwork on the guides layer shows");
     }
 
     /// Objects on the master page's desktop layer and guidelines on its
@@ -10990,7 +11608,7 @@ pub(crate) mod tests {
         let ink: Vec<u8> = (0..100u8).map(|i| i | 1).collect();
         bmp.splice(40..40, ink);
         bmp[20..24].copy_from_slice(&(32u32 + 100).to_le_bytes());
-        match decode_bitmap(&bmp, 20, None) {
+        match decode_bitmap(&bmp, 20, None, 1.0) {
             Some(Ok((id, def))) => {
                 assert_eq!(id, 34);
                 assert_eq!((def.width_px, def.height_px), (2, 2));
@@ -11194,6 +11812,36 @@ pub(crate) mod tests {
         let (doc, _) =
             parse_document_with(&tree, &riff(b"CDRD", &body), Version(13), Some(b"junk"));
         assert!(matches!(first_shape(&doc).kind, ShapeKind::Bitmap { .. }));
+    }
+
+    #[test]
+    fn large_cmyk_bitmap_decodes_in_bands_with_inks_intact() {
+        let (w, h): (u32, u32) = (2000, 2001);
+        let byte_len = w as usize * h as usize * 4;
+        let mut bmp = u32s(&[99]);
+        bmp.extend_from_slice(&[0; 50]);
+        bmp.extend_from_slice(&u32s(&[BITMAP_CMYK, 0, w, h, 0, 32, 0, byte_len as u32]));
+        bmp.extend_from_slice(&[0; 32]);
+        let mut pixels = vec![0u8; byte_len];
+        pixels[0..4].copy_from_slice(&[255, 0, 0, 0]);
+        let top_last = ((h as usize - 1) * w as usize + (w as usize - 1)) * 4;
+        pixels[top_last..top_last + 4].copy_from_slice(&[0, 255, 0, 0]);
+        bmp.extend_from_slice(&pixels);
+        let lut = tracedraw_core::icc::CmykLut::with_points(3, |[c, m, _, k]| {
+            Some([(1.0 - c) * (1.0 - k), (1.0 - m) * (1.0 - k), 1.0 - k])
+        })
+        .unwrap();
+        let (_, def) = decode_bitmap(&bmp, 13, Some(&lut), 1.0)
+            .expect("header")
+            .expect("decoded");
+        assert_eq!((def.width_px, def.height_px), (w, h));
+        let inks = def.inks.as_ref().expect("inks kept");
+        assert!(inks.fits(&def.png));
+        let pm = tiny_skia::Pixmap::decode_png(&def.png).expect("png");
+        let top = pm.pixel(w - 1, 0).expect("top").demultiply();
+        assert_eq!([top.red(), top.green(), top.blue()], [255, 0, 255]);
+        let bot = pm.pixel(0, h - 1).expect("bot").demultiply();
+        assert_eq!([bot.red(), bot.green(), bot.blue()], [0, 255, 255]);
     }
 
     #[test]
@@ -11468,6 +12116,36 @@ pub(crate) mod tests {
             // Two columns, the gutter after the first (zero here).
             assert_eq!(txsm.columns.map(|c| c.0), Some(2), "{v}");
         }
+    }
+
+    /// An empty text object in a version 10 file (#4330): a text with no
+    /// text record and one whose record holds no letters are not counted
+    /// as objects that could not be read.
+    #[test]
+    fn an_empty_text_is_not_an_unread_object() {
+        let obj = list(
+            b"obj ",
+            &chunk(
+                b"loda",
+                &loda(OBJ_ARTISTIC_TEXT, &[(ARG_COORDS, i32s(&[0, 0]))]),
+            ),
+        );
+        let body = [
+            chunk(b"mcfg", &mcfg(10, 2_540_000, 2_540_000)),
+            list(b"page", &list(b"layr", &obj)),
+        ]
+        .concat();
+        let (_, rep) = parse(&riff(b"CDRA", &body), 10);
+        assert_eq!(rep.skipped_objects, 0, "{:?}", rep.warnings);
+        let (_, rep) = text_doc(
+            12,
+            b"CDRC",
+            Vec::new(),
+            OBJ_ARTISTIC_TEXT,
+            &[(ARG_COORDS, i32s(&[0, 0]))],
+            txsm7(12, false, &[], ""),
+        );
+        assert_eq!(rep.skipped_objects, 0, "{:?}", rep.warnings);
     }
 
     fn text_doc(
@@ -13667,7 +14345,10 @@ pub(crate) mod tests {
                 assert_eq!(spans[0].tracking_pct, 0.0);
                 // The distance in points: 1.5 times 1.15 times 36 pt.
                 assert_eq!(para.leading_unit, LeadingUnit::Points);
-                assert!((para.leading_pct - 36.0 * 1.15 * 1.5).abs() < 1e-3, "{para:?}");
+                assert!(
+                    (para.leading_pct - 36.0 * 1.15 * 1.5).abs() < 1e-3,
+                    "{para:?}"
+                );
             }
             other => panic!("{other:?}"),
         }
@@ -13995,8 +14676,10 @@ pub(crate) mod tests {
         }
     }
 
+    /// A text object with no text record holds no letters: nothing is
+    /// drawn and nothing counts as unread (#4330).
     #[test]
-    fn text_object_without_txsm_is_skipped_with_a_warning() {
+    fn text_object_without_txsm_draws_nothing() {
         let obj = list(
             b"obj ",
             &chunk(
@@ -14011,8 +14694,7 @@ pub(crate) mod tests {
         .concat();
         let (_, rep) = parse(&riff(b"CDRD", &body), 13);
         assert_eq!(rep.shapes, 0);
-        assert_eq!(rep.skipped_objects, 1);
-        assert!(rep.warnings.iter().any(|w| w.contains("txsm")));
+        assert_eq!(rep.skipped_objects, 0, "{:?}", rep.warnings);
     }
 
     // Fills: bitmaps, textures, pattern tiles, version 16 fountain transform.
@@ -15962,10 +16644,10 @@ pub(crate) mod tests {
         );
     }
 
-    /// #2515: a transparency set on a clip container is the whole
-    /// container's. The clip frame read from it takes the amount and the
-    /// mask; they stayed on the frame inside, where the amount is not
-    /// drawn, so a picture in a see-through container opened opaque.
+    /// #2515, #4360: a transparency set on a clip container is shown on
+    /// the clip frame, and fades the frame's fill and outline while the
+    /// objects inside keep their own opacity; a graded one stays on the
+    /// frame inside.
     #[test]
     fn a_clip_containers_transparency_is_the_clip_frames() {
         use tracedraw_core::live::Effect;
@@ -16019,6 +16701,8 @@ pub(crate) mod tests {
         assert!((frame.opacity - 0.1).abs() < 1e-9, "{}", frame.opacity);
         assert_eq!(contents.len(), 1);
         assert_eq!(contents[0].opacity, 1.0);
+        // The objects inside are not faded with it (#4360).
+        assert!(clip.clip_contents_opaque());
 
         // The amount held in the record of argument 8000 (#1706).
         let bare = style_of(r#"{"transparency":{"fill":{"type":"1"}}}"#);
@@ -16037,8 +16721,8 @@ pub(crate) mod tests {
         let ShapeKind::ClipFrame { frame, .. } = &clip.kind else {
             panic!("not a clip frame: {:?}", clip.kind);
         };
-        assert_eq!(masks(&clip), 1, "{:?}", clip.effects);
-        assert_eq!(masks(frame), 0, "{:?}", frame.effects);
+        assert_eq!(masks(&clip), 0, "{:?}", clip.effects);
+        assert_eq!(masks(frame), 1, "{:?}", frame.effects);
 
         // A container with no transparency stays opaque.
         let plain = style_of(r#"{"fill":{"type":"0"}}"#);
@@ -17527,13 +18211,28 @@ pub(crate) mod tests {
         assert!((t(3.0, 2.5) - 0.5).abs() < 1e-9, "{}", t(3.0, 2.5));
         assert!((f.angle - 90.0).abs() < 1e-9, "{}", f.angle);
         // Along the box's diagonal, (0.5, 0.5) in box units: on the
-        // object the axis runs (10, 5) mm and the bands square to it.
+        // object the axis runs (10, 5) mm. The bands run along the
+        // frame's other axis, (-0.5, 0.5) in box units, (-10, 5) mm on
+        // the object, which is not square to the first on a box that is
+        // not square (#1238).
         let (f, b) = read(fill(&[0.0, 0.0, 0.5, -0.5, 0.0, 0.5, 0.5, 0.0]));
         let t = |x: f64, y: f64| f.param_at(b, Point::new(c + x, c + y)).expect("a frame");
         assert!((t(10.0, 5.0) - 0.5).abs() < 1e-9);
         assert!((t(15.0, 7.5) - 1.0).abs() < 1e-9, "{}", t(15.0, 7.5));
-        // (1, -2) is square to (10, 5).
-        assert!((t(11.0, 3.0) - 0.5).abs() < 1e-9, "{}", t(11.0, 3.0));
+        assert!((t(8.0, 6.0) - 0.5).abs() < 1e-9, "{}", t(8.0, 6.0));
+        // #1238: a skewed fill. The same axis with the other one lying
+        // along the box's width: the bands are level.
+        let (f, b) = read(fill(&[0.0, 0.0, 0.5, -0.5, 0.0, 0.5, 0.0, 0.0]));
+        let t = |x: f64, y: f64| f.param_at(b, Point::new(c + x, c + y)).expect("a frame");
+        assert!((t(10.0, 5.0) - 0.5).abs() < 1e-9);
+        assert!((t(2.0, 5.0) - 0.5).abs() < 1e-9, "{}", t(2.0, 5.0));
+        assert!((t(15.0, 7.5) - 1.0).abs() < 1e-9, "{}", t(15.0, 7.5));
+        // A second axis of no length, or not a number, falls back to
+        // bands square to the first in box units.
+        for bad in [0.0, f64::NAN, f64::INFINITY] {
+            let (f, _) = read(fill(&[0.0, 0.0, 0.5, bad, 0.0, 0.5, bad, 0.0]));
+            assert!(f.handles.is_some(), "{f:?}");
+        }
         // A tail of four values, or an axis of no length, keeps the angle
         // and the edge pad.
         for tail in [
@@ -17720,6 +18419,109 @@ pub(crate) mod tests {
         assert!((s.opacity - 0.8).abs() < 1e-9, "{}", s.opacity);
     }
 
+    /// #1238 (a version 27 drawing of a car): a transparency taken off
+    /// leaves its section in the style string with fill type 0 and the
+    /// old amounts, and no transparency argument; the lamps and the
+    /// grille opened see-through or gone. And the section's `mode` is
+    /// the merge mode, which opened as Normal with a warning, so the
+    /// highlights and shades lay over the paint as flat patches.
+    #[test]
+    fn style_string_transparency_taken_off_and_merge_modes() {
+        use tracedraw_core::live::{Effect, MergeMode};
+        let rect = |style: &str, op: Option<Vec<u8>>| {
+            let style = [u32s(&[1, style.len() as u32]), style.as_bytes().to_vec()].concat();
+            let mut args = vec![
+                (ARG_STYLE_STRING, style),
+                (ARG_COORDS, f64s(&[254_000.0, 254_000.0, 1.0, 1.0])),
+            ];
+            if let Some(op) = op {
+                args.insert(0, (ARG_OPACITY, op));
+            }
+            let body = [
+                chunk(b"mcfg", &mcfg(27, 2_540_000, 2_540_000)),
+                list(
+                    b"page",
+                    &list(
+                        b"layr",
+                        &list(b"obj ", &chunk(b"loda", &loda(OBJ_RECT, &args))),
+                    ),
+                ),
+            ]
+            .concat();
+            let (doc, rep) = parse(&riff(b"CDRR", &body), 27);
+            assert_eq!(rep.shapes, 1, "{:?}", rep.warnings);
+            (first_shape(&doc).clone(), rep)
+        };
+        let style = |ty: u8, amount: &str, mode: u8| {
+            format!(
+                r#"{{"transparency":{{"fill":{{"type":"{ty}"}},"uniformTransparency":"{amount}","mode":"{mode}"}}}}"#
+            )
+        };
+        // Taken off: solid, whatever amount and mode were left behind.
+        let (s, rep) = rect(&style(0, "1", 9), None);
+        assert_eq!(s.opacity, 1.0);
+        assert!(s.effects.is_empty(), "{:?}", s.effects);
+        assert!(rep.warnings.is_empty(), "{:?}", rep.warnings);
+        // The same section with the argument is a transparency.
+        let (s, _) = rect(
+            &style(0, "0.3", 0),
+            Some(transparency_record_v16(0, 30.0, 1)),
+        );
+        assert!((s.opacity - 0.7).abs() < 1e-9, "{}", s.opacity);
+        // And type 1 without the argument is one too.
+        let (s, _) = rect(&style(1, "0.3", 0), None);
+        assert!((s.opacity - 0.7).abs() < 1e-9, "{}", s.opacity);
+        // The merge modes seen, each a mask of the opacity so merged.
+        for (code, mode) in [
+            (7, MergeMode::Add),
+            (8, MergeMode::Subtract),
+            (9, MergeMode::Multiply),
+            (29, MergeMode::Overlay),
+        ] {
+            let (s, rep) = rect(
+                &style(1, "0.5", code),
+                Some(transparency_record_v16(0, 50.0, 1)),
+            );
+            assert!(rep.warnings.is_empty(), "{code}: {:?}", rep.warnings);
+            assert_eq!(s.opacity, 1.0, "{code}");
+            match s.effects.as_slice() {
+                [Effect::Transparency {
+                    mask: Fill::Solid(Color::Gray { v }),
+                    merge,
+                    ..
+                }] => {
+                    assert_eq!(*merge, mode, "{code}");
+                    assert!((v - 0.5).abs() < 1e-6, "{code}: {v}");
+                }
+                other => panic!("{code}: {other:?}"),
+            }
+        }
+        // A merge mode on an object that hides nothing still merges.
+        let (s, _) = rect(&style(1, "0", 9), Some(transparency_record_v16(0, 0.0, 1)));
+        assert!(
+            matches!(
+                s.effects.as_slice(),
+                [Effect::Transparency {
+                    merge: MergeMode::Multiply,
+                    ..
+                }]
+            ),
+            "{:?}",
+            s.effects
+        );
+        // A code outside the table: Normal, named in a warning.
+        let (s, rep) = rect(
+            &style(1, "0.5", 99),
+            Some(transparency_record_v16(0, 50.0, 1)),
+        );
+        assert!((s.opacity - 0.5).abs() < 1e-9, "{}", s.opacity);
+        assert!(
+            rep.warnings.iter().any(|w| w.contains("merge mode 99")),
+            "{:?}",
+            rep.warnings
+        );
+    }
+
     /// #3095: a fountain transparency in a version 18 file, each kind
     /// (linear, radial, conical, square), with nodes in greys, in another
     /// model, or not given in the style string at all (then the record's
@@ -17800,7 +18602,11 @@ pub(crate) mod tests {
         assert_eq!(s.opacity, 1.0);
         let f = mask(&s).unwrap_or_else(|| panic!("{:?}", s.effects));
         assert_eq!(f.stops.len(), 3, "{:?}", f.stops);
-        assert!((grey(f.stops[1].color) - 128.0 / 255.0).abs() < 0.02, "{:?}", f.stops);
+        assert!(
+            (grey(f.stops[1].color) - 128.0 / 255.0).abs() < 0.02,
+            "{:?}",
+            f.stops
+        );
     }
 
     /// #2960: an object's vector pattern transparency read from its

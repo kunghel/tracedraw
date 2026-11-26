@@ -5,6 +5,7 @@
 //! the right, the help button at the bottom left, OK and Cancel at the
 //! bottom right. Cancel puts back what the dialog changed.
 
+use crate::ui::btn_icons::IconUi;
 use crate::app::{App, Units};
 use crate::i18n::{tr, trf};
 use crate::settings::{AutoCenter, HandleSize, NodeShape, NodeSize, Startup};
@@ -44,6 +45,7 @@ pub enum OptionsPage {
     Appearance,
     Commands,
     CommandBars,
+    ContextMenus,
     ColorPalette,
     // Tools > Options > Tools.
     Pick,
@@ -128,7 +130,13 @@ impl OptionsSet {
                 Save,
                 Text,
             ],
-            OptionsSet::Customization => &[Appearance, CommandBars, Commands, ColorPalette],
+            OptionsSet::Customization => &[
+                Appearance,
+                CommandBars,
+                Commands,
+                ContextMenus,
+                ColorPalette,
+            ],
             OptionsSet::Tools => &[
                 Pick,
                 Eraser,
@@ -230,6 +238,7 @@ impl OptionsPage {
             Appearance => "options.appearance",
             Commands => "options.commands",
             CommandBars => "options.command_bars",
+            ContextMenus => "options.context_menus",
             ColorPalette => "options.color_palette",
             Pick => "tool.pick",
             ZoomPan => "options.zoom_pan",
@@ -473,28 +482,41 @@ pub fn options_dialog(app: &mut App, ctx: &Context, close: &mut bool) {
         app.settings.spelling.dictionary_folder = Some(dir);
     }
     let set = app.options_page.set();
+    let width = if app.options_page == OptionsPage::ContextMenus {
+        (ctx.content_rect().width() - 16.0).clamp(200.0, 887.0)
+    } else {
+        887.0
+    };
+    let compact = width < 887.0;
     let mut ok = false;
     let mut cancel = false;
     let x_closed = chrome::dialog(
         ctx,
         "options_dialog",
         &set.title(),
-        egui::vec2(887.0, 663.0 + TABS_H),
+        egui::vec2(width, 663.0 + TABS_H),
         |ui| {
             let body = ui.max_rect();
+            let content_width = if compact { body.width() - 28.0 } else { 859.0 };
             let tabs = egui::Rect::from_min_size(
                 body.min + egui::vec2(14.0, 8.0),
-                egui::vec2(859.0, TABS_H - 6.0),
+                egui::vec2(content_width, TABS_H - 6.0),
             );
-            set_tabs(app, ui, tabs, set);
-            let top = 10.0 + TABS_H;
+            let tabs_height = set_tabs(app, ui, tabs, set, compact);
+            let top = 10.0 + TABS_H + (tabs_height - (TABS_H - 6.0));
+            let page_height = 566.0 - (top - (10.0 + TABS_H));
+            let list_width = if compact {
+                (content_width * 0.26).clamp(150.0, 225.0)
+            } else {
+                225.0
+            };
             let list = egui::Rect::from_min_size(
                 body.min + egui::vec2(14.0, top),
-                egui::vec2(225.0, 566.0),
+                egui::vec2(list_width, page_height),
             );
             let page = egui::Rect::from_min_size(
-                body.min + egui::vec2(251.0, top),
-                egui::vec2(622.0, 566.0),
+                body.min + egui::vec2(14.0 + list_width + 12.0, top),
+                egui::vec2(content_width - list_width - 12.0, page_height),
             );
             page_list(app, ui, list, set);
             ui.scope_builder(egui::UiBuilder::new().max_rect(page), |ui| {
@@ -529,8 +551,8 @@ pub fn options_dialog(app: &mut App, ctx: &Context, close: &mut bool) {
                     });
             });
             let buttons = egui::Rect::from_min_size(
-                body.min + egui::vec2(14.0, top + 566.0 + 15.0),
-                egui::vec2(859.0, 27.0),
+                body.min + egui::vec2(14.0, top + page_height + 15.0),
+                egui::vec2(content_width, 27.0),
             );
             ui.scope_builder(egui::UiBuilder::new().max_rect(buttons), |ui| {
                 ui.horizontal(|ui| {
@@ -545,7 +567,7 @@ pub fn options_dialog(app: &mut App, ctx: &Context, close: &mut bool) {
                         && ui
                             .add_sized(
                                 [150.0, 27.0],
-                                egui::Button::new(tr("options.save_as_default")),
+                                crate::ui::btn_icons::Ib::new("options.save_as_default"),
                             )
                             .rich_tip(crate::ui::tips::keyed("options.save_as_default"))
                             .clicked()
@@ -554,11 +576,17 @@ pub fn options_dialog(app: &mut App, ctx: &Context, close: &mut bool) {
                     }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         // The buttons bring their own tips (#2367).
-                        if chrome::button(ui, &tr("dialog.cancel")).clicked() {
+                        let cancel_button = chrome::button(ui, &tr("dialog.cancel"));
+                        #[cfg(test)]
+                        remember_dialog_control(ui, "cancel", &cancel_button);
+                        if cancel_button.clicked() {
                             cancel = true;
                         }
                         ui.add_space(5.0);
-                        if chrome::button(ui, &tr("dialog.ok")).clicked() {
+                        let ok_button = chrome::button(ui, &tr("dialog.ok"));
+                        #[cfg(test)]
+                        remember_dialog_control(ui, "ok", &ok_button);
+                        if ok_button.clicked() {
                             ok = true;
                         }
                     });
@@ -594,6 +622,16 @@ pub(crate) fn save_as_default(app: &mut App) {
     app.status = tr("status.settings_saved");
 }
 
+#[cfg(test)]
+fn remember_dialog_control(ui: &Ui, key: &str, response: &egui::Response) {
+    ui.ctx().data_mut(|data| {
+        data.insert_temp(
+            egui::Id::new(("options_dialog_test_control", key)),
+            (response.rect, ui.clip_rect()),
+        );
+    });
+}
+
 /// How far the page drawn last reached past the right edge of its
 /// panel (for tests).
 #[cfg(test)]
@@ -607,12 +645,12 @@ const TABS_H: f32 = 32.0;
 /// The tabs along the top: one per set of pages (Document Setup while
 /// a drawing is open), the current one selected. A tab opens the page of
 /// its set shown last, else its first page (#633).
-fn set_tabs(app: &mut App, ui: &mut Ui, rect: egui::Rect, set: OptionsSet) {
+fn set_tabs(app: &mut App, ui: &mut Ui, rect: egui::Rect, set: OptionsSet, wrap: bool) -> f32 {
     let last = |s: OptionsSet| egui::Id::new(("options_last_page", s as u8));
     let page = app.options_page;
     ui.ctx().data_mut(|d| d.insert_temp(last(set), page));
-    ui.scope_builder(egui::UiBuilder::new().max_rect(rect), |ui| {
-        ui.horizontal(|ui| {
+    let rows = ui.scope_builder(egui::UiBuilder::new().max_rect(rect), |ui| {
+        let add_tabs = |ui: &mut Ui| {
             for s in OptionsSet::ALL {
                 if s == OptionsSet::Document && !app.has_document() {
                     continue;
@@ -631,13 +669,24 @@ fn set_tabs(app: &mut App, ui: &mut Ui, rect: egui::Rect, set: OptionsSet) {
                         .unwrap_or_default();
                 }
             }
-        });
+        };
+        if wrap {
+            ui.horizontal_wrapped(add_tabs)
+        } else {
+            ui.horizontal(add_tabs)
+        }
     });
+    let bottom = if wrap {
+        rows.inner.response.rect.bottom().max(rect.bottom())
+    } else {
+        rect.bottom()
+    };
     ui.painter().hline(
         rect.x_range(),
-        rect.bottom() + 2.0,
+        bottom + 2.0,
         egui::Stroke::new(1.0, crate::theme::Tokens::border()),
     );
+    bottom - rect.top()
 }
 
 /// Where the tab of `set` was drawn last (for tests).
@@ -728,6 +777,7 @@ fn draw_page(app: &mut App, ui: &mut Ui) {
         Appearance => appearance_page(app, ui),
         Commands => commands_page(app, ui),
         CommandBars => command_bars_page(app, ui),
+        ContextMenus => crate::ui::context_menu_editor::show(app, ui),
         ColorPalette => color_palette_page(app, ui),
         Pick => pick_page(app, ui),
         ZoomPan => zoom_pan_page(app, ui),
@@ -1096,6 +1146,22 @@ fn general_page(app: &mut App, ui: &mut Ui) {
         if DesktopOnly::Splash.shown() {
             ui.checkbox(&mut app.settings.show_splash, tr("options.show_splash"))
                 .rich_tip(crate::ui::tips::keyed("options.show_splash"));
+            // How long the splash stays up at least, so its name and
+            // version can be read (#4340); 0 by default, as before.
+            ui.add_enabled_ui(app.settings.show_splash, |ui| {
+                ui.horizontal(|ui| {
+                    ui.add_space(24.0);
+                    ui.label(tr("options.splash_seconds"));
+                    ui.add(
+                        egui::DragValue::new(&mut app.settings.splash_seconds)
+                            .range(0.0..=crate::settings::SPLASH_MAX_SECONDS)
+                            .speed(0.1)
+                            .max_decimals(1)
+                            .suffix(" s"),
+                    )
+                    .rich_tip(crate::ui::tips::keyed("options.splash_seconds"));
+                });
+            });
         }
         ui.checkbox(&mut app.settings.tracecut.show, tr("options.show_tracecut"))
             .rich_tip(crate::ui::tips::keyed("options.show_tracecut"));
@@ -1198,7 +1264,7 @@ fn hardware_acceleration(app: &mut App, ui: &mut Ui) {
     dim(ui, tr("options.restart_to_apply"));
     // How fast this computer is, with this setting and the other one.
     if ui
-        .button(tr("menu.help.benchmark"))
+        .ibutton("menu.help.benchmark")
         .rich_tip(crate::ui::tips::pair(
             "menu.help.benchmark",
             "menu.help.benchmark_tip",
@@ -1314,6 +1380,16 @@ fn display_page(app: &mut App, ui: &mut Ui) {
             "options.show_page_border",
             "options.show_page_border_tip",
         ));
+        // F9 fills the screen with the page instead of keeping the zoom
+        // of the window (#4239).
+        ui.checkbox(
+            &mut app.settings.preview_fit_page,
+            tr("options.preview_fit_page"),
+        )
+        .rich_tip(crate::ui::tips::pair(
+            "options.preview_fit_page",
+            "options.preview_fit_page_tip",
+        ));
         // The colour round the page, softer than white if wished (#3930).
         ui.horizontal(|ui| {
             ui.label(tr("options.preview_background")).rich_tip(crate::ui::tips::pair(
@@ -1336,7 +1412,7 @@ fn display_page(app: &mut App, ui: &mut Ui) {
                         app.settings.preview_background_custom = true;
                     }
                     if ui
-                        .button(tr("options.reset"))
+                        .ibutton("options.reset")
                         .rich_tip(crate::ui::tips::pair("options.reset", "dialog.reset_desc"))
                         .clicked()
                     {
@@ -1431,7 +1507,7 @@ fn display_page(app: &mut App, ui: &mut Ui) {
         }
         ui.label(tr("options.points_per_inch"));
         if ui
-            .button(tr("options.reset"))
+            .ibutton("options.reset")
             .rich_tip(crate::ui::tips::pair("options.reset", "dialog.reset_desc"))
             .clicked()
         {
@@ -1562,7 +1638,8 @@ fn edit_page(app: &mut App, ui: &mut Ui) {
             .size()
             .x
             + 2.0 * ui.spacing().button_padding.x
-            + ui.spacing().item_spacing.x;
+            + ui.spacing().item_spacing.x
+            + crate::ui::btn_icons::extra_width(ui, "dialog.reset");
         if ui
             .add(
                 crate::ui::Slider::new(&mut v, 0.0..=100.0)
@@ -1579,7 +1656,7 @@ fn edit_page(app: &mut App, ui: &mut Ui) {
             app.settings.focus_visibility = v.round() as u8;
         }
         if ui
-            .button(tr("dialog.reset"))
+            .ibutton("dialog.reset")
             .rich_tip(crate::ui::tips::keyed("dialog.reset"))
             .clicked()
         {
@@ -1708,6 +1785,9 @@ fn nodes_page(app: &mut App, ui: &mut Ui) {
             "options.show_curve_direction",
             "options.show_curve_direction_tip",
         ));
+    // The Pick tool's node marks (#3258); off keeps the start marks only.
+    ui.checkbox(&mut n.mark_every_node, tr("options.mark_every_node"))
+        .rich_tip(tr("options.mark_every_node_tip"));
     ui.checkbox(&mut n.corner_widgets, tr("options.corner_widgets"))
         .rich_tip(tr("options.corner_widgets_tip"));
     ui.add_enabled_ui(n.corner_widgets, |ui| {
@@ -1756,7 +1836,7 @@ fn nodes_page(app: &mut App, ui: &mut Ui) {
                 ui.horizontal(|ui| {
                     rgb_button(ui, &mut n.main_rgb);
                     if ui
-                        .button(tr("options.reset"))
+                        .ibutton("options.reset")
                         .rich_tip(crate::ui::tips::pair("options.reset", "dialog.reset_desc"))
                         .clicked()
                     {
@@ -1775,7 +1855,7 @@ fn nodes_page(app: &mut App, ui: &mut Ui) {
                 ui.horizontal(|ui| {
                     rgb_button(ui, &mut n.secondary_rgb);
                     if ui
-                        .button(tr("options.reset"))
+                        .ibutton("options.reset")
                         .rich_tip(crate::ui::tips::pair("options.reset", "dialog.reset_desc"))
                         .clicked()
                     {
@@ -1946,7 +2026,7 @@ fn snapping_page(app: &mut App, ui: &mut Ui) {
         }
         ui.horizontal(|ui| {
             if ui
-                .button(tr("options.select_all"))
+                .ibutton("options.select_all")
                 .rich_tip(crate::ui::tips::pair(
                     "options.select_all",
                     "options.select_all_tip",
@@ -1956,7 +2036,7 @@ fn snapping_page(app: &mut App, ui: &mut Ui) {
                 *modes = crate::snap_points::SnapModes::default();
             }
             if ui
-                .button(tr("options.deselect_all"))
+                .ibutton("options.deselect_all")
                 .rich_tip(crate::ui::tips::pair(
                     "options.deselect_all",
                     "options.deselect_all_tip",
@@ -2118,7 +2198,7 @@ fn alignment_guides_page(app: &mut App, ui: &mut Ui) {
         chrome::section(ui, &tr("options.guide_look"));
         guide_look(ui, "align_look", &mut a.color, &mut a.style);
         if ui
-            .button(tr("options.reset"))
+            .ibutton("options.reset")
             .rich_tip(crate::ui::tips::pair("options.reset", "dialog.reset_desc"))
             .clicked()
         {
@@ -2201,7 +2281,7 @@ fn dynamic_guides_page(app: &mut App, ui: &mut Ui) {
                 ));
                 ui.label(tr("options.degrees"));
                 if ui
-                    .button(tr("options.dynamic_add_angle"))
+                    .ibutton("options.dynamic_add_angle")
                     .rich_tip(crate::ui::tips::pair(
                         "options.dynamic_add_angle",
                         "options.dynamic_add_angle_tip",
@@ -2256,7 +2336,7 @@ fn dynamic_guides_page(app: &mut App, ui: &mut Ui) {
         chrome::section(ui, &tr("options.guide_look"));
         guide_look(ui, "dyn_look", &mut d.color, &mut d.style);
         if ui
-            .button(tr("options.reset"))
+            .ibutton("options.reset")
             .rich_tip(crate::ui::tips::pair("options.reset", "dialog.reset_desc"))
             .clicked()
         {
@@ -2299,7 +2379,7 @@ fn path_field(
         let browse = ui
             .add_enabled(
                 !matches!(action, FolderAction::Unavailable(_)),
-                egui::Button::new(tr("options.browse")),
+                crate::ui::btn_icons::Ib::new("options.browse"),
             )
             .rich_tip_always(tip);
         if browse.clicked() {
@@ -2680,7 +2760,7 @@ fn dictionary_download_row(app: &mut App, ui: &mut Ui) {
         };
         let licence = dl::entry(&code).map(|e| e.license).unwrap_or("");
         if ui
-            .add_enabled(!busy, egui::Button::new(label))
+            .add_enabled(!busy, crate::ui::btn_icons::Ib::with_text("options.download", label))
             .rich_tip(format!(
                 "{}\n{}",
                 crate::ui::tips::pair(
@@ -2698,7 +2778,7 @@ fn dictionary_download_row(app: &mut App, ui: &mut Ui) {
             }
         }
         if ui
-            .button(tr("options.add_dictionary_files"))
+            .ibutton("options.add_dictionary_files")
             .rich_tip(crate::ui::tips::pair(
                 "options.add_dictionary_files",
                 "options.add_dictionary_files_tip",
@@ -2867,7 +2947,7 @@ fn spelling_tab(app: &mut App, ui: &mut Ui) {
                     // app (#1398): the button says so instead.
                     let mut open = ui.add_enabled(
                         own.is_some() && !crate::files::WEB && !crate::files::ANDROID,
-                        egui::Button::new(tr("options.open_folder")),
+                        crate::ui::btn_icons::Ib::new("options.open_folder"),
                     );
                     if crate::files::ANDROID {
                         open = open.rich_disabled_tip(crate::ui::tips::pair(
@@ -2907,7 +2987,7 @@ fn spelling_tab(app: &mut App, ui: &mut Ui) {
                     if ui
                         .add_enabled(
                             p.dictionary_folder.is_some(),
-                            egui::Button::new(tr("options.clear_folder")),
+                            crate::ui::btn_icons::Ib::new("options.clear_folder"),
                         )
                         .clicked()
                     {
@@ -2924,7 +3004,7 @@ fn spelling_tab(app: &mut App, ui: &mut Ui) {
     }
     dictionary_download_row(app, ui);
     if ui
-        .button(tr("options.refresh_dictionaries"))
+        .ibutton("options.refresh_dictionaries")
         .rich_tip(crate::ui::tips::pair(
             "options.refresh_dictionaries",
             "options.refresh_dictionaries_tip",
@@ -3118,7 +3198,7 @@ fn autocorrect_tab(app: &mut App, ui: &mut Ui) {
         if ui
             .add_enabled(
                 usable && existing.is_none(),
-                egui::Button::new(tr("autocorrect.add")),
+                crate::ui::btn_icons::Ib::new("autocorrect.add"),
             )
             .rich_tip_always(crate::ui::tips::pair(
                 "autocorrect.add",
@@ -3133,7 +3213,7 @@ fn autocorrect_tab(app: &mut App, ui: &mut Ui) {
         if ui
             .add_enabled(
                 picked.is_some(),
-                egui::Button::new(tr("autocorrect.delete")),
+                crate::ui::btn_icons::Ib::new("autocorrect.delete"),
             )
             .rich_tip_always(crate::ui::tips::pair(
                 "autocorrect.delete",
@@ -3150,7 +3230,7 @@ fn autocorrect_tab(app: &mut App, ui: &mut Ui) {
         if ui
             .add_enabled(
                 usable && existing.is_some(),
-                egui::Button::new(tr("autocorrect.replace")),
+                crate::ui::btn_icons::Ib::new("autocorrect.replace"),
             )
             .rich_tip_always(crate::ui::tips::pair(
                 "autocorrect.replace",
@@ -3204,7 +3284,7 @@ fn autocorrect_tab(app: &mut App, ui: &mut Ui) {
     });
     ui.add_space(4.0);
     if ui
-        .button(tr("autocorrect.apply_selection"))
+        .ibutton("autocorrect.apply_selection")
         .rich_tip(crate::ui::tips::pair(
             "autocorrect.apply_selection",
             "autocorrect.apply_selection_tip",
@@ -3305,7 +3385,7 @@ fn appearance_page(app: &mut App, ui: &mut Ui) {
                     "options.ui_size_tip",
                 ));
             reset = ui
-                .button(tr("options.reset_to_default"))
+                .ibutton("options.reset_to_default")
                 .rich_tip(crate::ui::tips::pair(
                     "options.reset_to_default",
                     "options.reset_to_default_tip",
@@ -3409,7 +3489,7 @@ fn appearance_page(app: &mut App, ui: &mut Ui) {
                         app.settings.desktop_custom = true;
                     }
                     if ui
-                        .button(tr("options.reset"))
+                        .ibutton("options.reset")
                         .rich_tip(crate::ui::tips::pair("options.reset", "dialog.reset_desc"))
                         .clicked()
                     {
@@ -3803,6 +3883,13 @@ fn command_items(app: &App, category: Option<&str>, filter: &str) -> Vec<Command
             let label = command_label(e);
             let name = match crate::macros::command_name(&e.key) {
                 Some((name, _)) => name,
+                // View > Snap To's rows say what they snap to, so in the
+                // list they read "Snap To Guidelines" and come together
+                // with the other Snap commands (#3754).
+                None if e.path.last().map(String::as_str) == Some("menu.view.snap_to") => trf(
+                    "options.snap_to_command",
+                    &[("name", tr(&e.key).trim_end_matches("..."))],
+                ),
                 None => tr(&e.key).trim_end_matches("...").to_string(),
             };
             out.push(CommandItem {
@@ -3993,6 +4080,26 @@ fn commands_page_body(app: &mut App, ui: &mut Ui) {
     {
         app.shortcut_editor.selected = items.first().map(|c| c.id.clone());
     }
+    // Typing a letter with no field taking the keys jumps to the next
+    // command starting with it, as in a long list of files (#4217).
+    let typing = app.shortcut_editor.capture.is_none() && ui.ctx().memory(|m| m.focused().is_none());
+    if typing {
+        let typed = ui.input(|i| {
+            i.events.iter().find_map(|e| match e {
+                egui::Event::Text(t) if !i.modifiers.ctrl && !i.modifiers.command => {
+                    t.chars().next().filter(|c| c.is_alphanumeric())
+                }
+                _ => None,
+            })
+        });
+        if let Some(c) = typed {
+            let names: Vec<(&str, &str)> = items.iter().map(|c| (c.id.as_str(), c.name.as_str())).collect();
+            if let Some(id) = next_starting_with(&names, app.shortcut_editor.selected.as_deref(), c) {
+                app.shortcut_editor.selected = Some(id);
+                app.shortcut_editor.scroll_to_selected = true;
+            }
+        }
+    }
     ui.horizontal_top(|ui| {
         egui::Frame::new()
             .stroke(egui::Stroke::new(1.0, Tokens::control_border()))
@@ -4075,6 +4182,23 @@ fn commands_page_body(app: &mut App, ui: &mut Ui) {
             }
         });
     });
+}
+
+/// The command a typed letter jumps to on the Commands page (#4217): the
+/// first after `current` (in the list's order, from the top again past
+/// its end) whose name starts with `letter`, any case; `None` when no
+/// name does. `items` are (id, name) pairs.
+fn next_starting_with(items: &[(&str, &str)], current: Option<&str>, letter: char) -> Option<String> {
+    let want: String = letter.to_lowercase().collect();
+    let starts = |name: &str| name.trim_start().to_lowercase().starts_with(&want);
+    let from = current
+        .and_then(|c| items.iter().position(|(id, _)| *id == c))
+        .map_or(0, |i| i + 1);
+    let n = items.len();
+    (0..n)
+        .map(|k| &items[(from + k) % n.max(1)])
+        .find(|(_, name)| starts(name))
+        .map(|(id, _)| id.to_string())
 }
 
 /// The command whose keys `c` shows and sets: a bar button that runs a
@@ -4254,7 +4378,7 @@ fn command_icon(app: &mut App, ui: &mut Ui, c: &CommandItem) {
         ));
         let open = app.shortcut_editor.icon_picker;
         if ui
-            .add(egui::Button::new(tr("options.command_icon_choose")).selected(open))
+            .add(crate::ui::btn_icons::Ib::new("options.command_icon_choose").selected(open))
             .rich_tip(crate::ui::tips::pair(
                 "options.command_icon_choose",
                 "options.command_icon_choose_tip",
@@ -4264,7 +4388,7 @@ fn command_icon(app: &mut App, ui: &mut Ui, c: &CommandItem) {
             app.shortcut_editor.icon_picker = !open;
         }
         if ui
-            .add_enabled(chosen, egui::Button::new(tr("options.command_icon_reset")))
+            .add_enabled(chosen, crate::ui::btn_icons::Ib::new("options.command_icon_reset"))
             .rich_tip(crate::ui::tips::pair(
                 "options.command_icon_reset",
                 "options.command_icon_reset_tip",
@@ -4388,7 +4512,7 @@ fn command_keys(app: &mut App, ui: &mut Ui, c: &CommandItem) {
     let has_keys = !current_keys(app, c).is_empty();
     ui.horizontal(|ui| {
         if ui
-            .add_enabled(has_keys, egui::Button::new(tr("options.delete")))
+            .add_enabled(has_keys, crate::ui::btn_icons::Ib::new("options.delete"))
             .rich_tip(tr("options.clear_shortcut"))
             .clicked()
         {
@@ -4397,7 +4521,7 @@ fn command_keys(app: &mut App, ui: &mut Ui, c: &CommandItem) {
         // The commands of the category shown; with every command shown,
         // the same as resetting all, so it asks first.
         if ui
-            .button(tr("options.reset_shortcuts"))
+            .ibutton("options.reset_shortcuts")
             .rich_tip(crate::ui::tips::pair(
                 "options.reset_shortcuts",
                 "options.reset_shortcuts_tip",
@@ -4411,7 +4535,7 @@ fn command_keys(app: &mut App, ui: &mut Ui, c: &CommandItem) {
         }
     });
     if ui
-        .button(tr("options.reset_all_shortcuts"))
+        .ibutton("options.reset_all_shortcuts")
         .rich_tip(crate::ui::tips::pair(
             "options.reset_all_shortcuts",
             "options.reset_all_shortcuts_tip",
@@ -4424,7 +4548,7 @@ fn command_keys(app: &mut App, ui: &mut Ui, c: &CommandItem) {
         ui.label(tr("options.reset_all_shortcuts_question"));
         ui.horizontal(|ui| {
             if ui
-                .button(tr("dialog.reset"))
+                .ibutton("dialog.reset")
                 .rich_tip(crate::ui::tips::keyed("dialog.reset"))
                 .clicked()
             {
@@ -4497,15 +4621,44 @@ fn capture_keys(app: &mut App, ui: &mut Ui) {
         return;
     };
     let pressed = ui.input(|i| {
-        i.events.iter().find_map(|e| match e {
-            egui::Event::Key {
-                key,
-                pressed: true,
-                modifiers,
-                ..
-            } if !crate::shortcuts::is_modifier(*key) => Some((*key, *modifiers)),
-            _ => None,
-        })
+        i.events
+            .iter()
+            .find_map(|e| match e {
+                egui::Event::Key {
+                    key,
+                    pressed: true,
+                    modifiers,
+                    ..
+                } if !crate::shortcuts::is_modifier(*key) => {
+                    // Ctrl is missing from C, X and V's own key event (their
+                    // copy/cut/paste translation strips it): `i.modifiers`,
+                    // kept from the separate `ModifiersChanged` event their
+                    // own Ctrl key-down still sends, has it.
+                    let mods = if matches!(key, egui::Key::C | egui::Key::X | egui::Key::V) {
+                        i.modifiers
+                    } else {
+                        *modifiers
+                    };
+                    Some((*key, mods))
+                }
+                _ => None,
+            })
+            .or_else(|| {
+                // With Ctrl (and often Shift) held, Windows' copy/cut/paste
+                // translation can drop C, X and V's own press and deliver
+                // only its release (`ctrl_v_pastes_when_only_its_release_comes_through`
+                // in interaction.rs has the same shape for Paste): take
+                // that release as the capture, with the modifiers really
+                // held, not whatever is left on the release event.
+                i.events.iter().find_map(|e| match e {
+                    egui::Event::Key {
+                        key: key @ (egui::Key::C | egui::Key::X | egui::Key::V),
+                        pressed: false,
+                        ..
+                    } => Some((*key, i.modifiers)),
+                    _ => None,
+                })
+            })
     });
     let Some((key, mods)) = pressed else {
         return;
@@ -4577,7 +4730,7 @@ fn command_bars_page(app: &mut App, ui: &mut Ui) {
                 });
             custom_bars_buttons(app, ui);
             if ui
-                .button(tr("options.reset"))
+                .ibutton("options.reset")
                 .rich_tip(crate::ui::tips::pair("options.reset", "dialog.reset_desc"))
                 .clicked()
             {
@@ -4659,7 +4812,7 @@ fn custom_bars_buttons(app: &mut App, ui: &mut Ui) {
     ui.horizontal(|ui| {
         let room = app.settings.bars.custom.len() < crate::ui::bars::MAX_CUSTOM;
         if ui
-            .add_enabled(room, egui::Button::new(tr("options.custom_bar_new")))
+            .add_enabled(room, crate::ui::btn_icons::Ib::new("options.custom_bar_new"))
             .rich_tip(crate::ui::tips::pair(
                 "options.custom_bar_new",
                 "options.custom_bar_new_tip",
@@ -4674,7 +4827,7 @@ fn custom_bars_buttons(app: &mut App, ui: &mut Ui) {
         if ui
             .add_enabled(
                 picked.is_some(),
-                egui::Button::new(tr("options.custom_bar_delete")),
+                crate::ui::btn_icons::Ib::new("options.custom_bar_delete"),
             )
             .rich_tip(crate::ui::tips::pair(
                 "options.custom_bar_delete",
@@ -4820,6 +4973,16 @@ fn zoom_pan_page(app: &mut App, ui: &mut Ui) {
         "options.wheel_center_mouse",
         "options.wheel_center_mouse_tip",
     ));
+    // The same part of every page at the same zoom when going from page
+    // to page; off, each page as it was left.
+    ui.checkbox(
+        &mut app.settings.same_view_on_every_page,
+        tr("options.same_view_on_every_page"),
+    )
+    .rich_tip(crate::ui::tips::pair(
+        "options.same_view_on_every_page",
+        "options.same_view_on_every_page_tip",
+    ));
     // The wheel's glide and its step (#1648, #895).
     ui.checkbox(&mut app.settings.smooth_zoom, tr("options.smooth_zoom"))
         .rich_tip(crate::ui::tips::pair(
@@ -4882,7 +5045,7 @@ fn zoom_pan_page(app: &mut App, ui: &mut Ui) {
     ui.separator();
     // The ruler calibration lives on the Display page; this opens it there.
     if ui
-        .button(tr("options.calibrate_zoom"))
+        .ibutton("options.calibrate_zoom")
         .rich_tip(crate::ui::tips::pair(
             "options.calibrate_zoom",
             "options.calibrate_zoom_tip",
@@ -5758,7 +5921,7 @@ fn global_general_page(app: &mut App, ui: &mut Ui) {
     ui.add_space(10.0);
     ui.label(egui::RichText::new(tr("options.reset_all_hint")).color(Tokens::text_dim()));
     if ui
-        .button(tr("options.reset_all"))
+        .ibutton("options.reset_all")
         .rich_tip(crate::ui::tips::pair(
             "options.reset_all",
             "options.reset_all_tip",
@@ -5782,6 +5945,60 @@ pub fn text_size_unread_key() -> &'static str {
     } else {
         "options.follow_text_size_unread"
     }
+}
+
+/// The program Edit in Spreadsheet opens a table's workbook in (#4144):
+/// empty for the system's program for `.xlsx` files, named under the
+/// field when it is known.
+fn spreadsheet_editor_field(app: &mut App, ui: &mut Ui) {
+    ui.label(tr("options.spreadsheet_editor"));
+    let system = crate::spreadsheet_editor::system_default();
+    let hint = match &system {
+        Some(a) => trf("options.spreadsheet_editor_system_named", &[("name", &a.name)]),
+        None => tr("options.spreadsheet_editor_system"),
+    };
+    ui.horizontal(|ui| {
+        ui.add(
+            egui::TextEdit::singleline(&mut app.settings.spreadsheet_editor)
+                .desired_width(300.0)
+                .hint_text(hint),
+        )
+        .rich_tip(crate::ui::tips::pair(
+            "options.spreadsheet_editor",
+            "options.spreadsheet_editor_tip",
+        ));
+        if ui
+            .ibutton("options.browse")
+            .rich_tip(crate::ui::tips::pair(
+                "options.browse",
+                "options.browse_tip",
+            ))
+            .clicked()
+        {
+            crate::files::Dialog::new().pick_file(app, |app, path| {
+                app.settings.spreadsheet_editor = path.display().to_string();
+            });
+        }
+        if ui
+            .add_enabled(
+                !app.settings.spreadsheet_editor.is_empty(),
+                crate::ui::btn_icons::Ib::new("options.clear_folder"),
+            )
+            .clicked()
+        {
+            app.settings.spreadsheet_editor.clear();
+        }
+    });
+    let note = match &system {
+        Some(a) => format!(
+            "{} {}",
+            tr("options.spreadsheet_editor_hint"),
+            trf("options.spreadsheet_editor_found", &[("path", &a.path.display().to_string())])
+        ),
+        None => tr("options.spreadsheet_editor_hint"),
+    };
+    ui.label(egui::RichText::new(note).color(Tokens::text_dim()).size(11.0));
+    ui.add_space(10.0);
 }
 
 fn file_locations_page(app: &mut App, ui: &mut Ui) {
@@ -5808,7 +6025,7 @@ fn file_locations_page(app: &mut App, ui: &mut Ui) {
                 "options.bitmap_editor_tip",
             ));
             if ui
-                .button(tr("options.browse"))
+                .ibutton("options.browse")
                 .rich_tip(crate::ui::tips::pair(
                     "options.browse",
                     "options.browse_tip",
@@ -5822,7 +6039,7 @@ fn file_locations_page(app: &mut App, ui: &mut Ui) {
             if ui
                 .add_enabled(
                     !app.settings.bitmap_editor.is_empty(),
-                    egui::Button::new(tr("options.clear_folder")),
+                    crate::ui::btn_icons::Ib::new("options.clear_folder"),
                 )
                 .clicked()
             {
@@ -5835,6 +6052,7 @@ fn file_locations_page(app: &mut App, ui: &mut Ui) {
                 .size(11.0),
         );
         ui.add_space(10.0);
+        spreadsheet_editor_field(app, ui);
     }
     ui.label(tr("options.save_hint"));
     if let Some(p) = crate::settings::Settings::path() {
@@ -5893,7 +6111,7 @@ fn workspace_page(app: &mut App, ui: &mut Ui) {
     ui.horizontal(|ui| {
         let any = parts.any();
         if ui
-            .add_enabled(any, egui::Button::new(tr("options.workspace_export")))
+            .add_enabled(any, crate::ui::btn_icons::Ib::new("options.workspace_export"))
             .rich_tip_always(crate::ui::tips::pair(
                 "options.workspace_export",
                 "options.workspace_export_tip",
@@ -5904,7 +6122,7 @@ fn workspace_page(app: &mut App, ui: &mut Ui) {
         }
         // Imported parts stay until OK; Cancel puts the old ones back.
         if ui
-            .add_enabled(any, egui::Button::new(tr("options.workspace_import")))
+            .add_enabled(any, crate::ui::btn_icons::Ib::new("options.workspace_import"))
             .rich_tip_always(crate::ui::tips::pair(
                 "options.workspace_import",
                 "options.workspace_import_tip",
@@ -6018,7 +6236,7 @@ fn layout_page(app: &mut App, ui: &mut Ui) {
     ui.checkbox(&mut app.page_sorter, tr("menu.view.page_sorter"))
         .rich_tip(crate::ui::tips::keyed("menu.view.page_sorter"));
     if ui
-        .button(tr("menu.layout.switch_orientation"))
+        .ibutton("menu.layout.switch_orientation")
         .rich_tip(crate::ui::tips::pair(
             "menu.layout.switch_orientation",
             "menu.layout.switch_orientation_tip",
@@ -6041,15 +6259,26 @@ fn layout_page(app: &mut App, ui: &mut Ui) {
         String,
         tracedraw_core::MasterScope,
         bool,
+        bool,
+        bool,
     );
     let masters: Vec<MasterRow> = app
         .doc()
         .master
         .iter()
-        .map(|l| (l.id, l.name.clone(), l.scope, l.in_front))
+        .map(|l| {
+            (
+                l.id,
+                l.name.clone(),
+                l.scope,
+                l.in_front,
+                l.page_range.is_some(),
+                l.desktop,
+            )
+        })
         .collect();
-    for (id, name, scope, front) in masters {
-        ui.horizontal(|ui| {
+    for (id, name, scope, front, ranged, desktop) in masters {
+        ui.horizontal_wrapped(|ui| {
             ui.label(&name);
             // Drawn over the page's own layers or behind them (#1132).
             let mut on = front;
@@ -6069,7 +6298,7 @@ fn layout_page(app: &mut App, ui: &mut Ui) {
                 (tracedraw_core::MasterScope::Even, "options.scope_even"),
             ] {
                 if ui
-                    .selectable_label(scope == s, tr(k))
+                    .selectable_label(!ranged && scope == s, tr(k))
                     .rich_tip_with(|| format!("{}\n{}", tr(k), tr(&format!("{k}_tip"))))
                     .clicked()
                 {
@@ -6078,6 +6307,27 @@ fn layout_page(app: &mut App, ui: &mut Ui) {
                         scope: s,
                     });
                 }
+            }
+            if !desktop
+                && ui
+                    .selectable_label(ranged, tr("docker.range_pages"))
+                    .rich_tip_with(|| {
+                        let range = app
+                            .doc()
+                            .layer(id)
+                            .ok()
+                            .and_then(|layer| layer.page_range.as_ref())
+                            .map(ToString::to_string)
+                            .unwrap_or_default();
+                        format!(
+                            "{}\n{range}\n{}",
+                            tr("docker.range_pages"),
+                            tr("docker.page_range_desc")
+                        )
+                    })
+                    .clicked()
+            {
+                crate::ui::objects_docker::open_layer_range(app, id);
             }
         });
     }
@@ -6088,12 +6338,22 @@ fn layout_page(app: &mut App, ui: &mut Ui) {
             (tracedraw_core::MasterScope::Even, "options.new_master_even"),
         ] {
             if ui
-                .button(tr(k))
+                .ibutton(k)
                 .rich_tip_with(|| format!("{}\n{}", tr(k), tr(&format!("{k}_tip"))))
                 .clicked()
             {
                 crate::ui::objects_docker::new_master_layer(app, s);
             }
+        }
+        if ui
+            .ibutton("docker.new_range_layer")
+            .rich_tip(crate::ui::tips::pair(
+                "docker.new_range_layer",
+                "docker.page_range_desc",
+            ))
+            .clicked()
+        {
+            crate::ui::objects_docker::open_new_range_layer(app);
         }
     });
     // Which kinds of master layer are drawn in front of the page's
@@ -6292,7 +6552,7 @@ fn background_page(app: &mut App, ui: &mut Ui) {
         }
         _ => {
             if ui
-                .button(tr("options.choose_bitmap"))
+                .ibutton("options.choose_bitmap")
                 .rich_tip(crate::ui::tips::pair(
                     "options.choose_bitmap",
                     "options.choose_bitmap_tip",
@@ -6347,6 +6607,27 @@ fn bleed_page(app: &mut App, ui: &mut Ui) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A typed letter on the Commands page jumps to the next command
+    /// starting with it, any case, from the top again past the end; a
+    /// letter no name starts with stays put (#4217).
+    #[test]
+    fn a_typed_letter_jumps_to_the_next_command_starting_with_it() {
+        let items = [
+            ("a", "Align"),
+            ("b", "Blend"),
+            ("c", "Break Apart"),
+            ("d", "Combine"),
+            ("e", "break curve"),
+        ];
+        assert_eq!(next_starting_with(&items, None, 'b').as_deref(), Some("b"));
+        assert_eq!(next_starting_with(&items, Some("b"), 'B').as_deref(), Some("c"));
+        assert_eq!(next_starting_with(&items, Some("c"), 'b').as_deref(), Some("e"));
+        assert_eq!(next_starting_with(&items, Some("e"), 'b').as_deref(), Some("b"), "round again");
+        assert_eq!(next_starting_with(&items, Some("a"), 'c').as_deref(), Some("d"));
+        assert_eq!(next_starting_with(&items, Some("a"), 'z'), None);
+        assert_eq!(next_starting_with(&[], None, 'a'), None);
+    }
 
     /// #1415: the splash, hardware acceleration and AI agent options are
     /// shown on the desktop and hidden on Android and in the browser,
@@ -6520,6 +6801,13 @@ mod tests {
         );
         let found = command_items(&app, None, "open");
         assert!(!found.is_empty() && found.len() < all.len());
+        // The Snap To rows are named for the list (#3754).
+        let snap = command_items(&app, None, "");
+        for id in ["menu.view.snap_guidelines", "menu.view.snap_objects"] {
+            let name = trf("options.snap_to_command", &[("name", &tr(id))]);
+            assert_ne!(name, tr(id));
+            assert!(snap.iter().any(|c| c.id == id && c.name == name), "{id}");
+        }
         // Table's commands come under Text, where their submenu sits;
         // there is no Table category.
         let text = command_items(&app, Some("menu.text"), "");
@@ -7054,7 +7342,13 @@ mod tests {
         use OptionsPage::*;
         assert_eq!(
             OptionsSet::Customization.pages(),
-            &[Appearance, CommandBars, Commands, ColorPalette]
+            &[
+                Appearance,
+                CommandBars,
+                Commands,
+                ContextMenus,
+                ColorPalette
+            ]
         );
         let mut app = App::headless();
         assert!(app.settings.center_dialogs);
@@ -7492,6 +7786,151 @@ mod tests {
         }
     }
 
+    fn context_menu_dialog_frame(
+        app: &mut App,
+        ctx: &Context,
+        screen: egui::Vec2,
+        events: Vec<egui::Event>,
+    ) -> bool {
+        let mut close = false;
+        let mut output = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(egui::Pos2::ZERO, screen)),
+                events,
+                ..Default::default()
+            },
+            |ui| options_dialog(app, ui.ctx(), &mut close),
+        );
+        output.textures_delta.clear();
+        close
+    }
+
+    #[test]
+    fn context_menu_dialog_keeps_actions_visible_on_narrow_desktop_screens() {
+        for screen in [
+            egui::vec2(780.0, 760.0),
+            egui::vec2(640.0, 760.0),
+            egui::vec2(560.0, 760.0),
+        ] {
+            let ctx = crate::theme::ui_context();
+            let mut app = App::headless();
+            app.options_page = OptionsPage::ContextMenus;
+            app.settings
+                .context_menus
+                .set_visible("canvas_object", "menu.edit.copy", false);
+            for _ in 0..4 {
+                assert!(!context_menu_dialog_frame(
+                    &mut app,
+                    &ctx,
+                    screen,
+                    Vec::new()
+                ));
+            }
+            let screen_rect = egui::Rect::from_min_size(egui::Pos2::ZERO, screen);
+            let assert_visible = |name: &str, rect: egui::Rect, clip: egui::Rect| {
+                assert!(
+                    screen_rect.expand(0.5).contains_rect(rect),
+                    "{name} at {rect:?} exceeds screen {screen:?}"
+                );
+                assert!(
+                    clip.expand(0.5).contains_rect(rect),
+                    "{name} at {rect:?} is clipped by {clip:?} on screen {screen:?}"
+                );
+            };
+            let dialog = ctx
+                .memory(|memory| memory.area_rect(egui::Id::new("options_dialog")))
+                .expect("settings dialog is drawn");
+            assert!(screen_rect.expand(0.5).contains_rect(dialog), "{dialog:?}");
+            for name in ["ok", "cancel"] {
+                let (rect, clip): (egui::Rect, egui::Rect) = ctx.data(|data| {
+                    data.get_temp(egui::Id::new(("options_dialog_test_control", name)))
+                        .expect("dialog action is drawn")
+                });
+                assert_visible(name, rect, clip);
+            }
+            for name in ["scene", "search", "reset_menu", "reset_all"] {
+                let (rect, clip) = ctx.data(|data| {
+                    (
+                        data.get_temp::<egui::Rect>(egui::Id::new((
+                            "context_menu_editor_test",
+                            name,
+                        )))
+                        .expect("editor control is drawn"),
+                        data.get_temp::<egui::Rect>(egui::Id::new((
+                            "context_menu_editor_test_clip",
+                            name,
+                        )))
+                        .expect("editor control has a clipping rectangle"),
+                    )
+                });
+                assert_visible(name, rect, clip);
+            }
+            for set in OptionsSet::ALL {
+                if set != OptionsSet::Document || app.has_document() {
+                    let rect = ctx.data(|data| {
+                        data.get_temp::<egui::Rect>(tab_rect_id(set))
+                            .expect("settings tab is drawn")
+                    });
+                    assert!(
+                        screen_rect.expand(0.5).contains_rect(rect),
+                        "{} tab at {rect:?} exceeds screen {screen:?}",
+                        set.tab_label()
+                    );
+                }
+            }
+            let overflow: f32 =
+                ctx.data(|data| data.get_temp(page_overflow_id()).expect("page is drawn"));
+            assert!(
+                overflow < 0.5,
+                "page exceeds screen {screen:?} by {overflow}"
+            );
+        }
+    }
+
+    #[test]
+    fn narrow_context_menu_dialog_cancel_is_clickable_and_restores_preferences() {
+        let screen = egui::vec2(640.0, 760.0);
+        let ctx = crate::theme::ui_context();
+        let mut app = App::headless();
+        app.options_page = OptionsPage::ContextMenus;
+        for _ in 0..4 {
+            assert!(!context_menu_dialog_frame(
+                &mut app,
+                &ctx,
+                screen,
+                Vec::new()
+            ));
+        }
+        app.settings
+            .context_menus
+            .set_visible("canvas_object", "menu.edit.copy", false);
+        let (rect, _): (egui::Rect, egui::Rect) = ctx.data(|data| {
+            data.get_temp(egui::Id::new(("options_dialog_test_control", "cancel")))
+                .expect("cancel is drawn")
+        });
+        let pos = rect.center();
+        let mut closed = false;
+        for pressed in [true, false] {
+            closed = context_menu_dialog_frame(
+                &mut app,
+                &ctx,
+                screen,
+                vec![
+                    egui::Event::PointerMoved(pos),
+                    egui::Event::PointerButton {
+                        pos,
+                        button: egui::PointerButton::Primary,
+                        pressed,
+                        modifiers: egui::Modifiers::NONE,
+                    },
+                ],
+            );
+        }
+        assert!(closed, "the visible Cancel button takes the click");
+        assert!(app.settings.context_menus.is_default());
+        assert!(app.options_snapshot.is_none());
+    }
+
     /// A frame of the whole window with `events` as its input.
     fn frame(ctx: &Context, app: &mut App, events: Vec<egui::Event>) {
         let input = egui::RawInput {
@@ -7576,6 +8015,72 @@ mod tests {
         frame(&ctx, &mut app, vec![key(Key::F7, Modifiers::COMMAND)]);
         assert!(app.shortcut_editor.capture.is_none());
         assert_eq!(export_keys(&app), ["Ctrl+E"]);
+    }
+
+    /// Ctrl is missing from C, X and V's own key event on Windows (their
+    /// copy/cut/paste translation strips it): a real Ctrl held, reported
+    /// through a `ModifiersChanged` event as it really is, is still
+    /// captured with C, X and V, not silently as the bare letter.
+    #[test]
+    fn ctrl_is_not_lost_capturing_a_shortcut_with_c_x_or_v() {
+        use crate::ui::dialogs::Dialog;
+        use egui::{Event, Key, Modifiers};
+        let ctx = crate::theme::ui_context();
+        for letter in [Key::C, Key::X, Key::V] {
+            let mut app = App::headless();
+            app.show_welcome = false;
+            app.dialog = Dialog::Options;
+            app.options_page = OptionsPage::Commands;
+            frame(&ctx, &mut app, vec![]);
+            app.shortcut_editor.capture = Some("menu.file.export".into());
+            frame(
+                &ctx,
+                &mut app,
+                vec![
+                    Event::ModifiersChanged(Modifiers::COMMAND),
+                    key(letter, Modifiers::NONE),
+                ],
+            );
+            let export_keys =
+                crate::shortcuts::keys_for(&app.settings.shortcuts, "menu.file.export", None);
+            let wanted = format!("Ctrl+{}", crate::shortcuts::key_name(letter));
+            assert!(
+                export_keys.contains(&wanted),
+                "{letter:?}: {export_keys:?}"
+            );
+        }
+    }
+
+    /// With Ctrl (and Shift) held, Windows' copy/cut/paste translation can
+    /// drop C, X and V's own press and deliver only its release: that
+    /// release still captures Ctrl+Shift+V, with the modifiers really
+    /// held, not a bare V.
+    #[test]
+    fn a_shortcut_with_c_x_or_v_is_captured_from_its_release_when_the_press_never_comes() {
+        use crate::ui::dialogs::Dialog;
+        use egui::{Event, Key, Modifiers};
+        let ctx = crate::theme::ui_context();
+        let mut app = App::headless();
+        app.show_welcome = false;
+        app.dialog = Dialog::Options;
+        app.options_page = OptionsPage::Commands;
+        frame(&ctx, &mut app, vec![]);
+        app.shortcut_editor.capture = Some("menu.file.export".into());
+        let mods = Modifiers::COMMAND | Modifiers::SHIFT;
+        let v_up = Event::Key {
+            key: Key::V,
+            physical_key: None,
+            pressed: false,
+            repeat: false,
+            modifiers: mods,
+        };
+        frame(&ctx, &mut app, vec![Event::ModifiersChanged(mods), v_up]);
+        let export_keys =
+            crate::shortcuts::keys_for(&app.settings.shortcuts, "menu.file.export", None);
+        assert!(
+            export_keys.contains(&"Ctrl+Shift+V".to_string()),
+            "{export_keys:?}"
+        );
     }
 
     /// A tool takes a second key without losing its first; either picks

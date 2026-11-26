@@ -401,12 +401,13 @@ impl App {
     /// selection: a press there that took nothing is a near miss.
     pub(crate) fn near_selected_nodes(&self, p: Point) -> bool {
         let reach = 3.0 * self.settings.nodes.pick_px() / self.view.zoom as f64;
+        let shown = self.handle_nodes();
         for id in &self.node_targets() {
             let Some((path, _, t)) = self.path_of(*id) else {
                 continue;
             };
             for n in nodes::nodes(&(t * path)) {
-                let chosen = self.node_selection.contains(&(*id, n.index));
+                let chosen = shown.contains(&(*id, n.index));
                 let mut spots = vec![n.pos];
                 if chosen {
                     spots.extend(n.ctrl_in);
@@ -448,6 +449,24 @@ impl App {
             .find_map(|s| crate::kind_nodes::spline_with_point(&s, p, tol).map(|pts| (s, pts)))
     }
 
+    /// The nodes whose control handles show and take a press (#4337):
+    /// with one node chosen, it and the nodes joined to it by a segment
+    /// (the first and last of a closed subpath joined too), so the curves
+    /// on both sides of it can be shaped; with several chosen, none, and
+    /// only the chosen nodes' markers show.
+    pub(crate) fn handle_nodes(&self) -> Vec<(ShapeId, usize)> {
+        let [(id, index)] = self.node_selection[..] else {
+            return Vec::new();
+        };
+        let Some((path, _, _)) = self.path_of(id) else {
+            return Vec::new();
+        };
+        nodes::handle_neighbours(&path, index)
+            .into_iter()
+            .map(|n| (id, n))
+            .collect()
+    }
+
     /// Control handle under the pointer, for selected nodes only, or one
     /// of the two handles a chosen segment shows (its start node's
     /// outgoing handle and its end node's incoming one).
@@ -475,16 +494,17 @@ impl App {
             }
             return best.map(|b| b.0);
         }
-        // The nodes of each curve with chosen nodes, worked out once.
-        for (k, &(id, _)) in self.node_selection.iter().enumerate() {
-            if self.node_selection[..k].iter().any(|s| s.0 == id) {
+        // The nodes whose handles show (#4337), each curve worked out once.
+        let shown = self.handle_nodes();
+        for (k, &(id, _)) in shown.iter().enumerate() {
+            if shown[..k].iter().any(|s| s.0 == id) {
                 continue;
             }
             let Some((path, _, t)) = self.path_of(id) else {
                 continue;
             };
             for n in nodes::nodes(&(t * path)) {
-                if self.node_selection.contains(&(id, n.index)) {
+                if shown.contains(&(id, n.index)) {
                     take((id, n.index, Which::In), n.ctrl_in);
                     take((id, n.index, Which::Out), n.ctrl_out);
                 }
@@ -745,7 +765,10 @@ impl App {
             if let Some(w) = self.corner_widget_at(p) {
                 // Ctrl+click chooses the corner, or takes it out.
                 let one_at_a_time = self.settings.nodes.corner_one_at_a_time;
-                if self.start_corner_drag(w, p, one_at_a_time && mods.shift) {
+                // With every corner rounding together, Ctrl+drag rounds
+                // this corner alone (#4216).
+                let own_only = !one_at_a_time && mods.command && !mods.shift;
+                if self.start_corner_drag_with(w, p, one_at_a_time && mods.shift, own_only) {
                     return;
                 }
             }

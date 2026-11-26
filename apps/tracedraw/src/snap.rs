@@ -373,17 +373,10 @@ impl App {
             }
         }
         if best.is_none() && self.snap.grid {
-            // Grid lines pass through the grid origin (#2990).
-            let grid = self.doc().metadata.grid;
-            let o = self.grid_origin();
-            let (step, origin) = if horizontal {
-                (grid.spacing_x, o.x)
-            } else {
-                (grid.spacing_y, o.y)
-            };
-            let step = step.max(0.001);
-            let g = origin + ((v - origin) / step).round() * step;
-            if (g - v).abs() <= tol {
+            // Grid lines pass through the grid origin (#2990); their
+            // subdivisions and gutters count too (#4395). An angled grid
+            // is snapped to point by point instead.
+            if let Some(g) = self.grid_geom().snap_axis_value(v, horizontal, tol) {
                 return Some(g);
             }
         }
@@ -890,6 +883,16 @@ impl App {
         if !enabled {
             return p;
         }
+        // Where an angled guideline crosses another guideline: a point,
+        // before either line alone takes the pointer (#4234).
+        if let Some(q) = self.guide_crossing_near(p) {
+            self.snap_mark.set(Some(crate::snap_points::Target {
+                point: q,
+                mode: crate::snap_points::SnapMode::Guideline,
+                edge: None,
+            }));
+            return q;
+        }
         let (xs, ys) = self.snap_candidates(exclude, true, false);
         let axis = Point::new(
             self.snap_axis(p.x, &xs, true).unwrap_or(p.x),
@@ -898,6 +901,10 @@ impl App {
         if axis != p {
             self.mark_axis_snap(p, axis);
             return axis;
+        }
+        // An angled grid (#4395): its crossings first, then its lines.
+        if let Some(q) = self.angled_grid_snap(p) {
+            return q;
         }
         if !self.snap.guides {
             return self.edge_snap(p, exclude, own);
@@ -928,6 +935,69 @@ impl App {
         self.edge_snap(p, exclude, own)
     }
 
+    /// `p` snapped to an angled document grid (#4395): onto the crossing
+    /// of its lines nearest it, or square onto its nearest line, within
+    /// the snap tolerance; marked as a grid snap. None for a grid of
+    /// horizontal and vertical lines, which the axes take.
+    pub(crate) fn angled_grid_snap(&self, p: Point) -> Option<Point> {
+        if !self.snap.grid {
+            return None;
+        }
+        let geom = self.grid_geom();
+        if geom.rectilinear() {
+            return None;
+        }
+        let tol = self.snap_tolerance();
+        let q = geom.snap_node(p, tol).or_else(|| geom.snap_line(p, tol))?;
+        self.snap_mark.set(Some(crate::snap_points::Target {
+            point: q,
+            mode: crate::snap_points::SnapMode::Grid,
+            edge: None,
+        }));
+        Some(q)
+    }
+
+    /// The crossing nearest `p`, within the snap tolerance, of an angled
+    /// guideline with another guideline of the page (#4234); crossings of
+    /// two straight ones are found by the axes already.
+    pub(crate) fn guide_crossing_near(&self, p: Point) -> Option<Point> {
+        if !self.snap.guides {
+            return None;
+        }
+        let guides = self.doc().guides_on_page(self.page).ok()?;
+        let tol = self.snap_tolerance();
+        let lines: Vec<(bool, Point, tracedraw_core::geometry::Vec2)> = guides
+            .iter()
+            .map(|g| {
+                let (o, d) = g.line.point_and_direction();
+                (matches!(g.line, GuideLine::Angled { .. }), o, d)
+            })
+            .collect();
+        let mut best: Option<(f64, Point)> = None;
+        for (i, &(ai, oa, da)) in lines.iter().enumerate() {
+            // Only lines that pass near the pointer can cross near it.
+            if (p - oa).cross(da).abs() > tol {
+                continue;
+            }
+            for &(bi, ob, db) in &lines[i + 1..] {
+                if !(ai || bi) {
+                    continue;
+                }
+                let den = da.cross(db);
+                if den.abs() < 1e-9 {
+                    continue;
+                }
+                let t = (ob - oa).cross(db) / den;
+                let q = oa + da * t;
+                let d = (q - p).hypot();
+                if d <= tol && best.is_none_or(|b| d < b.0) {
+                    best = Some((d, q));
+                }
+            }
+        }
+        best.map(|b| b.1)
+    }
+
     /// The pointer at `p` snapped to `q` along the axes: mark it, with its
     /// screen tip, when a guideline or the grid took it (guidelines first);
     /// the page's and objects' bounds are not marked.
@@ -947,14 +1017,8 @@ impl App {
             if !self.snap.grid {
                 return false;
             }
-            let grid = self.doc().metadata.grid;
-            let o = self.grid_origin();
-            let on = |v: f64, step: f64, origin: f64| {
-                let step = step.max(0.001);
-                let k = (v - origin) / step;
-                (k - k.round()).abs() * step < 1e-9
-            };
-            (moved_x && on(q.x, grid.spacing_x, o.x)) || (moved_y && on(q.y, grid.spacing_y, o.y))
+            let geom = self.grid_geom();
+            (moved_x && geom.on_line(q.x, true)) || (moved_y && geom.on_line(q.y, false))
         };
         let on_baseline = || {
             self.snap.baseline_grid
@@ -1572,10 +1636,138 @@ impl App {
                 }
             }
         }
+        // A slanted guideline the selection's outline comes near: the
+        // move takes it onto the guideline, across it, when that is a
+        // nearer catch than the straight lines' (#4383).
+        if let Some(n) = self.angled_guide_catch(d) {
+            let axis = if best_dx.is_none() && best_dy.is_none() {
+                f64::INFINITY
+            } else {
+                best_dx.unwrap_or(0.0).hypot(best_dy.unwrap_or(0.0))
+            };
+            if n.hypot() < axis {
+                return (d + n, true);
+            }
+        }
+        if best_dx.is_none() && best_dy.is_none() && self.snap.grid {
+            // An angled grid (#4395): a corner or the centre of the moved
+            // box onto the crossing nearest it.
+            let geom = self.grid_geom();
+            if !geom.rectilinear() {
+                let tol = self.snap_tolerance();
+                let mut best: Option<(f64, Vec2)> = None;
+                for c in [
+                    Point::new(moved.x0, moved.y0),
+                    Point::new(moved.x1, moved.y0),
+                    Point::new(moved.x0, moved.y1),
+                    Point::new(moved.x1, moved.y1),
+                    moved.center(),
+                ] {
+                    if let Some(q) = geom.snap_node(c, tol) {
+                        let off = q - c;
+                        if best.is_none_or(|b| off.hypot() < b.0) {
+                            best = Some((off.hypot(), off));
+                        }
+                    }
+                }
+                if let Some((_, off)) = best {
+                    return (d + off, true);
+                }
+            }
+        }
         (
             Vec2::new(d.x + best_dx.unwrap_or(0.0), d.y + best_dy.unwrap_or(0.0)),
             best_dx.is_some() || best_dy.is_some(),
         )
+    }
+
+    /// The points of the selection's outline on the page, kept while the
+    /// drawing and the selection stay as they are.
+    fn selection_outline_points(&self) -> std::rc::Rc<Vec<Point>> {
+        let key = (self.engine.revision(), self.selection.clone());
+        if let Some((k, pts)) = self.snap_outline.borrow().as_ref() {
+            if *k == key {
+                return pts.clone();
+            }
+        }
+        let mut pts = Vec::new();
+        for s in self.selected_shapes() {
+            let parent = self.doc().parent_transform(s.id).unwrap_or(Affine::IDENTITY);
+            let path = parent * s.page_path();
+            let b = tracedraw_core::geometry::Shape::bounding_box(&path);
+            let tol = (b.width().max(b.height()) * 1e-3).max(1e-3);
+            tracedraw_core::geometry::flatten(&path, tol, &mut |el| {
+                use tracedraw_core::geometry::PathEl;
+                if let PathEl::MoveTo(p) | PathEl::LineTo(p) = el {
+                    if pts.len() < 20_000 {
+                        pts.push(p);
+                    }
+                }
+            });
+        }
+        let pts = std::rc::Rc::new(pts);
+        *self.snap_outline.borrow_mut() = Some((key, pts.clone()));
+        pts
+    }
+
+    /// Whether the selection's outline, moved by `d`, touches slanted
+    /// guideline `line` with its edge or its middle.
+    fn outline_on_line(&self, line: GuideLine, d: Vec2) -> bool {
+        let pts = self.selection_outline_points();
+        if pts.is_empty() {
+            return false;
+        }
+        let (o, dir) = line.point_and_direction();
+        let n = Vec2::new(-dir.y, dir.x);
+        let at = o.to_vec2().dot(n);
+        let (mut lo, mut hi) = (f64::INFINITY, f64::NEG_INFINITY);
+        for p in pts.iter() {
+            let v = (p.to_vec2() + d).dot(n);
+            lo = lo.min(v);
+            hi = hi.max(v);
+        }
+        [lo, hi, (lo + hi) / 2.0].iter().any(|v| (v - at).abs() < 1e-6)
+    }
+
+    /// The shift that puts the selection, moved by `d`, on the nearest
+    /// slanted guideline within the snap distance: its outline's edge or
+    /// its middle on the line (#4383, they caught horizontal and vertical
+    /// guidelines only).
+    pub(crate) fn angled_guide_catch(&self, d: Vec2) -> Option<Vec2> {
+        if !self.snap.guides || self.symbol_edit_index().is_some() {
+            return None;
+        }
+        let guides = self.doc().guides_on_page(self.page).ok()?;
+        if !guides.iter().any(|g| matches!(g.line, GuideLine::Angled { .. }) && !g.hidden) {
+            return None;
+        }
+        let pts = self.selection_outline_points();
+        if pts.is_empty() {
+            return None;
+        }
+        let tol = self.snap_tolerance();
+        let mut best: Option<Vec2> = None;
+        for g in guides.iter().filter(|g| !g.hidden) {
+            if !matches!(g.line, GuideLine::Angled { .. }) {
+                continue;
+            }
+            let (o, dir) = g.line.point_and_direction();
+            let n = Vec2::new(-dir.y, dir.x);
+            let line = o.to_vec2().dot(n);
+            let (mut lo, mut hi) = (f64::INFINITY, f64::NEG_INFINITY);
+            for p in pts.iter() {
+                let v = (p.to_vec2() + d).dot(n);
+                lo = lo.min(v);
+                hi = hi.max(v);
+            }
+            for v in [lo, hi, (lo + hi) / 2.0] {
+                let shift = line - v;
+                if shift.abs() <= tol && best.is_none_or(|b| shift.abs() < b.hypot()) {
+                    best = Some(n * shift);
+                }
+            }
+        }
+        best
     }
 
     /// All snapping off: Alt+Q, or Q held down on its own for the
@@ -1614,13 +1806,19 @@ impl App {
         };
         let on = |v: f64, edges: [f64; 3]| edges.iter().any(|e| (e - v).abs() < 1e-6);
         let (xs, ys) = ([b.x0, b.x1, b.center().x], [b.y0, b.y1, b.center().y]);
+        // A move whose outline lies on a slanted guideline shows it too
+        // (#4383).
+        let moved = match &self.drag {
+            Drag::Move { total, .. } => Some(*total),
+            _ => None,
+        };
         guides
             .iter()
             .map(|g| g.line)
             .filter(|line| match *line {
                 GuideLine::Vertical { x } => on(x, xs),
                 GuideLine::Horizontal { y } => on(y, ys),
-                GuideLine::Angled { .. } => false,
+                GuideLine::Angled { .. } => moved.is_some_and(|d| self.outline_on_line(*line, d)),
             })
             .collect()
     }
@@ -1745,6 +1943,61 @@ mod tests {
             ..SnapSettings::default()
         };
         app
+    }
+
+    /// #4234: an angled guideline crossing a vertical one gives a point
+    /// the pointer snaps to; two straight guidelines are left to the axes.
+    #[test]
+    fn an_angled_guideline_crossing_another_is_a_snap_point() {
+        let mut app = app();
+        let page = app.page;
+        for line in [
+            GuideLine::Vertical { x: 50.0 },
+            GuideLine::Angled { x: 0.0, y: 0.0, angle: 45.0 },
+        ] {
+            app.run(Command::AddGuide { page, guide: line.into() });
+        }
+        let q = app.guide_crossing_near(Point::new(50.4, 49.7)).expect("crossing");
+        assert!((q - Point::new(50.0, 50.0)).hypot() < 1e-9, "{q:?}");
+        assert!(app.guide_crossing_near(Point::new(80.0, 20.0)).is_none());
+    }
+
+    /// #4383: a moved object comes onto a slanted guideline it nears,
+    /// its outline's edge on the line, and the guideline is shown caught.
+    #[test]
+    fn a_move_snaps_onto_a_slanted_guideline() {
+        let mut app = app();
+        app.snap = SnapSettings {
+            guides: true,
+            page: false,
+            objects: false,
+            grid: false,
+            off: false,
+            ..SnapSettings::default()
+        };
+        let page = app.page;
+        app.run(Command::AddGuide {
+            page,
+            guide: GuideLine::Angled { x: 0.0, y: 0.0, angle: 45.0 }.into(),
+        });
+        let id = app
+            .new_shape(tracedraw_core::ShapeKind::Rect {
+                rect: Rect::new(20.0, 0.0, 30.0, 10.0),
+                radius: 0.0,
+                corners: None,
+            })
+            .unwrap();
+        app.select(vec![id]);
+        let b = Rect::new(20.0, 0.0, 30.0, 10.0);
+        // Its top left corner (20, 10) moved 6 mm left lies 2.8 mm off
+        // the line y = x: it is taken onto it.
+        let d = app.snap_move(b, Vec2::new(-6.0, 0.0));
+        let corner = Point::new(20.0, 10.0) + d;
+        assert!((corner.x - corner.y).abs() < 1e-6, "{corner:?} {d:?}");
+        // Far from it nothing happens.
+        let far = app.snap_move(b, Vec2::new(30.0, 0.0));
+        assert_eq!(far, Vec2::new(30.0, 0.0));
+        assert!(app.outline_on_line(GuideLine::Angled { x: 0.0, y: 0.0, angle: 45.0 }, d));
     }
 
     /// A new drawing's grid starts at the page's top-left corner, so a
@@ -2377,6 +2630,7 @@ mod tests {
             grab: Vec2::ZERO,
             mods: Default::default(),
             snapped: (false, false),
+            flat: (false, false),
             start_geometry: g,
         };
         // Without its start geometry the right side passes the middle of
@@ -2541,6 +2795,7 @@ mod tests {
             grab: Vec2::ZERO,
             mods: Default::default(),
             snapped: (false, false),
+            flat: (false, false),
             start_geometry: None,
         };
         let q = app.snap_point_excluding(Point::new(49.0, 21.0), &[id]);
@@ -2708,6 +2963,7 @@ mod tests {
             grab: Vec2::ZERO,
             mods: Default::default(),
             snapped: (false, false),
+            flat: (false, false),
             start_geometry: None,
         };
         app.drag = scale(b, 20.0);
@@ -2793,6 +3049,7 @@ mod tests {
                 grab: Vec2::ZERO,
                 mods: Default::default(),
                 snapped: (false, false),
+                flat: (false, false),
                 start_geometry: None,
             };
             let (q, snapped) = app.snap_scale_handle(Point::new(49.5, y));

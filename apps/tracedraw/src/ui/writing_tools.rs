@@ -2,6 +2,7 @@
 //! Grammar, Thesaurus), "?" and Close; and Text > Custom Optional
 //! Hyphens. See docs/behavior/writing-tools.md.
 
+use crate::ui::btn_icons::IconUi;
 use crate::app::App;
 use crate::i18n::{tr, trf};
 use crate::theme::Tokens;
@@ -144,7 +145,7 @@ pub fn add_correction(prefs: &mut crate::autocorrect::AutocorrectPrefs, word: &s
 fn side_button(ui: &mut Ui, key: &str, enabled: bool) -> bool {
     ui.add_enabled(
         enabled,
-        egui::Button::new(tr(key)).min_size(egui::vec2(140.0, 24.0)),
+        crate::ui::btn_icons::Ib::new(key).min_size(egui::vec2(140.0, 24.0)),
     )
     .rich_tip(crate::ui::tips::keyed(key))
     .rich_disabled_tip(crate::ui::tips::keyed(key))
@@ -305,7 +306,7 @@ fn spell_tab(app: &mut App, ui: &mut Ui, st: &mut WritingToolsState) {
                     undo |= side_button(ui, "writing.undo", t.done > 0);
                     ui.end_row();
                     skip_all |= side_button(ui, "writing.skip_all", current.is_some());
-                    ui.menu_button(tr("writing.options"), |ui| {
+                    ui.imenu_button("writing.options", |ui| {
                         let p = &mut app.settings.spelling;
                         let mut changed = ui
                             .checkbox(&mut p.ignore_digits, tr("writing.ignore_digits"))
@@ -704,20 +705,20 @@ fn thesaurus_tab(app: &mut App, ui: &mut Ui, st: &mut WritingToolsState, close: 
             .rich_tip(crate::ui::tips::keyed("thesaurus.history"));
         look |= r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
         look |= ui
-            .add_sized([100.0, 24.0], egui::Button::new(tr("thesaurus.look_up")))
+            .add_sized([100.0, 24.0], crate::ui::btn_icons::Ib::new("thesaurus.look_up"))
             .rich_tip(crate::ui::tips::keyed("thesaurus.look_up"))
             .clicked();
         insert |= ui
             .add_enabled(
                 t.selected.is_some(),
-                egui::Button::new(tr("writing.insert")).min_size(egui::vec2(100.0, 24.0)),
+                crate::ui::btn_icons::Ib::new("writing.insert").min_size(egui::vec2(100.0, 24.0)),
             )
             .rich_tip(crate::ui::tips::keyed("writing.insert"))
             .rich_disabled_tip(crate::ui::tips::keyed("writing.insert"))
             .clicked();
-        let options = ui.menu_button(tr("writing.options"), |ui| {
+        let options = ui.imenu_button("writing.options", |ui| {
             ui.checkbox(&mut t.auto_close, tr("writing.auto_close"));
-            if ui.button(tr("thesaurus.pick_file")).clicked() {
+            if ui.ibutton("thesaurus.pick_file").clicked() {
                 pick_file = true;
                 ui.close();
             }
@@ -1012,7 +1013,7 @@ pub fn custom_hyphens_dialog(
                     if ui
                         .add_enabled(
                             valid,
-                            egui::Button::new(tr("hyphens.add")).min_size(egui::vec2(130.0, 24.0)),
+                            crate::ui::btn_icons::Ib::new("hyphens.add").min_size(egui::vec2(130.0, 24.0)),
                         )
                         .rich_tip_always(crate::ui::tips::keyed("hyphens.add"))
                         .clicked()
@@ -1031,7 +1032,7 @@ pub fn custom_hyphens_dialog(
                     if ui
                         .add_enabled(
                             st.selected.is_some(),
-                            egui::Button::new(tr("hyphens.remove"))
+                            crate::ui::btn_icons::Ib::new("hyphens.remove")
                                 .min_size(egui::vec2(130.0, 24.0)),
                         )
                         .rich_tip_always(crate::ui::tips::keyed("hyphens.remove"))
@@ -1092,7 +1093,7 @@ pub fn custom_hyphens_dialog(
             apply = ui
                 .add_enabled(
                     !app.text_shapes().is_empty(),
-                    egui::Button::new(tr("hyphens.apply_selection"))
+                    crate::ui::btn_icons::Ib::new("hyphens.apply_selection")
                         .min_size(egui::vec2(140.0, 27.0)),
                 )
                 .rich_tip_always(crate::ui::tips::keyed("hyphens.apply_selection"))

@@ -41,6 +41,20 @@ impl App {
         self.status = tr("status.rotate_lines_base");
     }
 
+    /// Where the next click of Rotate by Two Lines lands for the pointer
+    /// at `p` (snapped already): a line's second end goes in steps of the
+    /// constrain angle from its first while the constrain key is held,
+    /// as when drawing a line (#4373).
+    pub fn rotate_lines_point(&self, p: Point, constrain: bool) -> Point {
+        match self.pending_rotate_lines.as_deref() {
+            Some(pts) if constrain && pts.len() % 2 == 1 => pts
+                .last()
+                .map(|from| crate::interaction::constrain_from(*from, p, self.settings.constrain_angle))
+                .unwrap_or(p),
+            _ => p,
+        }
+    }
+
     /// One click of Rotate by Two Lines at `p` (page space, snapped
     /// already): the fourth turns the selection.
     pub fn rotate_lines_click(&mut self, p: Point) {
@@ -131,6 +145,17 @@ mod tests {
             10.0 + 40.0 * a.cos(),
             10.0 + 40.0 * a.sin()
         )));
+        // #4373: with the constrain key a line's second end keeps to the
+        // constrain angle's steps from its first; the first end does not.
+        app.select(vec![id]);
+        app.start_rotate_by_lines();
+        let free = Point::new(3.0, 50.0);
+        assert_eq!(app.rotate_lines_point(free, true), free);
+        app.rotate_lines_click(Point::ZERO);
+        let q = app.rotate_lines_point(Point::new(20.0, 1.0), true);
+        assert!(q.y.abs() < 1e-9 && q.x > 19.0, "{q:?}");
+        assert_eq!(app.rotate_lines_point(Point::new(20.0, 1.0), false), Point::new(20.0, 1.0));
+        app.pending_rotate_lines = None;
         // The shorter way: 350 degrees is -10.
         let t = turn_between(
             (Point::ZERO, Point::new(1.0, 0.0)),

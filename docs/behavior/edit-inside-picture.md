@@ -12,8 +12,8 @@ While a picture is edited (`app.pixel_edit` is set) the main window keeps
 its bars, palettes and panels, docked, floating and moved as ever, with
 the picture's content in them (`ui/pixel_mode.rs`):
 
-- Menus: File (Finish, Cancel), Edit (Undo, Redo, Copy or Cut the
-  selection to a layer, Paste as layer, Delete, Fill, Content Fill),
+- Menus: File (Finish, Cancel), Edit (Undo, Redo, Cut Ctrl+X, Copy
+  Ctrl+C, Paste Ctrl+V, Copy or Cut the selection to a layer, Paste as layer, Delete, Fill, Content Fill),
   View (Zoom In, Zoom Out, Fit in Window, Actual Pixels), Image (Crop to
   Selection, Auto Crop; Convert to Greyscale, Convert to Black and White;
   Mirror (across, up and down); Rotate (90 degrees clockwise Ctrl+R,
@@ -95,7 +95,13 @@ fits and Ctrl+1 shows the actual pixels.
 
 `PixelEdit` (`pixel_edit_app.rs`) holds the picture decoded to RGBA
 (`PixelImage`), an optional selection mask (one byte per pixel, 0 to
-255), the tool, its options and its own undo history. Nothing in the
+255), the tool, its options and its own undo history. The selection
+shows as marching ants (`selection_edges`): the pixel edges where the
+mask crosses half way, joined into straight runs turned clockwise round
+the selection, drawn as a black line one screen point wide with white
+dashes of 4 points (gaps of 4) moving 12 points a second; only the runs
+on screen are drawn, and past 400,000 points of outline the dashes stand
+still. Nothing in the
 document changes while editing: the page is drawn without the picture
 (`pixel_edit_doc`, the shape with `visible = false`) and the edited
 pixels are drawn over it as a texture through the picture's own
@@ -125,10 +131,11 @@ pixel y runs down, page y runs up.
 
 | Tool | Key | What it does |
 | --- | --- | --- |
-| Pick | V | drags the pixels of the layer in use (what leaves the picture is lost); its numbers move, scale, turn and flip them (see Property bar) |
+| Pick | V | a box with handles round the selected pixels (the layer's pixels that are not clear with nothing selected): a drag inside it, or away from its handles, moves them by whole pixels; the square handles at the corners and the middles of the sides scale with the opposite side staying (a corner keeps the width to the height while Keep ratio is on, Shift the other way); the round handle above, or a drag just outside a corner, turns about the middle (Shift in steps of 15 degrees). The pixels follow the drag and go into the layer on release, one undo step; the selection goes with them. Its numbers move, scale, turn and flip them, shown before Apply or Enter; Esc resets them (see Property bar) |
 | Rectangle mask | R | drag a box; Shift adds, Ctrl subtracts, Shift+Ctrl exclusive or |
 | Ellipse mask | J | drag a box |
 | Freehand mask | K | a click sets a corner, a drag draws freehand; a double click, Enter or a click within 8 points of the first corner closes it; Esc drops it |
+| Pen mask | N | a press sets a point and a drag from it pulls its two handles (opposite, or with Alt only the one going on), so the outline curves through it as a cubic curve; a click is a corner; the curve on to the pointer shows dashed; Backspace takes the last point back; a double click, Enter or a press within 8 points of the first point closes it (curves cut into steps of about 2 px); Esc drops it |
 | Lasso | A | freehand outline, closed on release |
 | Edge mask | 4 | freehand outline whose points (2 px apart) go to the strongest edge (Sobel slope of the light, less half a unit a pixel away) within the reach (1 to 40 px, 6), closed on release |
 | Magic wand | W | pixels of like colour (Tolerance, Contiguous) |
@@ -205,14 +212,30 @@ opacity and merge mode (the 28 merge modes of transparencies, drawn by
 the renderer's `composite_layer`); hidden layers are left out. While
 painting only the changed box is put together again.
 
-Layers panel (top of the side panel): the layers top first, each with a
-show box, a lock box and its name (a click uses it); the name, opacity
-(a drag of the slider is one undo step) and merge mode of the layer in
-use; New (clear, above), Duplicate, Delete (never the last), Up, Down,
+Layers panel (`ui/pixel_layers.rs`): on top the merge mode and opacity
+of the layer in use (a drag of the slider is one undo step); then the
+layers top first in a list, each a row with its show (eye) and lock
+buttons, a bent arrow when it is clipped, a miniature of its pixels
+(an adjustment layer's icon), a miniature of its mask when it has one,
+its name and, under it, its merge mode and opacity (and "hidden"). A
+click on a row uses the layer; a double click renames it in place
+(Enter or a click away keeps the name). A click on the mask's miniature
+uses the layer and paints its mask (framed in the accent), a click on
+the pixels' miniature paints its pixels again. The miniatures are made
+again at most every half second while the picture changes, never in the
+middle of a stroke. Under the list, icon buttons named in their tips:
+New (clear, above), Duplicate, Add Mask, New Adjustment Layer, Up, Down,
 Merge Down (into the one below with its opacity and mode; the one below
-keeps its settings), Flatten; Copy to Layer and Cut to Layer (the
-selected pixels, soft edges kept, on a new layer above), Paste as Layer
-(the picture on the clipboard, its top left at the selection's).
+keeps its settings), Flatten, Delete (never the last); then Copy to
+Layer and Cut to Layer (the selected pixels, soft edges kept, on a new
+layer above; greyed with no selection), Paste as Layer (the picture on
+the clipboard, its top left at the selection's), Fit to Surface and
+Clip to layer below (pushed in when on). A layer with a mask adds a
+Mask row: Paint Mask (pushed in while painting it), Invert, Apply and
+Delete. A thin line parts the rows. A right click on a row uses that
+layer and lists its commands with their icons: Rename, Duplicate, Delete,
+Show or Hide, Lock or Unlock, Clip to layer below, Up, Down, Merge Down,
+Flatten, and Add Mask or Paint Mask, Invert Mask and Delete Mask (#4108).
 
 Clip to layer below: the layer shows only where the nearest layer
 beneath it that is not clipped has pixels (its coverage after its mask).
@@ -226,7 +249,28 @@ alpha by the mask and drops it) and Delete Mask. Merge Down applies the
 top layer's mask and clip first.
 
 Crop and flip reach every layer and mask. Finish puts the layers together into
-the picture's pixels, as they were seen; the drawing keeps no layers.
+the picture's pixels, as they were seen (#4112). The layers can stay,
+chosen at the foot of the Layers menu:
+
+- Keep Layers After Finish (on by default): the layers and masks stay in
+  memory while the drawing is open, and Edit Inside on that picture opens
+  them again, the same layer in use. Turned off, the kept layers go and
+  their memory is freed; at most 8 pictures keep layers, the oldest goes
+  first, and closing the last drawing frees them all.
+- Save Layers in the Drawing File (off by default): the layers are also
+  saved with the picture, as its object data `pixel.layers` (each layer's
+  settings, its pixels and mask as PNG), hidden from the Object Data
+  panel, so they open again after the file is opened again. The file
+  grows by the layers' size.
+
+Either way the layers carry a fingerprint of the picture they were put
+together into: when the picture changed since (Undo, another edit, a
+picture swapped), they no longer fit and the picture opens as it is; a
+Finish with one plain layer drops the saved layers. When neither is on,
+Finish on a changed picture with layers asks first: Flatten and Finish,
+Keep Layers and Finish (turns the first on) or Go Back, with "Do not ask
+again" (Options > Global > Warnings, "Before Finish in the image editing
+mode puts the layers together for good").
 
 ## More selections
 
@@ -314,8 +358,11 @@ keeps its scale on the page and its top left corner.
   the whole picture and nothing changes.
 - Warp tool: Start puts a grid (2 to 8 cells a side, 4 by default) over
   the selection box, else over the box of the layer's pixels that are not
-  clear, else over the whole picture. Dragging a point (picked within 12
-  screen pixels) bends the layer through a smooth (Catmull-Rom) surface
+  clear, else over the whole picture. Dragging a point (the nearest within
+  20 screen pixels of where the button went down, so a quick drag still
+  takes it; the point keeps its distance from the pointer instead of
+  jumping under it; the point the pointer would take shows larger and
+  filled, with a grab hand, #4116) bends the layer through a smooth (Catmull-Rom) surface
   through the points, previewed live; pixels outside the box stay. Enter
   or Apply keeps it as one undo step, Reset puts the points back, Esc or
   Cancel drops it, and changing tool applies it. A mask on the layer
@@ -383,6 +430,84 @@ lights back in one step. Choosing another tool, any command that changes
 the picture, Redo, or Finish keeps the lit pixels; the lights keep their
 settings with nothing painted.
 
+## Layer styles
+
+The Layers panel has a **Layer style** part for the layer in use (not an
+adjustment layer): effects worked out from the layer's see-through edge
+each time the layers are put together, so they stay changeable until
+Merge Down, Flatten or Finish make them pixels (#4369).
+
+- **Drop shadow** and **Outer glow** go behind the layer; **Colour
+  overlay**, **Gradient overlay**, **Inner glow**, **Inner shadow**,
+  **Bevel and emboss** (inner, outer, emboss, pillow; raised or sunk) and
+  **Stroke** (outside, inside, centred) go on it. Each has its colour,
+  merge mode, opacity and sizes; the shadows and the bevel the angle the
+  light comes from.
+- **Fill** sets how much of the layer's own pixels show, its effects
+  staying (0 % leaves only the effects). **Show effects** hides them all,
+  keeping their settings. Copy, Paste and Clear work on the whole style.
+- A drag of a setting is one undo step. The style is copied with the
+  layer and kept with the layers after Finish and in the file.
+- The layer's row shows a small picture when it has a style; its
+  right-click menu has Clear layer style.
+
+## Text tool
+
+The **Text** tool (T) puts text on a layer of its own (#4370). A click
+starts a new text layer whose first baseline starts there and opens a
+box under it to type into (Enter a new line; Ctrl+Enter or Esc ends). A
+click on a text layer's letters types into it again, a drag moves it.
+The property bar has the font, the size in pixels, bold, italic,
+underline, strikethrough, the alignment, the colour, the line spacing
+and the letter spacing: changes go to the text layer in use at once,
+and are what the next text layer starts with.
+
+- The layer stays text, drawn by the drawing's own text engine, until it
+  is painted on (it becomes pixels, one undo step brings the text back),
+  scaled or turned with the Pick tool, merged down, flattened, or made
+  pixels with **Make pixels** (property bar, or the row's right-click
+  menu). Moved as a whole with the Pick tool it stays text.
+- A text layer left empty goes when the typing ends. One still named
+  "Text" takes its first words as its name.
+- Layer styles work on text layers (a shadow or an outline round text).
+
+## Right-click menu
+
+A right click on the picture (#4391 #4393 #4394):
+
+- with a brush (paint, eraser, clone, heal, the retouch brushes, the
+  liquify brushes, the mask brush, Remove, the sprayer): the brush's size,
+  hardness, opacity, flow, angle and roundness, and for the clone and
+  heal brushes the source options below; Deselect and Select Inverse
+  when there is a selection.
+- with the other tools: Deselect, Select All, Select Inverse; Feather…;
+  Modify > Border…, Smooth…, Expand…, Contract…; Transform selection (the
+  Pick tool); Copy to layer, Cut to layer, Cut, Copy, Paste; Fill…,
+  Stroke…, Content-aware fill, Delete; Crop to selection, Save selection,
+  Quick Mask.
+
+The commands with "…" ask their pixels in a small box first (Enter or OK
+runs, Esc cancels), the fill and the stroke also the colour and the
+opacity, the stroke its position (outside, inside, centred). The box
+remembers what each was last given. Expand and Contract round the
+corners as a circle rolled round them. The image menus open the same
+boxes.
+
+The selection tools' property bar has **Feather** (new selections get a
+soft edge that many pixels wide), Deselect, Select Inverse and a
+**Modify** menu of the boxed commands.
+
+## Clone source options
+
+The clone and heal brushes' **Source** menu on the property bar (and
+their right-click menu) has (#4394): the **angle** the copy is turned
+by round the source, its **scale**, **Mirror across** and **Mirror
+down**, **Copy from** (this layer, this layer and below, all layers) and
+**Aligned** (the source follows the brush from stroke to stroke; off,
+each stroke starts again at the source). **New layer for cloning** adds
+a clear layer and copies from all layers onto it, keeping the picture
+beneath as it is.
+
 ## Checks
 
 - Given a picture, when a page point is mapped to pixels and back, then
@@ -403,6 +528,24 @@ settings with nothing painted.
 - Given a picture with a half-opaque layer, when finished, then the
   picture holds the layers put together, and a locked layer was not
   changed (`finish_puts_the_layers_together_and_a_locked_layer_keeps_its_pixels`).
+- Copy, cut and paste: Ctrl+C takes the selected pixels of the layer in
+  use (the whole layer with nothing selected), cut to the selection's
+  box, and puts them on the system clipboard as a picture too; Ctrl+X
+  also clears them; Ctrl+V pastes what was taken as a new layer at the
+  place it was taken from (a picture copied in another program at the
+  selection's top left) with nothing selected after, so the Pick tool's
+  box is round the pasted pixels
+  (`copy_paste_puts_the_pixels_back_where_they_were_and_move_takes_them`,
+  `a_cut_clears_the_selected_pixels`,
+  `copy_takes_the_selected_pixels_cut_to_their_box`).
+- Pick tool: `the_move_box_handles_move_scale_and_turn`,
+  `a_whole_pixel_move_keeps_the_pixels_sharp`,
+  `the_move_tool_moves_only_the_selected_pixels_and_the_selection`.
+- Given an effect open in the Effects panel, when a stroke is painted,
+  then the preview shows again on the painted pixels once the button is
+  up (`the_effect_preview_comes_back_after_painting_with_it_open`). A
+  painting tool on an adjustment layer says the layer has no pixels to
+  paint.
 - Layers: `a_new_layer_is_clear_and_painting_changes_only_it`,
   `layer_opacity_visibility_and_merge_mode_change_what_is_seen`,
   `merge_down_flatten_delete_and_order`,

@@ -74,16 +74,11 @@ pub fn retext_spans(spans: &mut Vec<TextSpan>, new: &str) {
     debug_assert_eq!(spans_char_count(spans), new.len());
 }
 
-/// Call `f` with every text object that has a content link, nested ones
-/// too, in drawing order (master layers first, then the pages).
-fn each_linked_text<'a>(doc: &'a Document, f: &mut dyn FnMut(u64, &'a Shape)) {
-    fn walk<'a>(s: &'a Shape, f: &mut dyn FnMut(u64, &'a Shape)) {
+/// Call `f` with each text object, nested ones too, in drawing order.
+fn each_text<'a>(doc: &'a Document, f: &mut dyn FnMut(&'a Shape)) {
+    fn walk<'a>(s: &'a Shape, f: &mut dyn FnMut(&'a Shape)) {
         match &s.kind {
-            ShapeKind::Text { .. } => {
-                if let Some(link) = s.content_link {
-                    f(link, s);
-                }
-            }
+            ShapeKind::Text { .. } => f(s),
             ShapeKind::Group { children } => children.iter().for_each(|c| walk(c, f)),
             ShapeKind::ClipFrame { frame, contents } => {
                 walk(frame, f);
@@ -99,13 +94,12 @@ fn each_linked_text<'a>(doc: &'a Document, f: &mut dyn FnMut(u64, &'a Shape)) {
     }
 }
 
-/// Every text object with a content link and its characters.
-fn linked_texts(doc: &Document) -> Vec<(u64, ShapeId, String)> {
-    let mut out = Vec::new();
-    each_linked_text(doc, &mut |link, s| {
-        out.push((link, s.id, text_of(s).unwrap_or_default()));
+fn each_linked_text<'a>(doc: &'a Document, f: &mut dyn FnMut(u64, &'a Shape)) {
+    each_text(doc, &mut |s| {
+        if let Some(link) = s.content_link {
+            f(link, s);
+        }
     });
-    out
 }
 
 impl Document {
@@ -137,15 +131,23 @@ impl Document {
     /// altered (the first in drawing order when several were) gives its
     /// characters to the others; with none altered (a text just joined
     /// the link, pasted or undone into it) a text that was there before
-    /// gives them, else the first. Cheap when nothing is linked.
+    /// gives them, else the first. Also update text guides attached to
+    /// edited outlines. Cheap when nothing is linked.
     pub fn sync_linked_text(&mut self, before: &Document) {
-        let now = linked_texts(self);
-        if now.is_empty() {
-            return;
-        }
+        let mut paths = Vec::new();
         let mut links: BTreeMap<u64, Vec<(ShapeId, String)>> = BTreeMap::new();
-        for (link, id, text) in now {
-            links.entry(link).or_default().push((id, text));
+        each_text(self, &mut |s| {
+            if let Some(link) = s.content_link {
+                links.entry(link).or_default().push((s.id, text_of(s).unwrap_or_default()));
+            }
+            if let ShapeKind::Text { on_path: Some(tp), .. } = &s.kind {
+                if let Some(source) = tp.source {
+                    paths.push((s.id, source));
+                }
+            }
+        });
+        for (id, source) in paths {
+            self.sync_text_path(before, id, source);
         }
         for members in links.values() {
             let Some((_, first)) = members.first() else {

@@ -128,10 +128,105 @@ fn made(
     Some(out)
 }
 
+/// A PNG decoded without the decoder's usual memory cap: a picture
+/// already in the drawing may be larger than it (#4201: 11834 x 25340
+/// pixels).
+fn decode_any(png: &[u8], format: image::ImageFormat) -> Option<image::DynamicImage> {
+    let mut r = image::ImageReader::with_format(std::io::Cursor::new(png), format);
+    r.no_limits();
+    r.decode().ok()
+}
+
+/// Make the pictures in `s` no larger than an output at `dpi` shows
+/// (twice that, for the resampling to keep the detail), their ink
+/// channels with them (#4201: the inks of a picture too large to split
+/// were left out of a CMYK export, which came out grey). Smaller
+/// pictures stay as they are.
+pub fn fit_pictures_to(s: &mut Shape, dpi: f64) {
+    fit_pictures(s, dpi, 16_000_000.0);
+}
+
+/// [`fit_pictures_to`], for pictures of at least `least` pixels.
+fn fit_pictures(s: &mut Shape, dpi: f64, least: f64) {
+    match &mut s.kind {
+        ShapeKind::Group { children } => {
+            children.iter_mut().for_each(|c| fit_pictures(c, dpi, least));
+            return;
+        }
+        ShapeKind::ClipFrame { frame, contents } => {
+            fit_pictures(frame, dpi, least);
+            contents.iter_mut().for_each(|c| fit_pictures(c, dpi, least));
+            return;
+        }
+        _ => {}
+    }
+    let c = s.transform.as_coeffs();
+    let (sx, sy) = (c[0].hypot(c[1]), c[2].hypot(c[3]));
+    let ShapeKind::Bitmap {
+        rect,
+        width_px,
+        height_px,
+        png,
+        ..
+    } = &mut s.kind
+    else {
+        return;
+    };
+    let px = |mm: f64| (mm / 25.4 * dpi * 2.0).ceil().max(1.0);
+    let (want_w, want_h) = (px(rect.width().abs() * sx), px(rect.height().abs() * sy));
+    let (w, h) = (f64::from(*width_px), f64::from(*height_px));
+    // Small pictures, and those already near the output's size, stay.
+    if w * h < least || (w <= want_w * 1.5 && h <= want_h * 1.5) {
+        return;
+    }
+    let (nw, nh) = (want_w.min(w) as u32, want_h.min(h) as u32);
+    let inks = s
+        .picture_inks
+        .as_deref()
+        .filter(|i| i.fits(png.as_slice()))
+        .cloned();
+    let Some(img) = decode_any(png.as_slice(), image::ImageFormat::Png) else {
+        return;
+    };
+    let (ow, oh) = (img.width(), img.height());
+    let small = image::imageops::resize(&img.to_rgba8(), nw, nh, image::imageops::FilterType::Triangle);
+    drop(img);
+    let Some(new_png) = crate::bitmap_fx::encode(&small) else {
+        return;
+    };
+    let new_png = SharedBytes::from(new_png);
+    let new_inks = inks.and_then(|i| {
+        let planes = decode_any(i.png.as_slice(), image::ImageFormat::Png)?.to_luma8();
+        let n = i.inks.len() as u32;
+        if n == 0 || planes.width() != ow || planes.height() != oh * n {
+            return None;
+        }
+        let mut out = image::GrayImage::new(nw, nh * n);
+        for k in 0..n {
+            let plane = image::imageops::crop_imm(&planes, 0, k * oh, ow, oh).to_image();
+            let shrunk =
+                image::imageops::resize(&plane, nw, nh, image::imageops::FilterType::Triangle);
+            image::imageops::replace(&mut out, &shrunk, 0, i64::from(k * nh));
+        }
+        let mut buf = Vec::new();
+        out.write_to(&mut std::io::Cursor::new(&mut buf), image::ImageFormat::Png)
+            .ok()?;
+        Some(PictureInks {
+            inks: i.inks.clone(),
+            png: SharedBytes::from(buf),
+            of: tracedraw_core::picture_inks::fingerprint(new_png.as_slice()),
+        })
+    });
+    *png = new_png;
+    *width_px = nw;
+    *height_px = nh;
+    s.picture_inks = new_inks.map(Box::new);
+}
+
 /// Split a picture into its inks: from the channels it keeps, else its
 /// pixels through the colour management.
 fn separate(png: &[u8], inks: Option<&PictureInks>) -> Option<Separated> {
-    let img = crate::bitmap_fx::decode(png)?;
+    let img = decode_any(png, image::ImageFormat::Png)?.to_rgba8();
     let (width, height) = img.dimensions();
     let n = width as usize * height as usize;
     let alpha: Vec<u8> = img.pixels().map(|p| p[3]).collect();
@@ -165,9 +260,7 @@ fn separate(png: &[u8], inks: Option<&PictureInks>) -> Option<Separated> {
 
 /// The inks a picture keeps, when they decode to planes of its size.
 fn from_channels(inks: &PictureInks, width: u32, height: u32, alpha: &[u8]) -> Option<Separated> {
-    let planes = image::load_from_memory_with_format(&inks.png, image::ImageFormat::Png)
-        .ok()?
-        .to_luma8();
+    let planes = decode_any(&inks.png, image::ImageFormat::Png)?.to_luma8();
     let n = width as usize * height as usize;
     if planes.width() != width
         || planes.height() as usize != height as usize * inks.inks.len()
@@ -355,5 +448,75 @@ pub fn swap_pictures(s: &mut Shape, picture: &dyn Fn(&Shape) -> Option<SharedByt
             contents.iter_mut().for_each(|c| swap_pictures(c, picture));
         }
         _ => {}
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tracedraw_core::geometry::Rect;
+
+    /// A picture far larger than the output keeps its inks when it is
+    /// made smaller for it (#4201): cyan on the left half, red (magenta
+    /// and yellow) on the right, on every plate as before.
+    #[test]
+    fn a_large_picture_made_smaller_keeps_its_inks() {
+        let (w, h) = (400u32, 200u32);
+        let img = image::RgbaImage::from_fn(w, h, |x, _| {
+            image::Rgba(if x < w / 2 { [0, 160, 230, 255] } else { [230, 30, 40, 255] })
+        });
+        let png = crate::bitmap_fx::encode(&img).expect("png");
+        let planes = image::GrayImage::from_fn(w, h * 4, |x, y| {
+            let ink = y / h;
+            image::Luma([match (ink, x < w / 2) {
+                (0, true) | (1, false) | (2, false) => 255,
+                _ => 0,
+            }])
+        });
+        let mut buf = std::io::Cursor::new(Vec::new());
+        planes
+            .write_to(&mut buf, image::ImageFormat::Png)
+            .expect("planes");
+        let mut s = Shape::new(
+            tracedraw_core::ShapeId(1),
+            ShapeKind::Bitmap {
+                rect: Rect::new(0.0, 0.0, 40.0, 20.0),
+                width_px: w,
+                height_px: h,
+                png: png.clone().into(),
+                fx: None,
+            },
+        );
+        s.cmyk_bitmap = true;
+        s.picture_inks = Some(Box::new(PictureInks::cmyk(&png, buf.into_inner().into())));
+        // 25.4 dpi: 40 x 20 pixels shown, so 80 x 40 kept.
+        fit_pictures(&mut s, 25.4, 0.0);
+        let ShapeKind::Bitmap {
+            width_px,
+            height_px,
+            png,
+            ..
+        } = &s.kind
+        else {
+            panic!("bitmap");
+        };
+        assert_eq!((*width_px, *height_px), (80, 40));
+        let inks = s.picture_inks.as_deref().expect("inks kept");
+        assert!(inks.fits(png.as_slice()));
+        let at = |plate: Plate, x: u32| {
+            let p = plate_picture(&s, plate).expect("plate");
+            let img = crate::bitmap_fx::decode(&p).expect("png");
+            assert_eq!(img.dimensions(), (80, 40));
+            255 - img.get_pixel(x, 20).0[0]
+        };
+        assert!(at(Plate::Process(0), 10) > 250);
+        assert!(at(Plate::Process(0), 70) < 5);
+        assert!(at(Plate::Process(1), 70) > 250);
+        assert!(at(Plate::Process(2), 70) > 250);
+        assert!(at(Plate::Process(3), 10) < 5);
+        // Pictures near the output's size stay as they are.
+        let before = s.clone();
+        fit_pictures(&mut s, 25.4, 0.0);
+        assert_eq!(s, before);
     }
 }

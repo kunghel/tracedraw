@@ -1022,7 +1022,8 @@ Sub Main()
 End Sub
 "##,
     );
-    assert!(e.contains("445") || e.contains("Not supported"), "{e}");
+    // No file is open with that number.
+    assert!(e.contains("'52'"), "{e}");
 }
 
 #[test]
@@ -1092,4 +1093,24 @@ End Sub
         out,
         vec!["[10]", "12", "1             Name          x", "[]"]
     );
+}
+
+#[test]
+fn resume_to_a_label_inside_a_block_compiles() {
+    // #4315: a published macro's handler and its label sit inside an If
+    // (a stray End If); the Sub never reaches them and must still run.
+    let out = run(r##"
+Sub Main()
+    On Error Resume Next
+    If True Then
+        Debug.Print "work"
+ExitSub:
+        Debug.Print "done"
+        Exit Sub
+ErrHandler:
+        Resume ExitSub
+    End If
+End Sub
+"##);
+    assert_eq!(out, vec!["work", "done"]);
 }

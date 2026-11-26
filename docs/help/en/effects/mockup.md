@@ -8,6 +8,37 @@ frame keeps the print on the shirt.
 
 ![The design placed on the photo](../../img/effects-mockup-1-design.png)
 
+## The quick way: the Mockup panel {#panel}
+
+[[menu.effects > menu.effects.mockup]] does all of this in one click, on
+sixteen ready product photos (T-shirts, mugs, a bottle, a tote bag, a
+cushion, a poster, a shop sign, a van, business cards, a flyer, a flag, a
+phone case and a box) or on a photo of your own.
+
+1. Select the design.
+2. In the [[docker.mockup]] panel, click a product. The larger picture
+   shows where the design will land.
+3. Set **[[docker.mockup_size]]**, **[[docker.mockup_across]]** and
+   **[[docker.mockup_down]]** if needed, and press **[[docker.apply]]**.
+
+The design bends onto the product (a mesh envelope that follows the
+perspective, the round of a mug or the waves of a flag), takes the photo's
+folds, shadows and highlights (Displace) and, on light products, the
+Multiply merge mode. Everything stays editable. With the mockup selected,
+click another product and press **[[docker.apply]]** again to try it there.
+
+- **[[docker.mockup_shading]]** and **[[docker.mockup_texture]]** make the
+  photo's light and folds stronger or weaker on the print.
+- **[[docker.mockup_blend]]**: Multiply for light products, Normal to keep
+  the ink's colours on dark ones.
+- **[[mockup.own_photo]]**: select your photo together with the design.
+  The design goes in the middle of the photo; fit it with the
+  [[tool.envelope]] tool.
+- **[[docker.mockup_export]]** saves the mockup as a JPG to send to the
+  client, with an optional **[[docker.mockup_caption]]** under it.
+
+The steps below do the same by hand, on a photo of your own.
+
 ## Place the photo and the design {#place}
 
 1. Choose [[menu.file > menu.file.import]] and import a photo of a plain shirt,

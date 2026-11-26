@@ -802,10 +802,21 @@ impl crate::app::App {
                     out.push(s.clone());
                 }
             }
-            if let tracedraw_core::document::ShapeKind::Group { children } = &s.kind {
-                for c in children {
-                    walk(c, dpi, out);
+            // Inside groups and clip frames too: a picture inside a clip
+            // frame made from an earlier state was never made again (#4105).
+            match &s.kind {
+                tracedraw_core::document::ShapeKind::Group { children } => {
+                    for c in children {
+                        walk(c, dpi, out);
+                    }
                 }
+                tracedraw_core::document::ShapeKind::ClipFrame { frame, contents } => {
+                    walk(frame, dpi, out);
+                    for c in contents {
+                        walk(c, dpi, out);
+                    }
+                }
+                _ => {}
             }
         }
         if !self.has_document() {
@@ -1189,6 +1200,110 @@ mod tests {
         hidden.effects[0].visible = false;
         let (same, _) = render_stack(&hidden, true, None).expect("renders");
         assert_eq!(same, src);
+    }
+
+    /// A blurred object inside a clip frame whose picture was made from an
+    /// earlier state of it gets a new picture, as one on the layer does
+    /// (#4105: the picture of the object as it was stayed).
+    #[test]
+    fn a_stale_picture_inside_a_clip_frame_is_made_again() {
+        use tracedraw_core::document::ShapeKind;
+        use tracedraw_core::Rect;
+        let mut app = crate::app::App::headless();
+        let sq = app
+            .new_shape(ShapeKind::Rect {
+                rect: Rect::new(40.0, 40.0, 60.0, 60.0),
+                radius: 0.0,
+                corners: None,
+            })
+            .expect("square");
+        let cmd = app
+            .bitmap_fx_command(sq, |v| {
+                let mut blur = new_effect("gaussian_blur");
+                blur.params.insert("radius".into(), 10.0);
+                v.push(blur);
+            })
+            .expect("blur");
+        app.run(cmd);
+        let fr = app
+            .new_shape(ShapeKind::Rect {
+                rect: Rect::new(0.0, 0.0, 150.0, 150.0),
+                radius: 0.0,
+                corners: None,
+            })
+            .expect("frame");
+        app.place_inside(vec![sq], fr);
+        let mut clip = app.doc().find_shape(fr).expect("clip").clone();
+        let ShapeKind::ClipFrame { contents, .. } = &mut clip.kind else {
+            panic!("a clip frame");
+        };
+        // Its state changes under the picture (scaled to half).
+        contents[0].transform = tracedraw_core::geometry::Affine::scale(0.5);
+        let _ = app.engine.amend(&tracedraw_core::Command::ReplaceShapes {
+            replacements: vec![(fr, clip)],
+        });
+        let stale = app.doc().find_shape(sq).expect("square").clone();
+        assert_ne!(stale.raster_fx.as_ref().unwrap().source, stale.raster_source());
+        app.sync_raster_fx();
+        let s = app.doc().find_shape(sq).expect("square");
+        assert_eq!(s.raster_fx.as_ref().unwrap().source, s.raster_source());
+    }
+
+    /// A Gaussian blur on a vector object spreads past the object's box
+    /// on the page: a view of only the blurred rim shows it as the whole
+    /// page does (#4082: the picture was cut at the object's box, a hard
+    /// edge round the blur).
+    #[test]
+    fn a_blurred_vector_object_is_not_cut_at_its_box() {
+        use tracedraw_core::document::{Shape, ShapeKind};
+        use tracedraw_core::geometry::{Rect, Size};
+        let mut doc = tracedraw_core::Document::new("t", Size::new(100.0, 100.0));
+        let mut sq = Shape::new(
+            tracedraw_core::ShapeId(7),
+            ShapeKind::Rect {
+                rect: Rect::new(40.0, 40.0, 60.0, 60.0),
+                radius: 0.0,
+                corners: None,
+            },
+        );
+        sq.fill = tracedraw_core::Fill::Solid(tracedraw_core::Color::BLACK);
+        sq.stroke = None;
+        let mut blur = new_effect("gaussian_blur");
+        blur.params.insert("radius".into(), 40.0);
+        sq.raster_fx = vector_raster_fx(&sq, &[], vec![blur], true, 150.0);
+        let rect = sq.raster_fx.as_ref().expect("picture").rect;
+        assert!(rect.x1 > 62.0, "the picture grows past the object: {rect:?}");
+        let page = doc.pages[0].id;
+        let layer = doc.pages[0].layers[0].id;
+        doc.layer_mut(layer).unwrap().shapes.push(sq);
+        let zoom = 4.0;
+        let alpha_at = |x0: f64, w: u32, x: f64, y: f64| {
+            let pm = tracedraw_render::render_page(
+                &doc,
+                page,
+                &tracedraw_render::RenderOptions {
+                    width: w,
+                    height: 400,
+                    view: tracedraw_render::ViewTransform {
+                        zoom,
+                        origin_x: -x0 * zoom,
+                        origin_y: 400.0,
+                        stretch_y: 1.0,
+                    },
+                    preview: None,
+                    wireframe: false,
+                    ..tracedraw_render::RenderOptions::default()
+                },
+            )
+            .expect("renders");
+            let px = ((x - x0) * zoom) as u32;
+            let py = (400.0 - y * zoom) as u32;
+            pm.pixel(px, py).expect("inside").alpha()
+        };
+        let whole = alpha_at(0.0, 400, 63.5, 50.0);
+        assert!(whole > 0, "the blur reaches past the box");
+        let rim = alpha_at(63.0, 36, 63.5, 50.0);
+        assert_eq!(rim, whole, "a view of the rim alone shows it too");
     }
 
     #[test]

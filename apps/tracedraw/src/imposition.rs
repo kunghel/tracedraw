@@ -137,8 +137,8 @@ pub struct Booklet {
     /// The space between the two pages of a spread, mm, centred on the
     /// fold.
     pub gap: f64,
-    /// Pages on each side of a sheet: 2 (one fold), 4 or 8 (a large
-    /// sheet folded into a signature of 8 or 16 pages, #3380).
+    /// Pages on each side of a sheet: 2 (one fold), 4, 8 or 16 (a large
+    /// sheet folded into a signature of 8, 16 or 32 pages, #3380, #4279).
     pub up: u32,
 }
 
@@ -178,12 +178,24 @@ impl Booklet {
         Self::safe(self.creep, 20.0)
     }
 
-    /// Pages on each side of a sheet: 2, 4 or 8.
+    /// Pages on each side of a sheet: 2, 4, 8 or 16.
     pub fn pages_per_side(&self) -> usize {
         match self.up {
             4 => 4,
             8 => 8,
+            16 => 16,
             _ => 2,
+        }
+    }
+
+    /// The folds that make a signature of a sheet printed
+    /// [`Self::pages_per_side`] pages a side ('v' across the columns, 'h'
+    /// across the rows), the last one the spine.
+    fn folds(&self) -> &'static [u8] {
+        match self.pages_per_side() {
+            16 => b"hvhv",
+            8 => b"vhv",
+            _ => b"hv",
         }
     }
 
@@ -192,6 +204,7 @@ impl Booklet {
         match self.pages_per_side() {
             4 => (2, 2),
             8 => (4, 2),
+            16 => (4, 4),
             _ => (2, 1),
         }
     }
@@ -207,11 +220,27 @@ impl Booklet {
 /// the last fold the spine; read front to back, the leaves of the folded
 /// sheet are the pages in order.
 fn folded_places(cols: usize, rows: usize, folds: &[u8]) -> [Vec<(usize, bool)>; 2] {
+    folded_layout(cols, rows, folds).0
+}
+
+/// [`folded_places`], with the side the spine is on for each place of
+/// the front and of the back: -1 to its left, 1 to its right on the
+/// flat sheet. The last fold, across the columns, lays the left half
+/// behind the right one, so the spine is at the left of a page no fold
+/// across the columns has turned over, at its right after an odd number
+/// of them; the back, turned over side to side, has it the other way.
+#[allow(clippy::type_complexity)]
+fn folded_layout(
+    cols: usize,
+    rows: usize,
+    folds: &[u8],
+) -> ([Vec<(usize, bool)>; 2], [Vec<f64>; 2]) {
     // Each place of the folded sheet: its leaves front to back, each a
     // place of the flat sheet and whether its front faces the front.
     let (mut w, mut h) = (cols, rows);
     let mut stacks: Vec<Vec<(usize, bool)>> = (0..cols * rows).map(|i| vec![(i, true)]).collect();
     let mut turned = vec![false; cols * rows];
+    let mut mirrored = vec![false; cols * rows];
     for &f in folds {
         let across = f == b'v';
         let (nw, nh) = if across { (w / 2, h) } else { (w, h / 2) };
@@ -236,8 +265,10 @@ fn folded_places(cols: usize, rows: usize, folds: &[u8]) -> [Vec<(usize, bool)>;
                     (x, h - 1 - y - nh)
                 };
                 let st = &stacks[y * w + x];
-                if !across {
-                    for &(i, _) in st {
+                for &(i, _) in st {
+                    if across {
+                        mirrored[i] = !mirrored[i];
+                    } else {
                         turned[i] = !turned[i];
                     }
                 }
@@ -250,6 +281,8 @@ fn folded_places(cols: usize, rows: usize, folds: &[u8]) -> [Vec<(usize, bool)>;
     let leaves = stacks.into_iter().next().unwrap_or_default();
     let mut front = vec![(0, false); cols * rows];
     let mut back = vec![(0, false); cols * rows];
+    let mut spine_front = vec![-1.0; cols * rows];
+    let mut spine_back = vec![1.0; cols * rows];
     for (k, (i, faces_front)) in leaves.into_iter().enumerate() {
         let (a, b) = if faces_front {
             (2 * k, 2 * k + 1)
@@ -260,8 +293,11 @@ fn folded_places(cols: usize, rows: usize, folds: &[u8]) -> [Vec<(usize, bool)>;
         front[i] = (a, turned[i]);
         // The back, turned over side to side: the column mirrored.
         back[y * cols + (cols - 1 - x)] = (b, turned[i]);
+        let spine = if mirrored[i] { 1.0 } else { -1.0 };
+        spine_front[i] = spine;
+        spine_back[y * cols + (cols - 1 - x)] = -spine;
     }
-    [front, back]
+    ([front, back], [spine_front, spine_back])
 }
 
 /// The sides of the sheets of a booklet printed 4 or 8 pages a side
@@ -273,8 +309,7 @@ fn folded_places(cols: usize, rows: usize, folds: &[u8]) -> [Vec<(usize, bool)>;
 pub fn folded_sides(pages: usize, b: &Booklet) -> Vec<Vec<(Option<usize>, bool)>> {
     let up = b.pages_per_side();
     let (cols, rows) = b.grid();
-    let folds: &[u8] = if up == 8 { b"vhv" } else { b"hv" };
-    let places = folded_places(cols as usize, rows as usize, folds);
+    let places = folded_places(cols as usize, rows as usize, b.folds());
     let per = 2 * up;
     let sheets = pages.div_ceil(per).max(1);
     let padded = sheets * per;
@@ -291,6 +326,48 @@ pub fn folded_sides(pages: usize, b: &Booklet) -> Vec<Vec<(Option<usize>, bool)>
         };
         for side in &places {
             out.push(side.iter().map(|&(i, turned)| (page(i), turned)).collect());
+        }
+    }
+    out
+}
+
+/// How far creep moves the page in each place of each side of
+/// [`folded_sides`] across the sheet (mm, x right; #4280): toward the
+/// spine, nothing for the outermost leaf, [`Booklet::creep_mm`] for the
+/// innermost. In a signature the leaves nest round its middle;
+/// saddle-stitched, the signatures nest too (the first round all the
+/// others), so the creep grows from the outer leaf of the first
+/// signature to the middle of the last; perfect-bound, each signature
+/// is folded and trimmed on its own and takes the whole creep.
+pub fn folded_creep(pages: usize, b: &Booklet) -> Vec<Vec<f64>> {
+    let up = b.pages_per_side();
+    let (cols, rows) = b.grid();
+    let (places, spines) = folded_layout(cols as usize, rows as usize, b.folds());
+    let per = 2 * up;
+    let sheets = pages.div_ceil(per).max(1);
+    // Leaves nested in one signature.
+    let levels = per / 4;
+    let (total, saddle) = match b.binding {
+        Binding::SaddleStitch => (sheets * levels, true),
+        Binding::PerfectBound => (levels, false),
+    };
+    let creep = b.creep_mm();
+    let mut out = Vec::new();
+    for s in 0..sheets {
+        for (side, spine) in places.iter().zip(&spines) {
+            out.push(
+                side.iter()
+                    .zip(spine)
+                    .map(|(&(i, _), &dir)| {
+                        let depth = i.min(per - 1 - i) / 2 + if saddle { s * levels } else { 0 };
+                        if total < 2 || creep == 0.0 {
+                            0.0
+                        } else {
+                            dir * creep * depth as f64 / (total - 1) as f64
+                        }
+                    })
+                    .collect(),
+            );
         }
     }
     out
@@ -641,6 +718,12 @@ pub fn plan(sizes: &[Size], o: &Options) -> Vec<SheetPlan> {
         Layout::Booklet if folded.is_empty() => booklet_sides(sizes.len(), &o.booklet),
         _ => Vec::new(),
     };
+    // Folded signatures: each place moves on its own (#4280).
+    let folded_shift: Vec<Vec<f64>> = if folded.is_empty() {
+        Vec::new()
+    } else {
+        folded_creep(sizes.len(), &o.booklet)
+    };
     let creep: Vec<f64> = sides
         .iter()
         .map(|s| {
@@ -692,6 +775,19 @@ pub fn plan(sizes: &[Size], o: &Options) -> Vec<SheetPlan> {
     };
     // The pages of a folded signature that stand upside down, moved with
     // their pages.
+    let folded_shift: Vec<Vec<f64>> = folded_shift
+        .into_iter()
+        .map(|shift| {
+            if o.cell_order.is_empty() {
+                shift
+            } else {
+                place_order(&o.cell_order, shift.len())
+                    .into_iter()
+                    .map(|i| shift.get(i).copied().unwrap_or(0.0))
+                    .collect()
+            }
+        })
+        .collect();
     let upside_down: Vec<Vec<bool>> = folded
         .iter()
         .map(|side| {
@@ -832,8 +928,15 @@ pub fn plan(sizes: &[Size], o: &Options) -> Vec<SheetPlan> {
                     let col = if o.back_side { cols - 1 - col } else { col } as f64;
                     let row = (n as u32 / cols) as f64;
                     let ps = page.and_then(|i| sizes.get(i)).copied().unwrap_or(cell);
-                    // Creep: the left page moves right, the right page left.
-                    let toward_spine = if col == 0.0 { creep } else { -creep };
+                    // Creep: the left page moves right, the right page
+                    // left; in a folded signature each place toward its
+                    // own spine (#4280).
+                    let toward_spine = match folded_shift.get(side).and_then(|f| f.get(n)) {
+                        Some(&shift) if o.back_side => -shift,
+                        Some(&shift) => shift,
+                        None if col == 0.0 => creep,
+                        None => -creep,
+                    };
                     // The page centred in its cell (y up: row 0 at the top).
                     let cx = x0
                         + (col * step_x + inner_bleed + cell.width / 2.0 + toward_spine) * sx
@@ -2019,6 +2122,120 @@ mod tests {
         let p = plan(&[page; 5], &o);
         assert_eq!(p.len(), 4);
         assert!(p.iter().all(|s| gap_of(s).abs() < 1e-9));
+    }
+
+    /// A sheet 16 pages a side folds into a signature of 32 (#4279).
+    #[test]
+    fn sixteen_a_side_folds_into_a_signature_of_32() {
+        let b = Booklet {
+            up: 16,
+            ..Default::default()
+        };
+        assert_eq!(b.grid(), (4, 4));
+        let sides = folded_sides(32, &b);
+        assert_eq!(sides.len(), 2);
+        let mut all: Vec<usize> = sides.iter().flatten().filter_map(|p| p.0).collect();
+        all.sort_unstable();
+        assert_eq!(all, (0..32).collect::<Vec<_>>());
+        // The first and last pages meet at the spine on the front, the
+        // first on the right.
+        let front = &sides[0];
+        let at = |p: usize| front.iter().position(|c| c.0 == Some(p));
+        let (first, last) = (at(0).unwrap_or(99), at(31).unwrap_or(99));
+        assert_eq!(first / 4, last / 4, "same row");
+        assert_eq!(first, last + 1, "{front:?}");
+        // 40 pages take two sheets.
+        let info = booklet_info(40, &b);
+        assert_eq!((info.sheets, info.blanks), (2, 24));
+        // Every leaf's two pages sit back to back: the place behind a
+        // page holds its other side.
+        for (f, k) in sides[0].iter().zip(0..) {
+            let behind = sides[1][(k / 4) * 4 + 3 - k % 4].0;
+            let (a, b) = (f.0.unwrap_or(0), behind.unwrap_or(0));
+            assert_eq!(a.min(b) % 2, 0);
+            assert_eq!(a.abs_diff(b), 1, "{a} behind {b}");
+        }
+    }
+
+    /// Creep in folded signatures (#4280): the outer leaf stays, the
+    /// innermost moves the whole creep toward the spine, both sides of a
+    /// leaf by the same amount; the plan moves the pages by it.
+    #[test]
+    fn folded_signatures_take_creep() {
+        for up in [4u32, 8, 16] {
+            let b = Booklet {
+                up,
+                creep: 3.0,
+                ..Default::default()
+            };
+            let per = 2 * up as usize;
+            let sides = folded_sides(per, &b);
+            let creep = folded_creep(per, &b);
+            assert_eq!(creep.len(), sides.len());
+            let shift_of = |p: usize| {
+                sides
+                    .iter()
+                    .zip(&creep)
+                    .find_map(|(s, c)| s.iter().position(|x| x.0 == Some(p)).map(|i| c[i]))
+                    .unwrap_or(f64::NAN)
+            };
+            assert!(shift_of(0).abs() < 1e-9, "up {up}: first page stays");
+            assert!(shift_of(per - 1).abs() < 1e-9);
+            let mid = per / 2;
+            assert!((shift_of(mid - 1).abs() - 3.0).abs() < 1e-9, "up {up}");
+            assert!((shift_of(mid).abs() - 3.0).abs() < 1e-9, "up {up}");
+            // Both pages of a leaf move the same way on the paper's
+            // two sides: toward the spine, mirrored on the back.
+            for p in (0..per).step_by(2) {
+                assert!((shift_of(p) + shift_of(p + 1)).abs() < 1e-9, "up {up} page {p}");
+            }
+            // Toward the spine: two pages side by side that meet at the
+            // spine (page p beside page per - 1 - p) move toward each
+            // other.
+            let (cols, _) = b.grid();
+            let cols = cols as usize;
+            for (side, c) in sides.iter().zip(&creep) {
+                for k in 0..side.len() - 1 {
+                    if k % cols == cols - 1 {
+                        continue;
+                    }
+                    if let (Some(a), Some(z)) = (side[k].0, side[k + 1].0) {
+                        if a + z == per - 1 {
+                            assert!(c[k] >= 0.0 && c[k + 1] <= 0.0, "up {up}: {side:?} {c:?}");
+                        }
+                    }
+                }
+            }
+            // The plan moves the pages.
+            let o = Options {
+                layout: Layout::Booklet,
+                booklet: b,
+                ..Default::default()
+            };
+            let none = Options {
+                booklet: Booklet { creep: 0.0, ..b },
+                ..o.clone()
+            };
+            let page = Size::new(100.0, 150.0);
+            let with = plan(&vec![page; per], &o);
+            let without = plan(&vec![page; per], &none);
+            for ((a, b), shifts) in with.iter().zip(&without).zip(&creep) {
+                for ((ca, cb), s) in a.cells.iter().zip(&b.cells).zip(shifts) {
+                    assert!((ca.trim.x0 - cb.trim.x0 - s).abs() < 1e-9);
+                }
+            }
+        }
+        // Saddle-stitched signatures nest: the outer leaf of the second
+        // signature moves, perfect-bound it does not.
+        let b = Booklet {
+            up: 4,
+            creep: 3.0,
+            ..Default::default()
+        };
+        let c = folded_creep(16, &b);
+        assert!(c[2].iter().all(|v| v.abs() > 0.5), "{c:?}");
+        let c = folded_creep(16, &Booklet { binding: Binding::PerfectBound, ..b });
+        assert!(c[2].iter().any(|v| v.abs() < 1e-9), "{c:?}");
     }
 
     #[test]

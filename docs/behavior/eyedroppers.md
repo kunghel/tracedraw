@@ -207,6 +207,17 @@ The Color Eyedropper also picks colours that no object gives (#3040):
   the window, on the panels, toolbars and palettes too, takes the colour
   shown there; the click presses nothing under it, and Esc or another
   tool ends it.
+- Outside the window (#4083): pressed in the window (on the drawing, or
+  with Sample from Screen anywhere) and let go outside it, the tool takes
+  the colour the screen shows where it was let go: the desktop, the task
+  bar, another program. Only where the system lets a program read the
+  screen (Windows); elsewhere the status line says the colour could not
+  be read (`screen_sample::desktop_color_at_cursor`).
+- Over a photo being traced, a plain click takes the colour the drawing
+  shows: inside an outline with no fill, the photo's; through a half
+  transparent shape, the mix seen; on an opaque shape, the shape's own,
+  and Alt+click reads the photo under it
+  (`eyedropper::tests::a_plain_click_reads_what_shows_over_a_traced_photo`).
 - The window is read back once a sample, so a renderer that cannot read
   back gives nothing and says so on the status line
   (`screen_sample::tests::a_click_off_the_objects_samples_the_window`,

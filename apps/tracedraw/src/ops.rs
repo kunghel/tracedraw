@@ -8,6 +8,21 @@ use tracedraw_core::{
     Command, ShapeId,
 };
 
+/// A bitmap prepared without touching the document, including its PNG encoding.
+pub(crate) struct PreparedImage {
+    pub png: Vec<u8>,
+    pub width: u32,
+    pub height: u32,
+}
+
+impl PreparedImage {
+    pub(crate) fn encode(img: image::RgbaImage) -> Result<Self, String> {
+        let (width, height) = img.dimensions();
+        let png = crate::bitmap_fx::encode(&img).ok_or_else(|| "PNG encode failed".to_string())?;
+        Ok(Self { png, width, height })
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Align {
     Left,
@@ -114,13 +129,6 @@ fn even_spread(boxes: &[(ShapeId, Rect)], room: Rect, horizontal: bool) -> Vec<C
     cmds
 }
 
-/// The nearest multiple of `step` from `origin` to `v`.
-fn nearest_line(v: f64, origin: f64, step: f64) -> f64 {
-    if !(step.is_finite() && step > 1e-9) {
-        return v;
-    }
-    origin + ((v - origin) / step).round() * step
-}
 
 /// How Object > Align and Distribute > Arrange in Grid lays the selected
 /// objects out.
@@ -218,11 +226,12 @@ impl App {
             AlignTo::ActiveObject | AlignTo::PageEdge | AlignTo::Grid => page,
             AlignTo::PageCenter => Rect::new(c.x, c.y, c.x, c.y),
         };
-        let grid = self.doc().metadata.grid;
-        let origin = self.grid_origin();
+        let geom = self.grid_geom();
         let on_grid = to == AlignTo::Grid && how != Align::CenterPage;
-        let gx = |v: f64| nearest_line(v, origin.x, grid.spacing_x);
-        let gy = |v: f64| nearest_line(v, origin.y, grid.spacing_y);
+        // Cell edges of the grid (#4395); an angled grid lines objects up
+        // on the crossings' rows and columns through its origin.
+        let gx = |v: f64| geom.nearest_edge(v, true);
+        let gy = |v: f64| geom.nearest_edge(v, false);
         let mut cmds = Vec::new();
         for s in &shapes {
             let b = self.align_box(s);
@@ -257,6 +266,20 @@ impl App {
         if !cmds.is_empty() {
             let _ = self.run_batch_keeping_lines("Align", &cmds);
         }
+    }
+
+    /// Center to Page Horizontally (`horizontal`) or Vertically (#3752):
+    /// each selected object moves across, or down, until its centre lies
+    /// on the page centre's line; the other direction stays.
+    pub fn center_to_page_axis(&mut self, horizontal: bool) {
+        // Align::CenterV lines the centres up on a vertical line (moves
+        // across); CenterH on a horizontal one (moves down).
+        let how = if horizontal {
+            Align::CenterV
+        } else {
+            Align::CenterH
+        };
+        self.align_with(how, crate::ops2::AlignTo::PageCenter);
     }
 
     /// Distribute between the outermost selected objects (the menu).
@@ -1596,13 +1619,20 @@ impl App {
         name: Option<String>,
         dpi: Option<(f64, f64)>,
     ) -> Option<tracedraw_core::ShapeId> {
-        let (w, h) = img.dimensions();
-        let Some(png) = crate::bitmap_fx::encode(&img) else {
-            self.status =
-                crate::i18n::trf("status.could_not_encode_image", &[("e", "PNG encode failed")]);
-            return None;
+        let image = match PreparedImage::encode(img) {
+            Ok(image) => image,
+            Err(error) => {
+                self.status = crate::i18n::trf("status.could_not_encode_image", &[("e", &error)]);
+                return None;
+            }
         };
-        self.place_png_at(png, w, h, name, dpi)
+        self.place_prepared_image(
+            image,
+            name,
+            dpi,
+            self.page_rect().center(),
+            self.active_layer()?,
+        )
     }
 
     /// Place a picture already encoded as the PNG a bitmap keeps (`w` by
@@ -1616,19 +1646,45 @@ impl App {
         name: Option<String>,
         dpi: Option<(f64, f64)>,
     ) -> Option<tracedraw_core::ShapeId> {
+        let image = PreparedImage {
+            png,
+            width: w,
+            height: h,
+        };
+        self.place_prepared_image(
+            image,
+            name,
+            dpi,
+            self.page_rect().center(),
+            self.active_layer()?,
+        )
+    }
+
+    /// Commit an already encoded image at its final centre in one undo step.
+    pub(crate) fn place_prepared_image(
+        &mut self,
+        image: PreparedImage,
+        name: Option<String>,
+        dpi: Option<(f64, f64)>,
+        center: Point,
+        layer: tracedraw_core::LayerId,
+    ) -> Option<tracedraw_core::ShapeId> {
+        let PreparedImage {
+            png,
+            width: w,
+            height: h,
+        } = image;
         let (dpi_x, dpi_y) =
             dpi.unwrap_or((crate::image_dpi::DEFAULT_DPI, crate::image_dpi::DEFAULT_DPI));
         let mm_w = w as f64 * 25.4 / dpi_x;
         let mm_h = h as f64 * 25.4 / dpi_y;
-        let page = self.page_rect();
-        let c = page.center();
+        let c = center;
         let rect = Rect::new(
             c.x - mm_w / 2.0,
             c.y - mm_h / 2.0,
             c.x + mm_w / 2.0,
             c.y + mm_h / 2.0,
         );
-        let layer = self.active_layer()?;
         let id = self.engine.new_shape_id();
         let mut shape = Shape::new(
             id,

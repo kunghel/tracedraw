@@ -11,6 +11,7 @@
 //! On the desktop the run is off the interface thread and can be
 //! cancelled. See docs/behavior/workflow.md.
 
+use crate::ui::btn_icons::IconUi;
 use crate::app::App;
 use crate::flow::{self, Flow, NodeId, Outcome, Source, Step, Target, Value};
 use crate::i18n::{tr, trf};
@@ -864,7 +865,7 @@ fn settings(ui: &mut Ui, st: &mut WorkflowState, ask: &mut Option<Ask>) {
             if let Source::File { path } = source {
                 ui.horizontal(|ui| {
                     if ui
-                        .button(tr("flow.choose"))
+                        .ibutton("flow.choose")
                         .rich_tip(keyed("flow.choose"))
                         .clicked()
                     {
@@ -989,7 +990,7 @@ fn settings(ui: &mut Ui, st: &mut WorkflowState, ask: &mut Option<Ask>) {
             if let Target::File { path } = target {
                 ui.horizontal(|ui| {
                     if ui
-                        .button(tr("flow.choose"))
+                        .ibutton("flow.choose")
                         .rich_tip(keyed("flow.choose_export"))
                         .clicked()
                     {
@@ -1059,21 +1060,21 @@ pub fn dialog(app: &mut App, ctx: &Context, close: &mut bool) {
             ui.horizontal_wrapped(|ui| {
                 let idle = !st.running();
                 if ui
-                    .add_enabled(idle, egui::Button::new(tr("flow.new")))
+                    .add_enabled(idle, crate::ui::btn_icons::Ib::new("flow.new"))
                     .rich_tip(keyed("flow.new"))
                     .clicked()
                 {
                     ask = Some(Ask::New);
                 }
                 if ui
-                    .add_enabled(idle, egui::Button::new(tr("flow.open")))
+                    .add_enabled(idle, crate::ui::btn_icons::Ib::new("flow.open"))
                     .rich_tip(keyed("flow.open"))
                     .clicked()
                 {
                     ask = Some(Ask::Open);
                 }
                 if ui
-                    .button(tr("flow.save"))
+                    .ibutton("flow.save")
                     .rich_tip(keyed("flow.save"))
                     .clicked()
                 {
@@ -1081,7 +1082,7 @@ pub fn dialog(app: &mut App, ctx: &Context, close: &mut bool) {
                 }
                 ui.separator();
                 ui.add_enabled_ui(idle, |ui| {
-                    ui.menu_button(tr("flow.add"), |ui| {
+                    ui.imenu_button("flow.add", |ui| {
                         let at = free_spot(&st.flow);
                         for step in Step::builtin() {
                             if ui.button(tr(&step.name_key())).clicked() {
@@ -1108,7 +1109,7 @@ pub fn dialog(app: &mut App, ctx: &Context, close: &mut bool) {
                     .rich_tip(keyed("flow.add"));
                     let can_delete = st.selected.is_some();
                     if ui
-                        .add_enabled(can_delete, egui::Button::new(tr("flow.delete")))
+                        .add_enabled(can_delete, crate::ui::btn_icons::Ib::new("flow.delete"))
                         .rich_tip(keyed("flow.delete"))
                         .clicked()
                     {
@@ -1120,7 +1121,7 @@ pub fn dialog(app: &mut App, ctx: &Context, close: &mut bool) {
                 });
                 ui.separator();
                 if ui
-                    .add_enabled(idle, egui::Button::new(tr("flow.preview")))
+                    .add_enabled(idle, crate::ui::btn_icons::Ib::new("flow.preview"))
                     .rich_tip(keyed("flow.preview"))
                     .clicked()
                 {
@@ -1130,7 +1131,7 @@ pub fn dialog(app: &mut App, ctx: &Context, close: &mut bool) {
                     });
                 }
                 if ui
-                    .add_enabled(idle, egui::Button::new(tr("flow.run")))
+                    .add_enabled(idle, crate::ui::btn_icons::Ib::new("flow.run"))
                     .rich_tip(keyed("flow.run"))
                     .clicked()
                 {
@@ -1140,7 +1141,7 @@ pub fn dialog(app: &mut App, ctx: &Context, close: &mut bool) {
                     });
                 }
                 if ui
-                    .add_enabled(idle, egui::Button::new(tr("flow.run_file")))
+                    .add_enabled(idle, crate::ui::btn_icons::Ib::new("flow.run_file"))
                     .rich_tip(keyed("flow.run_file"))
                     .clicked()
                 {

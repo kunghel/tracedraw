@@ -146,6 +146,25 @@ Cada um desses comandos é um passo de [[menu.edit.undo]]: logo depois dele,
 sem mudança no desenho, Desfazer devolve a seleção como era e Refazer a faz
 de novo. Quando o desenho muda, Desfazer volta aos passos do próprio desenho.
 
+### Selecionar iguais {#select-same}
+
+Abra [[docker.select_same]] pelo menu Editar ou em Janela > Painéis.
+Selecione um ou mais objetos de referência e
+marque as propriedades a comparar: preenchimento, cor e largura do contorno,
+tipo de objeto, dimensões, família da fonte ou tamanho da fonte. Todas as
+propriedades marcadas devem corresponder ao mesmo objeto de referência.
+Com várias referências, basta corresponder a uma delas.
+
+Preenchimento e tipo de objeto começam marcados. As dimensões comparam a
+largura e a altura nas coordenadas da página, com tolerância inicial de
+0,5 mm e comparações de tamanho igual, maior ou menor. Pesquise na página
+atual ou somente na camada atual e, opcionalmente, exclua grupos e
+recipientes de recorte. Objetos ocultos ou bloqueados ficam de fora.
+
+Pressione [[same.apply]] para substituir a seleção pelos objetos encontrados.
+Desfazer restaura a seleção anterior. A busca não modifica o desenho nem
+o marca como alterado.
+
 ## A ferramenta Seleção à mão livre {#freehand-pick}
 
 A ferramenta [[tool.freehand_pick]] funciona como a ferramenta [[tool.pick]],

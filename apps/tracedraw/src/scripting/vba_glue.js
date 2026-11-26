@@ -30,6 +30,8 @@ G.__host_download = function (url, path) { return __download(String(url), String
 
 // GetSetting and SaveSetting: kept by the app with the macros.
 G.__host_dir = function (path) { return __dir(String(path)); };
+// Files: Open, Print #, Input #, Kill, Dir, FileSystemObject...
+G.__host_fs = function (op, a, b, c) { return __fs(op, a, b, c); };
 G.__host_setting = function (op, app, section, key, value) {
   const r = __setting(op, app, section, key, value === null || value === undefined ? "" : value);
   return op === "all" ? (r ? JSON.parse(r) : []) : r;

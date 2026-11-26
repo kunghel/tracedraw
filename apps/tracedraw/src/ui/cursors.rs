@@ -343,6 +343,9 @@ pub fn for_tool_with_ctrl(
     middle_down: bool,
     pos: Option<Pos2>,
 ) -> ToolCursor {
+    if app.clipboard_paste_busy() {
+        return ToolCursor::System(egui::CursorIcon::Progress);
+    }
     if middle_down {
         return ToolCursor::Hand { closed: true };
     }
@@ -488,6 +491,11 @@ pub fn for_tool_with_ctrl(
         t if t.is_shaping_brush() && app.brush_resize.is_some() => {
             ToolCursor::System(egui::CursorIcon::ResizeHorizontal)
         }
+        // The Symbol Scatter panel's brush over the selected group.
+        _ if !app.symbol_brush_targets().is_empty() => ToolCursor::Nib {
+            radius: nib_px(app.symbol_scatter.brush_radius, app.view.zoom),
+            square: false,
+        },
         Tool::Eraser => ToolCursor::Nib {
             radius: nib_px(app.eraser_width / 2.0, app.view.zoom),
             square: app.eraser_square,
@@ -1723,6 +1731,33 @@ fn bucket(painter: &Painter, spot: Pos2) {
 mod tests {
     use super::*;
 
+    #[test]
+    fn a_pending_paste_shows_progress_and_restores_the_tool_pointer() {
+        let mut app = App::headless();
+        app.tool = Tool::Rectangle;
+        crate::clipboard::expect_handed();
+        let cursor = for_tool_with_ctrl(&app, false, false, false, false, None);
+        assert_eq!(cursor, ToolCursor::System(egui::CursorIcon::Progress));
+        let ctx = crate::theme::ui_context();
+        let mut output = ctx.run_ui(egui::RawInput::default(), |ui| {
+            show(ui.ctx(), cursor, None);
+            finish_frame(ui.ctx());
+        });
+        output.textures_delta.clear();
+        assert_eq!(
+            output.platform_output.cursor_icon,
+            egui::CursorIcon::Progress
+        );
+        assert!(output.platform_output.cursor_image.is_none());
+        crate::clipboard::hand_over(crate::clipboard::Handed::default());
+        app.take_handed_pastes();
+        assert!(!app.clipboard_paste_busy());
+        assert_ne!(
+            for_tool_with_ctrl(&app, false, false, false, false, None),
+            ToolCursor::System(egui::CursorIcon::Progress)
+        );
+    }
+
     /// With the option on, the cross hair's lines run from edge to edge
     /// of the drawing window through the pointer; pointers without a
     /// cross hair get none (#2996).
@@ -1999,6 +2034,10 @@ mod tests {
         // tool's pointer: the I-beam, no bitmap.
         let (icon, image, _) = frame(rect, Some(C::Text));
         assert_eq!(icon, C::Text);
+        assert!(image.is_none());
+        // A paste preparing a large picture overrides a tool bitmap too.
+        let (icon, image, _) = frame(rect, Some(C::Progress));
+        assert_eq!(icon, C::Progress);
         assert!(image.is_none());
         // The system's own pointers stay the system's.
         let (icon, image, _) = frame(ToolCursor::System(C::Default), None);

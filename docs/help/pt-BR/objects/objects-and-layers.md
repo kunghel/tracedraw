@@ -71,6 +71,23 @@ escolha [[menu.object > menu.object.order > menu.object.to_front_of_page]]
 (<kbd>Ctrl</kbd>+<kbd>End</kbd>) põe a camada de novo por baixo dos objetos da
 página.
 
+### Intervalos de páginas {#range-pages}
+
+O grupo [[docker.range_pages]] reúne camadas compartilhadas por intervalos
+de páginas. Use [[docker.new_range_layer]] no menu do grupo ou o botão de
+criação no grupo vazio para acrescentar uma. Digite um nome e intervalos como
+`1-8, 12, 15-20` e confirme. **Propriedades** permite alterar o intervalo depois.
+
+Os números indicam a posição da página no documento, a partir de 1. Editar um
+cabeçalho ou logotipo em uma camada de intervalo atualiza cada página abrangida
+por ela. A caixa de diálogo mostra quantas páginas atuais correspondem ao
+intervalo. É possível incluir posições de páginas futuras. Os números dos
+intervalos permanecem fixos ao inserir, excluir ou reordenar páginas.
+
+Salve como `.tdraw` para manter os intervalos compartilhados editáveis. Os
+outros formatos de saída colocam o conteúdo compartilhado apropriado em cada
+página selecionada.
+
 ## Renomear objetos e camadas {#rename}
 
 Clique duas vezes em uma camada ou objeto no painel, ou escolha

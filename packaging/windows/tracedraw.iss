@@ -44,6 +44,13 @@ PrivilegesRequiredOverridesAllowed=dialog
 ; Explorer, which loads the thumbnail handler (that file is moved aside
 ; instead, see MoveAsideInUse below, #3816).
 CloseApplicationsFilter=*.exe
+; A TraceDraw still running when the setup starts (after Restart for an
+; update, its window already closed while the program ends) has no window
+; to be asked to close, so the quiet setup could not replace its files,
+; undid its changes and closed without a word; ended by hand, the same
+; setup installed at once (#3816). Programs that do not close when asked
+; are now ended, as /FORCECLOSEAPPLICATIONS does.
+CloseApplications=force
 ; The setup always writes a log (Setup Log <date> #<n>.txt in the user's
 ; Temp folder), also when an older TraceDraw starts it without /LOG: a
 ; quiet update that rolled back left nothing to say why (#3816).
@@ -247,6 +254,7 @@ begin
       $05: Result := 'cs';
       $54: Result := 'lo';
       $2A: Result := 'vi';
+      $22: Result := 'uk';
     else
       Result := '';
     end;
@@ -299,6 +307,8 @@ begin
   AddAppLanguage('cs', 'Čeština');
   AddAppLanguage('lo', 'ພາສາລາວ');
   AddAppLanguage('vi', 'Tiếng Việt');
+  AddAppLanguage('eo', 'Esperanto');
+  AddAppLanguage('uk', 'Українська');
   SystemCode := AppLanguageForLangId(GetUILanguage);
   if SystemCode = '' then
     SystemCode := 'en';

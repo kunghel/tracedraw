@@ -284,22 +284,37 @@ impl App {
             let b = s.page_path().bounding_box();
             let old = s.effects.iter().find_map(|e| match e {
                 tracedraw_core::live::Effect::Transparency {
-                    mask: Fill::Fountain(f),
+                    mask,
                     merge,
                     target,
-                } if f.kind != FountainKind::Shaped => Some((f.clone(), *merge, *target)),
+                } => match mask {
+                    Fill::Fountain(f) if f.kind != FountainKind::Shaped => {
+                        Some((Some(f.clone()), *merge, *target))
+                    }
+                    // A detached shadow can carry a merge mode in a solid
+                    // mask even before it takes its first gradient.
+                    _ if s.bitmap_alpha_fill => Some((None, *merge, *target)),
+                    _ => None,
+                },
                 _ => None,
             });
-            let (mut f, merge, target) = old.unwrap_or_else(|| {
-                (
-                    Fountain::two(
-                        FountainKind::Linear,
-                        tracedraw_core::Color::WHITE,
-                        tracedraw_core::Color::BLACK,
-                        0.0,
-                    ),
-                    self.transparency_default.merge,
-                    self.transparency_default.target,
+            let (existing, merge, target) = old.unwrap_or_else(|| {
+                if s.bitmap_alpha_fill {
+                    (None, tracedraw_core::live::MergeMode::Normal, 2)
+                } else {
+                    (
+                        None,
+                        self.transparency_default.merge,
+                        self.transparency_default.target,
+                    )
+                }
+            });
+            let mut f = existing.unwrap_or_else(|| {
+                Fountain::two(
+                    FountainKind::Linear,
+                    tracedraw_core::Color::WHITE,
+                    tracedraw_core::Color::BLACK,
+                    0.0,
                 )
             });
             let d = to - from;
@@ -763,12 +778,23 @@ impl App {
     /// node of the gradient transparency picked, that node takes the
     /// colour's grey, its own transparency, and the object's fill stays
     /// (#2827: the object took the colour as its fill); otherwise it
-    /// fills the selection.
+    /// fills the selection. A drop shadow edited with Drop Shadow or
+    /// picked on its own takes the colour instead.
     pub fn palette_fill(&mut self, c: tracedraw_core::Color) {
         // The image editing mode: the colour the brush paints.
         if let Some(pe) = self.pixel_edit.as_mut() {
             let [r, g, b] = c.to_rgb8();
             pe.opts.color = [r, g, b, 255];
+            return;
+        }
+        use crate::tools::Tool;
+        let shadow = match self.tool {
+            Tool::Pick => self.picked_shadow(),
+            Tool::DropShadow => self.selected_shadow().map(|(id, ..)| id),
+            _ => None,
+        };
+        if let Some(id) = shadow {
+            self.set_shadow_color(id, c);
             return;
         }
         if self.tool == crate::tools::Tool::InteractiveFill {

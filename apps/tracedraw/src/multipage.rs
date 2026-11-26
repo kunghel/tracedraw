@@ -422,6 +422,10 @@ impl App {
         if page == self.page {
             return;
         }
+        let Some(index) = self.doc().pages.iter().position(|p| p.id == page) else {
+            return;
+        };
+        let restricted = self.prepare_range_page_change(index);
         let Some(r) = self
             .shown_pages()
             .into_iter()
@@ -446,6 +450,9 @@ impl App {
                 self.picked_layer = None;
                 self.selected_layers.clear();
             }
+            if restricted {
+                self.sync_layer_ranges(None);
+            }
             return;
         };
         self.view.origin = self
@@ -456,6 +463,9 @@ impl App {
         self.focus.clear();
         self.picked_layer = None;
         self.selected_layers.clear();
+        if restricted {
+            self.sync_layer_ranges(None);
+        }
     }
 
     /// In the Multipage View and a spread of facing pages, a press on
@@ -1168,6 +1178,88 @@ mod tests {
         assert_eq!(app.view.zoom, 0.7);
         let after = app.view.to_screen(app.page_rect().center());
         assert!((after - before).length() < 1e-3);
+    }
+
+    /// #4241: every page shows at the zoom in use. A page left at
+    /// another zoom comes back at the zoom in use, the point that was in
+    /// the middle of the window there still in the middle; in the
+    /// Multipage View a page gone to that is out of sight comes into
+    /// view at the same zoom.
+    #[test]
+    fn pages_gone_to_show_at_the_zoom_in_use() {
+        let mut app = App::headless();
+        app.show_welcome = false;
+        app.canvas_rect = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(800.0, 600.0));
+        app.add_page();
+        app.add_page();
+        app.page = app.doc().pages[0].id;
+        app.fit_pending = false;
+        app.view.zoom = 0.7;
+        app.view.origin = egui::pos2(-40.0, 900.0);
+        let mid = app.view.to_page(app.canvas_rect.center());
+        app.goto_page(1);
+        app.view.zoom = 1.9;
+        app.goto_page(0);
+        assert_eq!(app.view.zoom, 1.9);
+        let back = app.view.to_page(app.canvas_rect.center());
+        assert!((back.x - mid.x).abs() < 1e-3 && (back.y - mid.y).abs() < 1e-3);
+        // The Multipage View, the view far from the third page.
+        app.set_multipage(true);
+        app.fit_pending = false;
+        app.view.zoom = 2.0;
+        app.view.origin = egui::pos2(-5000.0, 500.0);
+        let third = app.doc().pages[2].id;
+        app.goto_page(2);
+        assert_eq!(app.page, third);
+        assert_eq!(app.view.zoom, 2.0);
+        assert!(app.page_on_screen(), "the page gone to is in view");
+        let centre = app.view.to_screen(app.page_rect().center());
+        assert!((centre - app.canvas_rect.center()).length() < 1e-3);
+        // A page already in view stays where it is.
+        let first = app.doc().pages[0].id;
+        let pr = app
+            .shown_pages()
+            .into_iter()
+            .find(|(id, _)| *id == first)
+            .map(|(_, r)| r)
+            .expect("shown");
+        let at = app.view.to_screen(tracedraw_core::geometry::Point::new(pr.x0, pr.y0));
+        app.view.origin += app.canvas_rect.center() - at;
+        let before = app.view;
+        app.goto_page(0);
+        assert_eq!(app.page, first);
+        assert_eq!(app.view.zoom, before.zoom);
+        assert!(app.page_on_screen());
+    }
+
+    /// Options > Zoom, Pan, Same view on every page: going to another
+    /// page shows the same part of it at the same zoom, even when that
+    /// page was left elsewhere; off, each page comes back as it was left.
+    #[test]
+    fn the_same_view_shows_on_every_page_when_asked() {
+        let mut app = App::headless();
+        app.show_welcome = false;
+        app.canvas_rect = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(800.0, 600.0));
+        app.add_page();
+        app.page = app.doc().pages[0].id;
+        app.fit_pending = false;
+        assert!(!app.settings.same_view_on_every_page, "off by default");
+        app.settings.same_view_on_every_page = true;
+        // The second page left somewhere else at another zoom.
+        app.goto_page(1);
+        app.view.zoom = 0.5;
+        app.view.origin = egui::pos2(300.0, 200.0);
+        app.goto_page(0);
+        // The top right corner of the first page, at 3x.
+        app.view.zoom = 3.0;
+        app.view.origin = egui::pos2(-1200.0, 700.0);
+        let before = app.view;
+        let corner = app.view.to_page(egui::pos2(700.0, 100.0));
+        app.goto_page(1);
+        assert_eq!(app.view.zoom, 3.0);
+        let there = app.view.to_page(egui::pos2(700.0, 100.0));
+        assert!((there.x - corner.x).abs() < 1e-3 && (there.y - corner.y).abs() < 1e-3);
+        assert_eq!(app.view.origin, before.origin);
     }
 
     /// The space between pages of a drawing that sets none.

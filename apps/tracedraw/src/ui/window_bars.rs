@@ -752,7 +752,16 @@ fn page_tabs(app: &mut App, ui: &mut Ui, area: Rect) {
             app.goto_page(i);
         }
         let mut action = None;
-        resp.context_menu(|ui| action = page_tab_menu(app, ui));
+        crate::ui::context_menus::filter_popup(
+            egui::Popup::context_menu(&resp),
+            &app.settings.context_menus,
+            "page_tabs",
+        )
+        .show(|ui| {
+            let _scope =
+                crate::ui::context_menus::Scope::new(&app.settings.context_menus, "page_tabs");
+            action = page_tab_menu(app, ui);
+        });
         if let Some(a) = action {
             apply_page_tab_action(app, a);
         }
@@ -874,7 +883,18 @@ pub(crate) const PAGE_TAB_MENU: [(&str, PageTabAction); 7] = [
 /// The menu of a page tab, for the current page.
 pub(crate) fn page_tab_menu(app: &App, ui: &mut Ui) -> Option<PageTabAction> {
     let mut out = None;
-    for (key, action) in PAGE_TAB_MENU {
+    let keys = PAGE_TAB_MENU.map(|(key, _)| key);
+    for key in crate::ui::context_menu_filter::ordered_keys(&keys)
+        .iter()
+        .copied()
+    {
+        let Some((_, action)) = PAGE_TAB_MENU
+            .iter()
+            .copied()
+            .find(|(candidate, _)| *candidate == key)
+        else {
+            continue;
+        };
         let enabled = action != PageTabAction::Delete || app.doc().pages.len() > 1;
         // A clicked row closes the menu itself.
         if crate::ui::menus::item(ui, key, "", enabled) {
@@ -1540,5 +1560,103 @@ mod tests {
             &app,
             right_mid + egui::vec2(40.0, 0.0)
         ));
+    }
+}
+
+#[cfg(test)]
+mod context_menu_settings_tests {
+    use super::*;
+
+    #[test]
+    fn reordered_page_tab_context_menu_click_uses_the_visible_row() {
+        let ctx = crate::theme::ui_context();
+        let mut app = App::headless();
+        app.settings.context_menus.set_order(
+            "page_tabs",
+            "",
+            &["menu.layout.switch_orientation", "menu.layout.rename_page"],
+        );
+        let frame = |events| {
+            crate::ui::menus::ROWS.with(|rows| rows.borrow_mut().clear());
+            let mut chosen = None;
+            let mut output = ctx.run_ui(
+                egui::RawInput {
+                    events,
+                    ..Default::default()
+                },
+                |ui| {
+                    let _scope = crate::ui::context_menus::Scope::new(
+                        &app.settings.context_menus,
+                        "page_tabs",
+                    );
+                    chosen = page_tab_menu(&app, ui);
+                },
+            );
+            output.textures_delta.clear();
+            chosen
+        };
+        assert_eq!(frame(Vec::new()), None);
+        let rows = crate::ui::menus::ROWS.with(|rows| rows.borrow().clone());
+        let (key, rect) = rows.first().expect("first page action");
+        assert_eq!(key, "menu.layout.switch_orientation");
+        let pos = rect.center();
+        assert_eq!(
+            frame(vec![
+                egui::Event::PointerMoved(pos),
+                egui::Event::PointerButton {
+                    pos,
+                    button: egui::PointerButton::Primary,
+                    pressed: true,
+                    modifiers: egui::Modifiers::NONE,
+                }
+            ]),
+            None
+        );
+        assert_eq!(
+            frame(vec![egui::Event::PointerButton {
+                pos,
+                button: egui::PointerButton::Primary,
+                pressed: false,
+                modifiers: egui::Modifiers::NONE,
+            }]),
+            Some(PageTabAction::SwitchOrientation)
+        );
+        assert_eq!(app.doc().pages.len(), 1);
+    }
+
+    #[test]
+    fn hidden_page_tab_rows_preserve_all_other_page_actions() {
+        let ctx = crate::theme::ui_context();
+        let mut app = App::headless();
+        app.add_page();
+        for key in ["menu.layout.rename_page", "page_tab.delete"] {
+            app.settings
+                .context_menus
+                .set_visible("page_tabs", key, false);
+        }
+        let draw = |scoped: bool| {
+            crate::ui::menus::ROWS.with(|rows| rows.borrow_mut().clear());
+            let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+                let _scope = scoped.then(|| {
+                    crate::ui::context_menus::Scope::new(&app.settings.context_menus, "page_tabs")
+                });
+                page_tab_menu(&app, ui);
+            });
+            out.textures_delta.clear();
+            crate::ui::menus::ROWS.with(|rows| rows.borrow().clone())
+        };
+        let hidden = draw(true);
+        for (key, _) in PAGE_TAB_MENU {
+            let visible = !["menu.layout.rename_page", "page_tab.delete"].contains(&key);
+            assert_eq!(
+                hidden.iter().any(|(drawn, _)| drawn == key),
+                visible,
+                "{key}"
+            );
+        }
+        let ordinary = draw(false);
+        for (key, _) in PAGE_TAB_MENU {
+            assert!(ordinary.iter().any(|(drawn, _)| drawn == key), "{key}");
+        }
     }
 }

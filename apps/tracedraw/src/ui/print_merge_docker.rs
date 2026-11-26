@@ -859,7 +859,7 @@ pub fn print_merge(app: &mut App, ui: &mut Ui) {
         if ui
             .add_enabled(
                 !loaded,
-                egui::Button::new(tr("merge.create")).min_size(Vec2::new(w, 26.0)),
+                crate::ui::btn_icons::Ib::new("merge.create").min_size(Vec2::new(w, 26.0)),
             )
             .rich_tip(tr("menu.file.print_merge_create"))
             .clicked()
@@ -869,7 +869,7 @@ pub fn print_merge(app: &mut App, ui: &mut Ui) {
         if ui
             .add_enabled(
                 loaded,
-                egui::Button::new(tr("merge.edit")).min_size(Vec2::new(w, 26.0)),
+                crate::ui::btn_icons::Ib::new("merge.edit").min_size(Vec2::new(w, 26.0)),
             )
             .rich_tip(tr("menu.file.print_merge_edit"))
             .clicked()
@@ -987,7 +987,7 @@ pub fn print_merge(app: &mut App, ui: &mut Ui) {
         ui.add_space(6.0);
         let wide = Vec2::new(full - 8.0, 26.0);
         if ui
-            .add(egui::Button::new(tr("merge.insert_field")).min_size(wide))
+            .add(crate::ui::btn_icons::Ib::new("merge.insert_field").min_size(wide))
             .clicked()
         {
             app.insert_merge_field();
@@ -998,7 +998,7 @@ pub fn print_merge(app: &mut App, ui: &mut Ui) {
             // next, the pointer the Place Inside arrow meanwhile (#577).
             if ui
                 .add(
-                    egui::Button::new(tr("merge.place_inside"))
+                    crate::ui::btn_icons::Ib::new("merge.place_inside")
                         .min_size(wide)
                         .selected(app.pending_merge_frame),
                 )
@@ -1021,7 +1021,7 @@ pub fn print_merge(app: &mut App, ui: &mut Ui) {
         if ui
             .add_enabled(
                 can_update,
-                egui::Button::new(tr("merge.update_field")).min_size(wide),
+                crate::ui::btn_icons::Ib::new("merge.update_field").min_size(wide),
             )
             .clicked()
         {
@@ -1035,7 +1035,7 @@ pub fn print_merge(app: &mut App, ui: &mut Ui) {
         if ui
             .add_enabled(
                 records,
-                egui::Button::new(tr("merge.create_document")).min_size(wide),
+                crate::ui::btn_icons::Ib::new("merge.create_document").min_size(wide),
             )
             .clicked()
         {
@@ -1044,7 +1044,7 @@ pub fn print_merge(app: &mut App, ui: &mut Ui) {
         if ui
             .add_enabled(
                 records,
-                egui::Button::new(tr("merge.print_document")).min_size(wide),
+                crate::ui::btn_icons::Ib::new("merge.print_document").min_size(wide),
             )
             .clicked()
         {

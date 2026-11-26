@@ -169,7 +169,7 @@ fn tray_settings(ui: &mut Ui, units: Units, st: &mut TraceCutState, has_selectio
     let take = row(ui, "", |ui| {
         ui.add_enabled(
             has_selection,
-            egui::Button::new(tr("tracecut.tray_take_size")),
+            crate::ui::btn_icons::Ib::new("tracecut.tray_take_size"),
         )
         .rich_tip(crate::ui::tips::keyed("tracecut.tray_take_size"))
         .clicked()

@@ -18,12 +18,15 @@ use crate::theme::Tokens;
 use crate::ui::field::NumField;
 use crate::ui::tips::RichTip;
 use egui::Ui;
-use tracedraw_core::geometry::{Affine, Vec2};
-use tracedraw_core::live::{Effect, MergeMode, SurfaceShade, BLEND_IF_ALL};
+use tracedraw_core::geometry::{Affine, Point, Rect, Shape as _, Vec2};
+use tracedraw_core::live::{
+    BlurPin, Effect, MergeMode, SurfaceShade, BLEND_IF_ALL, MAX_BLUR_PINS,
+};
+use tracedraw_core::outline_fx::CornerSide;
 use tracedraw_core::{Color, Command, Shape};
 
 /// An entry of the list.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Kind {
     Bevel,
     Outline,
@@ -48,10 +51,13 @@ pub enum Kind {
     TrimMarks,
     Feather,
     Halftone,
+    RoundCorners,
+    Slice,
+    Grain,
 }
 
 impl Kind {
-    pub const ALL: [Kind; 23] = [
+    pub const ALL: [Kind; 26] = [
         Kind::Bevel,
         Kind::Outline,
         Kind::ThreeD,
@@ -75,6 +81,9 @@ impl Kind {
         Kind::TrimMarks,
         Kind::Feather,
         Kind::Halftone,
+        Kind::RoundCorners,
+        Kind::Slice,
+        Kind::Grain,
     ];
 
     pub fn key(self) -> &'static str {
@@ -102,6 +111,9 @@ impl Kind {
             Kind::TrimMarks => "effect.trim_marks",
             Kind::Feather => "effect.feather",
             Kind::Halftone => "effect.halftone",
+            Kind::RoundCorners => "effect.round_corners",
+            Kind::Slice => "effect.slice",
+            Kind::Grain => "effect.grain",
         }
     }
 
@@ -140,6 +152,9 @@ impl Kind {
                 | (Kind::TrimMarks, Effect::TrimMarks { .. })
                 | (Kind::Feather, Effect::Feather { .. })
                 | (Kind::Halftone, Effect::Halftone { .. })
+                | (Kind::RoundCorners, Effect::RoundCorners { .. })
+                | (Kind::Slice, Effect::Slice { .. })
+                | (Kind::Grain, Effect::Grain { .. })
         )
     }
 
@@ -216,7 +231,10 @@ impl Kind {
                 angle: 90.0,
                 opacity: 0.5,
             },
-            Kind::GaussianBlur => Effect::GaussianBlur { radius: 1.0 },
+            Kind::GaussianBlur => Effect::GaussianBlur {
+                radius: 1.0,
+                pins: Vec::new(),
+            },
             Kind::Combine => Effect::Combine {
                 mode: tracedraw_core::shaping::CombineMode::Weld,
             },
@@ -312,6 +330,27 @@ impl Kind {
                 clip: true,
                 color: Color::BLACK,
             },
+            Kind::RoundCorners => Effect::RoundCorners {
+                radius: 1.0,
+                max_angle: 180.0,
+                side: CornerSide::Both,
+            },
+            Kind::Slice => Effect::Slice {
+                count: 6,
+                angle: 0.0,
+                gap: 0.6,
+                shift: 1.5,
+                alternate: true,
+                turn: 0.0,
+                seed: 1,
+                radius: 0.0,
+            },
+            Kind::Grain => Effect::Grain {
+                amount: 0.25,
+                size: 0.1,
+                mono: true,
+                seed: 0,
+            },
         }
     }
 }
@@ -397,6 +436,7 @@ impl App {
     /// keeps its values, switched off, and comes back with them; an
     /// object without it gets `fallback` (the values shown).
     pub fn set_layer_effect_on(&mut self, kind: Kind, on: bool, fallback: &Effect) {
+        self.layer_fx_last.insert(kind, fallback.clone());
         self.edit_layer_effects(|stack| match find(stack, kind) {
             Some(i) => stack[i].1 = on,
             None if on => stack.push((fallback.clone(), true)),
@@ -406,6 +446,7 @@ impl App {
 
     /// The entry's effect on the selection becomes `effect`.
     pub fn set_layer_effect(&mut self, kind: Kind, effect: &Effect) {
+        self.layer_fx_last.insert(kind, effect.clone());
         self.edit_layer_effects(|stack| {
             if let Some(i) = find(stack, kind) {
                 stack[i].0 = effect.clone();
@@ -453,9 +494,28 @@ impl App {
         }
     }
 
-    /// Take the entry's effect off the selection.
+    /// Take the entry's effect off the selection. Its values are kept
+    /// for the next time the entry is ticked (#4242).
     pub fn remove_layer_effect(&mut self, kind: Kind) {
+        if let Some(e) = self.selected_shapes().into_iter().find_map(|s| {
+            s.effect_stack()
+                .into_iter()
+                .find(|(e, _)| kind.matches(e))
+                .map(|(e, _)| e)
+        }) {
+            self.layer_fx_last.insert(kind, e);
+        }
         self.edit_layer_effects(|stack| stack.retain(|(e, _)| !kind.matches(e)));
+    }
+
+    /// The values an entry starts with on an object without it: those
+    /// it was last given, else its defaults (#4242).
+    pub fn layer_fx_start(&self, kind: Kind) -> Effect {
+        self.layer_fx_last
+            .get(&kind)
+            .filter(|e| kind.matches(e))
+            .cloned()
+            .unwrap_or_else(|| kind.default_effect())
     }
 
     /// The selection's fill opacity becomes `opacity` (0 to 1); at 1 the
@@ -487,6 +547,48 @@ fn highlighted_id() -> egui::Id {
     egui::Id::new("layer_effects_highlighted")
 }
 
+/// The object the list was last drawn for and the entries it had then.
+fn seen_id() -> egui::Id {
+    egui::Id::new("layer_effects_seen")
+}
+
+/// Highlights `kind` in the list, whose settings then show: the stack's
+/// Edit on an effect set here (#4350).
+pub fn highlight(ctx: &egui::Context, kind: Kind) {
+    if let Some(i) = Kind::ALL.iter().position(|k| *k == kind) {
+        ctx.data_mut(|d| d.insert_temp(highlighted_id(), i));
+    }
+}
+
+/// The entry to highlight for `shape`, whose stack is `stack`, when
+/// `current` was highlighted and the list last showed `seen` (#4350):
+/// an entry the object just gained; else, for another object, `current`
+/// when it has it, or its first effect.
+fn follow(
+    current: Kind,
+    shape: &Shape,
+    stack: &[(Effect, bool)],
+    seen: Option<&(tracedraw_core::ShapeId, Vec<usize>)>,
+) -> Kind {
+    let present: Vec<(usize, Kind)> = Kind::ALL
+        .into_iter()
+        .enumerate()
+        .filter(|(_, k)| find(stack, *k).is_some())
+        .collect();
+    match seen {
+        Some((id, kinds)) if *id == shape.id => present
+            .iter()
+            .filter(|(i, _)| !kinds.contains(i))
+            .max_by_key(|(_, k)| find(stack, *k))
+            .map_or(current, |(_, k)| *k),
+        _ if find(stack, current).is_some() => current,
+        _ => present
+            .iter()
+            .min_by_key(|(_, k)| find(stack, *k))
+            .map_or(current, |(_, k)| *k),
+    }
+}
+
 /// The Layer Effects section of the Effects docker.
 pub fn layer_effects(app: &mut App, ui: &mut Ui) {
     ui.strong(tr("layer_fx.title"));
@@ -495,10 +597,21 @@ pub fn layer_effects(app: &mut App, ui: &mut Ui) {
         return;
     };
     let stack = shape.effect_stack();
-    let mut current = ui
+    let current = ui
         .data(|d| d.get_temp::<usize>(highlighted_id()))
         .and_then(|i| Kind::ALL.get(i).copied())
         .unwrap_or(Kind::Bevel);
+    // The highlight follows the object and the effects it gains, so the
+    // settings below are always those of the entry lit (#4350).
+    let seen = ui.data(|d| d.get_temp::<(tracedraw_core::ShapeId, Vec<usize>)>(seen_id()));
+    let mut current = follow(current, &shape, &stack, seen.as_ref());
+    let kinds: Vec<usize> = Kind::ALL
+        .into_iter()
+        .enumerate()
+        .filter(|(_, k)| find(&stack, *k).is_some())
+        .map(|(i, _)| i)
+        .collect();
+    ui.data_mut(|d| d.insert_temp(seen_id(), (shape.id, kinds)));
     for kind in Kind::ALL {
         let at = find(&stack, kind);
         ui.horizontal(|ui| {
@@ -510,7 +623,7 @@ pub fn layer_effects(app: &mut App, ui: &mut Ui) {
             {
                 let fallback = at
                     .map(|i| stack[i].0.clone())
-                    .unwrap_or_else(|| kind.default_effect());
+                    .unwrap_or_else(|| app.layer_fx_start(kind));
                 app.set_layer_effect_on(kind, on, &fallback);
                 current = kind;
             }
@@ -542,7 +655,7 @@ pub fn layer_effects(app: &mut App, ui: &mut Ui) {
     let at = find(&stack, current);
     let mut effect = at
         .map(|i| stack[i].0.clone())
-        .unwrap_or_else(|| current.default_effect());
+        .unwrap_or_else(|| app.layer_fx_start(current));
     ui.label(egui::RichText::new(tr(current.key())).color(Tokens::SELECTION));
     let changed = settings(app, ui, &mut effect);
     if changed {
@@ -708,6 +821,79 @@ fn offset(app: &App, ui: &mut Ui, v: &mut Vec2) -> bool {
     });
     if changed {
         *v = from_polar(d, a);
+    }
+    changed
+}
+
+/// Where pin number `n` of a variable blur goes when added, in the
+/// object's coordinates: the first in the middle of `bounds`, the next
+/// ones spread round it so they do not cover each other.
+pub fn new_pin_place(bounds: Rect, n: usize) -> Point {
+    let c = bounds.center();
+    if n == 0 {
+        return c;
+    }
+    let a = n as f64 * 2.399_963; // the golden angle, radians
+    let (rx, ry) = (bounds.width() * 0.3, bounds.height() * 0.3);
+    Point::new(c.x + rx * a.cos(), c.y + ry * a.sin())
+}
+
+/// The pins of a variable Gaussian blur: each with its radius and a ×,
+/// and a button adding one (it starts with `radius`). The pins are
+/// dragged on the page with the Shape tool. True when one changed.
+fn blur_pins(app: &App, ui: &mut Ui, radius: f64, pins: &mut Vec<BlurPin>) -> bool {
+    let mut changed = false;
+    let mut remove = None;
+    for (i, pin) in pins.iter_mut().enumerate() {
+        ui.horizontal(|ui| {
+            ui.label(format!("{} {}:", tr("layer_fx.pin"), i + 1));
+            let mut v = app.units.world_from_mm(pin.radius);
+            if ui
+                .add(
+                    NumField::new(&mut v)
+                        .range(0.0..=app.units.world_from_mm(50.0))
+                        .length_decimals(app.settings.precision.min(10) as usize)
+                        .unit_mm(app.units.world_to_mm(1.0))
+                        .suffix(format!(" {}", app.units.short()))
+                        .width(70.0),
+                )
+                .rich_tip(tr("layer_fx.radius"))
+                .changed()
+            {
+                pin.radius = app.units.world_to_mm(v).clamp(0.0, 50.0);
+                changed = true;
+            }
+            if ui
+                .small_button("\u{00D7}")
+                .rich_tip(tr("layer_fx.remove_pin"))
+                .clicked()
+            {
+                remove = Some(i);
+            }
+        });
+    }
+    if let Some(i) = remove {
+        pins.remove(i);
+        changed = true;
+    }
+    let room = pins.len() < MAX_BLUR_PINS;
+    if ui
+        .add_enabled(room, crate::ui::btn_icons::Ib::new("layer_fx.add_pin"))
+        .rich_tip(tr("layer_fx.add_pin_desc"))
+        .clicked()
+    {
+        let bounds = app
+            .selected_shapes()
+            .into_iter()
+            .next()
+            .map(|s| s.local_path().bounding_box())
+            .filter(|b| b.width().is_finite() && b.height().is_finite())
+            .unwrap_or(Rect::new(0.0, 0.0, 10.0, 10.0));
+        pins.push(BlurPin {
+            at: new_pin_place(bounds, pins.len()),
+            radius: if pins.is_empty() { radius } else { 0.0 },
+        });
+        changed = true;
     }
     changed
 }
@@ -887,9 +1073,35 @@ fn settings(app: &App, ui: &mut Ui, e: &mut Effect) -> bool {
                 changed |= percent(ui, "layer_fx.opacity", opacity);
             });
         }
-        Effect::GaussianBlur { radius } => {
+        Effect::GaussianBlur { radius, pins } => {
             ui.horizontal(|ui| {
                 changed |= length(app, ui, "layer_fx.radius", radius, 50.0);
+            });
+            changed |= blur_pins(app, ui, *radius, pins);
+        }
+        Effect::Grain {
+            amount,
+            size,
+            mono,
+            seed,
+        } => {
+            ui.horizontal(|ui| {
+                changed |= percent(ui, "layer_fx.grain_amount", amount);
+                changed |= length(app, ui, "layer_fx.grain_size", size, 10.0);
+            });
+            ui.horizontal(|ui| {
+                changed |= ui
+                    .checkbox(mono, tr("layer_fx.mono"))
+                    .rich_tip(tr("layer_fx.mono"))
+                    .changed();
+                if ui
+                    .add(crate::ui::btn_icons::Ib::new("layer_fx.new_grain"))
+                    .rich_tip(tr("layer_fx.new_grain"))
+                    .clicked()
+                {
+                    *seed = seed.wrapping_add(1);
+                    changed = true;
+                }
             });
         }
         Effect::Combine { mode } => {
@@ -902,6 +1114,11 @@ fn settings(app: &App, ui: &mut Ui, e: &mut Effect) -> bool {
                         CombineMode::BackMinusFront,
                         "menu.object.back_minus_front",
                         "layer_fx.combine_cut_desc",
+                    ),
+                    (
+                        CombineMode::FrontMinusBack,
+                        "menu.object.front_minus_back",
+                        "layer_fx.combine_front_cut_desc",
                     ),
                     (
                         CombineMode::Intersect,
@@ -1215,6 +1432,91 @@ fn settings(app: &App, ui: &mut Ui, e: &mut Effect) -> bool {
                 }
             });
         }
+        Effect::RoundCorners {
+            radius,
+            max_angle,
+            side,
+        } => {
+            ui.horizontal(|ui| {
+                changed |= length(app, ui, "layer_fx.radius", radius, 100.0);
+                ui.label(tr("layer_fx.max_angle"));
+                if ui
+                    .add(
+                        NumField::new(max_angle)
+                            .range(1.0..=180.0)
+                            .suffix("\u{00B0}"),
+                    )
+                    .rich_tip(tr("layer_fx.max_angle_desc"))
+                    .changed()
+                {
+                    changed = true;
+                }
+            });
+            ui.horizontal(|ui| {
+                ui.label(tr("layer_fx.corners"));
+                for (v, key) in [
+                    (CornerSide::Both, "layer_fx.corners_all"),
+                    (CornerSide::Convex, "layer_fx.corners_convex"),
+                    (CornerSide::Concave, "layer_fx.corners_concave"),
+                ] {
+                    changed |= ui
+                        .selectable_value(side, v, tr(key))
+                        .rich_tip(tr(key))
+                        .changed();
+                }
+            });
+        }
+        Effect::Slice {
+            count,
+            angle,
+            gap,
+            shift,
+            alternate,
+            turn,
+            seed,
+            radius,
+        } => {
+            ui.horizontal(|ui| {
+                ui.label(tr("layer_fx.slices"));
+                if ui
+                    .add(NumField::new(count).range(1..=tracedraw_core::outline_fx::MAX_SLICES))
+                    .rich_tip(tr("layer_fx.slices_desc"))
+                    .changed()
+                {
+                    changed = true;
+                }
+                changed |= degrees(ui, "layer_fx.angle", angle);
+            });
+            ui.horizontal(|ui| {
+                changed |= length(app, ui, "layer_fx.gap", gap, 100.0);
+                changed |= length(app, ui, "layer_fx.shift", shift, 200.0);
+            });
+            ui.horizontal(|ui| {
+                changed |= ui
+                    .checkbox(alternate, tr("layer_fx.alternate"))
+                    .rich_tip(tr("layer_fx.alternate_desc"))
+                    .changed();
+                ui.label(tr("layer_fx.turn"));
+                if ui
+                    .add(NumField::new(turn).range(0.0..=90.0).suffix("\u{00B0}"))
+                    .rich_tip(tr("layer_fx.slice_turn_desc"))
+                    .changed()
+                {
+                    changed = true;
+                }
+            });
+            ui.horizontal(|ui| {
+                ui.label(tr("layer_fx.seed"));
+                if ui
+                    .add(NumField::new(seed).range(0..=9999))
+                    .rich_tip(tr("layer_fx.seed_desc"))
+                    .changed()
+                {
+                    changed = true;
+                }
+                changed |= length(app, ui, "layer_fx.round", radius, 100.0);
+            });
+        }
         _ => {}
     }
     changed
@@ -1353,7 +1655,7 @@ fn transform_settings(app: &App, ui: &mut Ui, e: &mut Effect) -> bool {
             .rich_tip(tr("layer_fx.random_desc"))
             .changed();
         if ui
-            .add_enabled(*random, egui::Button::new(tr("layer_fx.reseed")))
+            .add_enabled(*random, crate::ui::btn_icons::Ib::new("layer_fx.reseed"))
             .rich_tip(tr("layer_fx.reseed_desc"))
             .clicked()
         {
@@ -1491,7 +1793,7 @@ fn move_marker(range: &mut [f64; 4], marker: usize, together: bool, v: f64) {
 /// fades in over the gap. The values show as 0 to 255.
 fn range_bar(ui: &mut Ui, salt: &str, range: &mut [f64; 4]) -> bool {
     let id = ui.id().with(("blend_if_bar", salt));
-    let width = ui.available_width().clamp(120.0, 240.0);
+    let width = crate::ui::docker_form::fit_w(ui, 240.0);
     let (rect, response) =
         ui.allocate_exact_size(egui::vec2(width, 26.0), egui::Sense::click_and_drag());
     let strip = egui::Rect::from_min_size(rect.min + egui::vec2(6.0, 0.0), egui::vec2(width - 12.0, 10.0));
@@ -1680,6 +1982,84 @@ mod tests {
         out.textures_delta.clear();
     }
 
+    /// The lit entry is always the one whose settings show: it follows
+    /// the selected object and the effect it just gained (#4350).
+    #[test]
+    fn the_highlight_follows_the_object_and_its_new_effect() {
+        let mut app = App::headless();
+        let rect = |app: &mut App, x: f64| {
+            app.new_shape(ShapeKind::Rect {
+                rect: Rect::new(x, 0.0, x + 10.0, 10.0),
+                radius: 0.0,
+                corners: None,
+            })
+            .expect("shape")
+        };
+        let a = rect(&mut app, 0.0);
+        let b = rect(&mut app, 20.0);
+        let ctx = crate::theme::ui_context();
+        let lit = |ctx: &egui::Context, app: &mut App| {
+            let mut out = ctx.run_ui(Default::default(), |ui| layer_effects(app, ui));
+            out.textures_delta.clear();
+            ctx.data(|d| d.get_temp::<usize>(highlighted_id()))
+                .map(|i| Kind::ALL[i])
+        };
+        app.select(vec![a]);
+        app.set_layer_effect_on(Kind::OffsetPath, true, &Kind::OffsetPath.default_effect());
+        assert_eq!(lit(&ctx, &mut app), Some(Kind::OffsetPath));
+        // Halftone added after: it lights up.
+        app.set_layer_effect_on(Kind::Halftone, true, &Kind::Halftone.default_effect());
+        assert_eq!(lit(&ctx, &mut app), Some(Kind::Halftone));
+        // The stack's Edit on the other one lights it.
+        highlight(&ctx, Kind::OffsetPath);
+        assert_eq!(lit(&ctx, &mut app), Some(Kind::OffsetPath));
+        assert_eq!(lit(&ctx, &mut app), Some(Kind::OffsetPath));
+        // Another object without that effect: its own first effect.
+        app.select(vec![b]);
+        app.set_layer_effect_on(Kind::OuterGlow, true, &Kind::OuterGlow.default_effect());
+        app.select(vec![b]);
+        assert_eq!(lit(&ctx, &mut app), Some(Kind::OuterGlow));
+        // Back to the first: it has neither Outer Glow, so its first
+        // effect, Grow Outline.
+        app.select(vec![a]);
+        assert_eq!(lit(&ctx, &mut app), Some(Kind::OffsetPath));
+    }
+
+    /// An effect taken away with its × keeps its values: ticking the
+    /// entry again, on the object or on another one, starts from them
+    /// (#4242).
+    #[test]
+    fn an_effect_taken_away_comes_back_with_its_values() {
+        let mut app = App::headless();
+        let rect = |app: &mut App, x: f64| {
+            app.new_shape(ShapeKind::Rect {
+                rect: Rect::new(x, 0.0, x + 10.0, 10.0),
+                radius: 0.0,
+                corners: None,
+            })
+            .expect("shape")
+        };
+        let a = rect(&mut app, 0.0);
+        let b = rect(&mut app, 20.0);
+        app.select(vec![a]);
+        let mut ht = Kind::Halftone.default_effect();
+        if let Effect::Halftone { size, angle, .. } = &mut ht {
+            *size = 3.5;
+            *angle = 30.0;
+        }
+        app.set_layer_effect_on(Kind::Halftone, true, &Kind::Halftone.default_effect());
+        app.set_layer_effect(Kind::Halftone, &ht);
+        app.remove_layer_effect(Kind::Halftone);
+        assert!(app.doc().find_shape(a).expect("a").effects.is_empty());
+        assert_eq!(app.layer_fx_start(Kind::Halftone), ht);
+        app.select(vec![b]);
+        let start = app.layer_fx_start(Kind::Halftone);
+        app.set_layer_effect_on(Kind::Halftone, true, &start);
+        assert_eq!(app.doc().find_shape(b).expect("b").effects, vec![ht]);
+        // An entry never set starts from its defaults.
+        assert_eq!(app.layer_fx_start(Kind::Bevel), Kind::Bevel.default_effect());
+    }
+
     /// Ticking an entry adds its effect; clearing it keeps the values,
     /// switched off, and ticking it again brings them back; a value set
     /// goes to the effect; × takes it away; fill opacity comes and goes;
@@ -1756,5 +2136,76 @@ mod tests {
         app.select(Vec::new());
         let mut out = ctx.run_ui(Default::default(), |ui| layer_effects(&mut app, ui));
         out.textures_delta.clear();
+    }
+
+    /// Blur pins are effect nodes of the Shape tool: they sit on the
+    /// object where they are, follow it when it moves, and a drag takes
+    /// a pin along, one undo step; added pins do not cover each other.
+    #[test]
+    fn blur_pins_are_dragged_on_the_page() {
+        use crate::interaction2::{effect_nodes, BLUR_PIN_BASE};
+        let mut app = App::headless();
+        let id = app
+            .new_shape(ShapeKind::Rect {
+                rect: Rect::new(0.0, 0.0, 40.0, 20.0),
+                radius: 0.0,
+                corners: None,
+            })
+            .expect("shape");
+        app.select(vec![id]);
+        let b = Rect::new(0.0, 0.0, 40.0, 20.0);
+        let first = new_pin_place(b, 0);
+        assert_eq!(first, Point::new(20.0, 10.0));
+        let places: Vec<Point> = (0..6).map(|n| new_pin_place(b, n)).collect();
+        for (i, p) in places.iter().enumerate() {
+            assert!(b.contains(*p), "{p:?}");
+            for q in &places[i + 1..] {
+                assert!((*p - *q).hypot() > 1.0, "{p:?} {q:?}");
+            }
+        }
+        let blur = Effect::GaussianBlur {
+            radius: 2.0,
+            pins: vec![
+                BlurPin {
+                    at: first,
+                    radius: 2.0,
+                },
+                BlurPin {
+                    at: Point::new(5.0, 5.0),
+                    radius: 0.0,
+                },
+            ],
+        };
+        app.set_layer_effect_on(Kind::GaussianBlur, true, &blur);
+        let shape = |app: &App| app.doc().find_shape(id).expect("shape").clone();
+        let nodes = effect_nodes(&shape(&app));
+        assert_eq!(
+            nodes,
+            vec![
+                (BLUR_PIN_BASE, first),
+                (BLUR_PIN_BASE + 1, Point::new(5.0, 5.0))
+            ]
+        );
+        // The pins move with the object.
+        let _ = app.engine.run(&Command::TransformShapes {
+            shapes: vec![id],
+            transform: Affine::translate((10.0, 0.0)),
+        });
+        let nodes = effect_nodes(&shape(&app));
+        assert_eq!(nodes[0].1, Point::new(30.0, 10.0));
+        // A drag of the second pin.
+        app.snap.off = true;
+        app.effect_node_grab = Vec2::ZERO;
+        app.effect_node_drag = Some((id, BLUR_PIN_BASE + 1));
+        app.effect_node_stepped = false;
+        app.effect_node_drag_to(Point::new(25.0, 15.0));
+        app.effect_node_drag_to(Point::new(27.0, 16.0));
+        app.effect_node_drag = None;
+        let nodes = effect_nodes(&shape(&app));
+        assert!((nodes[1].1 - Point::new(27.0, 16.0)).hypot() < 1e-6, "{:?}", nodes[1]);
+        assert_eq!(nodes[0].1, Point::new(30.0, 10.0), "the other pin stays");
+        app.undo();
+        let nodes = effect_nodes(&shape(&app));
+        assert!((nodes[1].1 - Point::new(15.0, 5.0)).hypot() < 1e-6, "{:?}", nodes[1]);
     }
 }

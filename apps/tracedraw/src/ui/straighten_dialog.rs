@@ -3,6 +3,7 @@
 //! perspective sliders, Crop image and Crop and resample to original
 //! size.
 
+use crate::ui::btn_icons::IconUi;
 use crate::app::App;
 use crate::i18n::tr;
 use crate::straighten::{straighten, turned, Straighten};
@@ -362,7 +363,7 @@ pub fn straighten_dialog(app: &mut App, ctx: &Context, st: &mut StraightenState,
                 });
                 ui.add_space(6.0);
                 if ui
-                    .button(tr("dialog.reset"))
+                    .ibutton("dialog.reset")
                     .rich_tip(crate::ui::tips::keyed("dialog.reset"))
                     .clicked()
                 {

@@ -34,6 +34,7 @@ pub fn effect_key(e: &Effect) -> &'static str {
         Effect::GradientOverlay { .. } => "effect.gradient_overlay",
         Effect::GaussianBlur { .. } => "effect.gaussian_blur",
         Effect::Halftone { .. } => "effect.halftone",
+        Effect::Grain { .. } => "effect.grain",
         Effect::FillOpacity { .. } => "effect.fill_opacity",
         Effect::BlendIf { .. } => "effect.blend_if",
         Effect::Displace { .. } => "effect.displace",
@@ -54,6 +55,8 @@ pub fn effect_key(e: &Effect) -> &'static str {
         Effect::ShapeFrame { .. } => "effect.shape_frame",
         Effect::TrimMarks { .. } => "effect.trim_marks",
         Effect::Feather { .. } => "effect.feather",
+        Effect::RoundCorners { .. } => "effect.round_corners",
+        Effect::Slice { .. } => "effect.slice",
     }
 }
 
@@ -82,6 +85,11 @@ fn changed_stack(s: &Shape, change: Change) -> Option<Vec<(Effect, bool)>> {
 }
 
 pub fn effects_docker(app: &mut App, ui: &mut Ui) {
+    // A bitmap effect being set here rather than in its dialog (#4253).
+    if app.fx_panel.is_some() {
+        crate::ui::fx_panel::panel(app, ui);
+        ui.add_space(4.0);
+    }
     // The stackable looks with their values (#1141), then the whole stack.
     crate::ui::layer_effects::layer_effects(app, ui);
     ui.separator();
@@ -109,7 +117,7 @@ fn presets(app: &mut App, ui: &mut Ui) {
         )
         .rich_tip(tr("effects.preset_name"));
         if ui
-            .add_enabled(has, egui::Button::new(tr("effects.preset_save")))
+            .add_enabled(has, crate::ui::btn_icons::Ib::new("effects.preset_save"))
             .rich_tip(crate::ui::tips::pair(
                 "effects.preset_save",
                 "effects.preset_save_desc",
@@ -159,7 +167,7 @@ fn presets(app: &mut App, ui: &mut Ui) {
                     remove = Some(i);
                 }
                 if ui
-                    .add_enabled(has, egui::Button::new(tr("effects.preset_apply")).small())
+                    .add_enabled(has, crate::ui::btn_icons::Ib::new("effects.preset_apply").small())
                     .rich_tip(crate::ui::tips::pair(
                         "effects.preset_apply",
                         "effects.preset_apply_desc",
@@ -236,29 +244,95 @@ fn effect_stack(app: &mut App, ui: &mut Ui) {
         ui.label(egui::RichText::new(tr("effects.select_hint")).color(Tokens::text_dim()));
         return;
     };
-    let stack = shape.effect_stack();
-    if stack.is_empty() {
+    if shape.effect_stack().is_empty() {
         ui.label(egui::RichText::new(tr("effects.none")).color(Tokens::text_dim()));
         return;
     }
+    stack_rows(app, ui, &shape);
+    ui.add_space(4.0);
+    ui.label(egui::RichText::new(tr("effects.order_hint")).color(Tokens::text_dim()));
+}
+
+/// The side of an eye button.
+const EYE: f32 = 18.0;
+
+/// An eye that shows whether something is drawn, open when `on`; a
+/// click on it is the response's click.
+pub fn eye_button(ui: &mut Ui, on: bool) -> egui::Response {
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(EYE, EYE), egui::Sense::click());
+    if resp.hovered() {
+        ui.painter().rect_filled(rect, 2.0, Tokens::tool_hover());
+    }
+    crate::ui::objects_docker::paint_eye(ui, rect, on);
+    resp
+}
+
+/// The panel whose settings edit an effect of the stack: the effect's own
+/// docker where it has one, else the Effects docker (Layer Effects).
+pub fn edit_docker(e: &Effect) -> crate::app::DockerTab {
+    use crate::app::DockerTab as D;
+    match e {
+        Effect::Contour { .. } => D::Contour,
+        Effect::Blend { .. } => D::Blend,
+        Effect::Envelope { .. } | Effect::MeshEnvelope { .. } => D::Envelope,
+        Effect::Extrude { .. } => D::Extrude,
+        Effect::Bevel { .. } => D::Bevel,
+        Effect::Lens(_) => D::Lens,
+        _ => D::Effects,
+    }
+}
+
+/// A row per effect of `shape`'s stack, in the order they apply (#4231):
+/// the eye that draws it or keeps it switched off at its place, its name
+/// (dragged onto another object, it gives that object a copy), Edit,
+/// which opens the panel that sets it, up, down and remove. The
+/// Properties docker shows the same rows as the Effects docker.
+pub fn stack_rows(app: &mut App, ui: &mut Ui, shape: &Shape) {
+    let stack = shape.effect_stack();
     let n = stack.len();
+    let mut edit = None;
     let mut change = None;
+    let mut dropped = None;
     for (i, (effect, on)) in stack.iter().enumerate() {
         ui.horizontal(|ui| {
-            let mut shown = *on;
-            if ui
-                .checkbox(&mut shown, "")
-                .rich_tip(tr("effects.toggle"))
-                .changed()
+            if eye_button(ui, *on)
+                .rich_tip(crate::ui::tips::pair("docker.show_hide_effect", "effects.toggle"))
+                .clicked()
             {
                 change = Some(Change::Toggle(i));
             }
             let name = egui::RichText::new(tr(effect_key(effect)));
-            ui.label(if *on {
-                name
-            } else {
-                name.color(Tokens::text_dim())
-            });
+            // The name can be dragged onto another object on the page,
+            // which gets a copy of the effect (#4243).
+            let label = ui
+                .add(
+                    egui::Label::new(if *on {
+                        name
+                    } else {
+                        name.color(Tokens::text_dim())
+                    })
+                    .sense(egui::Sense::drag()),
+                )
+                .rich_tip(crate::ui::tips::pair(effect_key(effect), "effects.drag_to_object"));
+            if label.dragged() {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+                if let Some(at) = ui.ctx().pointer_latest_pos() {
+                    egui::Area::new(egui::Id::new("effect_drag_label"))
+                        .order(egui::Order::Tooltip)
+                        .fixed_pos(at + egui::vec2(14.0, 6.0))
+                        .interactable(false)
+                        .show(ui.ctx(), |ui| {
+                            egui::Frame::popup(ui.style()).show(ui, |ui| {
+                                ui.label(tr(effect_key(effect)));
+                            });
+                        });
+                }
+            } else if label.drag_stopped() {
+                let main = ui.ctx().viewport_id() == egui::ViewportId::ROOT;
+                if let Some(at) = ui.ctx().pointer_latest_pos().filter(|_| main) {
+                    dropped = Some((effect.clone(), *on, at));
+                }
+            }
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                 if ui
                     .small_button("\u{00D7}")
@@ -281,11 +355,37 @@ fn effect_stack(app: &mut App, ui: &mut Ui) {
                 {
                     change = Some(Change::Up(i));
                 }
+                if ui
+                    .small_button("\u{270F}")
+                    .rich_tip(crate::ui::tips::pair("docker.edit_effect", "effects.edit_desc"))
+                    .clicked()
+                {
+                    edit = Some(edit_docker(effect));
+                    // Set in Layer Effects: its entry lights up there (#4350).
+                    if let Some(kind) = crate::ui::layer_effects::Kind::ALL
+                        .into_iter()
+                        .find(|k| k.matches(effect))
+                    {
+                        crate::ui::layer_effects::highlight(ui.ctx(), kind);
+                    }
+                }
             });
         });
     }
-    ui.add_space(4.0);
-    ui.label(egui::RichText::new(tr("effects.order_hint")).color(Tokens::text_dim()));
+    if let Some(tab) = edit {
+        app.open_docker(tab);
+    }
+    // An effect taken away keeps its values for Layer Effects (#4242).
+    if let Some(Change::Remove(i)) = &change {
+        if let Some((e, _)) = shape.effect_stack().get(*i) {
+            if let Some(kind) = crate::ui::layer_effects::Kind::ALL
+                .into_iter()
+                .find(|k| k.matches(e))
+            {
+                app.layer_fx_last.insert(kind, e.clone());
+            }
+        }
+    }
     if let Some(stack) = change.and_then(|c| changed_stack(&shape, c)) {
         let (effects, parked) = Shape::split_stack(stack);
         app.run(Command::SetEffectStack {
@@ -294,6 +394,45 @@ fn effect_stack(app: &mut App, ui: &mut Ui) {
             parked,
         });
     }
+    if let Some((effect, on, at)) = dropped {
+        app.drop_effect_on(&shape, &effect, on, at);
+    }
+}
+
+impl App {
+    /// An effect of `src` dragged from the Effects panel and let go at
+    /// `at` on the screen: the object there, if another one, gets a copy
+    /// of it, sized to it, on top of its own effects (#4243). False when
+    /// nothing took it.
+    pub fn drop_effect_on(&mut self, src: &Shape, effect: &Effect, on: bool, at: egui::Pos2) -> bool {
+        if !self.canvas_rect.contains(at) || !self.has_document() || self.show_welcome {
+            return false;
+        }
+        let Some(id) = self.hit_test_inside(self.view.to_page(at)) else {
+            return false;
+        };
+        if id == src.id {
+            return false;
+        }
+        let Some(target) = self.doc().find_shape(id).cloned() else {
+            return false;
+        };
+        let mut stack = target.effect_stack();
+        stack.push((crate::copy_effect::carried(effect, src, &target), on));
+        let (effects, parked) = Shape::split_stack(stack);
+        if let Err(e) = self.engine.run_batch(
+            "Copy Effect",
+            &[Command::SetEffectStack {
+                shape: id,
+                effects,
+                parked,
+            }],
+        ) {
+            self.status = e.to_string();
+            return false;
+        }
+        true
+    }
 }
 
 #[cfg(test)]
@@ -301,6 +440,60 @@ mod tests {
     use super::*;
     use tracedraw_core::geometry::{Point, Rect, Vec2};
     use tracedraw_core::{Color, ShapeKind};
+
+    /// An effect dragged from the panel and let go over another object
+    /// gives it a copy, on top of its own effects; let go over the same
+    /// object or over nothing, nothing changes (#4243).
+    #[test]
+    fn an_effect_dragged_onto_an_object_is_copied_to_it() {
+        let mut app = App::headless();
+        app.show_welcome = false;
+        app.canvas_rect = egui::Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(800.0, 600.0));
+        app.zoom_to_page();
+        // Two squares in the window, at 100 and 200 px from its left.
+        let rect = |app: &mut App, x: f32| {
+            let p0 = app.view.to_page(egui::pos2(x, 100.0));
+            let p1 = app.view.to_page(egui::pos2(x + 40.0, 140.0));
+            app.new_shape(ShapeKind::Rect {
+                rect: Rect::new(p0.x.min(p1.x), p0.y.min(p1.y), p0.x.max(p1.x), p0.y.max(p1.y)),
+                radius: 0.0,
+                corners: None,
+            })
+            .expect("shape")
+        };
+        let a = rect(&mut app, 100.0);
+        let b = rect(&mut app, 200.0);
+        let shadow = Effect::BlockShadow {
+            offset: Vec2::new(1.0, -1.0),
+            color: Color::BLACK,
+            gap: 0.0,
+            expand: 0.0,
+        };
+        app.run(Command::SetEffects {
+            shape: a,
+            effects: vec![shadow.clone()],
+        });
+        app.select(vec![a]);
+        let src = app.doc().find_shape(a).expect("a").clone();
+        let centre = |app: &App, id| {
+            use tracedraw_core::geometry::Shape as _;
+            let s = app.doc().find_shape(id).expect("shape");
+            app.view.to_screen(s.page_path().bounding_box().center())
+        };
+        // Onto itself or onto nothing: no change.
+        assert!(!app.drop_effect_on(&src, &shadow, true, centre(&app, a)));
+        let empty = egui::pos2(600.0, 500.0);
+        assert!(!app.drop_effect_on(&src, &shadow, true, empty));
+        assert!(app.doc().find_shape(b).expect("b").effects.is_empty());
+        // Onto the other object: it gets the effect, one undo step.
+        assert!(app.drop_effect_on(&src, &shadow, true, centre(&app, b)));
+        let got = &app.doc().find_shape(b).expect("b").effects;
+        assert_eq!(got.len(), 1);
+        assert!(matches!(got[0], Effect::BlockShadow { .. }));
+        assert_eq!(app.doc().find_shape(a).expect("a").effects.len(), 1);
+        app.undo();
+        assert!(app.doc().find_shape(b).expect("b").effects.is_empty());
+    }
 
     #[test]
     fn the_stack_switches_moves_and_removes_effects() {
@@ -316,6 +509,7 @@ mod tests {
             offset: Vec2::new(1.0, -1.0),
             color: Color::BLACK,
             gap: 0.0,
+            expand: 0.0,
         };
         let persp = Effect::Perspective {
             corners: [Point::ZERO; 4],

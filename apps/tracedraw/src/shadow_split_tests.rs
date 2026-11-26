@@ -48,6 +48,203 @@ fn count(app: &App) -> usize {
         .sum()
 }
 
+#[test]
+fn detached_shadow_gradients_remain_independent_and_editable() {
+    use crate::tools::Tool;
+    use base64::Engine as _;
+    use std::io::Cursor;
+    use tracedraw_core::{Document, Rect, Shape, SharedBytes};
+
+    fn detached_bitmap(doc: &Document) -> (&Shape, &SharedBytes) {
+        doc.pages[0]
+            .layers
+            .iter()
+            .flat_map(|layer| &layer.shapes)
+            .find_map(|shape| match &shape.kind {
+                ShapeKind::Bitmap { png, .. } => Some((shape, png)),
+                _ => None,
+            })
+            .expect("detached bitmap")
+    }
+
+    for inner in [false, true] {
+        let mut app = App::headless();
+        let id = app
+            .new_shape(ShapeKind::Rect {
+                rect: Rect::new(20.0, 20.0, 60.0, 60.0),
+                radius: 0.0,
+                corners: None,
+            })
+            .expect("rect");
+        app.select(vec![id]);
+        app.apply_fill(Fill::Solid(Color::WHITE));
+        let color = Color::rgb8(120, 60, 180);
+        let merge = if inner {
+            MergeMode::Normal
+        } else {
+            MergeMode::Multiply
+        };
+        if inner {
+            app.push_effect(
+                Effect::InnerShadow {
+                    offset: Vec2::new(4.0, -4.0),
+                    color,
+                    opacity: 0.8,
+                    blur: 2.0,
+                    merge,
+                    spread: 0.0,
+                },
+                true,
+            );
+        } else {
+            app.set_shadow(
+                Some(Shadow {
+                    color,
+                    merge,
+                    ..Shadow::default()
+                }),
+                false,
+            );
+        }
+        app.break_apart();
+        let [shadow] = app.selection.as_slice() else {
+            panic!("one detached shadow");
+        };
+        let shadow = *shadow;
+        let original = app.doc().find_shape(shadow).expect("shadow").clone();
+        assert!(original.bitmap_alpha_fill);
+        assert_eq!(original.fill, Fill::Solid(color));
+        let b = original.bounds();
+        let from = Point::new(b.x0, b.center().y);
+        let to = Point::new(b.x1, b.center().y);
+
+        app.set_tool(Tool::InteractiveFill);
+        app.fill_from_drag(shadow, from, to);
+        let fill = app.doc().find_shape(shadow).expect("shadow").fill.clone();
+        let Fill::Fountain(fountain) = &fill else {
+            panic!("gradient fill");
+        };
+        assert_eq!(fountain.stops[0].color, color);
+        app.set_tool(Tool::Transparency);
+        app.transparency_default.merge = MergeMode::Screen;
+        app.transparency_from_drag_on(&[shadow], to, from);
+        let edited = app.doc().find_shape(shadow).expect("shadow").clone();
+        assert_eq!(edited.kind, original.kind, "preserves the feathered bitmap");
+        assert_eq!(edited.fill, fill, "preserves the color gradient");
+        let [Effect::Transparency {
+            mask,
+            merge: applied,
+            ..
+        }] = edited.effects.as_slice()
+        else {
+            panic!("gradient transparency");
+        };
+        assert_eq!(*applied, merge);
+
+        let mut bytes = Vec::new();
+        app.doc()
+            .write_tdraw_version(&mut bytes, tracedraw_core::document::TDRAW_FORMAT_VERSION)
+            .expect("save");
+        let saved = Document::from_tdraw_bytes(&bytes).expect("reopen");
+        let reopened = saved.find_shape(shadow).expect("reopened shadow");
+        assert!(reopened.bitmap_alpha_fill);
+        let [Effect::Transparency {
+            mask: saved_mask,
+            merge: saved_merge,
+            ..
+        }] = reopened.effects.as_slice()
+        else {
+            panic!("reopened transparency");
+        };
+        assert_eq!(*saved_merge, merge);
+        for (saved, original) in [(&reopened.fill, &edited.fill), (saved_mask, mask)] {
+            let (Fill::Fountain(saved), Fill::Fountain(original)) = (saved, original) else {
+                panic!("reopened gradient");
+            };
+            assert_eq!(saved.kind, original.kind);
+            assert_eq!(saved.stops, original.stops);
+            let a = saved.handles.expect("saved handles");
+            let b = original.handles.expect("original handles");
+            for (saved, original) in [(a.start, b.start), (a.end, b.end), (a.skew, b.skew)] {
+                assert!((saved - original).hypot() < 1e-9);
+            }
+        }
+
+        let painted_bitmaps = tracedraw_io::bitmap_fill_pictures(&saved);
+        let painted = painted_bitmaps.get(&shadow).expect("painted shadow");
+        let svg = tracedraw_io::svg::page_to_svg(&saved, 0);
+        let embedded = base64::engine::general_purpose::STANDARD.encode(painted);
+        assert!(svg.contains(&embedded), "SVG embeds the painted shadow");
+        assert!(
+            svg.contains("<mask "),
+            "SVG keeps its transparency gradient"
+        );
+
+        let cdr = tracedraw_cdr::write::document_to_cdr_version_with(
+            &saved,
+            tracedraw_cdr::write::NEWEST_VERSION,
+            &tracedraw_cdr::write::Previews {
+                painted_bitmaps,
+                ..Default::default()
+            },
+        );
+        let (exported, _) = tracedraw_cdr::open_bytes(&cdr, "shadow").expect("CDR opens");
+        let (reopened_cdr, _) = detached_bitmap(&exported);
+        assert!(reopened_cdr.bitmap_alpha_fill);
+        assert!(matches!(reopened_cdr.fill, Fill::Fountain(_)));
+        assert!(matches!(
+            reopened_cdr.effects.as_slice(),
+            [Effect::Transparency {
+                mask: Fill::Fountain(_),
+                ..
+            }]
+        ));
+
+        // Readers that skip TraceDraw's private effects member see the
+        // baked colours rather than the original monochrome bitmap.
+        let mut archive = zip::ZipArchive::new(Cursor::new(cdr)).expect("CDR archive");
+        let mut fallback = zip::ZipWriter::new(Cursor::new(Vec::new()));
+        for i in 0..archive.len() {
+            let file = archive.by_index(i).expect("CDR member");
+            if file.name().expect("CDR member name") != "tracedraw/effects.json" {
+                fallback.raw_copy_file(file).expect("copy CDR member");
+            }
+        }
+        let bytes = fallback.finish().expect("stand-in archive").into_inner();
+        let (stand_in, _) = tracedraw_cdr::open_bytes(&bytes, "shadow").expect("stand-in opens");
+        let (_, bitmap) = detached_bitmap(&stand_in);
+        let pixels = image::load_from_memory(bitmap)
+            .expect("CDR shadow pixels")
+            .to_rgba8();
+        let [r, g, b] = color.to_rgb8();
+        assert!(pixels
+            .pixels()
+            .any(|p| p[3] > 64 && p[0] > r && p[1] > g && p[2] > b));
+
+        app.undo();
+        let undone = app.doc().find_shape(shadow).expect("shadow");
+        assert_eq!(undone.fill, fill);
+        assert_eq!(undone.effects, original.effects);
+        app.redo();
+        assert_eq!(
+            app.doc().find_shape(shadow).expect("shadow").effects,
+            edited.effects
+        );
+        assert!(app.recolor_mono_bitmaps(true, Color::BLACK));
+        let recolored = app.doc().find_shape(shadow).expect("shadow");
+        assert_eq!(recolored.fill, Fill::Solid(Color::BLACK));
+        let ShapeKind::Bitmap { png, .. } = &recolored.kind else {
+            panic!("detached shadow bitmap");
+        };
+        let pixels = crate::bitmap_fx::decode(png).expect("recoloured bitmap");
+        assert_eq!(
+            crate::bitmap_modes::single_color(&pixels),
+            Some(Color::BLACK.to_rgb8())
+        );
+        assert_eq!(recolored.effects, edited.effects);
+    }
+}
+
 /// #2890: a drop shadow dragged onto one object, then onto another,
 /// stays on the first; the bar's fields and a drag on the same object
 /// still make one step of their changes.
@@ -112,6 +309,7 @@ fn every_kind_of_shadow_breaks_off_its_object() {
             offset: Vec2::new(4.0, -4.0),
             color: Color::rgb8(20, 20, 120),
             gap: 0.0,
+            expand: 0.0,
         },
         true,
     );
@@ -200,6 +398,7 @@ fn a_shadow_breaks_off_an_object_inside_a_group() {
             offset: Vec2::new(3.0, -3.0),
             color: Color::BLACK,
             gap: 0.0,
+            expand: 0.0,
         },
         true,
     );
@@ -271,6 +470,7 @@ fn a_block_shadow_survives_break_apart_of_a_curve_of_pieces() {
             offset: Vec2::new(4.0, -4.0),
             color: Color::rgb8(120, 120, 120),
             gap: 0.0,
+            expand: 0.0,
         },
         true,
     );

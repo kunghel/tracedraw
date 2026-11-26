@@ -5,6 +5,7 @@
 //! group (bars, text, the white background of the quiet zone).
 //! See docs/behavior/barcode.md.
 
+use crate::ui::btn_icons::IconUi;
 use crate::app::{App, Units};
 use crate::barcode::{self, BarcodeSpec, Symbology, TextAlignment, TextOption};
 use crate::i18n::{tr, trf};
@@ -538,7 +539,7 @@ fn step_printer(ui: &mut Ui, st: &mut BarcodeState) {
             ui.horizontal(|ui| {
                 ui.label(tr("barcode.to_one"));
                 if ui
-                    .button(tr("barcode.advanced"))
+                    .ibutton("barcode.advanced")
                     .rich_tip(crate::ui::tips::keyed("barcode.advanced"))
                     .clicked()
                 {

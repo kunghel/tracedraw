@@ -31,15 +31,19 @@ pub fn is_spreadsheet(ext: &str) -> bool {
 
 /// The rows of the file at `path`: the first sheet of a workbook, or the
 /// lines of a CSV (comma, semicolon or tab) or TSV file, each a row of
-/// cell texts. Trailing empty rows are left out.
-pub fn read_rows(path: &std::path::Path) -> Result<Vec<Vec<String>>, String> {
+/// cell texts, trailing empty rows left out; with the workbook's bytes
+/// when the file is one (kept with the table, #4143).
+pub fn read_sheet(
+    path: &std::path::Path,
+) -> Result<(Vec<Vec<String>>, Option<tracedraw_core::SharedBytes>), String> {
     let bytes = crate::files::read(path).map_err(|e| e.to_string())?;
     let ext = path
         .extension()
         .and_then(|e| e.to_str())
         .unwrap_or("")
         .to_ascii_lowercase();
-    rows_from_bytes(&ext, &bytes)
+    let rows = rows_from_bytes(&ext, &bytes)?;
+    Ok((rows, (ext == "xlsx").then(|| bytes.into())))
 }
 
 pub fn rows_from_bytes(ext: &str, bytes: &[u8]) -> Result<Vec<Vec<String>>, String> {
@@ -140,9 +144,20 @@ fn layout(rows: &[Vec<String>]) -> (Size, f64, usize) {
     (page, size_pt, per_page)
 }
 
-/// A drawing of the sheet `rows` (File > Open): A4 pages, the first row
-/// at the top of each.
+#[cfg(test)]
 pub fn document(title: &str, rows: &[Vec<String>]) -> Document {
+    document_from(title, rows, None)
+}
+
+/// A drawing of the sheet `rows` (File > Open): A4 pages, the first row
+/// at the top of each; the workbook `source` kept with the table when the
+/// sheet fits one page (a sheet split over pages keeps none: each page's
+/// table holds only part of it, #4143).
+pub fn document_from(
+    title: &str,
+    rows: &[Vec<String>],
+    source: Option<tracedraw_core::SharedBytes>,
+) -> Document {
     let (page, size_pt, per_page) = layout(rows);
     let mut doc = App::localized_document(title, page);
     let mut ids = doc.ids().clone();
@@ -169,7 +184,10 @@ pub fn document(title: &str, rows: &[Vec<String>]) -> Document {
         }
         let mut part = vec![head.clone()];
         part.extend(chunk.iter().cloned());
-        let t = table_of(&part, Point::new(MARGIN, page.height - MARGIN), size_pt);
+        let mut t = table_of(&part, Point::new(MARGIN, page.height - MARGIN), size_pt);
+        if chunks.len() == 1 {
+            t.source_xlsx = source.clone();
+        }
         let shape = table_shape(ids.shape(), t, title);
         doc.pages[i].layers[0].shapes.push(shape);
     }
@@ -184,14 +202,15 @@ impl App {
         let Some(layer) = self.active_layer() else {
             return;
         };
-        match read_rows(path) {
-            Ok(rows) => {
+        match read_sheet(path) {
+            Ok((rows, source)) => {
                 let page = self.page_rect();
-                let t = table_of(
+                let mut t = table_of(
                     &rows,
                     Point::new(page.x0 + MARGIN, page.y1 - MARGIN),
                     SIZE_PT,
                 );
+                t.source_xlsx = source;
                 let name = path
                     .file_stem()
                     .map(|s| s.to_string_lossy().to_string())

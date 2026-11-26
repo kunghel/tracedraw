@@ -50,6 +50,28 @@ impl SpiroType {
     }
 }
 
+/// Where the guilloche lines run: rings round the middle, a band across
+/// the box, or a frame round its edge.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GuilLayout {
+    #[default]
+    Rosette,
+    Band,
+    Frame,
+}
+
+impl GuilLayout {
+    pub const ALL: [GuilLayout; 3] = [GuilLayout::Rosette, GuilLayout::Band, GuilLayout::Frame];
+    pub fn key(self) -> &'static str {
+        match self {
+            GuilLayout::Rosette => "shapegen.guil_rosette",
+            GuilLayout::Band => "shapegen.guil_band_layout",
+            GuilLayout::Frame => "shapegen.guil_frame_layout",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FractalType {
@@ -271,6 +293,11 @@ fn mandala(s: &ShapeGenSettings, out: &mut Generated) {
 // ----- guilloche ------------------------------------------------------------
 
 pub(crate) fn guilloche(s: &ShapeGenSettings, out: &mut Generated) {
+    match s.guil_layout {
+        GuilLayout::Rosette => {}
+        GuilLayout::Band => return guilloche_band(s, out),
+        GuilLayout::Frame => return guilloche_frame(s, out),
+    }
     let c = Point::new(s.width / 2.0, s.height / 2.0);
     let n = s.guil_lines.max(1);
     let (w1, w2) = (s.guil_waves as f64, s.guil_waves2 as f64);
@@ -302,6 +329,89 @@ pub(crate) fn guilloche(s: &ShapeGenSettings, out: &mut Generated) {
             true,
             Paint::Line,
         );
+    }
+}
+
+/// The share (0 to 1) of the `k`th of `n` lines across the band.
+fn line_share(k: u32, n: u32) -> f64 {
+    if n <= 1 {
+        0.5
+    } else {
+        k as f64 / (n - 1) as f64
+    }
+}
+
+/// Guilloche lines across the box, left to right: each is two sine
+/// waves (a whole number of each across the width) round its own height,
+/// its phase turned from the last line's, so the lines weave. The waves
+/// stay inside the box.
+fn guilloche_band(s: &ShapeGenSettings, out: &mut Generated) {
+    let (w, h) = (s.width, s.height);
+    out.frame = Some(Rect::new(0.0, 0.0, w, h));
+    let n = s.guil_lines.max(1);
+    let (a1, a2) = (s.guil_amp.abs(), s.guil_amp2.abs());
+    let reach = (a1 + a2).min(h / 2.0);
+    let k = if a1 + a2 > 1e-9 { reach / (a1 + a2) } else { 1.0 };
+    let (a1, a2) = (a1 * k, a2 * k);
+    let w1 = (w / s.guil_period).round().max(1.0) * std::f64::consts::TAU / w;
+    let w2 = (w / s.guil_period2).round().max(1.0) * std::f64::consts::TAU / w;
+    let samples = ((w * w1.max(w2) / std::f64::consts::TAU * 24.0) as usize).clamp(48, 6000);
+    for i in 0..n {
+        if out.full() {
+            out.cut = true;
+            return;
+        }
+        // A hair inside, so the smoothed waves never poke out.
+        let edge = reach + h * 0.002;
+        let base = edge + (h - 2.0 * edge) * line_share(i, n);
+        let ph = (i as f64 * s.guil_twist).to_radians();
+        let f = |x: f64| {
+            Point::new(
+                x,
+                base + a1 * (w1 * x + ph).sin() + a2 * (w2 * x - ph * 2.0).sin(),
+            )
+        };
+        out.push(sampled(f, w, samples, false), false, Paint::Line);
+    }
+}
+
+/// Guilloche lines round the box's edge in a band `guil_band` wide:
+/// rounded rectangles one inside the other, each waved like a band's
+/// line along its length, the waves keeping step from line to line.
+fn guilloche_frame(s: &ShapeGenSettings, out: &mut Generated) {
+    let (w, h) = (s.width, s.height);
+    let outer = Rect::new(0.0, 0.0, w, h);
+    out.frame = Some(outer);
+    let band = s.guil_band.min(w / 2.0).min(h / 2.0).max(0.1);
+    let n = s.guil_lines.max(1);
+    let (a1, a2) = (s.guil_amp.abs(), s.guil_amp2.abs());
+    let reach = (a1 + a2).min(band / 2.0);
+    let k = if a1 + a2 > 1e-9 { reach / (a1 + a2) } else { 1.0 };
+    let (a1, a2) = (a1 * k, a2 * k);
+    // The waves are counted on the band's middle line.
+    let mid_rad = band / 2.0;
+    let mid_len = 2.0 * (w + h - 2.0 * band) + std::f64::consts::TAU * mid_rad;
+    let n1 = (mid_len / s.guil_period).round().max(1.0);
+    let n2 = (mid_len / s.guil_period2).round().max(1.0);
+    let samples = ((n1.max(n2) * 24.0) as usize).clamp(96, 12_000);
+    for i in 0..n {
+        if out.full() {
+            out.cut = true;
+            return;
+        }
+        let edge = reach + band * 0.002;
+        let d = edge + (band - 2.0 * edge) * line_share(i, n);
+        let r = outer.inflate(-d, -d);
+        let rad = (band - d).max(0.0).min(r.width() / 2.0).min(r.height() / 2.0);
+        let per = 2.0 * (r.width() + r.height() - 4.0 * rad) + std::f64::consts::TAU * rad;
+        let ph = (i as f64 * s.guil_twist).to_radians();
+        let tau = std::f64::consts::TAU;
+        let f = |u: f64| {
+            let (p, nrm) = crate::frame_gen::round_rect_at(r, rad, u * per);
+            let off = a1 * (tau * n1 * u + ph).sin() + a2 * (tau * n2 * u - ph * 2.0).sin();
+            p + nrm * off
+        };
+        out.push(sampled(f, 1.0, samples, true), true, Paint::Line);
     }
 }
 
@@ -489,11 +599,33 @@ pub(crate) fn tiling(s: &ShapeGenSettings, out: &mut Generated) {
 /// joined into rhombs and cut to the box. Thin and thick rhombs take the
 /// light and dark face.
 fn penrose(s: &ShapeGenSettings, rect: Rect, out: &mut Generated) {
+    for (color, q) in penrose_rhombs(rect, s.tile_size) {
+        if out.full() {
+            out.cut = true;
+            return;
+        }
+        let pts = clip_polygon(rect, &q);
+        if pts.len() < 3 {
+            continue;
+        }
+        let paint = if s.tile_fill {
+            Paint::Face(if color == 0 { 0 } else { 2 })
+        } else {
+            Paint::Line
+        };
+        out.push(polygon(&pts), true, paint);
+    }
+}
+
+/// The rhombs of a Penrose tiling covering `rect` with edges about
+/// `size` long: thin (0) or thick (1), corners in order. Rhombs reaching
+/// past the box are whole.
+pub(crate) fn penrose_rhombs(rect: Rect, size: f64) -> Vec<(u8, [Point; 4])> {
     let phi = (1.0 + 5f64.sqrt()) / 2.0;
     let c = rect.center();
     let radius = rect.width().hypot(rect.height()) / 2.0 * 1.05;
     // Each subdivision divides the edge by phi.
-    let depth = ((radius / s.tile_size).ln() / phi.ln())
+    let depth = ((radius / size.max(1e-9)).ln() / phi.ln())
         .ceil()
         .clamp(1.0, 11.0) as u32;
     let mut tris: Vec<(u8, Point, Point, Point)> = Vec::new();
@@ -539,30 +671,22 @@ fn penrose(s: &ShapeGenSettings, rect: Rect, out: &mut Generated) {
     };
     let mut halves: std::collections::HashMap<((i64, i64), (i64, i64), u8), Point> =
         std::collections::HashMap::new();
+    let mut out = Vec::new();
     for (color, a, b, cc) in tris {
-        if out.full() {
-            out.cut = true;
-            return;
-        }
         let k = key(b, cc);
         match halves.remove(&(k.0, k.1, color)) {
             Some(other) => {
-                let pts = clip_polygon(rect, &[a, b, other, cc]);
-                if pts.len() < 3 {
-                    continue;
+                if out.len() >= crate::shape_gen::MAX_ITEMS * 2 {
+                    break;
                 }
-                let paint = if s.tile_fill {
-                    Paint::Face(if color == 0 { 0 } else { 2 })
-                } else {
-                    Paint::Line
-                };
-                out.push(polygon(&pts), true, paint);
+                out.push((color, [a, b, other, cc]));
             }
             None => {
                 halves.insert((k.0, k.1, color), a);
             }
         }
     }
+    out
 }
 
 /// A polygon cut to the box (Sutherland-Hodgman), so tiles on the edge
@@ -597,7 +721,7 @@ fn clip_polygon(r: Rect, pts: &[Point]) -> Vec<Point> {
 }
 
 /// Clip the segment to the box (Liang-Barsky); None when outside.
-fn clip_segment(r: Rect, p: Point, q: Point) -> Option<(Point, Point)> {
+pub(crate) fn clip_segment(r: Rect, p: Point, q: Point) -> Option<(Point, Point)> {
     let d = q - p;
     let (mut t0, mut t1) = (0.0f64, 1.0f64);
     for (pv, qv) in [
@@ -767,6 +891,41 @@ mod tests {
         };
         let g = generate(&s);
         assert_eq!(g.items.len(), s.guil_lines as usize);
+    }
+
+    #[test]
+    fn guilloche_bands_and_frames_stay_in_the_box() {
+        for layout in [GuilLayout::Band, GuilLayout::Frame] {
+            let s = ShapeGenSettings {
+                kind: GenKind::Guilloche,
+                guil_layout: layout,
+                width: 160.0,
+                height: 60.0,
+                ..ShapeGenSettings::default()
+            };
+            let g = generate(&s);
+            assert_eq!(g.items.len(), s.guil_lines as usize, "{layout:?}");
+            fits(&g, &s);
+            let b = g.bounds().expect("bounds");
+            // It spans the box.
+            assert!(b.width() > 150.0, "{layout:?} {b:?}");
+            if layout == GuilLayout::Frame {
+                // The middle stays empty: every line is within the band.
+                let hole = Rect::new(
+                    s.guil_band + 0.5,
+                    s.guil_band + 0.5,
+                    s.width - s.guil_band - 0.5,
+                    s.height - s.guil_band - 0.5,
+                );
+                for it in &g.items {
+                    for el in it.path.elements() {
+                        if let Some(p) = el.end_point() {
+                            assert!(!hole.contains(p), "{p:?}");
+                        }
+                    }
+                }
+            }
+        }
     }
 
     #[test]

@@ -344,9 +344,12 @@ fn read_document(
         // TRACEDRAW_PASSWORD opens a protected file.
         let password = std::env::var("TRACEDRAW_PASSWORD").unwrap_or_default();
         // TRACEDRAW_PDF_IMPORT_TEXT=curves reads the text as curves from
-        // the fonts the file embeds.
+        // the fonts the file embeds; =paragraphs joins its lines into
+        // paragraph text, as the app's Join Lines choice does.
+        let text = std::env::var("TRACEDRAW_PDF_IMPORT_TEXT").unwrap_or_default();
         let options = tracedraw_io::pdf_import::ImportOptions {
-            text_as_curves: std::env::var("TRACEDRAW_PDF_IMPORT_TEXT").is_ok_and(|v| v == "curves"),
+            text_as_curves: text == "curves",
+            text_as_paragraphs: text == "paragraphs",
             ..Default::default()
         };
         let imported = tracedraw_io::pdf_import::parse_with_options(
@@ -949,6 +952,7 @@ fn main() -> ExitCode {
                         tracedraw_cdr::write::Previews {
                             thumbnail: pages.first().cloned(),
                             pages,
+                            painted_bitmaps: tracedraw_io::bitmap_fill_pictures(&doc),
                             fonts: doc
                                 .font_faces_used()
                                 .into_iter()

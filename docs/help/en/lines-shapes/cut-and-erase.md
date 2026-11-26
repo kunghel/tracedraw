@@ -113,6 +113,11 @@ are cut out and nothing new is made. A click on a part makes it an object
 of its own. The objects stay selected, with the new one, so you can go on
 building.
 
+Parts about to be taken away (with <kbd>Alt</kbd> or in Delete mode) are
+hatched in red; parts about to be merged in the selection colour. A selected
+group works as the objects in it: they are cut where they are, in their
+group, and the group stays selected.
+
 Tick **Use guidelines** on the property bar to let the guidelines shown
 on the page cut the objects into parts too, as if each were a line drawn
 across them. The guidelines stay where they are. It is off by default.

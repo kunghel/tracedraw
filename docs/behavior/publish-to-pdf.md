@@ -16,7 +16,11 @@ is downloaded). The dialog is `ui/publish_pdf.rs`; the file comes from
   with more than one open; symbols are renumbered so each drawing's
   instances keep theirs), Current Page, Pages with a list such as
   `1-3, 5` (pages that do not exist are left out; a list that names no
-  page is refused), and Selection (only with a selection).
+  page is refused), and Selection (only with a selection). Selection,
+  once exported with, is where the dialog opens the next time while
+  objects are selected, with the page size chosen for it; any other
+  range exported with starts it at Current document again (#4141,
+  `PublishPrefs::range_selection`).
 - Page size, for Selection: Defined by document (the page with the
   selected objects only) or Defined by selected objects (a page the size
   of the selection's bounds, the default).

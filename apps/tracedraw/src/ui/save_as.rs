@@ -7,6 +7,7 @@
 //! where every save is a download, it keeps the name, type, version and
 //! properties. See docs/behavior/files.md.
 
+use crate::ui::btn_icons::IconUi;
 use crate::app::App;
 use crate::files::{self, DirEntry, Place};
 use crate::i18n::{tr, trf};
@@ -24,6 +25,8 @@ const ERROR: egui::Color32 = egui::Color32::from_rgb(0xC4, 0x2B, 0x1C);
 const WIDTH: f32 = 760.0;
 const LIST_H: f32 = 250.0;
 const PLACES_W: f32 = 150.0;
+/// What the list's date, type and size columns take beside the names.
+const NAME_REST_W: f32 = 330.0;
 /// The folders used lately shown down the left (#1391).
 const RECENT_DIRS: usize = 6;
 /// Letters typed in the list this many seconds apart start a new search.
@@ -903,6 +906,7 @@ pub fn dialog(app: &mut App, ctx: &Context, st: &mut SaveAsState, close: &mut bo
     }
     window(ctx, tr("dialog.save_drawing")).show(ctx, |ui| {
         ui.set_width(WIDTH);
+        ui.set_max_width(WIDTH);
         // No folders in a browser (a download) or on Android (the
         // system's picker chooses the place when Save is pressed).
         if !files::WEB && !files::ANDROID {
@@ -914,9 +918,9 @@ pub fn dialog(app: &mut App, ctx: &Context, st: &mut SaveAsState, close: &mut bo
                 ui.set_min_height(LIST_H);
                 ui.set_max_height(LIST_H);
                 ui.horizontal_top(|ui| {
-                    places(ui, st);
+                    places(ui, st, &app.settings.context_menus);
                     ui.separator();
-                    listing(ui, st);
+                    listing(ui, st, &app.settings.context_menus);
                 });
             });
             ui.add_space(6.0);
@@ -1023,14 +1027,14 @@ fn folder_bar(ui: &mut Ui, st: &mut SaveAsState) {
                 st.note = Some(tr("dialog.no_such_folder"));
             }
         }
-        if ui.button(tr("dialog.new_folder")).clicked() {
+        if ui.ibutton("dialog.new_folder").clicked() {
             st.new_folder();
         }
         // The system's own folder window, for the places only it knows
         // (Windows libraries, Quick access, cloud folders, #3416).
         if let files::FolderAction::PickFolder(token) = files::FolderUse::SaveDrawing.action() {
             if ui
-                .button(tr("options.browse"))
+                .ibutton("options.browse")
                 .rich_tip(tr("options.browse_tip"))
                 .clicked()
             {
@@ -1044,7 +1048,11 @@ fn folder_bar(ui: &mut Ui, st: &mut SaveAsState) {
 /// folders and roots, then Drives (mounted drives, memory cards, network
 /// shares), Bookmarks (the desktop's, then those made here with a right
 /// click on a folder, which a right click removes) and Recent (#1391).
-fn places(ui: &mut Ui, st: &mut SaveAsState) {
+fn places(
+    ui: &mut Ui,
+    st: &mut SaveAsState,
+    context_menu_prefs: &crate::ui::context_menus::Preferences,
+) {
     let mut open: Option<PathBuf> = None;
     let mut unbookmark: Option<PathBuf> = None;
     ui.vertical(|ui| {
@@ -1096,8 +1104,19 @@ fn places(ui: &mut Ui, st: &mut SaveAsState) {
                         if r.clicked() {
                             open = Some(path.clone());
                         }
-                        r.context_menu(|ui| {
-                            if ui.button(tr("dialog.remove_bookmark")).clicked() {
+                        crate::ui::context_menus::filter_popup(
+                            egui::Popup::context_menu(&r),
+                            context_menu_prefs,
+                            "save_bookmark",
+                        )
+                        .show(|ui| {
+                            let _menu = crate::ui::context_menus::Scope::new(
+                                context_menu_prefs,
+                                "save_bookmark",
+                            );
+                            if crate::ui::context_menus::show_item(ui, "dialog.remove_bookmark")
+                                && ui.ibutton("dialog.remove_bookmark").clicked()
+                            {
                                 unbookmark = Some(path.clone());
                                 ui.close();
                             }
@@ -1126,11 +1145,34 @@ fn places(ui: &mut Ui, st: &mut SaveAsState) {
     }
 }
 
+/// Only operations offered for this file or folder keep its popup open.
+fn filter_save_entry_popup<'a>(
+    popup: egui::Popup<'a>,
+    preferences: &crate::ui::context_menus::Preferences,
+    directory: bool,
+    bookmarked: bool,
+) -> egui::Popup<'a> {
+    let visible = preferences.is_visible("save_entry", "dialog.rename_entry")
+        || directory
+            && (preferences.is_visible("save_entry", "dialog.open_entry")
+                || !bookmarked && preferences.is_visible("save_entry", "dialog.add_bookmark"));
+    if crate::ui::menus::invoke::active() || visible {
+        popup
+    } else {
+        egui::Popup::close_id(popup.ctx(), popup.get_id());
+        popup.open(false)
+    }
+}
+
 /// The folder's contents: a click picks an entry (a file's name becomes
 /// the name), a double click on a folder opens it, a right click offers
 /// Open and Rename. With the list picked, letters jump to entries, F2
 /// renames, Enter opens a folder and the arrows move.
-fn listing(ui: &mut Ui, st: &mut SaveAsState) {
+fn listing(
+    ui: &mut Ui,
+    st: &mut SaveAsState,
+    context_menu_prefs: &crate::ui::context_menus::Preferences,
+) {
     let tz = jiff::tz::TimeZone::system();
     let mut open: Option<PathBuf> = None;
     let mut pick: Option<PathBuf> = None;
@@ -1138,6 +1180,9 @@ fn listing(ui: &mut Ui, st: &mut SaveAsState) {
     let mut rename_done: Option<bool> = None;
     let mut bookmark: Option<PathBuf> = None;
     list_keys(ui, st, &mut open, &mut rename);
+    // The name column's share of the list: the rest is the date, type
+    // and size columns (#4404).
+    let name_w = (ui.available_width() - NAME_REST_W).max(140.0);
     ui.vertical(|ui| {
         egui::ScrollArea::vertical()
             .id_salt("save_as_list")
@@ -1211,11 +1256,20 @@ fn listing(ui: &mut Ui, st: &mut SaveAsState) {
                             } else {
                                 let r = ui
                                     .horizontal(|ui| {
+                                        // A long name is cut with an ellipsis
+                                        // and shown whole in its tip: it
+                                        // widened the dialog past the screen,
+                                        // Save out of reach (#4404).
+                                        ui.set_max_width(name_w);
                                         ui.spacing_mut().item_spacing.x = 4.0;
                                         entry_icon(ui, e.is_dir);
                                         let shown = tracedraw_text::seen_order(&e.name)
                                             .unwrap_or_else(|| e.name.clone());
-                                        ui.selectable_label(selected, shown)
+                                        ui.add(
+                                            egui::Button::selectable(selected, shown.clone())
+                                                .truncate(),
+                                        )
+                                        .rich_tip(shown)
                                     })
                                     .inner;
                                 if selected && st.scroll_to {
@@ -1226,21 +1280,53 @@ fn listing(ui: &mut Ui, st: &mut SaveAsState) {
                                 } else if r.clicked() || r.secondary_clicked() {
                                     pick = Some(e.path.clone());
                                 }
-                                r.context_menu(|ui| {
-                                    if e.is_dir && ui.button(tr("dialog.open_entry")).clicked() {
-                                        open = Some(e.path.clone());
-                                        ui.close();
-                                    }
-                                    if ui.button(tr("dialog.rename_entry")).clicked() {
-                                        rename = Some(e.path.clone());
-                                        ui.close();
-                                    }
-                                    if e.is_dir
-                                        && !st.bookmarks.contains(&e.path)
-                                        && ui.button(tr("dialog.add_bookmark")).clicked()
-                                    {
-                                        bookmark = Some(e.path.clone());
-                                        ui.close();
+                                filter_save_entry_popup(
+                                    egui::Popup::context_menu(&r),
+                                    context_menu_prefs,
+                                    e.is_dir,
+                                    st.bookmarks.contains(&e.path),
+                                )
+                                .show(|ui| {
+                                    let _menu = crate::ui::context_menus::Scope::new(
+                                        context_menu_prefs,
+                                        "save_entry",
+                                    );
+                                    crate::ui::context_menu_filter::ordered_menu! { ui;
+                                        "dialog.open_entry" => {
+                                            if e.is_dir
+                                                && crate::ui::context_menus::show_item(
+                                                    ui,
+                                                    "dialog.open_entry",
+                                                )
+                                                && ui.ibutton("dialog.open_entry").clicked()
+                                            {
+                                                open = Some(e.path.clone());
+                                                ui.close();
+                                            }
+                                        },
+                                        "dialog.rename_entry" => {
+                                            if crate::ui::context_menus::show_item(
+                                                ui,
+                                                "dialog.rename_entry",
+                                            ) && ui.ibutton("dialog.rename_entry").clicked()
+                                            {
+                                                rename = Some(e.path.clone());
+                                                ui.close();
+                                            }
+                                        },
+                                        "dialog.add_bookmark" => {
+                                            if e.is_dir
+                                                && !st.bookmarks.contains(&e.path)
+                                                && crate::ui::context_menus::show_item(
+                                                    ui,
+                                                    "dialog.add_bookmark",
+                                                )
+                                                && ui.ibutton("dialog.add_bookmark").clicked()
+                                            {
+                                                bookmark = Some(e.path.clone());
+                                                ui.close();
+                                            }
+                                        }
                                     }
                                 });
                             }
@@ -1672,6 +1758,55 @@ fn fields(ui: &mut Ui, st: &mut SaveAsState) {
 }
 
 #[cfg(test)]
+mod conditional_entry_popup_tests {
+    use super::*;
+
+    fn popup_drawn(
+        preferences: &crate::ui::context_menus::Preferences,
+        directory: bool,
+        bookmarked: bool,
+    ) -> bool {
+        let context = crate::theme::ui_context();
+        let id = egui::Id::new("conditional_save_entry_popup");
+        egui::Popup::open_id(&context, id);
+        let mut drawn = false;
+        let mut output = context.run_ui(Default::default(), |ui| {
+            let popup = egui::Popup::new(
+                id,
+                context.clone(),
+                egui::PopupAnchor::Position(egui::pos2(20.0, 20.0)),
+                ui.layer_id(),
+            )
+            .open_memory(None);
+            drawn = filter_save_entry_popup(popup, preferences, directory, bookmarked)
+                .show(|ui| {
+                    let _ = ui.add_enabled(false, egui::Button::new("Visible row"));
+                })
+                .is_some();
+        });
+        output.textures_delta.clear();
+        assert_eq!(egui::Popup::is_id_open(&context, id), drawn);
+        drawn
+    }
+
+    #[test]
+    fn hidden_rename_does_not_leave_directory_only_actions_in_a_file_popup() {
+        let mut preferences = crate::ui::context_menus::Preferences::default();
+        assert!(popup_drawn(&preferences, false, false));
+        preferences.set_visible("save_entry", "dialog.rename_entry", false);
+        assert!(!popup_drawn(&preferences, false, false));
+        assert!(popup_drawn(&preferences, true, false));
+        preferences.set_visible("save_entry", "dialog.open_entry", false);
+        assert!(popup_drawn(&preferences, true, false));
+        assert!(!popup_drawn(&preferences, true, true));
+        preferences.set_visible("save_entry", "dialog.add_bookmark", false);
+        assert!(!popup_drawn(&preferences, true, false));
+        preferences.set_visible("save_entry", "dialog.rename_entry", true);
+        assert!(popup_drawn(&preferences, false, false));
+    }
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::ui::dialogs::Dialog;
@@ -1738,6 +1873,38 @@ mod tests {
             Dialog::SaveAs(st) => st,
             other => panic!("no Save Drawing dialog: {other:?}"),
         }
+    }
+
+    /// #4404: a folder with a very long name in the list does not widen
+    /// the dialog past the screen: the name is cut and Save stays in view.
+    #[test]
+    fn a_long_folder_name_keeps_the_dialog_on_screen() {
+        let dir = temp_dir("save-as-long-name");
+        let long = "a very long folder name that goes on ".repeat(6);
+        let _ = std::fs::create_dir_all(dir.join(long.trim()));
+        let mut app = drawing();
+        app.save_as_dialog();
+        state(&mut app).open_dir(dir.clone());
+        let ctx = crate::theme::ui_context();
+        let mut right = 0.0f32;
+        for _ in 0..3 {
+            let input = egui::RawInput {
+                screen_rect: Some(Rect::from_min_size(Pos2::ZERO, vec2(1366.0, 740.0))),
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(input, |ui| crate::ui::dialogs::show(&mut app, ui.ctx()));
+            out.textures_delta.clear();
+            right = out
+                .shapes
+                .iter()
+                .map(|c| c.shape.visual_bounding_rect())
+                .filter(|r| r.is_finite())
+                .map(|r| r.right())
+                .fold(0.0, f32::max);
+        }
+        assert!(right <= 1366.0, "the dialog reaches x = {right}");
+        assert!(right < WIDTH + 400.0, "the dialog reaches x = {right}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// d#2122: a Hebrew file name shows its words from right to left, in

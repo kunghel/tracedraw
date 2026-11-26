@@ -14,6 +14,9 @@ use egui::{Color32, Context, Pos2, Rect, RichText, Sense, Stroke, Ui, Vec2};
 const GREEN: Color32 = Color32::from_rgb(0x1E, 0x9E, 0x3C);
 const ROW: f32 = 20.0;
 
+/// The most mirror lines the field takes (#4272).
+const MAX_LINES: u32 = tracedraw_core::live::SYMMETRY_MAX_LINES as u32;
+
 /// The mirror lines icon: three crossing dotted lines.
 fn lines_icon(ui: &mut Ui) {
     let (r, _) = ui.allocate_exact_size(Vec2::splat(18.0), Sense::hover());
@@ -114,7 +117,7 @@ pub fn show(app: &mut App, ctx: &Context) {
                         let mut changed = false;
                         lines_icon(ui);
                         changed |= ui
-                            .add_sized([52.0, ROW], NumField::new(&mut n).range(1..=12))
+                            .add_sized([52.0, ROW], NumField::new(&mut n).range(1..=MAX_LINES))
                             .rich_tip(tr("dialog.mirror_lines"))
                             .changed();
                         ui.separator();
@@ -156,7 +159,7 @@ pub fn show(app: &mut App, ctx: &Context) {
                             .rich_tip(tr("dialog.mirror_angle"))
                             .changed();
                         if changed {
-                            app.set_symmetry_of(id, c, a, n.clamp(1, 12) as u8);
+                            app.set_symmetry_of(id, c, a, n.clamp(1, MAX_LINES) as u8);
                         }
                         // Rotational: the copies turned round the centre,
                         // none mirrored (#2999).

@@ -40,6 +40,11 @@ everything back. Highlights:
   in the toolbox.
 - **Commands**: your own keyboard shortcuts (below).
 - **Command Bars**: which bars show.
+- **Context Menus**: show or hide operations in each right-click menu.
+  Expand submenus to see their children, then drag a handle or use Move Up
+  and Move Down to reorder items at the same level. Search keeps the parent
+  path visible. Restore a menu to reset both visibility and order. See
+  [context menu customization](../behavior/context-menus.md).
 - **Color Palette**: the No Color well, what the right mouse button does
   on the palette, and the document palette.
 
@@ -144,11 +149,11 @@ yours. Tool keys (single letters such as `Z` for Zoom) are listed under
 
 ## Languages
 
-The interface comes in 20 languages: English, Chinese (Simplified),
+The interface comes in 21 languages: English, Chinese (Simplified),
 Hindi, Spanish, French, Arabic (with a right-to-left layout), Bengali,
 Russian, Portuguese (Brazil), Indonesian, German, Japanese, Chinese
-(Traditional), Italian, Dutch, Polish, Turkish, Czech, Lao and
-Vietnamese.
+(Traditional), Italian, Dutch, Polish, Turkish, Czech, Lao, Vietnamese
+and Esperanto.
 
 To switch: **Tools > Options > Global > General**, choose the language.
 It changes at once. Shortcuts are the same in every language.

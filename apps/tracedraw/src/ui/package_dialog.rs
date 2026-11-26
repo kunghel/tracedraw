@@ -146,7 +146,7 @@ pub fn dialog(app: &mut App, ctx: &Context, st: &mut PackageState, close: &mut b
                             _ => None,
                         };
                         let mut browse = ui
-                            .add_enabled(token.is_some(), egui::Button::new(tr("publish.browse")));
+                            .add_enabled(token.is_some(), crate::ui::btn_icons::Ib::new("publish.browse"));
                         if let Some(tip) = crate::files::FolderUse::Package.tip() {
                             browse = browse.rich_disabled_tip(tr(tip));
                         }

@@ -47,7 +47,8 @@ preferred first, and `i18n::best_language` takes the first TraceDraw has:
 
 - Windows: `GetUserPreferredUILanguages` (the display languages of
   Settings > Time & language), else `GetUserDefaultUILanguage` mapped by
-  `i18n::language_for_langid`.
+  `i18n::language_for_langid`. Esperanto has no Windows language id, so
+  only the display language list (which can hold it) or Options picks it.
 - macOS: `CFLocaleCopyPreferredLanguages` (System Settings > General >
   Language & Region), else the variables below.
 - Linux and other Unix systems: the `LANGUAGE` list (left aside when the
@@ -72,7 +73,7 @@ Indonesian) gives Indonesian; `C` and `POSIX` give nothing.
   translation for it, else in English (`ShowLanguageDialog=no`).
 - The page "TraceDraw's language", after Select Additional Tasks, has one
   list: "System language (<the language it gives here>)" first, then the
-  twenty interface languages in the app's order. System language is
+  twenty-one interface languages in the app's order. System language is
   selected, so an install where nothing is changed follows the system.
   The language System language names comes from the Windows UI language
   (`GetUILanguage`) through `AppLanguageForLangId`, the same table as

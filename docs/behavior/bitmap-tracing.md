@@ -746,6 +746,65 @@ region of its own closing the letter).
 - The cleaning of edges, fringes and specks runs at every detail, 100
   included.
 
+## Geometric shapes
+
+The Geometric shapes box (Settings tab, under Image; outline only, off
+at first) is for logos and drawn shapes. Off, the trace is exactly as
+described above. On (`trace::Settings::geometric`, code in
+`trace_shapes.rs`):
+
+1. Pre-processing: the thin bands of other colours a compressed picture
+   leaves along an edge between two colours go, at most 2.5 px of the
+   art thick, whatever their colour, as long as they are no more than
+   40 (luma) darker than the darker side or lighter than the lighter
+   one (an outline drawn between the two stays). This runs with the
+   cleaning of fringes and again after the ends are settled, so the
+   edge of a shape with the colour beside it is one border all round.
+   Noise is taken out as the detail asks, no more (a further pass ate
+   small print), and the picture is enlarged only when Enlarge small
+   pictures first is on.
+2. Every border is fitted faithfully (see "Faithful fit and the
+   check"), picture enlarged or not: sides that run straight are exact
+   lines, bends are arcs, corners between straight sides are sharp at
+   the crossing of their lines, and lines within a degree and a half of
+   level or upright are set level or upright.
+3. Symmetry: a ring all round one region (no third colour on it), at
+   least 8 px of the art across each way and up to 6000 points long,
+   is mirrored across the upright and then the level line through its
+   centroid. When every mirrored point lies within 1 px of the ring
+   (root mean square 0.35 px or less), each point moves half way to
+   the mirror image of the nearest point on the ring, so the ring is
+   exactly symmetric before it is fitted.
+4. Whole shapes: such a ring, at least 4 px of the art across its
+   narrow side, is measured against a whole circle (the centroid of its
+   area, the mean distance from it), a whole ellipse (axes and turn from
+   the second moments of its area: semi-axes twice the square roots of
+   their eigenvalues) and a whole rectangle (turned the way its sides
+   run, the length-weighted mean of four times each piece's angle; as
+   wide and high as they reach; the corner radius with the least root
+   mean square of the signed distance, a radius under 0.5 px being a
+   square corner). The tolerance is 0.75 px of the art or 1.2 % of the
+   shape's size, whichever is more; 95 % of the fitted curve's points
+   must lie within it, none further than 2.5 times it (a speck of noise
+   on the edge), the root mean square within 45 % of it, and the same
+   for the border's own points with 0.5 px more. The shape must also
+   cover the area the border holds, give or take the tolerance along
+   its outline: the outline of a thin open ring runs near a circle all
+   along but holds next to nothing, and stays as it is. Of the shapes that pass, the simplest wins:
+   circle, ellipse, rectangle, rounded rectangle. A shape within 1.5
+   degrees of level or upright is set level or upright. The circle and
+   the ellipse are four cubics, the rounded rectangle four lines and
+   four quarter circles.
+
+All of this works on the shared borders, before the regions' rings are
+put together from them, so two colours side by side still meet along
+one curve with no gap: a dot inside a badge is one circle, the dot's
+outline and the hole in the badge.
+
+Vectorizing by an outside service with the user's own key is the Trace
+with AI button of the same dialog (`behavior/ai-vectorize.md`); it is
+nothing is sent until it is pressed.
+
 ## Gradients
 
 In flat art, the bands the colour reduction cuts a blend into are one
@@ -799,6 +858,17 @@ polylines, smoothed (Catmull-Rom) and output as curves with a stroke
 width equal to the mean local thickness.
 
 ## Checks
+
+- `trace::tests::geometric_shapes_draw_true_circles_and_rounded_rectangles`:
+  a noisy logo (a red dot, a blue badge with rounded corners holding a
+  green dot) traced with Geometric shapes: the dots are four cubics
+  within 0.35 px of true circles, the badge is exactly as wide and high
+  as drawn with four rounded corners, no page shows between the green
+  dot and the badge, and the box is off at first.
+- `trace_shapes::tests`: rough circles, turned ellipses, rounded badges
+  and turned squares made whole; stars, a bitten circle, tiny dots and
+  the outline of an open ring left alone; the whole shape runs the same way round; a nearly
+  symmetric ring made symmetric and a lopsided one left alone.
 
 - `pick_drag_tests::the_trace_preview_follows_a_slider_without_a_button`:
   a click on the Detail slider changes the value and the trace on show

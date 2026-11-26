@@ -161,6 +161,17 @@ impl Default for PictureMosaicSettings {
     }
 }
 
+impl PictureMosaicSettings {
+    /// Every setting back to its default; the picture library stays.
+    pub fn reset(&mut self) {
+        *self = Self {
+            library: self.library.take(),
+            images: std::mem::take(&mut self.images),
+            ..Self::default()
+        };
+    }
+}
+
 /// An image's average colour (premultiplied, flattened on white).
 pub fn average(img: &RgbaImage) -> [f32; 3] {
     let mut acc = [0f64; 3];

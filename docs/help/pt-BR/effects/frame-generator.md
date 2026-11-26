@@ -2,7 +2,8 @@
 
 O Gerador de molduras desenha uma moldura decorativa em volta do seu
 desenho: filetes para um certificado, arabescos clássicos para um convite,
-degraus art déco, pérolas, grega, festonado ou ondas entrelaçadas.
+degraus art déco, pérolas, grega, festonado, ondas entrelaçadas ou
+guilloché, as linhas finas entrelaçadas de certificados, diplomas e vales.
 
 ## Desenhar uma moldura {#frame}
 
@@ -21,6 +22,8 @@ Abra o painel [[docker.frame_generator]] em
    - [[docker.frame_line]]: a espessura das linhas finas.
    - [[docker.frame_repeat]]: o comprimento de uma pérola, grega, festão ou
      onda; cada lado recebe um número inteiro deles.
+   - [[docker.frame_strands]]: no guilloché, quantas linhas finas se
+     entrelaçam ao longo da faixa.
    - [[docker.frame_side_ornaments]]: um losango com dois pontos no meio de
      cada lado.
    - [[docker.frame_color]]: a cor das linhas e ornamentos.

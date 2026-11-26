@@ -708,7 +708,7 @@ pub fn grid_cut_window(app: &mut App, ctx: &egui::Context) {
             ui.horizontal(|ui| {
                 let own = g.total_w.is_none() && g.total_h.is_none();
                 if ui
-                    .add_enabled(!own, egui::Button::new(tr("grid_cut.object_size")))
+                    .add_enabled(!own, crate::ui::btn_icons::Ib::new("grid_cut.object_size"))
                     .rich_tip_always(pair("grid_cut.object_size", "grid_cut.object_size_tip"))
                     .clicked()
                 {

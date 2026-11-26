@@ -28,7 +28,13 @@ destination picked meanwhile unless it names a printer the system does
 not have (#614).
 The printers come from CUPS (Linux and macOS): `lpstat -l -p -d` lists
 them with their state, description and location (`printers.rs`,
-`parse_lpstat`), and a print on one of them hands the PDF to `lp -d`
+`parse_lpstat`). Each query is limited to five seconds and 1 MiB of
+stdout; stderr is discarded instead of buffered, and an unfinished query
+is killed and reaped. If the verbose query fails or exceeds those
+bounds, the compact `lpstat -p -d` query is tried with the same bounds.
+That fallback retains names, states and the default, but has no
+description or location. Failed or partial output is not offered as a
+printer list. A print on a printer hands the PDF to `lp -d`
 with the number of copies and their collation (`lp_args`) and the
 drawing's name as the job title; the status bar says "Sent to printer
 name", or what `lp` complained about. The dialog starts on the printer
@@ -276,6 +282,11 @@ over its settings), fills the window with the sheets exactly as Print
 sends them: the imposition, the marks, Mirror and Invert, built by the
 same function (`export::print_sheets`).
 
+- Print sends the job and leaves the preview open, so pages or sheets
+  can be sent one at a time (to collate by hand); Print and Close,
+  beside it, sends the job and closes the preview (#4072). Print This
+  Sheet leaves it open too.
+
 - The printer's unprintable edge (#1924): with a printer chosen (not a
   file), the strip along each side of the sheet that the printer cannot
   print on, its hard margins as the system reports them, is shaded
@@ -359,7 +370,12 @@ same function (`export::print_sheets`).
   Prepress: Print separations, Bleed with its limit (the Print dialog's
   Bleed limit, the same setting: 0 to 50 mm, greyed while Bleed is off,
   #1653, `print_preview::tests::the_bleed_limit_is_set_beside_bleed`)
-  beside Crop marks, Registration
+  beside Crop marks; when Bleed is off and objects on the pages run past
+  their page's edges (a background made larger than the page), a button
+  Print bleed (n mm) turns Bleed on by that much, up to 50 mm, so the
+  print keeps what runs past the page and the crop marks stay at the page
+  edges outside it (#4071, `export::tests::the_overhang_is_how_far_objects_run_past_their_page`);
+  Registration
   marks beside Color bars, Densitometer scale beside Page information,
   Mirror beside Invert, Grayscale beside Reverse order (#1657, #1394),
   Transform and Artwork position; then the layout

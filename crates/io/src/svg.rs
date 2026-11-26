@@ -533,6 +533,8 @@ fn write_unlinked(
     {
         // Image space (pixels, y down) to the local rect to the page.
         use base64::Engine;
+        let painted = crate::bitmap_fill_png(shape, ctx.flip * parent);
+        let png = painted.as_deref().unwrap_or(png);
         let b64 = base64::engine::general_purpose::STANDARD.encode(png);
         let m = transform
             * Affine::new([

@@ -2,7 +2,8 @@
 
 The Frame Generator draws a decorative frame round your design: ruled
 lines for a certificate, classic scrolls for an invitation, art deco
-steps, beads, a Greek key, scallops or interlaced waves.
+steps, beads, a Greek key, scallops, interlaced waves or guilloche, the
+fine weaving lines of certificates, diplomas and vouchers.
 
 ## Drawing a frame {#frame}
 
@@ -21,6 +22,8 @@ Open the [[docker.frame_generator]] panel with
    - [[docker.frame_line]]: the width of the thin lines.
    - [[docker.frame_repeat]]: the length of one bead, key, scallop or wave;
      each side gets a whole number of them.
+   - [[docker.frame_strands]]: for guilloche, how many fine lines weave
+     along the band.
    - [[docker.frame_side_ornaments]]: a diamond with two dots in the middle
      of each side.
    - [[docker.frame_color]]: the colour of the lines and ornaments.

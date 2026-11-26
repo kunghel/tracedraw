@@ -510,8 +510,9 @@ impl<N: Numeric> Widget for Slider<'_, N> {
             // In a row of a docker or a dialog (narrower than a bar across
             // the window): the rest of the row, so no slider there is a
             // short one beside a long one in a column.
+            // In a panel, the room up to the panel's edge (#4323).
             None if ui.max_rect().width() <= ROW_FILL_MAX && ui.available_width().is_finite() => {
-                (ui.available_width() - box_w - self.reserve)
+                (crate::ui::docker_form::fit_w(ui, f32::INFINITY) - box_w - self.reserve)
                     .max(ui.spacing().slider_width.min(MIN_ROW_RAIL_W))
                     .max(MIN_RAIL_W)
             }

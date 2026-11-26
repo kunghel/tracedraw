@@ -3,6 +3,7 @@
 //! and text) and the dialog asking how many rows or columns to insert or
 //! split into.
 
+use crate::ui::btn_icons::IconUi;
 use crate::app::App;
 use crate::i18n::tr;
 use crate::theme::Tokens;
@@ -56,9 +57,24 @@ pub fn table_bar(app: &mut App, ui: &mut Ui, drawing: bool) {
     borders(app, ui, cells);
     if target.is_some() {
         vsep(ui);
-        ui.menu_button(tr("table.options"), |ui| table_options(app, ui))
+        ui.imenu_button("table.options", |ui| table_options(app, ui))
             .response
             .rich_tip(crate::ui::tips::keyed("table.options"));
+        // The cells in the spreadsheet program (#4145).
+        if !crate::files::WEB
+            && ui
+                .add(crate::ui::btn_icons::Ib::with_text(
+                    "table.edit_in_spreadsheet",
+                    app.edit_in_spreadsheet_label(),
+                ))
+                .rich_tip(crate::ui::tips::pair(
+                    "table.edit_in_spreadsheet",
+                    "table.edit_in_spreadsheet_tip",
+                ))
+                .clicked()
+        {
+            app.edit_table_externally();
+        }
     }
     if cells {
         vsep(ui);

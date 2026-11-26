@@ -159,7 +159,15 @@ a click lower on the tab brings the panel to the front
   the upper panel alone in the column. Bringing the lower panel to the front, closing
   it or moving it away ends the stack (`App::settle_stacks`); opening
   it from a menu keeps both. A second column that empties into the edge
-  column takes its stack with it. On a phone the column shows the front
+  column takes its stack with it. Lock Docker in a panel's tab or
+  title menu (off by default) keeps it in front of its column: a panel
+  opened there afterwards (from a menu, a tab click or a command) is
+  shown under it instead of taking its place, and when the panel under
+  it is locked as well the new one opens in the side's second column
+  (floating when that column's two are locked too). A locked panel's
+  Close is pale and its tab's close button does nothing until it is
+  unlocked; the lock is kept with the workspace (`DockerSetup::locked`,
+  `App::open_beside_locked`, #3953). On a phone the column shows the front
   panel only.
 - A floating panel is a window with a grey border and a shadow: the
   panel's title bar (its name and close; no collapse) over its page,

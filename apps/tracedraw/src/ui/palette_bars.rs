@@ -25,6 +25,7 @@
 //! resizes the same way; it keeps the bars' drag (see `bars.rs`) and its
 //! own places beside the drawing.
 
+use crate::ui::btn_icons::IconUi;
 use crate::app::App;
 use crate::i18n::tr;
 use crate::settings::{BarSlot, DOCUMENT_PALETTE, MAX_ROWS, ROWS_FIT, SWATCH_STEPS};
@@ -274,80 +275,132 @@ pub fn palette_id_of(app: &App, which: Row) -> Option<String> {
     app.palettes.get(index).map(crate::settings::palette_id)
 }
 
-/// The palette menu's items for the strip `which`: Swatch Size, Rows and
-/// Position.
-pub fn strip_items(app: &mut App, ui: &mut Ui, which: Row) {
-    use crate::ui::menus::{item_label, radio, sub};
+/// Draw one strip submenu, so it can be ordered with the other root actions.
+pub(crate) fn strip_item(app: &mut App, ui: &mut Ui, which: Row, key: &str) {
+    use crate::ui::context_menu_filter::ordered_keys;
+    use crate::ui::menus::{item_label_keyed, radio, sub};
     let prefs = crate::ui::palette::strip_prefs(app, which);
-    sub(ui, "palette.size", |ui| {
-        for (size, key) in SWATCH_STEPS {
-            if radio(ui, key, "", prefs.swatch == size) {
-                set_swatch(app, which, size);
-            }
+    match key {
+        "palette.size" => {
+            crate::ui::menus::sub_dynamic(
+                ui,
+                "palette.size",
+                crate::settings::swatch_step_of(prefs.swatch).is_none(),
+                |ui| {
+                    let keys = SWATCH_STEPS.map(|(_, key)| key);
+                    for &key in ordered_keys(&keys).iter() {
+                        if let Some((size, _)) =
+                            SWATCH_STEPS.iter().find(|(_, candidate)| *candidate == key)
+                        {
+                            if radio(ui, key, "", prefs.swatch == *size) {
+                                set_swatch(app, which, *size);
+                            }
+                        }
+                    }
+                    // A size between the named ones (Ctrl+wheel steps finer).
+                    if crate::settings::swatch_step_of(prefs.swatch).is_none() {
+                        let label = crate::i18n::trf(
+                            "palette.size_custom",
+                            &[("n", &prefs.swatch.to_string())],
+                        );
+                        item_label_keyed(ui, "palette.size", &label, "", false);
+                    }
+                },
+            );
         }
-        // A size between the named ones (Ctrl+wheel steps finer).
-        if crate::settings::swatch_step_of(prefs.swatch).is_none() {
-            let label =
-                crate::i18n::trf("palette.size_custom", &[("n", &prefs.swatch.to_string())]);
-            item_label(ui, &label, "", false);
+        "palette.rows" => {
+            sub(ui, "palette.rows", |ui| {
+                let floating = prefs.dock == Dock::Floating;
+                let now = if floating {
+                    Some(crate::ui::palette::lines_of(app, which) as u8)
+                } else {
+                    Some(prefs.rows)
+                };
+                for &key in ordered_keys(&[
+                    "palette.rows_1",
+                    "palette.rows_2",
+                    "palette.rows_3",
+                    "palette.rows_4",
+                    "palette.rows_5",
+                    "palette.rows_6",
+                    "palette.rows_7",
+                    "palette.rows_8",
+                    "palette.rows_fit",
+                ])
+                .iter()
+                {
+                    if key == "palette.rows_fit" {
+                        if radio(ui, key, "", !floating && prefs.rows == ROWS_FIT) {
+                            set_rows(app, which, ROWS_FIT);
+                        }
+                    } else if let Some(n) = key
+                        .strip_prefix("palette.rows_")
+                        .and_then(|n| n.parse::<u8>().ok())
+                    {
+                        if radio(ui, key, "", now == Some(n)) {
+                            set_rows(app, which, n);
+                        }
+                    }
+                }
+            });
         }
-    });
-    sub(ui, "palette.rows", |ui| {
-        let floating = prefs.dock == Dock::Floating;
-        let now = if floating {
-            Some(crate::ui::palette::lines_of(app, which) as u8)
-        } else {
-            Some(prefs.rows)
-        };
-        for n in 1..=MAX_ROWS {
-            let key = format!("palette.rows_{n}");
-            if radio(ui, &key, "", now == Some(n)) {
-                set_rows(app, which, n);
-            }
+        "palette.position" => {
+            crate::ui::menus::sub_dynamic(
+                ui,
+                "palette.position",
+                which != Row::Main
+                    && crate::ui::context_menu_filter::is_visible("palette.among_toolbars"),
+                |ui| {
+                    let locked = app.settings.bars.locked;
+                    let among = among_toolbars(app, which);
+                    for &key in ordered_keys(&[
+                        "bars.top",
+                        "bars.bottom",
+                        "bars.left",
+                        "bars.right",
+                        "palette.float",
+                        "palette.among_toolbars",
+                    ])
+                    .iter()
+                    {
+                        if key == "palette.among_toolbars" {
+                            // Only additional bars can lie among the toolbars.
+                            if which != Row::Main
+                                && crate::ui::menus::radio_if(ui, key, "", among, !locked)
+                            {
+                                set_among_toolbars(app, which, crate::settings::MAX_TOOLBAR_ROW);
+                            }
+                        } else if let Some((dock, _)) =
+                            PLACES.iter().find(|(_, candidate)| *candidate == key)
+                        {
+                            let on = prefs.dock == *dock && !(*dock == Dock::Top && among);
+                            if crate::ui::menus::radio_if(ui, key, "", on, !locked) {
+                                set_dock(app, which, *dock, None);
+                            }
+                        }
+                    }
+                },
+            );
         }
-        if radio(
-            ui,
-            "palette.rows_fit",
-            "",
-            !floating && prefs.rows == ROWS_FIT,
-        ) {
-            set_rows(app, which, ROWS_FIT);
-        }
-    });
-    sub(ui, "palette.position", |ui| {
-        let locked = app.settings.bars.locked;
-        let among = among_toolbars(app, which);
-        for (dock, key) in PLACES {
-            let on = prefs.dock == dock && !(dock == Dock::Top && among);
-            if crate::ui::menus::radio_if(ui, key, "", on, !locked) {
-                set_dock(app, which, dock, None);
-            }
-        }
-        // A palette bar also lies among the toolbars along the top (the
-        // default palette has its own places at the top).
-        if which != Row::Main
-            && crate::ui::menus::radio_if(ui, "palette.among_toolbars", "", among, !locked)
-        {
-            set_among_toolbars(app, which, crate::settings::MAX_TOOLBAR_ROW);
-        }
-    });
+        _ => {}
+    }
 }
 
 /// Open as Palette Bar: every palette not shown yet, and the document
 /// palette.
 pub fn open_bar_items(app: &mut App, ui: &mut Ui) {
-    use crate::ui::menus::{item_label, sub};
+    use crate::ui::menus::{item_label_keyed, sub};
     sub(ui, "palette.open_bar", |ui| {
         let doc_open = app.extra_palettes.iter().any(|r| r.document);
         let name = app.document_palette_name();
-        if item_label(ui, &name, "", !doc_open) {
+        if item_label_keyed(ui, "palette.open_as_bar", &name, "", !doc_open) {
             app.open_palette_bar(DOCUMENT_PALETTE);
         }
         crate::ui::menus::sep(ui);
         for i in 0..app.palettes.len() {
             let shown = app.visible_palettes.contains(&i);
             let name = app.palette_name(i);
-            if item_label(ui, &name, "", !shown) {
+            if item_label_keyed(ui, "palette.open_as_bar", &name, "", !shown) {
                 let id = crate::settings::palette_id(&app.palettes[i]);
                 app.open_palette_bar(&id);
             }
@@ -402,7 +455,7 @@ pub fn rename_window(app: &mut App, ctx: &egui::Context) {
                     done = Some(name.clone());
                 }
                 if ui
-                    .button(tr("palette.reset_name"))
+                    .ibutton("palette.reset_name")
                     .rich_tip(tr("palette.reset_name_tip"))
                     .clicked()
                 {
@@ -964,10 +1017,25 @@ fn title(app: &mut App, ui: &mut Ui, which: Row, width: f32) {
             }
         }
     }
-    egui::Popup::context_menu(&resp)
-        .id(egui::Id::new(("palette_title_menu", which)))
-        .style(crate::ui::menus::menu_popup_style)
-        .show(|ui| crate::ui::menus::body(ui, |ui| crate::ui::palette::menu(app, ui, which)));
+    crate::ui::context_menus::filter_popup_with(
+        egui::Popup::context_menu(&resp)
+            .id(egui::Id::new(("palette_title_menu", which)))
+            .style(crate::ui::menus::menu_popup_style),
+        &app.settings.context_menus,
+        crate::ui::palette::menu_location(app, which),
+        &crate::ui::palette::menu_dynamic_items(
+            app,
+            which,
+            crate::ui::palette::menu_location(app, which),
+        ),
+    )
+    .show(|ui| {
+        let _scope = crate::ui::context_menus::Scope::new(
+            &app.settings.context_menus,
+            crate::ui::palette::menu_location(app, which),
+        );
+        crate::ui::menus::body(ui, |ui| crate::ui::palette::menu(app, ui, which));
+    });
 }
 
 /// The right and bottom edges and the corner between them of a floating
@@ -1140,6 +1208,48 @@ mod tests {
     use super::*;
     use crate::ui::palette::{floating_flow, min_len, thickness, Flow};
 
+    #[test]
+    fn context_menu_strip_submenus_apply_their_saved_child_order() {
+        for (parent, first) in [
+            ("palette.size", "palette.size_xl"),
+            ("palette.rows", "palette.rows_8"),
+            ("palette.position", "bars.right"),
+        ] {
+            let mut app = App::headless();
+            let ctx = crate::theme::ui_context();
+            app.settings
+                .context_menus
+                .set_order("palette", parent, &[first]);
+            crate::ui::menus::replay::start(0);
+            let mut output = ctx.run_ui(Default::default(), |ui| {
+                let _scope =
+                    crate::ui::context_menus::Scope::new(&app.settings.context_menus, "palette");
+                strip_item(&mut app, ui, Row::Main, parent);
+            });
+            output.textures_delta.clear();
+            let (hit, _) = crate::ui::menus::replay::finish();
+            assert_eq!(hit.as_deref(), Some(first));
+            match parent {
+                "palette.size" => {
+                    let expected = SWATCH_STEPS
+                        .iter()
+                        .find(|(_, key)| *key == first)
+                        .expect("size key")
+                        .0;
+                    assert_eq!(app.settings.palette.swatch_size, expected);
+                }
+                "palette.rows" => assert_eq!(app.settings.palette.rows, 8),
+                "palette.position" => {
+                    assert_eq!(
+                        crate::ui::palette::strip_prefs(&app, Row::Main).dock,
+                        Dock::Right
+                    );
+                }
+                _ => unreachable!(),
+            }
+        }
+    }
+
     /// The keys of every item `menu` shows, walked with the menu replay
     /// (each walk clicks one item, so a fresh app each time).
     fn menu_keys(which: Row, setup: impl Fn(&mut App)) -> Vec<String> {
@@ -1197,6 +1307,81 @@ mod tests {
             }
         }
         panic!("no item {key} in the menu");
+    }
+
+    /// Walk the popup without activating an item, including its submenus.
+    fn resource_menu_item_count(
+        app: &mut App,
+        location: Option<&'static str>,
+        draw: fn(&mut App, &mut Ui),
+    ) -> usize {
+        use crate::ui::menus::replay;
+        let ctx = crate::theme::ui_context();
+        replay::start(usize::MAX);
+        let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+            let _scope = location
+                .map(|id| crate::ui::context_menus::Scope::new(&app.settings.context_menus, id));
+            crate::ui::menus::body(ui, |ui| draw(app, ui));
+        });
+        out.textures_delta.clear();
+        let (hit, seen) = replay::finish();
+        assert!(hit.is_none(), "a menu walk must not run a command");
+        seen
+    }
+
+    #[test]
+    fn hidden_palette_actions_do_not_escape_the_popup_scope() {
+        fn draw(app: &mut App, ui: &mut Ui) {
+            crate::ui::palette::menu(app, ui, Row::Main);
+        }
+        let mut app = App::headless();
+        let baseline = resource_menu_item_count(&mut app, Some("palette"), draw);
+        app.settings
+            .context_menus
+            .set_visible("palette", "palette.new", false);
+        let filtered = resource_menu_item_count(&mut app, Some("palette"), draw);
+        assert_eq!(filtered + 1, baseline);
+        let outside = resource_menu_item_count(&mut app, None, draw);
+        assert_eq!(outside, baseline, "the popup scope must be restored");
+    }
+
+    #[test]
+    fn dynamic_palette_targets_share_an_operation_preference() {
+        let mut app = App::headless();
+        let baseline = resource_menu_item_count(&mut app, Some("palette"), open_bar_items);
+        assert!(baseline > 0);
+        app.settings
+            .context_menus
+            .set_visible("palette", "palette.open_as_bar", false);
+        let filtered = resource_menu_item_count(&mut app, Some("palette"), open_bar_items);
+        assert_eq!(filtered, 0, "all palette targets share the operation key");
+        assert!(
+            !app.palettes.is_empty(),
+            "filtering leaves resource data intact"
+        );
+    }
+
+    #[test]
+    fn document_palette_bars_use_the_document_context_preferences() {
+        let mut app = App::headless();
+        assert_eq!(
+            crate::ui::palette::menu_location(&app, Row::Main),
+            "palette"
+        );
+        assert_eq!(
+            crate::ui::palette::menu_location(&app, Row::Document),
+            "palette_document"
+        );
+        app.open_palette_bar(DOCUMENT_PALETTE);
+        let k = app
+            .extra_palettes
+            .iter()
+            .position(|row| row.document)
+            .expect("document palette bar");
+        assert_eq!(
+            crate::ui::palette::menu_location(&app, Row::Extra(k)),
+            "palette_document"
+        );
     }
 
     #[test]

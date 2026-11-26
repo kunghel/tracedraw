@@ -1123,10 +1123,14 @@ pub fn single_color(img: &RgbaImage) -> Option<[u8; 3]> {
 pub fn recolor_single(img: &RgbaImage, to: [u8; 3]) -> Option<RgbaImage> {
     single_color(img)?;
     let mut out = img.clone();
-    for p in out.pixels_mut().filter(|p| p[3] > 0) {
+    recolor_visible_pixels(&mut out, to);
+    Some(out)
+}
+
+fn recolor_visible_pixels(img: &mut RgbaImage, to: [u8; 3]) {
+    for p in img.pixels_mut().filter(|p| p[3] > 0) {
         *p = Rgba([to[0], to[1], to[2], p[3]]);
     }
-    Some(out)
 }
 
 /// A monochrome bitmap with its foreground (or background) pixels in
@@ -1169,8 +1173,13 @@ impl crate::app::App {
             };
             // A bitmap of one colour (a drop shadow broken apart) takes
             // the colour whichever button picks it (#2677).
-            let Some(out) = crate::bitmap_fx::decode(png).and_then(|img| {
-                recolor_single(&img, to).or_else(|| recolor_mono(&img, foreground, to))
+            let Some(out) = crate::bitmap_fx::decode(png).and_then(|mut img| {
+                if s.bitmap_alpha_fill {
+                    recolor_visible_pixels(&mut img, to);
+                    Some(img)
+                } else {
+                    recolor_single(&img, to).or_else(|| recolor_mono(&img, foreground, to))
+                }
             }) else {
                 return false;
             };
@@ -1187,6 +1196,13 @@ impl crate::app::App {
                     fx: None,
                 },
             });
+            if s.bitmap_alpha_fill {
+                // Keep the editable fill and the bitmap colour in sync.
+                cmds.push(tracedraw_core::Command::SetFill {
+                    shapes: vec![s.id],
+                    fill: tracedraw_core::Fill::Solid(c),
+                });
+            }
         }
         if let Err(e) = self.engine.run_batch("Bitmap Color", &cmds) {
             self.status = e.to_string();

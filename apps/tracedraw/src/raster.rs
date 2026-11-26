@@ -22,12 +22,18 @@ use tracedraw_core::{geometry::Affine, Document, PageId, ShapeId};
 use tracedraw_render::{render_page, Preview, RenderOptions, ViewTransform};
 #[cfg(not(target_arch = "wasm32"))]
 use tracedraw_render::{
-    render_page_cancellable, render_page_on_one_thread, render_page_progressive,
+    render_page_cancellable, render_page_on_one_thread_cancellable, render_page_progressive,
 };
 
 /// How long the view must rest, seconds, before a moved view is
 /// rendered anew instead of showing the last render moved into place.
 pub const SETTLE_SECONDS: f64 = 0.12;
+
+/// How long the drawing must rest at a revision, seconds, before a render
+/// still running for an earlier one is asked to give up (#4233): a few
+/// frames, enough to tell a drag that goes on from one that has stopped.
+#[cfg(not(target_arch = "wasm32"))]
+pub const REVISION_REST: f64 = 0.08;
 
 /// The shortest wait, seconds, after the last step of a zoom before a
 /// render still running for an earlier zoom is asked to give up: a few
@@ -95,6 +101,27 @@ struct BackJob {
     key: BackKey,
     page_rect: tracedraw_core::geometry::Rect,
     rx: std::sync::mpsc::Receiver<Option<ColorImage>>,
+    /// Set to make the backdrop give up when it is no longer wanted
+    /// (#4361).
+    cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+/// A render no longer waited for gives up (#4361): its picture could
+/// never be taken, and on a large drawing it went on for seconds with
+/// the drawing's copy, and the main render the render turn, so a drawing
+/// closed in another tab kept the one left open slow.
+#[cfg(not(target_arch = "wasm32"))]
+impl Drop for BackJob {
+    fn drop(&mut self) {
+        self.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl Drop for Job {
+    fn drop(&mut self) {
+        self.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
 }
 
 /// A render running on its own thread: what it is for, and where its
@@ -299,6 +326,11 @@ pub struct Raster {
     /// render ran: the wait before a render in flight for an earlier
     /// zoom is asked to give up follows the pace of these steps.
     zoom_step: Option<f64>,
+    /// The drawing's revision last asked for and when (egui time) it was
+    /// first asked for: a render for an earlier revision gives up only
+    /// once the drawing has rested at this one (#4233).
+    #[cfg(not(target_arch = "wasm32"))]
+    revision_since: Option<(u64, f64)>,
     /// Proofed colours on a grid of screen colours (View > Proof Colors),
     /// made when first needed and dropped with the texture (the colour
     /// settings changed).
@@ -670,6 +702,14 @@ impl Raster {
         self.key.as_ref().map(|k| k.zoom)
     }
 
+    /// Every picture after the first drawn on its thread, each waiting
+    /// for `hold` before it draws, as a slow page would, for tests.
+    #[cfg(test)]
+    pub fn hold_renders(&mut self, hold: std::sync::Arc<std::sync::Mutex<()>>) {
+        self.threaded = true;
+        self.hold = Some(hold);
+    }
+
     /// The drawing revision of the picture currently held in `texture`.
     pub fn shown_revision(&self) -> Option<u64> {
         self.texture.as_ref()?;
@@ -843,10 +883,27 @@ impl Raster {
             // A render for an earlier revision of the main canvas is
             // obsolete too (#3903): letting it run to completion wastes
             // CPU while holding both the render turn and the old document
-            // snapshot.
+            // snapshot. But only once the drawing has rested at the latest
+            // revision: while it changes every frame (a shadow, a fill or
+            // a handle dragged over a picture or a heavy page), giving up
+            // at each change meant no picture ever came until the drag
+            // stopped (#4233). The running render ends, its picture shows,
+            // and the next one starts at the latest revision.
+            let since = match self.revision_since {
+                Some((rev, t)) if rev == key.revision => t,
+                _ => {
+                    self.revision_since = Some((key.revision, now));
+                    now
+                }
+            };
             if let Some(job) = &self.job {
                 if !self.follows_zoom && job.key.revision != key.revision {
-                    job.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+                    let due = since + REVISION_REST;
+                    if now >= due {
+                        job.cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+                    } else {
+                        ctx.request_repaint_after(std::time::Duration::from_secs_f64(due - now));
+                    }
                 }
             }
             if stale_zoom {
@@ -1170,7 +1227,7 @@ impl Raster {
                         };
                         self.backdrop = Some(Backdrop {
                             texture,
-                            key: job.key,
+                            key: job.key.clone(),
                             page_rect: job.page_rect,
                         });
                     }
@@ -1259,8 +1316,10 @@ impl Raster {
                     };
                     let (tx, rx) = std::sync::mpsc::channel();
                     let wake = ctx.clone();
+                    let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+                    let gives_up = cancel.clone();
                     std::thread::spawn(move || {
-                        let image = render_page_on_one_thread(&doc, page, &opts)
+                        let image = render_page_on_one_thread_cancellable(&doc, page, &opts, &gives_up)
                             .map(|pm| to_image(&pm, lut.as_deref()));
                         let _ = tx.send(image);
                         drop(doc);
@@ -1268,7 +1327,12 @@ impl Raster {
                         wake.request_repaint();
                     });
                     self.backdrops += 1;
-                    self.backdrop_job = Some(BackJob { key, page_rect, rx });
+                    self.backdrop_job = Some(BackJob {
+                        key,
+                        page_rect,
+                        rx,
+                        cancel,
+                    });
                     return None;
                 }
                 Some(since) => {
@@ -1498,7 +1562,7 @@ impl Raster {
                 let job = self.job.take().expect("job");
                 if let Some((image, seconds)) = result {
                     self.last_seconds = seconds;
-                    self.take_picture(ctx, image, job.filter, job.key, job.page_rect);
+                    self.take_picture(ctx, image, job.filter, job.key.clone(), job.page_rect);
                 }
                 false
             }
@@ -3049,6 +3113,50 @@ mod tests {
         assert_eq!(raster.render_count(), 2);
     }
 
+    /// #4361: a render or a backdrop no longer waited for (its drawing's
+    /// tab closed, the picture asked for changed) is told to give up, so
+    /// it does not keep the drawing's copy and the render turn for
+    /// nothing.
+    #[test]
+    fn renders_nobody_waits_for_give_up() {
+        let ctx = Context::default();
+        let doc = Document::new("t", Size::new(100.0, 50.0));
+        let view = View::default();
+        let mut raster = Raster::default();
+        let at = Rect::from_min_size(egui::pos2(0.0, 0.0), egui::vec2(320.0, 200.0));
+        pass(&ctx, &mut raster, &doc, &view, at, 0.0);
+        let render = raster.job.as_ref().map(|j| j.cancel.clone());
+        let (_tx, rx) = std::sync::mpsc::channel();
+        let back = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        raster.backdrop_job = Some(BackJob {
+            key: BackKey {
+                revision: 0,
+                page: doc.pages[0].id,
+                area: [0; 4],
+                size: (1, 1),
+                wireframe: false,
+                simulate_overprints: false,
+                complex_effects: false,
+                proof: false,
+            },
+            page_rect: tracedraw_core::geometry::Rect::new(0.0, 0.0, 1.0, 1.0),
+            rx,
+            cancel: back.clone(),
+        });
+        raster.invalidate();
+        assert!(back.load(std::sync::atomic::Ordering::Relaxed), "the backdrop");
+        if let Some(c) = render {
+            assert!(c.load(std::sync::atomic::Ordering::Relaxed), "the render");
+        }
+        // A render under way when the tab closes.
+        pass(&ctx, &mut raster, &doc, &view, at, 1.0);
+        let render = raster.job.as_ref().map(|j| j.cancel.clone());
+        drop(raster);
+        if let Some(c) = render {
+            assert!(c.load(std::sync::atomic::Ordering::Relaxed), "the render of a closed tab");
+        }
+    }
+
     #[test]
     fn a_canvas_that_moves_renders_again() {
         let ctx = Context::default();
@@ -3197,8 +3305,9 @@ mod tests {
 
     /// #3903: when the drawing's revision moves on while a render job for an
     /// earlier revision is still running on its thread, the obsolete job is
-    /// told to give up instead of running to completion and uploading an
-    /// outdated picture, and the latest revision renders right after.
+    /// told to give up once the drawing rests at the new revision, instead
+    /// of running to completion and uploading an outdated picture, and the
+    /// latest revision renders right after.
     #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn a_newer_revision_cancels_a_stale_render_in_flight() {
@@ -3261,19 +3370,39 @@ mod tests {
             .expect("job 2")
             .cancel
             .load(std::sync::atomic::Ordering::Relaxed));
+        // While the drawing changes every frame (a drag), job 2 goes on:
+        // giving up at each change would never let a picture come
+        // (#4233).
         for rev in 3..=5 {
             frame(&mut raster, rev);
             assert_eq!(raster.render_count(), renders + 1);
             assert!(
-                raster
+                !raster
                     .job
                     .as_ref()
                     .expect("still job 2")
                     .cancel
                     .load(std::sync::atomic::Ordering::Relaxed),
-                "revision {rev} should cancel stale job 2"
+                "revision {rev}: the drag goes on, job 2 keeps drawing"
             );
         }
+        // Once the drawing rests at revision 5, the stale job gives up.
+        let mut given_up = false;
+        for _ in 0..30 {
+            frame(&mut raster, 5);
+            assert_eq!(raster.render_count(), renders + 1);
+            if raster
+                .job
+                .as_ref()
+                .expect("still job 2")
+                .cancel
+                .load(std::sync::atomic::Ordering::Relaxed)
+            {
+                given_up = true;
+                break;
+            }
+        }
+        assert!(given_up, "revision 5 rested: stale job 2 should give up");
         drop(held);
         let mut settled = false;
         for _ in 0..400 {

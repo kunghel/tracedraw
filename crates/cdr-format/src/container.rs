@@ -138,6 +138,54 @@ pub fn detect(bytes: &[u8]) -> Result<Container> {
     Err(Error::NotCdr)
 }
 
+thread_local! {
+    /// Set while [`accept_damaged`] runs on this thread.
+    static ACCEPT_DAMAGED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// The streams read damaged meanwhile, with why.
+    static DAMAGED: std::cell::RefCell<Vec<String>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+
+/// Run `read` with damaged streams accepted (#4332): a stream whose
+/// checksum does not match or that ends short gives what could be read,
+/// instead of refusing the whole file. Gives what `read` gives and the
+/// streams that were damaged, with why.
+pub fn accept_damaged<R>(read: impl FnOnce() -> R) -> (R, Vec<String>) {
+    let before = ACCEPT_DAMAGED.with(|a| a.replace(true));
+    DAMAGED.with(|d| d.borrow_mut().clear());
+    let out = read();
+    ACCEPT_DAMAGED.with(|a| a.set(before));
+    (out, DAMAGED.with(|d| std::mem::take(&mut *d.borrow_mut())))
+}
+
+fn accepting_damaged() -> bool {
+    ACCEPT_DAMAGED.with(|a| a.get())
+}
+
+/// Whether reading a member failed because the member is damaged: its
+/// checksum does not match, its compressed data is broken, or it ends
+/// before its declared size.
+pub fn is_damage(e: &std::io::Error) -> bool {
+    matches!(
+        e.kind(),
+        std::io::ErrorKind::InvalidData | std::io::ErrorKind::UnexpectedEof
+    )
+}
+
+/// A member `name` whose reading stopped with `e` after `read` bytes:
+/// kept (noted as damaged) when damaged streams are accepted and some of
+/// it was read; else the error, [`Error::Damaged`] for a damaged member.
+fn keep_damaged(name: &str, e: &std::io::Error, read: &[u8]) -> Result<()> {
+    if !is_damage(e) {
+        return Err(Error::Io(std::io::Error::new(e.kind(), e.to_string())));
+    }
+    if accepting_damaged() && !read.is_empty() {
+        log::warn!("{name} is damaged ({e}); {} bytes read kept", read.len());
+        DAMAGED.with(|d| d.borrow_mut().push(format!("{name}: {e}")));
+        return Ok(());
+    }
+    Err(Error::Damaged(format!("{name}: {e}")))
+}
+
 /// The RIFF stream as a contiguous byte vector.
 pub fn riff_stream(bytes: &[u8], container: &Container) -> Result<Vec<u8>> {
     match &container.kind {
@@ -157,7 +205,9 @@ pub fn riff_stream(bytes: &[u8], container: &Container) -> Result<Vec<u8>> {
             let declared = f.size();
             let limit = member_limit(declared);
             let mut out = Vec::with_capacity(declared.min(MAX_STREAM) as usize);
-            f.take(limit).read_to_end(&mut out)?;
+            if let Err(e) = f.take(limit).read_to_end(&mut out) {
+                keep_damaged(riff_member, &e, &out)?;
+            }
             if cut_short(out.len() as u64, limit, declared) {
                 log::warn!("{riff_member} inflates past {limit} bytes; cut off there");
             }
@@ -205,8 +255,13 @@ pub fn external_member(bytes: &[u8], container: &Container, name: &str) -> Optio
             // inflates to and stops there.
             let declared = f.size();
             let limit = member_limit(declared);
-            let mut out = Vec::new();
-            if f.take(limit).read_to_end(&mut out).is_ok() {
+            let mut out = Vec::with_capacity(declared.min(MAX_STREAM) as usize);
+            let read = match f.take(limit).read_to_end(&mut out) {
+                Ok(_) => true,
+                // A damaged data stream: what was read, when asked for.
+                Err(e) => accepting_damaged() && keep_damaged(&c, &e, &out).is_ok(),
+            };
+            if read {
                 if cut_short(out.len() as u64, limit, declared) {
                     log::warn!("{c} inflates past {limit} bytes; cut off there");
                 }
@@ -260,6 +315,42 @@ pub fn cut_short(len: u64, limit: u64, declared: u64) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A package whose RIFF stream's checksum does not match (#4332): the
+    /// file is refused as damaged, which the window offers to open
+    /// anyway; read with damaged streams accepted, the stream comes back
+    /// whole and is named as damaged.
+    #[test]
+    fn a_damaged_stream_is_refused_or_read_anyway() {
+        use std::io::Write;
+        let mut riff = b"RIFF\x10\0\0\0CDRE".to_vec();
+        riff.extend_from_slice(&[7u8; 64]);
+        let mut buf = Vec::new();
+        {
+            let mut w = zip::ZipWriter::new(std::io::Cursor::new(&mut buf));
+            let opts = zip::write::SimpleFileOptions::default()
+                .compression_method(zip::CompressionMethod::Stored);
+            w.start_file("content/riffData.cdr", opts).expect("member");
+            w.write_all(&riff).expect("written");
+            w.finish().expect("finished");
+        }
+        // One byte of the stored stream changed: its checksum fails.
+        let at = buf
+            .windows(riff.len())
+            .position(|win| win == riff.as_slice())
+            .expect("the stream is stored");
+        buf[at + 20] ^= 0xff;
+        let c = detect(&buf).expect("the package is found");
+        match riff_stream(&buf, &c) {
+            Err(Error::Damaged(why)) => assert!(why.contains("riffData.cdr"), "{why}"),
+            other => panic!("not refused as damaged: {:?}", other.map(|v| v.len())),
+        }
+        let (read, damaged) = accept_damaged(|| riff_stream(&buf, &c));
+        assert_eq!(read.expect("read anyway").len(), riff.len());
+        assert_eq!(damaged.len(), 1, "{damaged:?}");
+        // Nothing is left accepted afterwards.
+        assert!(matches!(riff_stream(&buf, &c), Err(Error::Damaged(_))));
+    }
 
     /// A data member inflates to the size the archive declares for it,
     /// within the ceiling (a big drawing's bitmaps, #323), and never

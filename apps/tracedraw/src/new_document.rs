@@ -607,7 +607,7 @@ fn preset_row(ui: &mut Ui, st: &mut NewDocState, rect: egui::Rect, menu_at: egui
         }
         ui.add_enabled(
             false,
-            egui::Button::selectable(st.settings.preset == CUSTOM, tr("newdoc.preset_custom")),
+            crate::ui::btn_icons::Ib::selectable(st.settings.preset == CUSTOM, "newdoc.preset_custom"),
         );
     });
     if let Some(name) = chosen {

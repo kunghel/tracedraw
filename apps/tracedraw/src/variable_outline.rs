@@ -1099,13 +1099,13 @@ pub fn variable_outline_bar(app: &mut App, ui: &mut egui::Ui) {
     }
     crate::ui::propbar::sep(ui);
     if ui
-        .add_enabled(node.is_some(), egui::Button::new(tr("vo.delete_node")))
+        .add_enabled(node.is_some(), crate::ui::btn_icons::Ib::new("vo.delete_node"))
         .clicked()
     {
         app.delete_variable_outline_node();
     }
     if ui
-        .add_enabled(has_nodes, egui::Button::new(tr("vo.clear")))
+        .add_enabled(has_nodes, crate::ui::btn_icons::Ib::new("vo.clear"))
         .rich_tip(tr("vo.clear_hint"))
         .clicked()
     {

@@ -1,7 +1,9 @@
 //! Effects > Frame Generator: a decorative frame drawn around the
 //! selection (or inside the page when nothing is selected) as vector
 //! curves: ruled lines, classic corner scrolls, art deco steps and fans,
-//! beads, a Greek key, scallops and interlaced waves, with optional
+//! beads, a Greek key, scallops, interlaced waves and guilloche (many
+//! fine waved lines weaving along the band, for certificates and
+//! vouchers), with optional
 //! ornaments in the middle of the sides. The frame is one group on top,
 //! in one undo step.
 
@@ -21,10 +23,11 @@ pub enum Style {
     GreekKey,
     Scallops,
     Waves,
+    Guilloche,
 }
 
 impl Style {
-    pub const ALL: [Style; 7] = [
+    pub const ALL: [Style; 8] = [
         Style::Lines,
         Style::Classic,
         Style::ArtDeco,
@@ -32,6 +35,7 @@ impl Style {
         Style::GreekKey,
         Style::Scallops,
         Style::Waves,
+        Style::Guilloche,
     ];
 
     pub fn key(self) -> &'static str {
@@ -43,6 +47,7 @@ impl Style {
             Style::GreekKey => "docker.frame_greek_key",
             Style::Scallops => "docker.frame_scallops",
             Style::Waves => "docker.frame_waves",
+            Style::Guilloche => "docker.frame_guilloche",
         }
     }
 }
@@ -83,6 +88,8 @@ pub struct FrameSettings {
     pub line: f64,
     /// Length of one repeat of beads, keys, scallops and waves.
     pub repeat: f64,
+    /// Guilloche: how many waved lines weave along the band.
+    pub strands: u32,
     /// An ornament in the middle of each side.
     pub side_ornaments: bool,
     pub color: Color,
@@ -97,9 +104,17 @@ impl Default for FrameSettings {
             width: 8.0,
             line: 0.5,
             repeat: 8.0,
+            strands: 12,
             side_ornaments: false,
             color: Color::BLACK,
         }
+    }
+}
+
+impl FrameSettings {
+    /// Every setting back to its default.
+    pub fn reset(&mut self) {
+        *self = Self::default();
     }
 }
 
@@ -318,6 +333,24 @@ pub fn frame(outer: Rect, s: &FrameSettings) -> Vec<Piece> {
                 out.push(stroked(wave(mid, b / 2.0, b * 0.32, period, phase), lw));
             }
         }
+        Style::Guilloche => {
+            // Ruled edges, then the strands: each waves round the band's
+            // middle line with its own phase, its height swelling and
+            // shrinking along a slower wave, so the lines weave into a
+            // braid of loops.
+            out.push(inset(outer, Corner::Round, b, 0.0, lw));
+            out.push(inset(outer, Corner::Round, b, b, lw));
+            let mid = outer.inflate(-b / 2.0, -b / 2.0);
+            let n = s.strands.clamp(2, 60);
+            let fine = (lw * 0.35).max(0.05);
+            for k in 0..n {
+                let phase = TAU * k as f64 / n as f64;
+                out.push(stroked(
+                    guilloche_strand(mid, b / 2.0, b * 0.36, period, phase),
+                    fine,
+                ));
+            }
+        }
     }
     if s.side_ornaments {
         out.extend(side_ornaments(outer, b, lw));
@@ -527,7 +560,7 @@ fn scalloped(r: Rect, period: f64, depth: f64) -> BezPath {
 /// The point and outward normal at arc length `t` along the rounded
 /// rectangle `r` (corner radius `rad`), counter-clockwise from the
 /// middle of the bottom side.
-fn round_rect_at(r: Rect, rad: f64, t: f64) -> (Point, Vec2) {
+pub(crate) fn round_rect_at(r: Rect, rad: f64, t: f64) -> (Point, Vec2) {
     let (w, h) = (r.width() - 2.0 * rad, r.height() - 2.0 * rad);
     let q = FRAC_PI_2 * rad;
     let per = 2.0 * (w + h) + 4.0 * q;
@@ -582,6 +615,29 @@ fn wave(r: Rect, rad: f64, amp: f64, period: f64, phase: f64) -> BezPath {
             let t = per * i as f64 / steps as f64;
             let (p, nrm) = round_rect_at(r, rad, t);
             p + nrm * (amp * (TAU * n * t / per + phase).sin())
+        })
+        .collect();
+    polyline(&pts, true)
+}
+
+/// One guilloche strand round the rounded rectangle `r`: a wave about
+/// `period` long whose height (up to `amp`) follows a wave four times as
+/// long, both shifted by `phase`, so neighbouring strands cross and
+/// weave.
+fn guilloche_strand(r: Rect, rad: f64, amp: f64, period: f64, phase: f64) -> BezPath {
+    let rad = rad.min(r.width() / 2.0).min(r.height() / 2.0);
+    let per = 2.0 * (r.width() + r.height() - 4.0 * rad) + TAU * rad;
+    let n = (per / period).round().max(4.0);
+    // The slow wave: a whole number round the frame.
+    let slow = (n / 4.0).round().max(1.0);
+    let steps = (n as usize * 32).min(40_000);
+    let pts: Vec<Point> = (0..steps)
+        .map(|i| {
+            let t = per * i as f64 / steps as f64;
+            let u = TAU * t / per;
+            let (p, nrm) = round_rect_at(r, rad, t);
+            let swell = 0.55 + 0.45 * (slow * u + phase / 2.0).cos();
+            p + nrm * (amp * swell * (n * u + phase).sin())
         })
         .collect();
     polyline(&pts, true)

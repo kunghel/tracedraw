@@ -264,9 +264,14 @@ impl App {
     fn end_transient_editing(&mut self) {
         // Time counted for the drawing being left belongs to it.
         self.flush_tracked_time();
-        if self.clip_frame_edit.is_some() {
+        // Every level of clip frames inside clip frames (#4110).
+        for _ in 0..64 {
+            if self.clip_frame_edit.is_none() {
+                break;
+            }
             self.finish_clip_frame_edit();
         }
+        self.clip_edit_outer.clear();
         // Editing a symmetry ends with the drawing it is in; it stayed on,
         // its message in the status bar over the next drawing (#442).
         if self.symmetry_edit.is_some() {
@@ -295,6 +300,8 @@ impl App {
         self.pending_merge_frame = false;
         self.pending_copy_effect = None;
         self.pending_copy_envelope = false;
+        self.pending_replace = None;
+        self.pending_copy_clip = false;
         self.pending_copy_fill = false;
         self.fill_swatch_drag = None;
         self.envelope_drag = None;
@@ -757,10 +764,14 @@ impl App {
     pub fn duplicate_page_to_new_document(&mut self) {
         let page = self.page;
         let mut doc = self.doc().clone();
-        if !doc.pages.iter().any(|p| p.id == page) {
+        let Some(index) = doc.pages.iter().position(|p| p.id == page) else {
             return;
+        };
+        if doc.master.iter().any(|l| l.page_range.is_some()) {
+            doc = doc.with_master_layers_on_pages(&[index]);
+        } else {
+            doc.pages.retain(|p| p.id == page);
         }
-        doc.pages.retain(|p| p.id == page);
         doc.comments.retain(|c| c.page == page);
         doc.page_guides_hidden.retain(|p| *p == page);
         doc.selection_groups.clear();

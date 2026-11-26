@@ -1,5 +1,6 @@
 //! Full-screen preview (F9) and the Page Sorter view.
 
+use crate::ui::btn_icons::IconUi;
 use crate::app::App;
 use crate::i18n::tr;
 use crate::theme::Tokens;
@@ -12,13 +13,16 @@ pub struct PreviewSession {
     pub(crate) bounds: tracedraw_core::geometry::Rect,
     pub(crate) zoom: f64,
     was_fullscreen: bool,
+    /// The page fills the screen (Options > Display > Full-screen
+    /// preview, #4239) until the preview is zoomed.
+    fit_page: bool,
     /// When the preview opened, to wait for the window to fill the screen.
     started: f64,
     hint_until: f64,
     texture: Option<(PreviewKey, egui::TextureHandle)>,
 }
 
-#[derive(PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct PreviewKey {
     width: u32,
     height: u32,
@@ -39,6 +43,7 @@ pub fn begin(app: &mut App, ctx: &egui::Context, selected_only: bool) {
         bounds: preview_bounds(app),
         zoom: f64::from(app.view.zoom),
         was_fullscreen: ctx.input(|i| i.viewport().fullscreen.unwrap_or(false)),
+        fit_page: app.settings.preview_fit_page && !selected_only,
         started: ctx.input(|i| i.time),
         hint_until: ctx.input(|i| i.time) + 1.5,
         texture: None,
@@ -257,6 +262,7 @@ pub(crate) fn apply_preview_keys(app: &mut App, keys: &[PreviewInput], size: egu
             PreviewInput::Zoom(f) => {
                 if let Some(session) = &mut app.preview_session {
                     session.zoom = (session.zoom * f).clamp(0.01, 500.0);
+                    session.fit_page = false;
                 }
             }
             PreviewInput::Page(step) => {
@@ -287,6 +293,18 @@ pub fn fullscreen(app: &mut App, ui: &mut Ui) {
     if !keys.is_empty() {
         let size = ctx.content_rect().size();
         apply_preview_keys(app, &keys, size);
+    }
+    // The page filling the screen, when the option asks for it: the
+    // page's middle in the screen's, as large as the screen lets it.
+    let screen = ctx.content_rect().size();
+    let page = app.page_rect();
+    if let Some(session) = app.preview_session.as_mut().filter(|s| s.fit_page) {
+        let fit = (f64::from(screen.x) / page.width().max(1e-6))
+            .min(f64::from(screen.y) / page.height().max(1e-6));
+        if fit.is_finite() && fit > 0.0 {
+            session.bounds = page;
+            session.zoom = fit;
+        }
     }
     let background = app.preview_background_color();
     egui::CentralPanel::default()
@@ -365,7 +383,21 @@ pub fn fullscreen(app: &mut App, ui: &mut Ui) {
                     (FULL_SCREEN_WAIT - waited).max(0.0),
                 ));
             }
-            if !cached && ready {
+            // While a screenshot tool or another window has the focus, or
+            // the window is minimised, the picture already made stays: the
+            // window's size and scale change as the system takes the
+            // screen, and drawing the whole page again for each change
+            // hung the program (#4198). It is drawn again once the window
+            // is back.
+            let away = ctx.input(|i| {
+                i.viewport().minimized == Some(true) || i.viewport().focused == Some(false)
+            });
+            let has_picture = app
+                .preview_session
+                .as_ref()
+                .is_some_and(|s| s.texture.is_some());
+            let tiny = rect.width() < 16.0 || rect.height() < 16.0;
+            if !cached && ready && !tiny && !(away && has_picture) {
                 if let Some(pm) = tracedraw_render::render_page(app.doc(), app.page, &opts) {
                     let image = egui::ColorImage::from_rgba_premultiplied(
                         [pm.width() as usize, pm.height() as usize],
@@ -463,10 +495,10 @@ mod viewport_tests;
 pub fn page_sorter(app: &mut App, ui: &mut Ui) {
     ui.horizontal(|ui| {
         ui.heading(tr("menu.view.page_sorter"));
-        if ui.button(tr("preview.back_to_page")).clicked() {
+        if ui.ibutton("preview.back_to_page").clicked() {
             app.page_sorter = false;
         }
-        if ui.button(tr("menu.layout.insert_page")).clicked() {
+        if ui.ibutton("menu.layout.insert_page").clicked() {
             app.add_page();
         }
     });
@@ -703,5 +735,57 @@ mod tests {
         assert!(!app.fullscreen_preview, "F9 again closes it");
         window(&ctx, &mut app, Vec::new());
         assert!(!app.fullscreen_preview);
+    }
+
+    /// #4198: while a screenshot tool has the focus (the window losing
+    /// it, its size changing as the system takes the screen), the
+    /// preview keeps the picture it made instead of drawing the page again
+    /// at every change, and stays open; back in focus, it draws again.
+    #[test]
+    fn a_screenshot_tool_taking_the_focus_keeps_the_preview_picture() {
+        let ctx = crate::theme::ui_context();
+        let mut app = App::headless();
+        app.show_welcome = false;
+        let run = |app: &mut App, t: f64, size: (f32, f32), focused: bool, events| {
+            let mut input = egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(size.0, size.1),
+                )),
+                time: Some(t),
+                events,
+                ..Default::default()
+            };
+            input.viewports.insert(
+                egui::ViewportId::ROOT,
+                egui::ViewportInfo {
+                    focused: Some(focused),
+                    fullscreen: Some(true),
+                    ..Default::default()
+                },
+            );
+            let mut out = ctx.run_ui(input, |ui| crate::ui::root(app, ui));
+            out.textures_delta.clear();
+        };
+        let key = |app: &App| {
+            app.preview_session
+                .as_ref()
+                .and_then(|s| s.texture.as_ref().map(|(k, _)| k.clone()))
+        };
+        run(&mut app, 0.0, (1400.0, 900.0), true, Vec::new());
+        run(&mut app, 0.1, (1400.0, 900.0), true, vec![f9()]);
+        for k in 0..3 {
+            run(&mut app, 1.0 + f64::from(k), (1400.0, 900.0), true, Vec::new());
+        }
+        assert!(app.fullscreen_preview);
+        let made = key(&app).expect("the preview picture");
+        for (k, size) in [(1200.0, 800.0), (1000.0, 700.0), (8.0, 8.0)].into_iter().enumerate() {
+            run(&mut app, 5.0 + k as f64, size, false, Vec::new());
+            assert_eq!(key(&app).as_ref(), Some(&made), "kept while away");
+            assert!(app.fullscreen_preview, "still open");
+        }
+        run(&mut app, 10.0, (1200.0, 800.0), true, Vec::new());
+        let again = key(&app).expect("drawn again");
+        assert_ne!(again, made, "drawn again at the new size");
     }
 }

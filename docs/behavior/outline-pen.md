@@ -48,6 +48,16 @@ saved state as they were. Edit Line Style opened from the dialog takes
 the preview back, and it shows again on the return. With nothing
 selected (the default outline) nothing is previewed.
 
+## Presets
+
+The Presets row (#4090, `outline_presets.rs`) under the Variable
+Outline group keeps outlines under a name in the settings
+(`outline_presets`, at most 100). Choosing one puts its whole outline in
+the dialog (every field marked as set), so OK gives it to the selected
+objects in one undo step; + saves the outline shown under the name typed
+beside the list (the same name replaces it), - removes the preset chosen.
+A new name starts as "Outline 1", the first number not taken.
+
 ## Fields and defaults
 
 | Field | Default | Notes |

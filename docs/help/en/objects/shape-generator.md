@@ -85,7 +85,9 @@ meet their neighbours, so the result repeats with no seam.
 
 ### [[shapegen.kind_tessellation]] {#tessellation}
 
-Triangles, hexagons, scales or chevrons with a [[shapegen.gap]] and a
+Triangles, hexagons, scales, chevrons, [[shapegen.tess_masonry]] (bricks
+in a running bond) or [[shapegen.tess_pinwheel]] (right triangles turned
+at angles that never repeat) with a [[shapegen.gap]] and a
 [[shapegen.rotation]].
 
 ![A tessellation of filled hexagons with a small gap](../../img/objects-shape-generator-tessellation.png)
@@ -131,7 +133,11 @@ roses and mandalas.
 ### [[shapegen.kind_guilloche]] {#guilloche}
 
 Rings bent by two waves, each turned by the [[shapegen.guil_twist]] so the
-lines weave, as on banknotes.
+lines weave, as on banknotes. The [[shapegen.guil_layout]] can also run the
+lines as a [[shapegen.guil_band_layout]] across the box or a
+[[shapegen.guil_frame_layout]] round its edge ([[shapegen.guil_band]] wide),
+with waves [[shapegen.guil_period]] and [[shapegen.guil_period2]] long: the
+borders of certificates, diplomas and vouchers.
 
 ![A guilloche rosette of woven lines](../../img/objects-shape-generator-guilloche.png)
 
@@ -161,6 +167,10 @@ shaped by the [[shapegen.tile_angle]].
 - [[shapegen.kind_layer_waves]], [[shapegen.kind_blobs]] and
   [[shapegen.kind_soft_gradient]]: filled backgrounds in the colours you
   choose, see [Backgrounds](#backgrounds).
+- [[shapegen.kind_circle_packing]], [[shapegen.kind_phyllotaxis]],
+  [[shapegen.kind_quadtree]], [[shapegen.kind_reaction_diffusion]] and
+  [[shapegen.kind_interlace]]: see
+  [Packings, knots and organic patterns](#more-patterns).
 
 Generators that make random choices have a [[shapegen.seed]]: the same seed
 always gives the same result, and [[shapegen.new_seed]] picks another one.
@@ -188,6 +198,12 @@ diameter is 0, a rectangle when both are the same) at real size, with a
 [[shapegen.cone_tab]] on one side and an optional [[shapegen.cone_bleed]]
 outline. [[shapegen.cone_pieces]] cuts it into several pieces, each with its
 own tab. The panel shows the slant height, the radii and the angle.
+
+For a decal measured on the object itself, tick Measured round to type the
+lengths round its top and bottom (a tape round a tumbler or a traffic cone)
+instead of the diameters, and Height along the side to type the height up
+its sloping side. Overlap runs the decal on past its end, at full height, so
+the two ends lap over each other when it is wrapped.
 
 To put a design on the object, draw it flat as a strip and select it, then
 click [[shapegen.wrap]]: the template is drawn and the strip is bent onto
@@ -354,3 +370,37 @@ with the minus button). Each [[shapegen.seed]] gives another variation.
 The waves and blobs are ordinary filled curves and the gradient is an
 ordinary mesh fill, so they can be edited, recoloured and exported like
 any other object; add grain or blur with the effects if you like.
+
+## Packings, knots and organic patterns {#more-patterns}
+
+- [[shapegen.kind_circle_packing]]: circles of many sizes fill the box
+  without touching, from the [[shapegen.pack_min]] to the
+  [[shapegen.pack_max]], with a [[shapegen.gap]] between them, up to
+  [[shapegen.pack_count]] circles. Pick a shape or text with
+  [[shapegen.use_selection]] to fill it instead of the box: good for laser
+  art, backgrounds and logos.
+- [[shapegen.kind_phyllotaxis]]: [[shapegen.phy_count]] dots in the
+  spiral of a sunflower head, each turned from the last by the
+  [[shapegen.phy_angle]] (the golden angle by default). The
+  [[shapegen.cell_shape]], [[shapegen.cell_size]] and
+  [[shapegen.scale_ratio]] (outer dots against the middle ones) set the
+  dots.
+- [[shapegen.kind_quadtree]]: the box is cut into squares and each is split
+  into four at random ([[shapegen.qt_split]]) up to the [[shapegen.qt_depth]];
+  every square takes a colour from [[shapegen.bg_colors]] and a geometric
+  motif in another colour: a quarter or half disc, a disc, a ring, a
+  triangle, a small square, a leaf or bars.
+- [[shapegen.kind_reaction_diffusion]]: organic patterns like animal skin,
+  a maze or coral, grown by two chemicals on a grid and traced as filled
+  curves. Choose the [[shapegen.rd_preset]], the [[shapegen.rd_cells]]
+  (more makes smaller shapes and takes longer), the [[shapegen.rd_steps]]
+  and the [[shapegen.rd_level]] where the edges are traced;
+  [[shapegen.rd_invert]] fills the space between the shapes.
+- [[shapegen.kind_interlace]]: bands that pass over and under each other in
+  turn. [[shapegen.knot_celtic]] draws knotwork on square tiles, with
+  [[shapegen.knot_breaks]] that turn the strands back (mirrored when
+  [[shapegen.knot_symmetric]]); the star patterns draw straight straps of
+  ten-point (girih), eight-point or six-point stars shaped by the
+  [[shapegen.tile_angle]]. [[shapegen.knot_ribbon]] draws each strand as two
+  lines [[shapegen.knot_width]] apart, and [[shapegen.knot_gap]] is the
+  space left where a strand passes under another.

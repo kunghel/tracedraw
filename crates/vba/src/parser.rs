@@ -876,23 +876,172 @@ impl<'a> Parser<'a> {
             | "seek" | "write" | "input" | "width" | "lset" | "rset" | "reset"
                 if self.file_statement_follows(&w) =>
             {
+                if let Some(st) = self.file_statement(&w)? {
+                    return Ok(st);
+                }
                 self.skip_to_eos();
                 Ok(StmtKind::Unsupported(format!("{word} statement")))
             }
             "print" if matches!(self.peek_at(1), Tok::Op("#")) => {
-                self.skip_to_eos();
-                Ok(StmtKind::Unsupported("Print # statement".into()))
+                self.bump();
+                let n = self.file_number()?;
+                self.expect_op(",").ok();
+                let items = self.print_items()?;
+                Ok(StmtKind::File {
+                    op: FileOp::Print,
+                    args: vec![n],
+                    items,
+                    targets: Vec::new(),
+                })
             }
-            "line" if self.kw_at(1, "input") => {
-                self.skip_to_eos();
-                Ok(StmtKind::Unsupported("Line Input statement".into()))
+            "line" if self.kw_at(1, "input") && matches!(self.peek_at(2), Tok::Op("#")) => {
+                self.bump();
+                self.bump();
+                let n = self.file_number()?;
+                self.expect_op(",")?;
+                let target = self.postfix()?;
+                Ok(StmtKind::File {
+                    op: FileOp::LineInput,
+                    args: vec![n],
+                    items: Vec::new(),
+                    targets: vec![target],
+                })
             }
             "name" if !matches!(self.peek_at(1), Tok::Op("=") | Tok::Op(".") | Tok::Op("(")) => {
-                self.skip_to_eos();
-                Ok(StmtKind::Unsupported("Name statement".into()))
+                self.bump();
+                let from = self.expr()?;
+                self.expect_kw("as")?;
+                let to = self.expr()?;
+                Ok(StmtKind::File {
+                    op: FileOp::Name,
+                    args: vec![from, to],
+                    items: Vec::new(),
+                    targets: Vec::new(),
+                })
             }
             _ => self.simple_statement(),
         }
+    }
+
+    /// `#n` or `n`: a file number.
+    fn file_number(&mut self) -> R<Expr> {
+        self.eat_op("#");
+        self.expr()
+    }
+
+    /// The items of `Print #n, ...`: expressions and the `;` or `,`
+    /// after each, as `Debug.Print` takes them.
+    fn print_items(&mut self) -> R<Vec<(Expr, Option<char>)>> {
+        let mut items = Vec::new();
+        while !self.at_eos() {
+            if self.op(";") || self.op(",") {
+                let c = if self.op(";") { ';' } else { ',' };
+                self.bump();
+                items.push((Expr::Str(String::new()), Some(c)));
+                continue;
+            }
+            let e = self.expr()?;
+            let sep = if self.eat_op(";") {
+                Some(';')
+            } else if self.eat_op(",") {
+                Some(',')
+            } else {
+                None
+            };
+            items.push((e, sep));
+        }
+        Ok(items)
+    }
+
+    /// The file statements the runtime carries out (text files, the file
+    /// system); `None` for the others (Get, Put, Seek, Lock...), which stay
+    /// unsupported. The current token is the statement's word.
+    fn file_statement(&mut self, w: &str) -> R<Option<StmtKind>> {
+        let st = |op, args, targets| StmtKind::File {
+            op,
+            args,
+            items: Vec::new(),
+            targets,
+        };
+        Ok(Some(match w {
+            "open" => {
+                self.bump();
+                let path = self.expr()?;
+                let mut mode = "random".to_string();
+                if self.eat_kw("for") {
+                    mode = self.ident()?.to_lowercase();
+                }
+                // Access Read Write, Shared, Lock Read Write: no meaning here.
+                while !self.at_eos() && !self.kw("as") {
+                    self.bump();
+                }
+                self.expect_kw("as")?;
+                let n = self.file_number()?;
+                let mut args = vec![path, Expr::Str(mode), n];
+                if self.eat_kw("len") {
+                    self.expect_op("=")?;
+                    args.push(self.expr()?);
+                }
+                st(FileOp::Open, args, Vec::new())
+            }
+            "close" | "reset" => {
+                self.bump();
+                let mut args = Vec::new();
+                while !self.at_eos() {
+                    args.push(self.file_number()?);
+                    if !self.eat_op(",") {
+                        break;
+                    }
+                }
+                st(FileOp::Close, args, Vec::new())
+            }
+            "write" => {
+                self.bump();
+                let n = self.file_number()?;
+                self.eat_op(",");
+                let items = self.print_items()?;
+                StmtKind::File {
+                    op: FileOp::Write,
+                    args: vec![n],
+                    items,
+                    targets: Vec::new(),
+                }
+            }
+            "input" => {
+                self.bump();
+                let n = self.file_number()?;
+                let mut targets = Vec::new();
+                while self.eat_op(",") {
+                    targets.push(self.postfix()?);
+                }
+                st(FileOp::Input, vec![n], targets)
+            }
+            "kill" | "mkdir" | "rmdir" | "chdir" | "chdrive" => {
+                self.bump();
+                let a = self.expr()?;
+                let op = match w {
+                    "kill" => FileOp::Kill,
+                    "mkdir" => FileOp::MkDir,
+                    "rmdir" => FileOp::RmDir,
+                    "chdir" => FileOp::ChDir,
+                    _ => FileOp::ChDrive,
+                };
+                st(op, vec![a], Vec::new())
+            }
+            "filecopy" => {
+                self.bump();
+                let a = self.expr()?;
+                self.expect_op(",")?;
+                let b = self.expr()?;
+                st(FileOp::FileCopy, vec![a, b], Vec::new())
+            }
+            // File attributes: files keep the ones the system gives them.
+            "setattr" => {
+                self.skip_to_eos();
+                StmtKind::Nop
+            }
+            _ => return Ok(None),
+        }))
     }
 
     /// Whether a file statement word is used as one (and not as a name).
@@ -905,9 +1054,10 @@ impl<'a> Parser<'a> {
             "lock" | "unlock" | "get" | "put" | "seek" | "write" | "input" | "width" => {
                 matches!(next, Tok::Op("#"))
             }
-            "close" | "reset" => {
-                matches!(next, Tok::Op("#") | Tok::Newline | Tok::Eof | Tok::Num(_))
-            }
+            "close" | "reset" => matches!(
+                next,
+                Tok::Op("#") | Tok::Newline | Tok::Eof | Tok::Num(_) | Tok::Ident(_)
+            ),
             "lset" | "rset" => true,
             _ => !matches!(next, Tok::Op("(")) || w == "open",
         }

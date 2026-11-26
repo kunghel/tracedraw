@@ -22,14 +22,18 @@ pub enum Similar {
     /// colours and widths, and opacity near enough, as a click with a
     /// wand that picks what looks alike.
     Look,
+    /// The same size: width and height within a hundredth of a
+    /// millimetre, as the object's box on the page reads them (#4238).
+    Size,
 }
 
 impl Similar {
-    pub const ALL: [Similar; 5] = [
+    pub const ALL: [Similar; 6] = [
         Similar::Fill,
         Similar::Outline,
         Similar::TextFormat,
         Similar::Kind,
+        Similar::Size,
         Similar::Look,
     ];
 
@@ -41,6 +45,7 @@ impl Similar {
             Similar::TextFormat => "menu.edit.similar_text_format",
             Similar::Kind => "menu.edit.similar_kind",
             Similar::Look => "menu.edit.similar_look",
+            Similar::Size => "menu.edit.similar_size",
         }
     }
 
@@ -52,6 +57,7 @@ impl Similar {
             Similar::TextFormat => "menu.edit.repeat_similar_text_format",
             Similar::Kind => "menu.edit.repeat_similar_kind",
             Similar::Look => "menu.edit.repeat_similar_look",
+            Similar::Size => "menu.edit.repeat_similar_size",
         }
     }
 }
@@ -143,6 +149,13 @@ fn strokes_close(
     }
 }
 
+/// Whether two boxes have the same width and height, to a hundredth of
+/// a millimetre (#4238).
+fn same_size(a: tracedraw_core::Rect, b: tracedraw_core::Rect) -> bool {
+    let near = |x: f64, y: f64| x.is_finite() && y.is_finite() && (x - y).abs() <= 0.01;
+    near(a.width(), b.width()) && near(a.height(), b.height())
+}
+
 /// Whether `candidate` is like `reference` in the way `how` asks; `tol`
 /// (0 to 1) for [`Similar::Look`].
 pub fn is_similar(reference: &Shape, candidate: &Shape, how: Similar, tol: f64) -> bool {
@@ -159,6 +172,7 @@ pub fn is_similar(reference: &Shape, candidate: &Shape, how: Similar, tol: f64) 
             !want.is_empty() && text_formats(candidate).iter().any(|f| want.contains(f))
         }
         Similar::Kind => kind_of(reference) == kind_of(candidate),
+        Similar::Size => same_size(reference.bounds(), candidate.bounds()),
     }
 }
 
@@ -413,7 +427,7 @@ impl App {
     }
 
     /// Select `ids` as the selection command `key`, kept on the Undo list.
-    fn selection_command(&mut self, key: &'static str, ids: Vec<ShapeId>) {
+    pub(crate) fn selection_command(&mut self, key: &'static str, ids: Vec<ShapeId>) {
         if !self.has_document() || ids == self.selection {
             return;
         }
@@ -584,6 +598,45 @@ mod tests {
         app.select_similar(Similar::Look);
         assert_eq!(app.selection, vec![a]);
         assert!(Similar::ALL.contains(&Similar::Look));
+    }
+
+    /// Same Size picks the objects as wide and as tall as a selected one,
+    /// whatever their kind or look; a wider one or a turned-around one
+    /// (tall where it was wide) stays out (#4238).
+    #[test]
+    fn same_size_picks_objects_of_the_same_width_and_height() {
+        let mut s = scene();
+        let app = &mut s.app;
+        let wide = app
+            .new_shape(ShapeKind::Rect {
+                rect: Rect::new(0.0, 100.0, 20.0, 110.0),
+                radius: 0.0,
+                corners: None,
+            })
+            .expect("wide");
+        let tall = app
+            .new_shape(ShapeKind::Rect {
+                rect: Rect::new(30.0, 100.0, 40.0, 120.0),
+                radius: 0.0,
+                corners: None,
+            })
+            .expect("tall");
+        app.select(vec![s.red_a]);
+        app.select_similar(Similar::Size);
+        let picked = sorted(app.selection.clone());
+        for id in [s.red_a, s.red_b, s.blue_r, s.red_e] {
+            assert!(picked.contains(&id), "10 x 10 objects of any kind");
+        }
+        assert!(!picked.contains(&wide) && !picked.contains(&tall));
+        app.select(vec![wide]);
+        app.select_similar(Similar::Size);
+        assert_eq!(app.selection, vec![wide], "nothing else 20 x 10");
+        assert_eq!(
+            Similar::Size.key(),
+            "menu.edit.similar_size",
+            "listed in Select Similar"
+        );
+        assert!(Similar::ALL.contains(&Similar::Size));
     }
 
     fn ellipse(app: &mut App, x: f64, fill: Fill) -> ShapeId {

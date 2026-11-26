@@ -55,6 +55,7 @@ pub fn portable(e: &Effect) -> bool {
             | Effect::GradientOverlay { .. }
             | Effect::GaussianBlur { .. }
             | Effect::Halftone { .. }
+            | Effect::Grain { .. }
             | Effect::FillOpacity { .. }
             | Effect::BlendIf { .. }
             | Effect::Lens(_)
@@ -348,6 +349,7 @@ mod tests {
             offset: Vec2::new(1.0, -1.0),
             color: Color::BLACK,
             gap: 0.0,
+            expand: 0.0,
         };
         let persp = Effect::Perspective {
             corners: [Point::ZERO; 4],
@@ -364,6 +366,7 @@ mod tests {
                 offset: Vec2::new(5.0, 5.0),
                 color: Color::WHITE,
                 gap: 1.0,
+                expand: 0.0,
             },
             persp.clone(),
         ];

@@ -10,6 +10,16 @@ once, each in its own format, to one folder.
 - Add Selection adds the selected objects as one asset, cropped to their
   bounds, named after the object when it has a name ("Object" or
   "Selection" otherwise) and numbered.
+- Add Slices adds, for each selected object, the box of what it draws
+  (`own_visual_bounds`, rotated objects by their whole box) cut into
+  rows x columns equal areas (the two fields beside the button, 1 x 1 at
+  first, 1 to 50 each, not kept between sessions). Each area is an asset
+  that exports the current page's shown objects on its shown layers, in
+  their order, cut to the area (the area as the page; `export::area_document`),
+  not only the object. Named after the object ("Slice" with no name) and
+  numbered, or with "row-column" when cut into more than one; objects with
+  an empty box are skipped. The link under the name goes to the page
+  (`export_assets::tests::slices_export_the_areas_with_what_shows_in_them`).
 - New assets take the format, resolution and, for JPEG and TIFF, colour
   mode under "New assets" (default PNG at 150 dpi, RGB).
 - Each row: a tick (only ticked assets are exported), the name (the file

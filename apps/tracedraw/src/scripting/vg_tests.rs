@@ -882,7 +882,7 @@ fn pdf_settings_publish_the_current_page_alone() {
 /// The other names macros call members by (#2968) are known by the
 /// FNV-1a hash of their lowercase spelling: the hash is the standard one
 /// (reference values of plain strings), and every entry names a member
-/// shapes have.
+/// shapes have or a global object (#4315: the script tools).
 #[test]
 fn other_member_names_are_known_by_hash_and_name_real_members() {
     let mut app = App::headless();
@@ -890,9 +890,9 @@ fn other_member_names_are_known_by_hash_and_name_real_members() {
         &mut app,
         "print(__nameHash(''), __nameHash('Shape'), __nameHash('AddToClipFrame'));
          const r = ActiveLayer.CreateRectangle2(0, 0, 1, 1);
-         const missing = [...__memberAliases.values()].filter(m => !(m in r));
+         const missing = [...__memberAliases.values()].filter(m => !(m in r) && !(m in globalThis));
          print(__memberAliases.size, missing.length, __member_alias('AddToClipFrame') === undefined);",
     );
     assert_eq!(out[0], "2166136261 2646858022 4187151640");
-    assert_eq!(out[1], "3 0 true");
+    assert_eq!(out[1], "4 0 true");
 }

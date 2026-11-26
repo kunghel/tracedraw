@@ -21,6 +21,15 @@ The new object takes the default fill and outline (no fill and a thin black
 outline at first) and is selected. To change those defaults, see
 [Object styles and defaults](../templates-styles/object-styles.md#document-defaults).
 
+Many rectangles and circles at once, from a list of sizes such as a cutting
+list: choose Object > Insert > Shapes from Spreadsheet and open a CSV or
+Excel file. Its columns are found by their names (width, height, diameter,
+quantity, name) and can be picked by hand. Each row with a diameter makes a
+circle, each row with a width and a height a rectangle, as many as its
+quantity, laid out in rows from the top-left corner of the page with the gap
+you set. The sizes are read in the document's units, and a row's name
+becomes the object's name.
+
 ## Rectangle {#rectangle}
 
 Choose the [[tool.rectangle]] tool (<kbd>F6</kbd>) and drag from one corner to

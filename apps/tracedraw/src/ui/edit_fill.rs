@@ -14,6 +14,7 @@
 //! nothing selected it sets the fill of new objects. See
 //! docs/behavior/gradient-fill.md.
 
+use crate::ui::btn_icons::IconUi;
 use crate::app::App;
 use crate::fill_tool::{fountain_handles, moved_nodes, FountainHandle};
 use crate::i18n::tr;
@@ -882,7 +883,7 @@ fn band(ui: &mut Ui, f: &mut Fountain, node: &mut usize) {
     }
     ui.horizontal(|ui| {
         if ui
-            .button(tr("edit_fill.reverse"))
+            .ibutton("edit_fill.reverse")
             .rich_tip(tr("edit_fill.reverse_tip"))
             .clicked()
         {
@@ -1092,7 +1093,7 @@ fn transform(ui: &mut Ui, f: &mut Fountain, b: GRect) {
     if f.handles.is_some() {
         // Nodes placed with Interactive Fill: back to the angle and centre.
         if ui
-            .button(tr("edit_fill.reset_nodes"))
+            .ibutton("edit_fill.reset_nodes")
             .rich_tip(tr("edit_fill.reset_nodes_tip"))
             .clicked()
         {

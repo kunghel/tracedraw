@@ -10,6 +10,7 @@
 //! width and colour, or none) of the objects it makes.
 
 use crate::app::App;
+use crate::ui::btn_icons::IconUi;
 use crate::i18n::tr;
 use crate::theme::Tokens;
 use crate::ui::field::NumField;
@@ -226,7 +227,7 @@ pub fn mesh_bar(app: &mut App, ui: &mut Ui) {
     if ui
         .add_enabled(
             !app.selection.is_empty(),
-            egui::Button::new(tr("toolbar.mesh_shuffle")),
+            crate::ui::btn_icons::Ib::new("toolbar.mesh_shuffle"),
         )
         .rich_tip(crate::ui::tips::keyed("toolbar.mesh_shuffle"))
         .rich_disabled_tip(crate::ui::tips::keyed("toolbar.mesh_shuffle"))
@@ -236,7 +237,7 @@ pub fn mesh_bar(app: &mut App, ui: &mut Ui) {
     }
     crate::ui::propbar::sep(ui);
     if ui
-        .add_enabled(mesh.is_some(), egui::Button::new(tr("toolbar.clear_mesh")))
+        .add_enabled(mesh.is_some(), crate::ui::btn_icons::Ib::new("toolbar.clear_mesh"))
         .rich_tip(tr("toolbar.clear_mesh"))
         .clicked()
     {
@@ -341,6 +342,18 @@ pub fn smart_fill_bar(app: &mut App, ui: &mut Ui) {
     // The guidelines close off areas too (#3863), off by default.
     ui.checkbox(&mut app.area_fill_guides, tr("toolbar.builder_guides"))
         .rich_tip(crate::ui::tips::pair("toolbar.builder_guides", "toolbar.smart_fill_guides_desc"));
+    crate::ui::propbar::sep(ui);
+    // Every closed area of the selection at once, on a new layer (#4200).
+    if ui
+        .ibutton("toolbar.area_fill_all")
+        .rich_tip(crate::ui::tips::keyed("toolbar.area_fill_all"))
+        .clicked()
+    {
+        let n = app.area_fill_all();
+        if n > 0 {
+            app.status = tr("status.area_fill_all").replace("{n}", &n.to_string());
+        }
+    }
     crate::ui::propbar::sep(ui);
     dim(ui, tr("toolbar.smart_fill_hint"));
 }
@@ -496,6 +509,60 @@ mod tests {
         let s = made(&mut app);
         assert_eq!(s.fill, Fill::None);
         assert!(s.stroke.is_none());
+    }
+
+    /// Fill All Areas (#4200): a grid of two rectangles crossing a third
+    /// makes every closed area at once, on a new layer, in one undo step.
+    #[test]
+    fn fill_all_areas_fills_every_closed_area_on_a_new_layer() {
+        use tracedraw_core::geometry::Rect;
+        use tracedraw_core::ShapeKind;
+        let mut app = App::headless();
+        let rect = |app: &mut App, r: Rect| {
+            app.new_shape(ShapeKind::Rect {
+                rect: r,
+                radius: 0.0,
+                corners: None,
+            })
+            .expect("rect")
+        };
+        // A frame with a bar across it, sticking out on both sides.
+        let a = rect(&mut app, Rect::new(0.0, 0.0, 100.0, 50.0));
+        let b = rect(&mut app, Rect::new(40.0, -10.0, 60.0, 60.0));
+        app.select(vec![a, b]);
+        let layers = |app: &App| app.doc().page(app.page).map(|p| p.layers.len()).unwrap_or(0);
+        let before = layers(&app);
+        let n = app.area_fill_all();
+        // Left, middle and right of the frame, and the bar's two ends.
+        assert_eq!(n, 5, "{:?}", app.selection);
+        assert_eq!(layers(&app), before + 1);
+        let total: f64 = app
+            .selection
+            .iter()
+            .filter_map(|id| app.doc().find_shape(*id))
+            .map(|s| {
+                tracedraw_core::shaping::filled_area(
+                    &s.local_path(),
+                    tracedraw_core::shaping::FillRule::NonZero,
+                )
+            })
+            .sum();
+        assert!((total - 5400.0).abs() < 1.0, "{total}");
+        app.undo();
+        assert_eq!(layers(&app), before);
+        // Nothing closed: nothing made.
+        app.select(vec![]);
+        let mut p = tracedraw_core::geometry::BezPath::new();
+        p.move_to((500.0, 500.0));
+        p.line_to((600.0, 500.0));
+        let line = app
+            .new_shape(ShapeKind::Path {
+                path: p,
+                closed: false,
+            })
+            .expect("line");
+        app.select(vec![line]);
+        assert_eq!(app.area_fill_all(), 0);
     }
 
     /// Smart Fill fills an area enclosed by a curve crossing itself, off

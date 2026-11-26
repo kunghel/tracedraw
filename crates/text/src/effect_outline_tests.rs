@@ -160,6 +160,7 @@ fn block_shadow_of_letters_stays_on_the_slid_letters() {
             offset: v,
             color: Color::BLACK,
             gap: 0.0,
+            expand: 0.0,
         });
         let ev = evaluate(&s);
         assert_eq!(ev.below.len(), 1, "{name}");

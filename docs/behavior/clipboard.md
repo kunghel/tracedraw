@@ -79,7 +79,10 @@ alone goes there.
   6. other text: artistic text in the middle of the page, one step to
      undo with its fill and outline (`clipboard::tests::pasted_text_is_one_step`).
 
-Ctrl+Shift+V pastes the objects copied here in the middle of the view.
+Ctrl+Shift+V (Edit > Paste in View) pastes in the middle of the view,
+taken when the shortcut is pressed, even if the view moves while a
+picture is being read. Paste at Pointer in the page's right-click menu
+pastes the same, centred where the menu was opened.
 Paste on the page's context menu centres what it pastes where the menu
 was opened.
 
@@ -89,6 +92,22 @@ instead of at the top of the active layer; one Undo takes it back. With
 nothing selected it is Paste. It has no shortcut of its own; one can be
 given in Options > Customization (#3673,
 `clipboard::tests::paste_above_selection_lands_in_front_of_the_selection`).
+
+### Large pictures on the desktop
+
+The desktop reads and prepares external clipboard pictures on a worker
+thread, including decoding and PNG encoding. The window keeps responding
+and the pointer shows the system's progress indicator while the paste is
+pending. Repeating Paste during that wait does not start another copy of
+the same work. A copy still owned by TraceDraw can paste immediately.
+Picture paste starts when the shortcut is pressed. Releasing Ctrl or
+Shift before V does not lose the request or trigger a second paste.
+
+A Windows clipboard held briefly by another application is retried in
+the background. A read that ultimately fails shows an error in the
+status bar and does not paste an older internal copy instead. A result
+for a document, page or layer that is no longer active is discarded.
+An inserted picture and its target position form one undo step.
 
 ### In a browser and on Android (#1403)
 

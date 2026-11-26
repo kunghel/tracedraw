@@ -235,3 +235,70 @@ letters never trigger canvas shortcuts. A row grows downwards (the table
 top stays put) when its text needs more height than the row has; rows do
 not shrink while typing. All keystrokes in one cell are one "Edit Cell"
 undo step.
+
+## Copy and paste with spreadsheets
+
+(#4146, `table_clipboard::tests`.) Copying a table that is selected
+alone (Ctrl+C, Edit > Copy) puts its cells on the system clipboard twice:
+as text, one line per row with a tab between cells (a cell holding a
+tab, a line break or a quote is quoted, its quotes doubled), and as an
+HTML table whose cells carry their first characters' font, size, weight,
+slant and colour, their own fill (else the table's) as background, their
+alignment, and their merges. Spreadsheet apps paste either as cells.
+TraceDraw keeps its own copy too, so pasting here still brings the table
+itself. While cells are typed in, Ctrl+C with no characters chosen copies
+the chosen cells the same way (the active cell alone when only it is
+chosen).
+
+Pasting cells copied in a spreadsheet app (text of two rows or more, each
+with two cells or more separated by tabs) onto the page makes a new
+table of them at the page's centre, selected: the first row bold,
+numbers to the right, columns as wide as their texts, as an imported
+sheet (one undo step). Other text still pastes as a text.
+
+While a cell is typed in, pasted text that holds a tab, or several lines
+ending with a line break (one column of a spreadsheet), goes over the
+cells from the active cell to the right and down instead of into the
+cell: rows and columns are added at the bottom and the right when the
+table is too small, each cell keeps its text's look (an empty one takes
+the active cell's), and the whole paste is one "Paste Cells" undo step.
+
+## The workbook kept with a table
+
+(#4143.) A table imported from an `.xlsx` workbook (File > Import, or
+File > Open when the sheet fits one page) keeps the workbook itself; the
+`.tdraw` file saves it with the table (in a packed file once, however
+many copies of the table there are). A CSV or TSV file keeps nothing:
+it has no workbook. Tables made here have none either; a workbook is
+written from their cells when one is needed (`tracedraw_io::xlsx::
+write_xlsx`: one sheet, each cell's text in its place, plain numbers as
+numbers, merged cells merged).
+
+## Editing a table in a spreadsheet program
+
+(#4144, #4145, `table_external::tests`, `spreadsheet_editor::tests`.)
+Table > Edit in Spreadsheet, the same command on the table's property
+bar and in the right-click menu of a table selected alone, opens the
+table's cells in a spreadsheet program. The command is named after the
+program when it is known: "Edit in" and the program's name. The program
+is the one chosen under Options > File Locations > Spreadsheet editor,
+else the one the system opens `.xlsx` files with (on Windows the file
+association's program and its friendly name; on Linux the desktop entry
+`xdg-mime` names for the `.xlsx` media type, its Name and its program;
+on macOS the application Launch Services gives for the `.xlsx` type).
+The field shows the program the system has, and where it is.
+
+The workbook goes to `table-<id>.xlsx` in TraceDraw's folder for
+edited files (next to the system's temporary files, or a portable copy's
+own folder): the workbook the table keeps while it still holds the
+table's texts, so its formulas and formatting are kept, else one written
+from the cells. Each time the program saves it (checked once a second
+with the linked pictures), the table takes the sheet's texts in one
+"Update from Spreadsheet" undo step: rows and columns are added or taken
+away at the bottom and the right to fit the sheet, empty rows between
+filled ones keep their place, each cell keeps its text's look (a new
+cell takes the look of the nearest cell above it), and the saved
+workbook is kept with the table. A file still being written is read
+again the next second. The watch ends when the table is deleted or the
+file is gone. Android hands the workbook to the app picked for
+spreadsheets; the browser build has no command.

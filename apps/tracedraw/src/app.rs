@@ -421,6 +421,11 @@ pub enum Drag {
         /// snapped axis alone, so the side stays on what it snapped to
         /// (#2004).
         snapped: (bool, bool),
+        /// The axes, x and y, on which the selection has no size of its
+        /// own (a perfectly vertical or horizontal line: its box is only
+        /// as wide as its outline). They are kept at 100 %: scaled about
+        /// the box's edge, the line was flung sideways ever faster (#4173).
+        flat: (bool, bool),
         /// Where the selection stood when the handle was grabbed, built
         /// once the handle has left the snapping radius of its start: the
         /// handle then snaps to the selection's own nodes and edges as
@@ -667,6 +672,15 @@ pub enum Drag {
     /// The mirror lines of the symmetry being edited, dragged with the
     /// Pick tool: moved (the centre follows the pointer) or, from a
     /// turning handle, turned about the centre.
+    /// One of the document grid's axis controls dragged with the Pick
+    /// tool from `from` (page space), the grid as it was, an arrow
+    /// spanning `cells` cells (#4395).
+    GridAxis {
+        part: crate::grid_axis::AxisPart,
+        from: Point,
+        start: tracedraw_core::document::GridSettings,
+        cells: f64,
+    },
     /// A handle of the selected object's Grid effect dragged with the
     /// Pick tool, from `from` (page space), the grid as it was.
     GridHandle {
@@ -1151,6 +1165,9 @@ pub struct App {
     pub drop_frame: Option<ShapeId>,
     /// W and K held during that move.
     pub drop_keys: (bool, bool),
+    /// The W key itself held during that move: a closed object under the
+    /// pointer becomes a new clip frame holding the selection (#4227).
+    pub drop_new_frame: bool,
     /// Alt (the fill) or Alt+Shift (the outline) held while the selection
     /// is moved with the left button: a release over another object
     /// copies that onto it, as the right-button drop menu does, and the
@@ -1164,6 +1181,8 @@ pub struct App {
     /// A paste event or paste shortcut press came and its key is still
     /// down (see `interaction::paste_without_text`).
     pub paste_seen: bool,
+    /// A system clipboard read and picture preparation running in the background.
+    pub clipboard_paste: Option<crate::clipboard::PendingPaste>,
     pub curve: Option<CurveInProgress>,
     /// Undo and redo steps of `curve`, node by node.
     pub curve_steps: CurveSteps,
@@ -1262,6 +1281,15 @@ pub struct App {
     /// The view each page of the drawing was last shown with in this
     /// window, so going back to a page shows it as it was left (#3434).
     pub page_views: std::collections::HashMap<PageId, crate::view::View>,
+    /// A bitmap effect whose settings the Effects docker holds instead of
+    /// its dialog (#4253), and the selection it was opened for.
+    pub fx_panel: Option<crate::ui::effect_dialog::EffectState>,
+    pub fx_panel_sel: Vec<ShapeId>,
+    /// The values each Layer Effects entry was last given, so an effect
+    /// taken away with its × (or a new object's) starts again from them
+    /// instead of the defaults (#4242).
+    pub layer_fx_last:
+        std::collections::HashMap<crate::ui::layer_effects::Kind, tracedraw_core::live::Effect>,
     /// Set the view of Options > Display > View when a drawing opens
     /// with the next fit (a drawing just opened or made, #1134).
     pub open_view_pending: bool,
@@ -1269,6 +1297,15 @@ pub struct App {
     pub nudge_mm: f64,
     pub show_rulers: bool,
     pub show_grid: bool,
+    /// The grid's axis controls on the canvas: its origin and the ends of
+    /// its two axes drag with the Pick tool (Grid panel, #4395).
+    pub grid_axis_controls: bool,
+    /// The grid while its axis controls are dragged (#4395): drawn and
+    /// snapped to in place of the document's, which takes it at the
+    /// release in one step.
+    pub grid_live: Option<tracedraw_core::document::GridSettings>,
+    /// The Grid panel's name field for a new preset (#4395).
+    pub grid_preset_name: String,
     pub show_status_bar: bool,
     pub show_dockers: bool,
     /// Shift, Ctrl and Alt held from the keys on the drawing, for a
@@ -1394,6 +1431,8 @@ pub struct App {
     /// Block shadow colour and gap for the next drag.
     pub block_shadow_color: Color,
     pub block_shadow_gap: f64,
+    /// How far the Block Shadow tool grows a new shadow all round (#4378).
+    pub block_shadow_expand: f64,
     /// Inner shadow colour, opacity (0..1), feathering (mm) and merge
     /// mode for the next drag (#2473).
     pub inner_shadow: InnerShadowStyle,
@@ -1437,6 +1476,8 @@ pub struct App {
     pub last_transform_each: crate::ui::transform_each::TransformEach,
     /// The Light Flare settings used last.
     pub last_flare: crate::ui::flare::Flare,
+    /// The settings of the chart inserted last.
+    pub last_chart: Option<crate::chart::ChartSpec>,
     pub blend_steps: u32,
     /// The Blend docker's options for the next blend (and the shown one).
     pub blend_options: tracedraw_core::live::BlendOptions,
@@ -1542,6 +1583,9 @@ pub struct App {
     /// All colours of a palette at once (the expand button): which row.
     pub palette_expanded: Option<crate::ui::palette::Row>,
     pub raster: std::cell::RefCell<crate::raster::Raster>,
+    /// The low-resolution picture of an object whose contour or shadow
+    /// is dragged (D#4226).
+    pub effect_preview: std::cell::RefCell<Option<crate::effect_drag_preview::EffectPreview>>,
     /// The page's picture while nodes or a segment are dragged with the
     /// Shape tool (#1259): the drawing as it was before the drag is
     /// what the page shows, the edited curve following the pointer as
@@ -1660,6 +1704,10 @@ pub struct App {
     pub docker_preview_point: Option<Point>,
     /// The point the pointer snapped to this frame, for its mark.
     pub snap_mark: std::cell::Cell<Option<crate::snap_points::Target>>,
+    /// The outline points of the selection a move snaps to slanted
+    /// guidelines with, for the drawing revision and selection they were
+    /// taken at (#4383).
+    pub snap_outline: std::cell::RefCell<Option<((u64, Vec<ShapeId>), std::rc::Rc<Vec<Point>>)>>,
     /// The alignment and dynamic guides to draw this frame.
     pub live_guides: std::cell::RefCell<crate::live_guides::Overlay>,
     /// The snap points the pointer acquired, newest first: dynamic guides
@@ -1761,6 +1809,9 @@ pub struct App {
     pub pixel_edit: Option<Box<crate::pixel_edit_app::PixelEdit>>,
     /// The brush settings of picture editing, kept between pictures.
     pub pixel_opts: crate::pixel_edit::BrushOpts,
+    /// The layers of pictures edited inside, kept after Finish while the
+    /// drawings are open (#4112).
+    pub pixel_kept: crate::pixel_keep::KeptLayers,
     pub show_guides: bool,
     /// Selected guidelines of the active page (indices).
     pub selected_guides: Vec<usize>,
@@ -1834,6 +1885,9 @@ pub struct App {
     pub(crate) open_noticed: Option<PathBuf>,
     /// What that read gave, for the open it finishes.
     pub opened_read: Option<(PathBuf, crate::opening::OpenRead)>,
+    /// The next `.cdr` file opened is read even where it is damaged: the
+    /// user asked to open it anyway (#4332).
+    pub open_damaged_anyway: bool,
     /// Manual two-sided printing: the settings of a print whose fronts
     /// went out, while the prompt to turn the stack over shows.
     pub duplex_backs: Option<crate::ui::dialogs::PrintState>,
@@ -1948,6 +2002,9 @@ pub struct App {
     /// handed to programs, with their time stamps when handed over; one
     /// that is saved comes into the drawing.
     pub object_files: Vec<(std::path::PathBuf, Option<std::time::SystemTime>)>,
+    /// Tables' workbooks open in the spreadsheet program (#4145): saved
+    /// there, they give their tables the cells again.
+    pub table_files: Vec<crate::table_external::TableFile>,
     /// Session recovery: this session's marker in the auto-backup folder
     /// (made on the first frame; in a browser once its storage is read).
     pub session: Option<crate::recovery::Session>,
@@ -2010,6 +2067,13 @@ pub struct App {
     pub pending_copy_effect: Option<crate::copy_effect::CopyKind>,
     /// Copy Envelope Properties waits for the object to copy from.
     pub pending_copy_envelope: bool,
+    /// Replace with Object (false) or with Clones (true) waits for the
+    /// object to replace the selection with (#4220).
+    pub pending_replace: Option<bool>,
+    /// Copy Contents From waits for the clip frame to copy from (D#4221).
+    pub pending_copy_clip: bool,
+    /// Scale to Known Size's last choices (#4215).
+    pub scale_known: crate::scale_known::ScaleKnown,
     /// Copy Fill on the Interactive Fill bar: the next click picks the
     /// object whose fill the selection takes (#2471).
     pub pending_copy_fill: bool,
@@ -2061,6 +2125,7 @@ pub struct App {
     /// Objects docker: the pages and the Master Page nodes shown closed.
     pub objects_closed_pages: std::collections::HashSet<tracedraw_core::PageId>,
     pub objects_master_closed: bool,
+    pub objects_ranges_closed: bool,
     /// Objects docker: the cached thumbnails of the objects.
     pub object_thumbs: crate::object_thumbs::ObjectThumbs,
     /// Symbols docker: the cached pictures of the symbols (#3249).
@@ -2160,6 +2225,8 @@ pub struct App {
     #[cfg(not(target_arch = "wasm32"))]
     pub mcp_link: Option<crate::mcp_link::Link>,
     pub find_state: crate::ui::dialogs::FindReplaceState,
+    /// Combined criteria for the Select Same docker.
+    pub select_same: crate::select_same::SelectSameState,
     pub step_repeat: crate::ops2::StepRepeat,
     /// Repeat Copies' preview of the copies (#1197): the cached
     /// outlines, whether the panel asked for it this frame, and whether
@@ -2221,6 +2288,19 @@ pub struct App {
     pub glyph_size: f32,
     pub glyph_picked: Option<char>,
     pub table_edit: Option<crate::table::TableEdit>,
+    /// The clip frame whose contents are being edited as it was before
+    /// they came out: its envelope and other effects, shadow, opacity and
+    /// name go back onto it when the editing ends (#4070).
+    pub clip_edit_shell: Option<tracedraw_core::Shape>,
+    /// The clip frames being edited round the one edited now, outermost
+    /// first, when a clip frame inside another is edited (#4110): each
+    /// with what was outside it and its look kept aside. Finishing the
+    /// inner one goes back to editing the one round it.
+    pub clip_edit_outer: Vec<(
+        ShapeId,
+        std::collections::HashSet<ShapeId>,
+        Option<tracedraw_core::Shape>,
+    )>,
     /// The Table tool's drag and bar choices.
     pub table_ui: crate::table_tool::TableUi,
     pub missing_fonts: Vec<String>,
@@ -2317,6 +2397,9 @@ pub struct App {
     pub left_inner_dockers: DockerColumn,
     /// Dockers floating over the window, each in a window of its own.
     pub floating_dockers: Vec<FloatingDocker>,
+    /// A floating docker chosen again in Window > Panels, brought in
+    /// front of the others on the next frame (#4352).
+    pub raise_docker: Option<DockerTab>,
     /// Panels whose window of their own was closed: opened again, each
     /// comes back in that window, where it was (#3950).
     pub closed_own_windows: Vec<FloatingDocker>,
@@ -2327,6 +2410,9 @@ pub struct App {
     /// [`DockerPlace::column_index`]), the two stacked in the column's
     /// height (#2312).
     pub docker_stacks: [DockerStack; 4],
+    /// Dockers locked in front of their column (#3953): a docker opened
+    /// there goes under a locked one instead of taking its place.
+    pub locked_dockers: Vec<DockerTab>,
     /// A docker being moved by its tab or its title (see ui/dockers.rs).
     pub docker_drag: Option<DockerDrag>,
     /// The default column's front tab and whether it was open, as the
@@ -2481,8 +2567,19 @@ pub struct App {
     pub vector_mosaic: crate::vector_mosaic::VectorMosaicSettings,
     /// The Symbol Scatter docker's settings (and picked symbols).
     pub symbol_scatter: crate::symbol_scatter::ScatterSettings,
+    /// The symbol brush's stroke: where the nib was last, and whether the
+    /// stroke has made its undo step yet.
+    pub symbol_brush_last: Option<Point>,
+    pub symbol_brush_stepped: bool,
+    /// The Export docker's Add Slices grid: rows and columns each
+    /// selected object's area is cut into.
+    pub slice_grid: (u32, u32),
     /// The Frame Generator docker's settings.
     pub frame_gen: crate::frame_gen::FrameSettings,
+    /// The Mockup docker's settings (Effects > Mockup).
+    pub mockup: crate::mockup::MockupSettings,
+    /// The Math Shapes docker's settings (Window > Panels > Math Shapes).
+    pub math: crate::math_shapes::MathSettings,
     /// The 3D Revolve and Inflate docker's settings (and picked art).
     pub shape_3d: crate::shape3d::Settings3d,
     /// The Picture Mosaic docker's settings and indexed library.
@@ -2657,6 +2754,7 @@ pub enum DockerTab {
     ColorStyles,
     ObjectStyles,
     FindReplace,
+    SelectSame,
     Scripts,
     Palettes,
     Lens,
@@ -2672,6 +2770,7 @@ pub enum DockerTab {
     Symbols,
     Pages,
     Guidelines,
+    Grid,
     Fonts,
     FontSampler,
     Corners,
@@ -2681,8 +2780,10 @@ pub enum DockerTab {
     VectorMosaic,
     PictureMosaic,
     ShapeGenerator,
+    MathShapes,
     SymbolScatter,
     FrameGenerator,
+    Mockup,
     Shape3d,
     Shelf,
     Export,
@@ -2716,7 +2817,7 @@ impl DockerTab {
         DockerTab::PixelHistogram,
     ];
 
-    pub const ALL: [DockerTab; 48] = [
+    pub const ALL: [DockerTab; 52] = [
         DockerTab::Properties,
         DockerTab::Objects,
         DockerTab::Hints,
@@ -2731,6 +2832,7 @@ impl DockerTab {
         DockerTab::ColorStyles,
         DockerTab::ObjectStyles,
         DockerTab::FindReplace,
+        DockerTab::SelectSame,
         DockerTab::AiGenerate,
         DockerTab::Export,
         DockerTab::Comments,
@@ -2749,6 +2851,7 @@ impl DockerTab {
         DockerTab::Symbols,
         DockerTab::Pages,
         DockerTab::Guidelines,
+        DockerTab::Grid,
         DockerTab::Fonts,
         DockerTab::FontSampler,
         DockerTab::Corners,
@@ -2758,8 +2861,10 @@ impl DockerTab {
         DockerTab::VectorMosaic,
         DockerTab::PictureMosaic,
         DockerTab::ShapeGenerator,
+        DockerTab::MathShapes,
         DockerTab::SymbolScatter,
         DockerTab::FrameGenerator,
+        DockerTab::Mockup,
         DockerTab::Shape3d,
         DockerTab::Shelf,
         DockerTab::Effects,
@@ -2780,17 +2885,19 @@ impl DockerTab {
             DockerTab::ObjectStyles,
             DockerTab::Symbols,
             DockerTab::FindReplace,
+            DockerTab::SelectSame,
             DockerTab::Export,
             DockerTab::PrintMerge,
             DockerTab::AiGenerate,
         ],
         &[DockerTab::Transformations, DockerTab::Coordinates],
-        &[DockerTab::Guidelines],
+        &[DockerTab::Guidelines, DockerTab::Grid],
         &[
             DockerTab::AlignDistribute,
             DockerTab::StepAndRepeat,
             DockerTab::FitToPath,
             DockerTab::ShapeGenerator,
+            DockerTab::MathShapes,
         ],
         &[
             DockerTab::Shaping,
@@ -2818,7 +2925,7 @@ impl DockerTab {
     ];
 
     /// Window > Panels > Effects.
-    pub const EFFECTS_MENU: [DockerTab; 14] = [
+    pub const EFFECTS_MENU: [DockerTab; 15] = [
         DockerTab::Effects,
         DockerTab::Blend,
         DockerTab::Contour,
@@ -2832,6 +2939,7 @@ impl DockerTab {
         DockerTab::PictureMosaic,
         DockerTab::SymbolScatter,
         DockerTab::FrameGenerator,
+        DockerTab::Mockup,
         DockerTab::Shape3d,
     ];
 
@@ -2852,6 +2960,7 @@ impl DockerTab {
             DockerTab::ColorStyles => "docker.color_styles",
             DockerTab::ObjectStyles => "docker.object_styles",
             DockerTab::FindReplace => "docker.find_replace",
+            DockerTab::SelectSame => "docker.select_same",
             DockerTab::Scripts => "docker.scripts",
             DockerTab::Palettes => "docker.palettes",
             DockerTab::Lens => "docker.lens",
@@ -2867,6 +2976,7 @@ impl DockerTab {
             DockerTab::Symbols => "docker.symbols",
             DockerTab::Pages => "docker.pages",
             DockerTab::Guidelines => "docker.guidelines",
+            DockerTab::Grid => "docker.grid",
             DockerTab::Fonts => "docker.fonts",
             DockerTab::FontSampler => "docker.font_sampler",
             DockerTab::Corners => "docker.corners_docker",
@@ -2876,8 +2986,10 @@ impl DockerTab {
             DockerTab::VectorMosaic => "docker.vector_mosaic",
             DockerTab::PictureMosaic => "docker.picture_mosaic",
             DockerTab::ShapeGenerator => "docker.shape_generator",
+            DockerTab::MathShapes => "docker.math_shapes",
             DockerTab::SymbolScatter => "docker.symbol_scatter",
             DockerTab::FrameGenerator => "docker.frame_generator",
+            DockerTab::Mockup => "docker.mockup",
             DockerTab::Shape3d => "docker.shape3d",
             DockerTab::Shelf => "docker.shelf",
             DockerTab::Export => "docker.export",
@@ -3054,14 +3166,38 @@ impl DockerPlace {
 
 /// A docker shown in the lower part of a column, under the docker in
 /// front, and the share of the column's height the upper docker takes
-/// (#2312). The lower docker is one of the column's tabs.
-#[derive(Debug, Clone, Copy, PartialEq)]
+/// (#2312). The lower docker is one of the column's tabs. The lower part
+/// holds a group of its own (#4372): `group` lists the column's tabs
+/// that belong to it, in the order the strip shows them, and `below` is
+/// the one in sight there; the other tabs make the upper group.
+#[derive(Debug, Clone, PartialEq)]
 pub struct DockerStack {
     pub below: Option<DockerTab>,
     pub split: f32,
+    pub group: Vec<DockerTab>,
 }
 
 impl DockerStack {
+    /// Show `tab` in the lower part, joining the lower group (#4372).
+    pub fn show_in_lower(&mut self, tab: DockerTab) {
+        if !self.group.contains(&tab) {
+            self.group.push(tab);
+        }
+        self.below = Some(tab);
+    }
+
+    /// Take `tab` out of the lower group, the next one of the group in
+    /// sight when it was (#4372).
+    pub fn leave_lower(&mut self, tab: DockerTab) {
+        let at = self.group.iter().position(|t| *t == tab);
+        self.group.retain(|t| *t != tab);
+        if self.below == Some(tab) {
+            self.below = at
+                .and_then(|i| self.group.get(i.min(self.group.len().saturating_sub(1))))
+                .copied();
+        }
+    }
+
     /// The upper docker's share at first: 60 %.
     pub const DEFAULT_SPLIT: f32 = 0.6;
     /// The least share either docker keeps when the divider is dragged.
@@ -3082,6 +3218,7 @@ impl Default for DockerStack {
         DockerStack {
             below: None,
             split: Self::DEFAULT_SPLIT,
+            group: Vec::new(),
         }
     }
 }
@@ -3319,11 +3456,13 @@ impl App {
             ctrl_copy: false,
             glyph_scale: false,
             drop_frame: None,
+            drop_new_frame: false,
             drop_keys: (false, false),
             drop_colour: None,
             drop_colour_target: None,
             pen_editing: false,
             paste_seen: false,
+            clipboard_paste: None,
             curve: None,
             text_edit: None,
             ime_preedit: String::new(),
@@ -3354,11 +3493,17 @@ impl App {
             status_opens_options: None,
             fit_pending: true,
             page_views: Default::default(),
+            fx_panel: None,
+            fx_panel_sel: Vec::new(),
+            layer_fx_last: Default::default(),
             open_view_pending: true,
             units: Units::Millimeters,
             nudge_mm: 2.54,
             show_rulers: true,
             show_grid: false,
+            grid_axis_controls: false,
+            grid_live: None,
+            grid_preset_name: String::new(),
             show_status_bar: true,
             show_dockers: true,
             touch_mods: Default::default(),
@@ -3415,6 +3560,7 @@ impl App {
             table_fill: Fill::None,
             block_shadow_color: Color::cmyk_pct(0.0, 0.0, 0.0, 60.0),
             block_shadow_gap: 0.0,
+            block_shadow_expand: 0.0,
             inner_shadow: InnerShadowStyle::default(),
             table_border: Some(Stroke::hairline(Color::BLACK)),
             graph_rows: 4,
@@ -3439,6 +3585,7 @@ impl App {
             last_formula: None,
             last_transform_each: Default::default(),
             last_flare: Default::default(),
+            last_chart: None,
             blend_steps: 20,
             blend_options: Default::default(),
             blend_spacing_mm: 5.0,
@@ -3493,6 +3640,7 @@ impl App {
             palette_shades: None,
             palette_expanded: None,
             raster: std::cell::RefCell::new(crate::raster::Raster::default()),
+            effect_preview: Default::default(),
             node_drag_shown: None,
             visual_cache: std::cell::RefCell::new((u64::MAX, Default::default())),
             fill_preview: false,
@@ -3526,6 +3674,7 @@ impl App {
             pen_curve_steps: std::collections::HashMap::new(),
             snap: crate::snap::SnapSettings::default(),
             snap_mark: std::cell::Cell::new(None),
+            snap_outline: Default::default(),
             live_guides: Default::default(),
             guide_anchors: Default::default(),
             align_cache: Default::default(),
@@ -3575,6 +3724,7 @@ impl App {
             symmetry_doc: Default::default(),
             pixel_edit: None,
             pixel_opts: Default::default(),
+            pixel_kept: Default::default(),
             show_guides: true,
             selected_guides: Vec::new(),
             edit_master_guides: true,
@@ -3603,6 +3753,7 @@ impl App {
             open_notice_next: Vec::new(),
             open_noticed: None,
             opened_read: None,
+            open_damaged_anyway: false,
             duplex_backs: None,
             printers_seen: Vec::new(),
             printer_last: None,
@@ -3650,6 +3801,7 @@ impl App {
             linked_mtimes: Default::default(),
             linked_checked: None,
             object_files: Vec::new(),
+            table_files: Vec::new(),
             session: None,
             recovery_offer: Vec::new(),
             highlight_whats_new: false,
@@ -3687,6 +3839,9 @@ impl App {
             export_by_format: Vec::new(),
             pending_copy_effect: None,
             pending_copy_envelope: false,
+            pending_replace: None,
+            pending_copy_clip: false,
+            scale_known: Default::default(),
             pending_copy_fill: false,
             fill_swatch_drag: None,
             pending_clone_effect: None,
@@ -3717,6 +3872,7 @@ impl App {
             symbol_replace_source: None,
             symbol_rename: None,
             objects_master_closed: false,
+            objects_ranges_closed: false,
             picked_layer: None,
             selected_layers: Vec::new(),
             navigator_tex: None,
@@ -3758,6 +3914,7 @@ impl App {
             #[cfg(not(target_arch = "wasm32"))]
             mcp_link: None,
             find_state: Default::default(),
+            select_same: Default::default(),
             step_repeat: Default::default(),
             step_preview: None,
             step_preview_shown: false,
@@ -3788,6 +3945,8 @@ impl App {
             glyph_size: crate::ui::glyphs_docker::CELL,
             glyph_picked: None,
             table_edit: None,
+            clip_edit_shell: None,
+            clip_edit_outer: Vec::new(),
             table_ui: Default::default(),
             missing_fonts: Vec::new(),
             ask_missing_fonts: true,
@@ -3822,9 +3981,11 @@ impl App {
             inner_dockers: DockerColumn::default(),
             left_inner_dockers: DockerColumn::default(),
             floating_dockers: Vec::new(),
+            raise_docker: None,
             closed_own_windows: Vec::new(),
             docked_before: Vec::new(),
             docker_stacks: Default::default(),
+            locked_dockers: Vec::new(),
             docker_drag: None,
             docker_last: (DockerTab::Hints, true),
             free_transform_last: Point::ZERO,
@@ -3886,7 +4047,12 @@ impl App {
             coords: Default::default(),
             vector_mosaic: Default::default(),
             symbol_scatter: Default::default(),
+            symbol_brush_last: None,
+            symbol_brush_stepped: false,
+            slice_grid: (1, 1),
             frame_gen: Default::default(),
+            mockup: Default::default(),
+            math: Default::default(),
             shape_3d: Default::default(),
             picture_mosaic: Default::default(),
             picture_mosaic_job: None,
@@ -3941,10 +4107,28 @@ impl App {
                 }
             }
         }
+        app.after_update_start();
         if crate::files::WEB {
             app.show_web_notice();
         }
         app
+    }
+
+    /// Help > Mark New Features is kept across starts and updates
+    /// (#4325): with it on, the first start of a new version marks the
+    /// new menu rows and opens What's New, with the release's changes and
+    /// a link to all of them. The version is noted at every start.
+    fn after_update_start(&mut self) {
+        let version = env!("CARGO_PKG_VERSION");
+        self.highlight_whats_new = self.settings.mark_new_features;
+        let updated = whats_new_after(&self.settings.last_run_version, version);
+        if updated && self.settings.mark_new_features {
+            crate::ui::menus::open_whats_new(self);
+        }
+        if self.settings.last_run_version != version {
+            self.settings.last_run_version = version.to_string();
+            self.settings.save();
+        }
     }
 
     /// Tell the user, once per kind and session, that the browser did not
@@ -4706,6 +4890,7 @@ impl App {
             rasterize_complex_effects: self.rasterize_complex_effects,
             mode: self.view_mode.id().into(),
             grid_frequency: self.grid_frequency,
+            multipage: self.multipage,
         }
     }
 
@@ -4725,6 +4910,10 @@ impl App {
         self.rasterize_complex_effects = v.rasterize_complex_effects;
         self.view_mode = ViewMode::from_id(&v.mode);
         self.grid_frequency = v.grid_frequency;
+        self.multipage = v.multipage;
+        if v.multipage {
+            self.page_sorter = false;
+        }
     }
 
     /// Dockers' own choices now (see [`crate::settings::PanelPrefs`]).
@@ -4868,9 +5057,15 @@ impl App {
                         column: column_key(*place).to_string(),
                         tab: st.below?.key().to_string(),
                         split: st.split,
+                        group: if st.group.len() > 1 {
+                            keys(&st.group)
+                        } else {
+                            Vec::new()
+                        },
                     })
                 })
                 .collect(),
+            locked: keys(&self.locked_dockers),
             floating: self
                 .floating_dockers
                 .iter()
@@ -5000,15 +5195,107 @@ impl App {
                 .find(|p| column_key(*p) == st.column);
             if let (Some(place), Some(tab)) = (place, by_key(&st.tab)) {
                 if let Some(i) = place.column_index() {
+                    let mut group: Vec<DockerTab> =
+                        st.group.iter().filter_map(|k| by_key(k)).collect();
+                    group.dedup();
+                    if !group.contains(&tab) {
+                        group.push(tab);
+                    }
                     self.docker_stacks[i] = DockerStack {
                         below: Some(tab),
                         split: DockerStack::clamp_split(st.split),
+                        group,
                     };
                 }
             }
         }
+        self.locked_dockers = setup.locked.iter().filter_map(|k| by_key(k)).collect();
+        self.locked_dockers.dedup();
         self.settle_columns();
         self.docker_last = (self.docker_tab, self.show_dockers);
+    }
+
+    /// Whether `tab` is locked in front of its column (#3953).
+    pub fn docker_locked(&self, tab: DockerTab) -> bool {
+        self.locked_dockers.contains(&tab)
+    }
+
+    /// Lock or unlock `tab` (#3953). A locked docker stays where it is
+    /// when another docker opens: that one goes under it.
+    pub fn set_docker_locked(&mut self, tab: DockerTab, locked: bool) {
+        self.locked_dockers.retain(|t| *t != tab);
+        if locked {
+            self.locked_dockers.push(tab);
+        }
+    }
+
+    /// Open `tab` in the column at `place` without moving a locked docker
+    /// (#3953): with a locked docker in front, `tab` goes under it; when
+    /// the docker under it is locked too, `tab` goes to the side's second
+    /// column (floating when that is full of locked dockers as well).
+    /// False when the front docker there is not locked, so `tab` opens
+    /// the usual way.
+    pub fn open_beside_locked(&mut self, tab: DockerTab, place: DockerPlace) -> bool {
+        let Some(i) = place.column_index() else {
+            return false;
+        };
+        let (tabs, front, shown) = self.docker_column(place);
+        if tabs.is_empty() || front == tab || !self.docker_locked(front) {
+            return false;
+        }
+        let below = self.docker_stacks[i].below;
+        if below == Some(tab) {
+            self.set_docker_column(place, true, None);
+            return true;
+        }
+        if below.is_none_or(|b| !self.docker_locked(b)) {
+            if self.docker_place(tab) != Some(place) {
+                self.take_docker(tab);
+                // Taking it may have moved the column (a side's second
+                // column becomes the edge one when that empties).
+                let Some(dest) = self.docker_place(front) else {
+                    return false;
+                };
+                if let Some(tabs) = self.column_tabs_mut(dest) {
+                    let at = tabs
+                        .iter()
+                        .position(|t| *t == front)
+                        .map_or(tabs.len(), |i| i + 1);
+                    tabs.insert(at, tab);
+                }
+                return self.stack_under_front(tab, dest);
+            }
+            if !shown {
+                self.set_docker_column(place, true, None);
+            }
+            return self.stack_under_front(tab, place);
+        }
+        // Both dockers of the column are locked: the side's second column.
+        let inner = match place {
+            DockerPlace::Right => Some(DockerPlace::RightInner),
+            DockerPlace::Left => Some(DockerPlace::LeftInner),
+            _ => None,
+        };
+        match inner {
+            Some(inner) if self.open_beside_locked(tab, inner) => {}
+            Some(inner) if self.docker_place(tab) == Some(inner) => {
+                self.set_docker_column(inner, true, Some(tab));
+            }
+            Some(inner) => self.move_docker(tab, inner, None),
+            None => self.move_docker(tab, DockerPlace::Floating, None),
+        }
+        true
+    }
+
+    /// Show `tab`, one of the column's tabs, under the column's front
+    /// docker, the column open.
+    fn stack_under_front(&mut self, tab: DockerTab, place: DockerPlace) -> bool {
+        let Some(i) = place.column_index() else {
+            return false;
+        };
+        self.docker_stacks[i].show_in_lower(tab);
+        self.set_docker_column(place, true, None);
+        true
     }
 
     /// The docker shown under the one in front of the column at `place`
@@ -5017,6 +5304,71 @@ impl App {
         place
             .column_index()
             .and_then(|i| self.docker_stacks[i].below)
+    }
+
+    /// The tabs of the lower group of the column at `place`, in order
+    /// (#4372): empty while the column shows one docker.
+    pub fn docker_lower_group(&self, place: DockerPlace) -> &[DockerTab] {
+        place
+            .column_index()
+            .map_or(&[][..], |i| &self.docker_stacks[i].group[..])
+    }
+
+    /// `tab` belongs to the lower group of the column at `place` (#4372).
+    pub fn docker_in_lower(&self, place: DockerPlace, tab: DockerTab) -> bool {
+        self.docker_lower_group(place).contains(&tab)
+    }
+
+    /// Show `tab`, one of the lower group of the column at `place`, in
+    /// the lower part, the column open (#4372).
+    pub fn show_lower_docker(&mut self, place: DockerPlace, tab: DockerTab) {
+        if let Some(i) = place.column_index() {
+            if self.docker_stacks[i].group.contains(&tab) {
+                self.docker_stacks[i].below = Some(tab);
+            }
+        }
+        self.set_docker_column(place, true, None);
+    }
+
+    /// Put `tab` in the lower group of the column at `place` at `at`
+    /// among its tabs, shown there (#4372): a tab dropped between two
+    /// tabs of the lower group in the column's strip.
+    pub fn stack_docker_at(&mut self, tab: DockerTab, place: DockerPlace, at: usize) {
+        self.stack_docker(tab, place);
+        let Some(place) = self.docker_place(tab) else {
+            return;
+        };
+        if let Some(i) = place.column_index() {
+            let g = &mut self.docker_stacks[i].group;
+            if let Some(from) = g.iter().position(|t| *t == tab) {
+                g.remove(from);
+                g.insert(at.min(g.len()), tab);
+            }
+        }
+    }
+
+    /// Put `tab` in the upper group of the column at `place`, before the
+    /// upper tab `before` (at the end of the upper group when none)
+    /// (#4372): a tab dropped among the upper tabs of the strip.
+    pub fn insert_docker_upper(
+        &mut self,
+        tab: DockerTab,
+        place: DockerPlace,
+        before: Option<DockerTab>,
+    ) {
+        if let Some(i) = place.column_index() {
+            self.docker_stacks[i].leave_lower(tab);
+        }
+        let (tabs, _, _) = self.docker_column(place);
+        let lower = self.docker_lower_group(place).to_vec();
+        let rest: Vec<DockerTab> = tabs.iter().copied().filter(|t| *t != tab).collect();
+        let at = match before {
+            Some(b) => rest.iter().position(|t| *t == b),
+            None => rest.iter().rposition(|t| !lower.contains(t)).map(|i| i + 1),
+        }
+        .unwrap_or(rest.len());
+        self.insert_docker(tab, place, at);
+        self.settle_stacks();
     }
 
     /// Show `tab` in the lower part of the column at `place`, under the
@@ -5038,8 +5390,14 @@ impl App {
         let mut place = place;
         let mut front = front;
         if front == tab {
-            // The front docker goes below: the tab next to it comes up.
-            let next = tabs.iter().copied().find(|t| *t != tab);
+            // The front docker goes below: the tab next to it comes up,
+            // one of the upper group where there is one (#4372).
+            let lower = self.docker_lower_group(place);
+            let next = tabs
+                .iter()
+                .copied()
+                .find(|t| *t != tab && !lower.contains(t))
+                .or_else(|| tabs.iter().copied().find(|t| *t != tab));
             if let Some(n) = next {
                 front = n;
             }
@@ -5057,17 +5415,31 @@ impl App {
                 tabs.insert(at, tab);
             }
         }
+        if let Some(i) = place.column_index() {
+            self.docker_stacks[i].show_in_lower(tab);
+        }
         self.set_docker_column(place, true, Some(front));
         if let Some(i) = place.column_index() {
-            self.docker_stacks[i].below = Some(tab);
+            self.docker_stacks[i].show_in_lower(tab);
         }
     }
 
     /// Take the lower docker of the column at `place` out of the lower
-    /// part: it stays among the column's tabs (#2312).
+    /// part: it stays among the column's tabs (#2312), the next tab of
+    /// the lower group shown there instead (#4372).
     pub fn unstack_docker(&mut self, place: DockerPlace) {
         if let Some(i) = place.column_index() {
-            self.docker_stacks[i].below = None;
+            if let Some(b) = self.docker_stacks[i].below {
+                self.docker_stacks[i].leave_lower(b);
+            }
+        }
+    }
+
+    /// Take `tab` out of the lower group of the column at `place`
+    /// (#4372); it stays among the column's tabs.
+    pub fn unstack_tab(&mut self, place: DockerPlace, tab: DockerTab) {
+        if let Some(i) = place.column_index() {
+            self.docker_stacks[i].leave_lower(tab);
         }
     }
 
@@ -5078,13 +5450,27 @@ impl App {
             let Some(i) = place.column_index() else {
                 continue;
             };
-            let Some(below) = self.docker_stacks[i].below else {
-                continue;
-            };
             let (tabs, front, _) = self.docker_column(place);
-            if front == below || !tabs.contains(&below) {
-                self.docker_stacks[i].below = None;
+            let tabs = tabs.to_vec();
+            let st = &mut self.docker_stacks[i];
+            // The lower group keeps the column's tabs other than the one
+            // in front (#4372); a docker brought to the front leaves it.
+            if let Some(b) = st.below {
+                if !st.group.contains(&b) {
+                    st.group.push(b);
+                }
             }
+            st.group.retain(|t| *t != front && tabs.contains(t));
+            let mut seen = Vec::with_capacity(st.group.len());
+            st.group.retain(|t| {
+                let new = !seen.contains(t);
+                seen.push(*t);
+                new
+            });
+            if st.below.is_none_or(|b| !st.group.contains(&b)) {
+                st.below = st.group.first().copied();
+            }
+
         }
     }
 
@@ -5165,6 +5551,11 @@ impl App {
     /// `tab` is on screen: in front of an open column, or floating.
     pub fn docker_shown(&self, tab: DockerTab) -> bool {
         if let Some(place) = self.docker_place(tab) {
+            if self.docker_in_lower(place, tab) && self.docker_below(place) != Some(tab) {
+                return false;
+            }
+        }
+        if let Some(place) = self.docker_place(tab) {
             if self.docker_below(place) == Some(tab) {
                 return self.docker_column(place).2;
             }
@@ -5230,12 +5621,23 @@ impl App {
     /// Bring `tab` to the front where it lies; a docker open nowhere
     /// joins the default column.
     pub fn open_docker(&mut self, tab: DockerTab) {
-        // Shown under the front docker: its column opens, both stay.
+        // Shown under the front docker: its column opens, both stay; one
+        // of the lower group comes into sight there (#4372).
         if let Some(place) = self.docker_place(tab) {
-            if self.docker_below(place) == Some(tab) {
-                self.set_docker_column(place, true, None);
+            if self.docker_in_lower(place, tab) {
+                self.show_lower_docker(place, tab);
                 return;
             }
+        }
+        // A locked docker in front of the column it opens in stays (#3953).
+        let place = match self.docker_place(tab) {
+            Some(DockerPlace::Floating) => None,
+            Some(p) => Some(p),
+            None if self.closed_own_windows.iter().any(|f| f.tab == tab) => None,
+            None => Some(DockerPlace::Right),
+        };
+        if place.is_some_and(|p| self.open_beside_locked(tab, p)) {
+            return;
         }
         match self.docker_place(tab) {
             Some(DockerPlace::Left) => {
@@ -5245,7 +5647,8 @@ impl App {
             Some(p @ (DockerPlace::RightInner | DockerPlace::LeftInner)) => {
                 self.set_docker_column(p, true, Some(tab));
             }
-            Some(DockerPlace::Floating) => {}
+            // Already floating: its window comes to the front (#4352).
+            Some(DockerPlace::Floating) => self.raise_docker = Some(tab),
             None if self.closed_own_windows.iter().any(|f| f.tab == tab) => {
                 // Its window was closed: it opens there again.
                 if let Some(i) = self.closed_own_windows.iter().position(|f| f.tab == tab) {
@@ -5445,6 +5848,19 @@ impl App {
     /// default column goes back to how the last frame left it; one open
     /// nowhere joins the default column.
     pub fn reconcile_dockers(&mut self) {
+        // A docker brought to the front of the default column over a
+        // locked one goes under it instead (#3953).
+        let (last, last_shown) = self.docker_last;
+        if self.show_dockers
+            && last_shown
+            && self.docker_tab != last
+            && self.docker_locked(last)
+            && self.open_dockers.contains(&last)
+        {
+            let tab = self.docker_tab;
+            self.docker_tab = last;
+            self.open_docker(tab);
+        }
         if self.show_dockers && !self.open_dockers.contains(&self.docker_tab) {
             let tab = self.docker_tab;
             match self.docker_place(tab) {
@@ -5648,9 +6064,11 @@ impl App {
             return;
         }
         self.close_active_document();
-        // The last drawing gone: the kept fill pictures go with it.
+        // The last drawing gone: the kept fill pictures and picture
+        // layers go with it.
         if !self.has_document() {
             tracedraw_render::clear_procedural_cache();
+            self.pixel_kept.clear();
         }
     }
 
@@ -5952,6 +6370,12 @@ impl App {
         self.paste_any_at(Some(at));
     }
 
+    /// Paste at Pointer in the page's right-click menu: what Edit > Paste
+    /// pastes, centred where the menu was opened (`at`, page space).
+    pub fn paste_at_pointer(&mut self, at: Point) {
+        self.paste_any_at(Some(at));
+    }
+
     pub fn select_all_of(&mut self, pred: impl Fn(&Shape) -> bool) {
         let ids: Vec<ShapeId> = self
             .doc()
@@ -6031,6 +6455,25 @@ impl App {
 
     pub fn page_rect(&self) -> Rect {
         Rect::from_origin_size((0.0, 0.0), self.page_size())
+    }
+
+    /// The document grid's settings in use: the ones being dragged on
+    /// the canvas, else the document's (#4395).
+    pub fn grid_settings(&self) -> tracedraw_core::document::GridSettings {
+        match self.grid_live {
+            Some(g) if matches!(self.drag, Drag::GridAxis { .. }) => g,
+            _ => self.doc().metadata.grid,
+        }
+    }
+
+    /// The document grid laid out at the current zoom (#4395).
+    pub fn grid_geom(&self) -> crate::grid_geom::GridGeom {
+        crate::grid_geom::GridGeom::of(
+            &self.grid_settings(),
+            self.grid_origin(),
+            f64::from(self.view.zoom),
+            self.units.world_mm(),
+        )
     }
 
     /// What the drawing drawn small behind the view covers while it
@@ -6461,6 +6904,28 @@ impl App {
     }
 
     pub fn run(&mut self, cmd: Command) {
+        let range_layer = match &cmd {
+            Command::SetLayerScope { layer, .. } => Some(*layer),
+            Command::SetLayerPageRange { layer, page_range }
+                if page_range.as_ref().is_none_or(|range| !range.is_empty()) =>
+            {
+                Some(*layer)
+            }
+            _ => None,
+        };
+        if let Some(layer) = range_layer {
+            if self
+                .doc()
+                .master
+                .iter()
+                .any(|master| master.id == layer && !master.desktop)
+            {
+                self.prepare_layer_range_change(layer);
+            }
+        }
+        if crate::page_names::changes_page_order(&cmd) {
+            self.prepare_shared_layer_editing();
+        }
         // The box a move, turn or resize starts from, for its Repeat.
         let before = match &cmd {
             Command::TransformShapes { shapes, .. } if *shapes == self.selection => {
@@ -6508,9 +6973,15 @@ impl App {
         // Default page names follow the pages' order (#2374).
         if crate::page_names::changes_page_order(&cmd) {
             self.renumber_default_pages();
+            self.sync_layer_ranges(None);
         }
         self.sync_effect_clones_for(&cmd);
         self.sync_object_clones();
+        if let Command::SetLayerScope { layer, .. } | Command::SetLayerPageRange { layer, .. } =
+            &cmd
+        {
+            self.sync_layer_range(*layer);
+        }
         if let (Command::TransformShapes { transform, .. }, Some(before)) = (&cmd, before) {
             self.note_repeatable(Repeatable::Transform {
                 transform: *transform,
@@ -6531,6 +7002,214 @@ impl App {
         self.repeat_refs.clear();
         if let Some(rec) = &mut self.recording {
             rec.push(cmd);
+        }
+    }
+
+    /// Clear editing state for a shared layer excluded from the current page.
+    pub(crate) fn sync_layer_range(&mut self, id: LayerId) {
+        self.sync_layer_ranges(Some(id));
+    }
+
+    /// Finish editor modes before moving their objects into a restricted layer.
+    pub(crate) fn prepare_shapes_for_range_move(&mut self, ids: &[ShapeId]) -> bool {
+        let moving = |id: ShapeId| {
+            ids.contains(&id) || self.doc().ancestors(id).iter().any(|id| ids.contains(id))
+        };
+        let clip = self
+            .clip_frame_edit
+            .as_ref()
+            .is_some_and(|(frame, _)| moving(*frame));
+        let text = self
+            .text_edit
+            .as_ref()
+            .is_some_and(|edit| moving(edit.shape));
+        let table = self
+            .table_edit
+            .as_ref()
+            .is_some_and(|edit| clip || moving(edit.shape));
+        let symmetry = self.symmetry_edit.is_some_and(|id| clip || moving(id));
+        let crop = self.crop_area.is_some() && (clip || self.selection.iter().copied().any(moving));
+        let curve = self.curve.is_some() && (clip || self.selection.iter().copied().any(moving));
+        let focused = (clip && !self.focus.is_empty()) || self.focus.iter().copied().any(moving);
+        if curve {
+            self.finish_curve();
+        }
+        if text || clip {
+            self.finish_text();
+        }
+        if clip {
+            self.finish_clip_frame_edit();
+        }
+        if table {
+            self.table_edit = None;
+            self.ime_preedit.clear();
+        }
+        if symmetry {
+            self.finish_symmetry_edit();
+        }
+        if focused {
+            self.exit_focus();
+        }
+        if crop {
+            self.crop_area = None;
+            self.crop_drag = None;
+        }
+        text || clip || curve || table || symmetry || crop || focused
+    }
+
+    pub(crate) fn prepare_layer_range_change(&mut self, id: LayerId) {
+        if self.curve.is_some() && self.active_layer() == Some(id) {
+            self.finish_curve();
+        }
+        if self.text_edit.is_none()
+            && self.clip_frame_edit.is_none()
+            && self.curve.is_none()
+            && self.table_edit.is_none()
+            && self.symmetry_edit.is_none()
+            && self.crop_area.is_none()
+        {
+            return;
+        }
+        let Ok(layer) = self.doc().layer(id) else {
+            return;
+        };
+        let ids: Vec<_> = layer.shapes.iter().map(|shape| shape.id).collect();
+        self.prepare_shapes_for_range_move(&ids);
+    }
+
+    /// Commit editor modes on range layers before leaving their applicable pages.
+    pub(crate) fn prepare_range_page_change(&mut self, index: usize) -> bool {
+        let layers: Vec<_> = self
+            .doc()
+            .master
+            .iter()
+            .filter(|layer| layer.page_range.is_some() && !layer.applies_to(index))
+            .map(|layer| layer.id)
+            .collect();
+        let restricted = !layers.is_empty();
+        for layer in layers {
+            self.prepare_layer_range_change(layer);
+        }
+        restricted
+    }
+
+    fn prepare_shared_layer_editing(&mut self) {
+        if self.curve.is_some()
+            && self
+                .active_layer()
+                .is_some_and(|id| self.doc().master.iter().any(|layer| layer.id == id))
+        {
+            self.finish_curve();
+        }
+        let text = self.text_edit.as_ref().map(|edit| edit.shape);
+        let clip = self.clip_frame_edit.as_ref().map(|(frame, _)| *frame);
+        let table = self.table_edit.as_ref().map(|edit| edit.shape);
+        let mut layers: Vec<_> = text
+            .into_iter()
+            .chain(clip)
+            .chain(table)
+            .chain(self.symmetry_edit)
+            .chain(
+                self.selection
+                    .iter()
+                    .copied()
+                    .filter(|_| self.curve.is_some() || self.crop_area.is_some()),
+            )
+            .filter_map(|id| self.doc().top_level_of(id))
+            .filter_map(|id| self.doc().locate(id).ok().map(|(layer, _)| layer))
+            .filter(|id| self.doc().master.iter().any(|layer| layer.id == *id))
+            .collect();
+        layers.dedup();
+        for id in layers {
+            self.prepare_layer_range_change(id);
+        }
+    }
+
+    pub(crate) fn sync_layer_ranges(&mut self, only: Option<LayerId>) {
+        fn collect(shape: &Shape, out: &mut std::collections::HashSet<ShapeId>) {
+            out.insert(shape.id);
+            match &shape.kind {
+                ShapeKind::Group { children } => {
+                    for child in children {
+                        collect(child, out);
+                    }
+                }
+                ShapeKind::ClipFrame { frame, contents } => {
+                    collect(frame, out);
+                    for child in contents {
+                        collect(child, out);
+                    }
+                }
+                _ => {}
+            }
+        }
+        if self.selection.is_empty()
+            && self.picked_layer.is_none()
+            && self.text_edit.is_none()
+            && self.table_edit.is_none()
+            && self.symmetry_edit.is_none()
+            && self.focus.is_empty()
+        {
+            return;
+        }
+        let mut layers = std::collections::HashSet::new();
+        let mut shapes = std::collections::HashSet::new();
+        let index = self.page_index();
+        for layer in &self.doc().master {
+            if only.is_none_or(|id| id == layer.id) && !layer.applies_to(index) {
+                layers.insert(layer.id);
+                for shape in &layer.shapes {
+                    collect(shape, &mut shapes);
+                }
+            }
+        }
+        let picked = self
+            .picked_layer
+            .is_some_and(|id| layers.contains(&id) || self.doc().layer(id).is_err());
+        let text = self
+            .text_edit
+            .as_ref()
+            .is_some_and(|edit| shapes.contains(&edit.shape));
+        let table = self
+            .table_edit
+            .as_ref()
+            .is_some_and(|edit| shapes.contains(&edit.shape));
+        let symmetry = self.symmetry_edit.is_some_and(|id| shapes.contains(&id));
+        let focused = self.focus.iter().any(|id| shapes.contains(id));
+        if symmetry {
+            self.finish_symmetry_edit();
+        }
+        let selection = self
+            .selection
+            .iter()
+            .copied()
+            .filter(|id| !shapes.contains(id))
+            .collect::<Vec<_>>();
+        let changed = selection.len() != self.selection.len();
+        if !(picked || text || table || symmetry || focused || changed) {
+            return;
+        }
+        if changed {
+            self.select(selection);
+        }
+        if picked {
+            self.picked_layer = None;
+        }
+        if text {
+            self.text_edit = None;
+            self.ime_preedit.clear();
+        }
+        if table {
+            self.table_edit = None;
+            self.ime_preedit.clear();
+        }
+        self.crop_area = None;
+        self.crop_drag = None;
+        if focused {
+            self.exit_focus();
+        }
+        if only.is_some() {
+            self.status = crate::i18n::tr("docker.range_no_current_page");
         }
     }
 
@@ -6600,7 +7279,7 @@ impl App {
             // Cancel undoes only what the Shape Builder made since it was
             // chosen (#3220).
             if tool == Tool::ShapeBuilder {
-                self.builder.session_steps = 0;
+                self.builder_forget_session();
             }
             // Another tool ends a pick of Image > Color Mask (#2479).
             if tool != Tool::ColorEyedropper {
@@ -6973,7 +7652,12 @@ impl App {
         let angle = base.atan2();
         let dir = base / len;
         let normal = Vec2::new(-dir.y, dir.x);
-        let height = (c - a).dot(normal);
+        let mut height = (c - a).dot(normal);
+        // Ctrl held at the third point of the 3-Point Ellipse: a circle
+        // with the base as its diameter, wherever the point is (#4086).
+        if self.tool == Tool::ThreePointEllipse && arc {
+            height = circle_on_base_height(len, height);
+        }
         match self.tool {
             Tool::ThreePointRectangle | Tool::ThreePointEllipse => {
                 if height.abs() < 0.05 {
@@ -7238,11 +7922,22 @@ impl App {
     /// [`Self::pen_curve_steps`]): a curve drawn with the Pen or Bezier
     /// tool goes on being drawn with it, from where it stood then.
     fn resume_pen_step(&mut self, step: Option<u64>, undone: bool) {
+        if !self.pen_step_shown_on_current_page(step) {
+            return;
+        }
         let key = step.map(|s| (self.engine.instance(), s));
         if let Some(&ps) = key.and_then(|k| self.pen_curve_steps.get(&k)) {
             let to = if undone { ps.undo_to } else { ps.redo_to };
             self.resume_curve(ps.shape, ps.tool, to);
         }
+    }
+
+    fn pen_step_shown_on_current_page(&self, step: Option<u64>) -> bool {
+        step.and_then(|step| self.pen_curve_steps.get(&(self.engine.instance(), step)))
+            .and_then(|step| self.doc().top_level_of(step.shape))
+            .and_then(|id| self.doc().locate(id).ok())
+            .and_then(|(id, _)| self.doc().master.iter().find(|layer| layer.id == id))
+            .is_none_or(|layer| layer.applies_to(self.page_index()))
     }
 
     /// The curve `id`, just made with the outline `line` from the B-spline
@@ -7461,7 +8156,12 @@ impl App {
         if self.selection.is_empty() {
             return;
         }
-        let shapes = std::mem::take(&mut self.selection);
+        let mut shapes = std::mem::take(&mut self.selection);
+        // The dimensions measuring what goes, when so set (#4211).
+        if self.settings.delete_dimensions_with_object {
+            let more = self.dimensions_measuring(&shapes);
+            shapes.extend(more);
+        }
         // A part of a dimension goes on its own, the rest of it staying
         // as objects of their own (#3348).
         if let Some(cmds) = self.dimension_part_delete_commands(&shapes) {
@@ -7641,6 +8341,20 @@ impl App {
         };
         for shape in copies {
             cmds.push(Command::AddShape { layer, shape });
+        }
+        // Pasted with an object of a merged group selected: into that
+        // group, over the object, so the copies merge too (#4348).
+        if let Some(reference) = self
+            .selection
+            .last()
+            .copied()
+            .filter(|id| self.merge_group_of(*id).is_some())
+        {
+            cmds.push(Command::PlaceBeside {
+                shapes: ids.clone(),
+                reference,
+                in_front: true,
+            });
         }
         if let Err(e) = self.engine.run_batch("Paste", &cmds) {
             self.status = e.to_string();
@@ -7825,13 +8539,24 @@ impl App {
         // A copy of a connected object comes with its connector (#476).
         let originals: Vec<ShapeId> = shapes.iter().map(|s| s.id).collect();
         let connectors = self.connector_copies(&originals, &copies);
-        let cmds: Vec<Command> = copies
+        let mut cmds: Vec<Command> = copies
             .into_iter()
             .chain(connectors)
             .map(|shape| Command::AddShape { layer, shape })
             .collect();
         if cmds.is_empty() {
             return;
+        }
+        // A copy of an object of a merged group stays in that group, just
+        // over its original, and merges with the others (#4348).
+        for (orig, copy) in &pairs {
+            if self.merge_group_of(*orig).is_some() {
+                cmds.push(Command::PlaceBeside {
+                    shapes: vec![*copy],
+                    reference: *orig,
+                    in_front: true,
+                });
+            }
         }
         if let Err(e) = self.engine.run_batch("Duplicate", &cmds) {
             self.status = e.to_string();
@@ -8447,7 +9172,7 @@ impl App {
             // Only the colour changes: each object (and each object in a
             // group) keeps its own width, dash and the rest.
             let shapes = self.selection.clone();
-            let cmds = vec![match color {
+            let cmd = match color {
                 Some(c) => Command::PatchStroke {
                     shapes,
                     stroke: Stroke {
@@ -8460,10 +9185,15 @@ impl App {
                     shapes,
                     stroke: None,
                 },
-            }];
-            if let Err(e) = self.engine.run_batch("Outline Color", &cmds) {
-                self.status = e.to_string();
-            } else if let Some(c) = color {
+            };
+            // Run as a command of its own, so Edit > Repeat repeats it on
+            // the next objects selected (#4293).
+            let step = self.engine.last_step_id();
+            self.run(cmd);
+            if self.engine.last_step_id() == step {
+                return;
+            }
+            if let Some(c) = color {
                 self.add_ink_for(c);
                 self.remember_color(c);
             }
@@ -8588,6 +9318,14 @@ impl App {
     }
 
     pub fn apply_outline_width(&mut self, width: f64) {
+        if self.text_selection_active() {
+            self.text_apply_outline_width(width);
+            return;
+        }
+        if self.chosen_chars_active() {
+            self.chosen_chars_apply_outline_width(width);
+            return;
+        }
         let shapes = self.selected_shapes();
         if shapes.is_empty() {
             self.request_default_change(crate::defaults::DefaultChange::OutlineWidth(width));
@@ -8746,6 +9484,9 @@ impl App {
             return;
         }
         let step = self.engine.last_step_id();
+        // The creation step may remove the curve, so check its source layer
+        // before swapping the document rather than looking it up afterwards.
+        let resume_pen = self.pen_step_shown_on_current_page(step);
         let at = self.page_index_now();
         let undone = match self.engine.undo() {
             Ok(l) => {
@@ -8767,9 +9508,10 @@ impl App {
             if self.curve.as_ref().is_some_and(|c| c.resumed) {
                 self.curve = None;
             }
-            if self.curve.is_none() {
+            if self.curve.is_none() && resume_pen {
                 self.resume_pen_step(step, true);
             }
+            self.sync_layer_ranges(None);
         }
     }
 
@@ -8786,6 +9528,9 @@ impl App {
         self.curve_steps.clear();
         if self.redo_selection_step() {
             return;
+        }
+        if self.engine.redo_label().is_some() {
+            self.prepare_shared_layer_editing();
         }
         let at = self.page_index_now();
         let redone = match self.engine.redo() {
@@ -8808,6 +9553,7 @@ impl App {
             if self.curve.is_none() {
                 self.resume_pen_step(self.engine.last_step_id(), false);
             }
+            self.sync_layer_ranges(None);
         }
     }
 
@@ -9055,15 +9801,29 @@ impl App {
             return;
         }
         // A drawing read already off the interface's thread (#2849).
-        let opened_read = match self.opened_read.take() {
-            Some((p, read)) if p == path && ext == "tdraw" => Some(read),
+        let opened_read: Option<crate::opening::OpenRead> = match self.opened_read.take() {
+            Some((p, read)) if p == path && matches!(ext.as_str(), "tdraw" | "cdr" | "cmx") => {
+                Some(read)
+            }
             _ => None,
         };
         // A large drawing is read off the interface's thread, with a
         // window that shows how far it got (#2849); the open ends when
-        // it is read ([`App::poll_opening`]).
-        if ext == "tdraw" && opened_read.is_none() {
-            if let Some(size) = crate::opening::wants_background(&path) {
+        // it is read ([`App::poll_opening`]). A `.cdr` or `.cmx` always:
+        // 76 000 objects in a 5 MB file froze the window just the same
+        // as a large picture did.
+        // A damaged `.cdr` opened anyway is read here, where the flag that
+        // says so is set (#4332).
+        if matches!(ext.as_str(), "tdraw" | "cdr" | "cmx")
+            && opened_read.is_none()
+            && !(ext == "cdr" && self.open_damaged_anyway)
+        {
+            let from = if ext == "tdraw" {
+                crate::opening::BACKGROUND_FROM
+            } else {
+                0
+            };
+            if let Some(size) = crate::opening::wants_background_from(&path, from) {
                 if let Some(old) = self.opening.take() {
                     old.cancel();
                 }
@@ -9100,6 +9860,7 @@ impl App {
         }
         // Objects of a `.cdr` file left out because they could not be read.
         let mut unread = 0usize;
+        let mut damaged: Option<String> = None;
         let mut shrunk = Vec::new();
         // A PDF opened as pictures, at this resolution (#2570).
         let mut pictures: Option<f64> = None;
@@ -9274,12 +10035,12 @@ impl App {
                     (doc, format!("HPGL: {n} stroke(s)"))
                 })
         } else if crate::spreadsheet_import::is_spreadsheet(&ext) {
-            crate::spreadsheet_import::read_rows(&path).map(|rows| {
+            crate::spreadsheet_import::read_sheet(&path).map(|(rows, source)| {
                 let title = path
                     .file_stem()
                     .map(|s| s.to_string_lossy().to_string())
                     .unwrap_or_else(App::untitled_name);
-                let doc = crate::spreadsheet_import::document(&title, &rows);
+                let doc = crate::spreadsheet_import::document_from(&title, &rows, source);
                 let n = rows.len();
                 (doc, format!("{n} row(s)"))
             })
@@ -9412,6 +10173,10 @@ impl App {
                     });
                 }
                 doc2.set_ids(ids);
+                // An RGB drawing opens as an RGB document, as the command
+                // line's does, so a .cdr saved from it keeps its RGB
+                // colours (#4096).
+                tracedraw_io::pdf_import::open_in_colour_mode(&mut doc2);
                 // The paragraph frames the file's text continues in are
                 // linked (#2323).
                 let links = {
@@ -9463,8 +10228,30 @@ impl App {
                     (o.doc, msg)
                 })
         } else if ext == "cmx" {
-            Self::open_cdr(&path)
-                .map(|(doc, report)| {
+            match opened_read {
+                Some(Ok(crate::opening::OpenedFile::Cdr(mut doc, report))) => {
+                    for w in &report.warnings {
+                        log::warn!("cmx: {w}");
+                    }
+                    unread = report.skipped_objects;
+                    // Text that continues in other frames flows on into them (#4104).
+                    crate::textflow::link_and_flow_marked_frames(&mut doc);
+                    let msg = crate::i18n::trf(
+                        "status.opened_pages",
+                        &[
+                            ("format", "CMX"),
+                            ("pages", &report.pages.to_string()),
+                            ("objects", &report.shapes.to_string()),
+                        ],
+                    );
+                    Ok((doc, msg))
+                }
+                Some(Ok(crate::opening::OpenedFile::Damaged { message, .. })) => Err(message),
+                Some(Ok(crate::opening::OpenedFile::Tdraw(..))) => {
+                    Err("the opened file is not a CMX file".into())
+                }
+                Some(Err(e)) => Err(e),
+                None => Self::open_cdr(&path).map(|(doc, report)| {
                     for w in &report.warnings {
                         log::warn!("cmx: {w}");
                     }
@@ -9480,46 +10267,52 @@ impl App {
                             ],
                         ),
                     )
-                })
-                .map_err(|e| e.to_string())
+                }),
+            }
         } else if ext == "cdr" {
-            Self::open_cdr(&path)
-                .map(|(doc, report)| {
-                    let ver = report.version.map(|v| v.name()).unwrap_or_default();
-                    for w in &report.warnings {
-                        log::warn!("cdr: {w}");
-                    }
-                    unread = report.skipped_objects;
-                    cdr_version = report.version.map(|v| writable_cdr_version(v.0));
-                    opened_version = report.version.map(|v| v.0);
-                    let mut msg = crate::i18n::trf(
-                        "status.opened_cdr",
-                        &[
-                            ("version", &ver.to_string()),
-                            ("pages", &report.pages.to_string()),
-                            ("objects", &report.shapes.to_string()),
-                            ("skipped", &report.skipped_objects.to_string()),
-                        ],
-                    );
-                    // An older version than TraceDraw saves: say which
-                    // version Save will write.
-                    if let (Some(v), Some(w)) = (report.version, cdr_version) {
-                        if v.0 != w {
-                            msg.push(' ');
-                            msg.push_str(&crate::i18n::trf(
-                                "status.cdr_saves_as",
-                                &[("version", &w.to_string())],
-                            ));
-                        }
-                    }
-                    (doc, msg)
-                })
-                .map_err(|e| e.to_string())
-        } else if let Some(read) = opened_read {
-            read.map(|(d, known)| {
-                tdraw_version = Some(known);
-                (d, crate::i18n::tr("status.opened"))
+            let anyway = std::mem::take(&mut self.open_damaged_anyway);
+            let read = match opened_read {
+                Some(Ok(crate::opening::OpenedFile::Cdr(mut doc, report))) => {
+                    // Text that continues in other frames flows on into them (#4104).
+                    crate::textflow::link_and_flow_marked_frames(&mut doc);
+                    Ok((doc, *report))
+                }
+                // Refused as damaged on the worker: why, for the window
+                // that offers to open it anyway (#4332).
+                Some(Ok(crate::opening::OpenedFile::Damaged { message, why })) => {
+                    Err((message, Some(why)))
+                }
+                Some(Ok(crate::opening::OpenedFile::Tdraw(..))) => {
+                    Err(("the opened file is not a .cdr file".into(), None))
+                }
+                Some(Err(e)) => Err((e, None)),
+                None => Self::open_cdr_with(&path, anyway),
+            };
+            read.map_err(|(e, why)| {
+                damaged = why;
+                e
             })
+            .map(|(doc, report)| {
+                Self::cdr_opened(
+                    doc,
+                    report,
+                    anyway,
+                    &mut unread,
+                    &mut cdr_version,
+                    &mut opened_version,
+                )
+            })
+        } else if let Some(read) = opened_read {
+            match read {
+                Ok(crate::opening::OpenedFile::Tdraw(d, known)) => {
+                    tdraw_version = Some(known);
+                    Ok((d, crate::i18n::tr("status.opened")))
+                }
+                Ok(crate::opening::OpenedFile::Cdr(..) | crate::opening::OpenedFile::Damaged { .. }) => {
+                    Err("the opened file is not a drawing of TraceDraw's own".into())
+                }
+                Err(e) => Err(e),
+            }
         } else {
             crate::files::read(&path)
                 .and_then(|bytes| tracedraw_core::document::tdraw_text(&bytes))
@@ -9615,7 +10408,12 @@ impl App {
                 self.status = crate::i18n::trf(
                     "status.could_not_open",
                     &[("p", &path.display().to_string()), ("e", &e.to_string())],
-                )
+                );
+                // A damaged file: said in a window, which offers to open
+                // it anyway, not only in a line of the status bar (#4332).
+                if let Some(reason) = damaged {
+                    self.dialog = crate::ui::dialogs::Dialog::DamagedFile { path, reason };
+                }
             }
         }
     }
@@ -10450,7 +11248,10 @@ impl App {
                 .reduce(|a, b| a.union(b))
         };
         let mut cmds = Vec::new();
-        if let (Some(c), Some(f)) = (bounds(self, &contents), bounds(self, &[frame])) {
+        // A clip frame inside another is measured where it shows (#4227).
+        let frame_box = bounds(self, &[frame])
+            .or_else(|| self.doc().shape_on_page(frame).map(|s| s.bounds()));
+        if let (Some(c), Some(f)) = (bounds(self, &contents), frame_box) {
             let center = match self.settings.clip_frame.auto_center {
                 AutoCenter::Always => true,
                 AutoCenter::Never => false,
@@ -11151,20 +11952,96 @@ impl App {
         }
     }
 
+    /// Free physical RAM in bytes; 0 when the OS will not say.
+    fn free_ram() -> u64 {
+        crate::opening::free_ram()
+    }
+
+    /// The document and the status line an opened `.cdr` leaves, from
+    /// what the reader reported.
+    fn cdr_opened(
+        doc: tracedraw_core::Document,
+        report: tracedraw_cdr::ParseReport,
+        anyway: bool,
+        unread: &mut usize,
+        cdr_version: &mut Option<u16>,
+        opened_version: &mut Option<u16>,
+    ) -> (tracedraw_core::Document, String) {
+        let ver = report.version.map(|v| v.name()).unwrap_or_default();
+        for w in &report.warnings {
+            log::warn!("cdr: {w}");
+        }
+        *unread = report.skipped_objects;
+        *cdr_version = report.version.map(|v| writable_cdr_version(v.0));
+        *opened_version = report.version.map(|v| v.0);
+        let mut msg = crate::i18n::trf(
+            "status.opened_cdr",
+            &[
+                ("version", &ver.to_string()),
+                ("pages", &report.pages.to_string()),
+                ("objects", &report.shapes.to_string()),
+                ("skipped", &report.skipped_objects.to_string()),
+            ],
+        );
+        // Opened anyway though damaged: said (#4332).
+        if anyway {
+            msg.push(' ');
+            msg.push_str(&crate::i18n::tr("status.opened_damaged"));
+        }
+        // An older version than TraceDraw saves: say which version Save
+        // will write.
+        if let (Some(v), Some(w)) = (report.version, *cdr_version) {
+            if v.0 != w {
+                msg.push(' ');
+                msg.push_str(&crate::i18n::trf(
+                    "status.cdr_saves_as",
+                    &[("version", &w.to_string())],
+                ));
+            }
+        }
+        (doc, msg)
+    }
+
     /// Read a `.cdr` file through the file layer (uploads in a browser).
     pub(crate) fn open_cdr(
         path: &std::path::Path,
     ) -> std::result::Result<(tracedraw_core::Document, tracedraw_cdr::ParseReport), String> {
-        let bytes = crate::files::read(path).map_err(|e| e.to_string())?;
+        Self::open_cdr_with(path, false).map_err(|(e, _)| e)
+    }
+
+    /// [`App::open_cdr`], reading damaged streams as far as they go when
+    /// `anyway` (#4332). An error comes with why the file is damaged when
+    /// that is why it was refused.
+    pub(crate) fn open_cdr_with(
+        path: &std::path::Path,
+        anyway: bool,
+    ) -> std::result::Result<
+        (tracedraw_core::Document, tracedraw_cdr::ParseReport),
+        (String, Option<String>),
+    > {
+        tracedraw_cdr::set_open_ram(Self::free_ram());
+        let bytes = crate::files::read(path).map_err(|e| (e.to_string(), None))?;
         let title = path
             .file_stem()
             .and_then(|s| s.to_str())
             .unwrap_or("Untitled")
             .to_string();
-        let (mut doc, report) =
-            tracedraw_cdr::open_bytes(&bytes, &title).map_err(|e| e.to_string())?;
+        let read = if anyway {
+            tracedraw_cdr::open_bytes_damaged(&bytes, &title)
+        } else {
+            tracedraw_cdr::open_bytes(&bytes, &title)
+        };
+        let (mut doc, report) = read.map_err(|e| {
+            let why = match &e {
+                tracedraw_cdr::Error::Damaged(why) => Some(why.clone()),
+                _ => None,
+            };
+            (e.to_string(), why)
+        })?;
         // Clones saved by TraceDraw follow their masters again (#2879).
         crate::object_clone::rebase_clone_links(&mut doc);
+        // Text that continues in other frames flows on into them (#4104).
+        crate::textflow::link_and_flow_marked_frames(&mut doc);
         Ok((doc, report))
     }
 
@@ -11963,25 +12840,62 @@ impl App {
         {
             if let Some(id) = id {
                 self.multipage_activate(id);
+                // A page gone to that is not on screen comes into view
+                // at the same zoom (#4241): before, the view stayed and
+                // the page gone to could be out of sight.
+                if self.multipage && self.page == id && !self.page_on_screen() {
+                    self.centre_page_at_zoom();
+                }
             }
             return;
         }
         let Some(new) = id else {
             return;
         };
-        // The zoom stays: the page is shown as it was left, else at the
-        // same zoom, centred in the window; it was fitted to the window
-        // each time (#3434).
+        // The zoom stays: the page is shown where it was left, else
+        // centred in the window, always at the zoom in use; it was
+        // fitted to the window each time (#3434), and each page came
+        // back at the zoom it was left at, so the zoom kept changing
+        // from page to page (#4241).
+        let restricted = new != self.page && self.prepare_range_page_change(idx);
         if new != self.page {
             self.page_views.insert(self.page, self.view);
         }
+        let left = self.page_rect();
         self.page = new;
         self.selection.clear();
         self.selected_layers.clear();
-        match self.page_views.get(&new) {
-            Some(v) => self.view = *v,
+        if restricted {
+            self.sync_layer_ranges(None);
+        }
+        if self.settings.same_view_on_every_page {
+            // The same part of the page at the same zoom: the page's top
+            // left corner where the last page's was, so a page of another
+            // size shows the same corner.
+            let r = self.page_rect();
+            let z = self.view.zoom;
+            self.view.origin.x += (left.x0 - r.x0) as f32 * z;
+            self.view.origin.y -= (left.y1 - r.y1) as f32 * z;
+            return;
+        }
+        match self.page_views.get(&new).copied() {
+            Some(v) if v.zoom == self.view.zoom => self.view = v,
+            Some(v) => {
+                let c = self.canvas_rect.center();
+                let mid = v.to_page(c);
+                let z = self.view.zoom;
+                self.view.origin = egui::pos2(c.x - mid.x as f32 * z, c.y + mid.y as f32 * z);
+            }
             None => self.centre_page_at_zoom(),
         }
+    }
+
+    /// Whether the current page shows in the window at all.
+    pub(crate) fn page_on_screen(&self) -> bool {
+        let r = self.page_rect();
+        let a = self.view.to_screen(tracedraw_core::geometry::Point::new(r.x0, r.y0));
+        let b = self.view.to_screen(tracedraw_core::geometry::Point::new(r.x1, r.y1));
+        egui::Rect::from_two_pos(a, b).intersects(self.canvas_rect)
     }
 
     /// Show the current page in the middle of the window at the zoom it
@@ -12356,6 +13270,7 @@ pub(crate) fn cdr_previews(doc: &tracedraw_core::Document) -> tracedraw_cdr::wri
         fonts: cdr_font_faces(doc),
         embed_fonts: false,
         shadows: cdr_shadow_pictures(doc),
+        painted_bitmaps: tracedraw_io::bitmap_fill_pictures(doc),
         // Paragraph text goes out as lines: the other program hung on
         // TraceDraw's paragraph frames (#1698).
         paragraph_frames: false,
@@ -12419,6 +13334,17 @@ pub fn three_point_box(tool: Tool, len: f64, height: f64) -> Rect {
         Rect::new(0.0, -height.abs(), len, height.abs())
     } else {
         Rect::new(0.0, height.min(0.0), len, height.max(0.0))
+    }
+}
+
+/// The height (see [`three_point_box`]) of the 3-Point Ellipse that is
+/// the circle with the base of length `len` as its diameter, on the side
+/// of `height` (#4086: Ctrl at the third point).
+pub fn circle_on_base_height(len: f64, height: f64) -> f64 {
+    if height < 0.0 {
+        -len / 2.0
+    } else {
+        len / 2.0
     }
 }
 
@@ -13512,6 +14438,144 @@ mod tests {
         assert_eq!(side.docker_below(DockerPlace::RightInner), None);
     }
 
+    /// #4372: a column split in two holds a group of tabs in each part:
+    /// a click on a lower tab shows it below, the upper docker staying;
+    /// the groups come back with the workspace, and a tab moves from one
+    /// group to the other.
+    #[test]
+    fn a_split_column_keeps_a_group_of_tabs_in_each_part() {
+        let mut app = App::headless();
+        for t in [
+            DockerTab::Properties,
+            DockerTab::Objects,
+            DockerTab::Hints,
+            DockerTab::Undo,
+        ] {
+            app.open_docker(t);
+        }
+        app.set_docker_column(DockerPlace::Right, true, Some(DockerTab::Objects));
+        app.stack_docker(DockerTab::Hints, DockerPlace::Right);
+        app.stack_docker(DockerTab::Undo, DockerPlace::Right);
+        let place = DockerPlace::Right;
+        assert_eq!(app.docker_lower_group(place), [DockerTab::Hints, DockerTab::Undo]);
+        assert_eq!(app.docker_below(place), Some(DockerTab::Undo));
+        assert_eq!(app.docker_tab, DockerTab::Objects);
+        assert!(!app.docker_shown(DockerTab::Hints));
+        // The strip: the upper tabs, then the lower group.
+        let (tabs, _, _) = app.docker_column(place);
+        let order = crate::ui::dockers::strip_order(tabs, app.docker_lower_group(place));
+        assert_eq!(&order[order.len() - 2..], [DockerTab::Hints, DockerTab::Undo]);
+        // A lower tab clicked: shown below, the upper one stays.
+        crate::ui::dockers::click_tab(&mut app, place, DockerTab::Hints);
+        assert_eq!(app.docker_below(place), Some(DockerTab::Hints));
+        assert_eq!(app.docker_tab, DockerTab::Objects);
+        assert!(app.docker_shown(DockerTab::Hints) && app.docker_shown(DockerTab::Objects));
+        // An upper tab clicked: the lower part keeps its docker.
+        crate::ui::dockers::click_tab(&mut app, place, DockerTab::Properties);
+        assert_eq!(app.docker_tab, DockerTab::Properties);
+        assert_eq!(app.docker_below(place), Some(DockerTab::Hints));
+        // Opened by its shortcut, a lower docker shows below.
+        app.open_docker(DockerTab::Undo);
+        assert_eq!(app.docker_below(place), Some(DockerTab::Undo));
+        assert_eq!(app.docker_tab, DockerTab::Properties);
+        // Saved and read back.
+        let setup = app.docker_setup();
+        let mut next = App::headless();
+        next.set_docker_setup(&setup);
+        assert_eq!(next.docker_lower_group(place), [DockerTab::Hints, DockerTab::Undo]);
+        assert_eq!(next.docker_below(place), Some(DockerTab::Undo));
+        // Dropped among the upper tabs: it leaves the lower group.
+        app.insert_docker_upper(DockerTab::Undo, place, Some(DockerTab::Properties));
+        assert_eq!(app.docker_lower_group(place), [DockerTab::Hints]);
+        assert_eq!(app.docker_below(place), Some(DockerTab::Hints));
+        let (tabs, _, _) = app.docker_column(place);
+        let at = |t| tabs.iter().position(|x| *x == t);
+        assert!(at(DockerTab::Undo) < at(DockerTab::Properties));
+        // Dropped into the lower group at its start.
+        app.stack_docker_at(DockerTab::Objects, place, 0);
+        assert_eq!(app.docker_lower_group(place), [DockerTab::Objects, DockerTab::Hints]);
+        // Show Below unticked for one tab: only that one leaves.
+        app.unstack_tab(place, DockerTab::Hints);
+        assert_eq!(app.docker_lower_group(place), [DockerTab::Objects]);
+        assert_eq!(app.docker_below(place), Some(DockerTab::Objects));
+        // Its last tab closed: the column shows one docker again.
+        app.close_docker(DockerTab::Objects);
+        assert!(app.docker_lower_group(place).is_empty());
+        assert_eq!(app.docker_below(place), None);
+    }
+
+    /// #3953: a locked docker stays in front of its column; a docker
+    /// opened after it goes under it, and with the one under it locked
+    /// too, to the side's second column. Clicking another tab of the
+    /// column stacks it the same way, and the lock is kept with the
+    /// workspace. Unlocked, a new docker takes the front as before.
+    #[test]
+    fn a_locked_docker_keeps_its_place_when_another_opens() {
+        let mut app = App::headless();
+        app.set_docker_setup(&crate::settings::DockerSetup {
+            open: vec!["docker.properties".into(), "docker.hints".into()],
+            front: "docker.properties".into(),
+            ..Default::default()
+        });
+        app.show_dockers = true;
+        app.open_docker(DockerTab::Objects);
+        assert_eq!(app.docker_tab, DockerTab::Objects, "unlocked: replaced");
+        app.open_docker(DockerTab::Properties);
+        app.set_docker_locked(DockerTab::Properties, true);
+        app.open_docker(DockerTab::Undo);
+        assert_eq!(app.docker_tab, DockerTab::Properties, "locked stays");
+        assert_eq!(app.docker_below(DockerPlace::Right), Some(DockerTab::Undo));
+        assert!(app.docker_shown(DockerTab::Undo));
+        // Another one replaces the unlocked lower docker.
+        app.open_docker(DockerTab::Objects);
+        assert_eq!(app.docker_tab, DockerTab::Properties);
+        assert_eq!(app.docker_below(DockerPlace::Right), Some(DockerTab::Objects));
+        // A tab of the column clicked: it goes under too.
+        crate::ui::dockers::click_tab(&mut app, DockerPlace::Right, DockerTab::Hints);
+        assert_eq!(app.docker_tab, DockerTab::Properties);
+        assert_eq!(app.docker_below(DockerPlace::Right), Some(DockerTab::Hints));
+        // Brought to the front the old way, through docker_tab.
+        app.docker_tab = DockerTab::Objects;
+        app.reconcile_dockers();
+        assert_eq!(app.docker_tab, DockerTab::Properties);
+        assert_eq!(app.docker_below(DockerPlace::Right), Some(DockerTab::Objects));
+        // Both locked: the next one opens in a new column beside.
+        app.set_docker_locked(DockerTab::Objects, true);
+        app.open_docker(DockerTab::Color);
+        assert_eq!(app.docker_tab, DockerTab::Properties);
+        assert_eq!(app.docker_below(DockerPlace::Right), Some(DockerTab::Objects));
+        assert_eq!(app.docker_place(DockerTab::Color), Some(DockerPlace::RightInner));
+        assert!(app.docker_shown(DockerTab::Color));
+        // Kept with the workspace.
+        let setup = app.docker_setup();
+        assert_eq!(setup.locked, ["docker.properties", "docker.objects"]);
+        let mut other = App::headless();
+        other.set_docker_setup(&setup);
+        assert!(other.docker_locked(DockerTab::Properties) && other.docker_locked(DockerTab::Objects));
+        assert!(!other.docker_locked(DockerTab::Color));
+    }
+
+    /// #4254: a docker ticked in a column's three-dot list goes under a
+    /// locked docker there, never in its place.
+    #[test]
+    fn a_locked_docker_stays_when_one_opens_from_the_list() {
+        let mut app = App::headless();
+        app.set_docker_setup(&crate::settings::DockerSetup {
+            open: vec!["docker.properties".into()],
+            front: "docker.properties".into(),
+            ..Default::default()
+        });
+        app.show_dockers = true;
+        app.set_docker_locked(DockerTab::Properties, true);
+        crate::ui::dockers::open_from_list(&mut app, DockerTab::Undo, DockerPlace::Right);
+        assert_eq!(app.docker_tab, DockerTab::Properties);
+        assert_eq!(app.docker_below(DockerPlace::Right), Some(DockerTab::Undo));
+        // Unlocked: it takes the front as before.
+        app.set_docker_locked(DockerTab::Properties, false);
+        crate::ui::dockers::open_from_list(&mut app, DockerTab::Objects, DockerPlace::Right);
+        assert_eq!(app.docker_tab, DockerTab::Objects);
+    }
+
     #[test]
     fn a_closed_docker_stays_closed_the_next_time() {
         let mut app = App::headless();
@@ -13793,6 +14857,8 @@ mod tests {
         use crate::ui::bars::{move_bar, Bar, Dock};
         assert_eq!(app.settings.bars.dock(Bar::Palette), Dock::Bottom);
         move_bar(&mut app, Bar::Palette, Dock::Right, None);
+        // The Multipage View stays on for the drawings opened next (#3724).
+        app.set_multipage(true);
         app.sync_settings();
         let json = serde_json::to_string(&app.settings).expect("json");
         let saved: crate::settings::Settings = serde_json::from_str(&json).expect("read back");
@@ -13805,6 +14871,7 @@ mod tests {
         assert!(next.eraser_square);
         assert!(next.show_grid && !next.show_page_border);
         assert_eq!(next.view_mode, ViewMode::Wireframe);
+        assert!(next.multipage);
         assert!(next.snap.dynamic_guides && next.snap.off);
         assert_eq!(next.settings.snap.dynamic.angles, vec![30.0, 60.0]);
         assert!(next.settings.snap.align.each_object);
@@ -15026,5 +16093,24 @@ mod closed_format_tests {
             assert_eq!(shapes, count(&app));
         }
         let _ = std::fs::remove_dir_all(&dir);
+    }
+}
+
+/// Whether a start of `version` follows an update from `last` (the
+/// version of the start before): never on the first start of all.
+pub(crate) fn whats_new_after(last: &str, version: &str) -> bool {
+    !last.is_empty() && crate::updates::is_newer(version, last)
+}
+
+#[cfg(test)]
+mod whats_new_tests {
+    /// What's New opens on the first start of a newer version only: not
+    /// on the very first start, nor again on the same version (#4325).
+    #[test]
+    fn whats_new_follows_an_update_only() {
+        assert!(super::whats_new_after("0.52.0", "0.52.1"));
+        assert!(!super::whats_new_after("0.52.1", "0.52.1"));
+        assert!(!super::whats_new_after("", "0.52.1"));
+        assert!(!super::whats_new_after("0.53.0", "0.52.1"));
     }
 }

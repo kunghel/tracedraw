@@ -42,6 +42,8 @@ sha2 = "0.10"
 base64 = "0.22"
 qrcode = { version = "0.14", default-features = false }
 rqrr = "0.11"
+datamatrix = "0.3"
+qrcode-generator = { version = "6.1", default-features = false, features = ["rmqr"] }
 csv = "1"
 eframe.workspace = true
 egui.workspace = true
@@ -79,6 +81,10 @@ jiff = "0.2"
 # docs/behavior/android.md).
 [target.'cfg(not(target_os = "android"))'.dependencies]
 rfd.workspace = true
+
+# Nonblocking, bounded printer-list output on CUPS desktops.
+[target.'cfg(all(unix, not(any(target_arch = "wasm32", target_os = "android"))))'.dependencies]
+libc = "0.2"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # The window drawn with wgpu (Direct3D 12, Vulkan or Metal): the graphics
@@ -128,7 +134,7 @@ winit = { version = "0.30", default-features = false }
 # system drag sends no pointer moves (#1142).
 [target.'cfg(windows)'.dependencies]
 # The spell checker of Windows (COM, #1405).
-windows-sys = { version = "0.52", features = ["Win32_Foundation", "Win32_UI_WindowsAndMessaging", "Win32_System_Com", "Win32_UI_Input_KeyboardAndMouse", "Win32_System_Registry"] }
+windows-sys = { version = "0.52", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_UI_WindowsAndMessaging", "Win32_System_Com", "Win32_UI_Input_KeyboardAndMouse", "Win32_System_Registry", "Win32_System_LibraryLoader"] }
 # The window's message hook: characters input methods send that the
 # windowing layer drops (#1151). The same winit eframe uses.
 winit = { version = "0.30", default-features = false }

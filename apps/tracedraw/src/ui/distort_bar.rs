@@ -4,6 +4,7 @@
 //! Distortion, Clear Distortion, Convert to Curves; Apply for selected
 //! objects without a distortion.
 
+use crate::ui::btn_icons::IconUi;
 use crate::app::App;
 use crate::distort_tool::{DistortMode, MAX_TURNS};
 use crate::i18n::tr;
@@ -32,7 +33,7 @@ pub fn distort_bar(app: &mut App, ui: &mut Ui) {
     let shown = app.distort.mode;
     for m in DistortMode::ALL {
         if ui
-            .selectable_label(shown == m, tr(m.key()))
+            .iselectable(shown == m, m.key())
             .rich_tip(crate::ui::tips::keyed(m.key()))
             .clicked()
             && m != shown
@@ -102,7 +103,7 @@ pub fn distort_bar(app: &mut App, ui: &mut Ui) {
                 (&mut s.local, "distort.local", "distort.local_tip"),
             ] {
                 if ui
-                    .selectable_label(*flag, tr(key))
+                    .iselectable(*flag, key)
                     .rich_tip(tr(tip))
                     .clicked()
                 {
@@ -117,7 +118,7 @@ pub fn distort_bar(app: &mut App, ui: &mut Ui) {
                 (false, "distort.counterclockwise"),
             ] {
                 if ui
-                    .selectable_label(s.clockwise == cw, tr(key))
+                    .iselectable(s.clockwise == cw, key)
                     .rich_tip(crate::ui::tips::keyed(key))
                     .clicked()
                     && s.clockwise != cw
@@ -151,19 +152,19 @@ pub fn distort_bar(app: &mut App, ui: &mut Ui) {
     sep(ui);
     let distorted = app.selected_distortion().is_some();
     if ui
-        .add_enabled(distorted, egui::Button::new(tr("distort.center")))
+        .add_enabled(distorted, crate::ui::btn_icons::Ib::new("distort.center"))
         .clicked()
     {
         app.center_distortion();
     }
     if ui
-        .add_enabled(distorted, egui::Button::new(tr("distort.clear")))
+        .add_enabled(distorted, crate::ui::btn_icons::Ib::new("distort.clear"))
         .clicked()
     {
         app.clear_distortion();
     }
     if ui
-        .add_enabled(distorted, egui::Button::new(tr("distort.convert")))
+        .add_enabled(distorted, crate::ui::btn_icons::Ib::new("distort.convert"))
         .clicked()
     {
         app.bake_distortion();
@@ -177,7 +178,7 @@ pub fn distort_bar(app: &mut App, ui: &mut Ui) {
     });
     if undistorted
         && ui
-            .button(tr("docker.apply"))
+            .ibutton("docker.apply")
             .rich_tip(tr("distort.apply_tip"))
             .clicked()
     {

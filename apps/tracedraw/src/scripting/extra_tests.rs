@@ -441,3 +441,45 @@ fn scripts_and_macros_set_a_dimensions_label_size() {
     assert_eq!(out, vec!["24"]);
     assert_eq!(dimensions(&app)[0].style.text_size, 24.0);
 }
+
+#[test]
+fn scripts_keep_name_value_pairs_with_the_drawing() {
+    // #4137: ActiveDocument.Data, kept in the drawing and undone as one step.
+    let mut app = App::headless();
+    let out = js(
+        &mut app,
+        "const d = ActiveDocument.Data;
+         d.Set('calibration', '1.02');
+         d.Item('preset').Value = 'cards';
+         d.Set('preset', 'labels');
+         print(d.Count, d.Get('calibration'), d.Item(2).Value, d.Has('none'), d.Get('none') === '');",
+    );
+    assert_eq!(out, vec!["2 1.02 labels false true"]);
+    assert_eq!(
+        app.doc().data,
+        vec![
+            ("calibration".to_string(), "1.02".to_string()),
+            ("preset".to_string(), "labels".to_string())
+        ]
+    );
+    let out = js(
+        &mut app,
+        "ActiveDocument.Properties.Remove('calibration');
+         print([...ActiveDocument.Data].map(i => i.Name + '=' + i.Value).join(','));",
+    );
+    assert_eq!(out, vec!["preset=labels"]);
+    // The drawing's file keeps them.
+    let json = serde_json::to_string(app.doc()).unwrap();
+    let back: tracedraw_core::Document = serde_json::from_str(&json).unwrap();
+    assert_eq!(back.data, app.doc().data);
+    app.undo();
+    assert_eq!(app.doc().data.len(), 2);
+    // Macros see the same pairs.
+    let out = run_vgcore(
+        &mut app,
+        "print(ActiveDocument.Data.Get('preset'), ActiveDocument.Properties.Count)",
+        "Macro",
+    )
+    .unwrap();
+    assert_eq!(out, vec!["labels 2"]);
+}

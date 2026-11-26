@@ -83,7 +83,9 @@ fn hidden_layer_flags_ignore_missing_malformed_and_unrelated_records() {
     }
     let doc = sample("guides.cdr");
     let guides = named(&doc.pages[0].layers, "Guides");
-    assert!(!guides.visible);
+    // A guides layer holding artwork shows it, as the file does, and does
+    // not print (#4331).
+    assert!(guides.visible);
     assert!(!guides.printable);
 }
 

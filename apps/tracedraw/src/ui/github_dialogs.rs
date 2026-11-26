@@ -143,7 +143,7 @@ pub fn history_dialog(app: &mut App, ctx: &Context, close: &mut bool) {
                                     if ui
                                         .add_enabled(
                                             !app.github.busy(),
-                                            egui::Button::new(tr("github.open_version")),
+                                            crate::ui::btn_icons::Ib::new("github.open_version"),
                                         )
                                         .rich_tip_always(crate::ui::tips::keyed(
                                             "github.open_version",

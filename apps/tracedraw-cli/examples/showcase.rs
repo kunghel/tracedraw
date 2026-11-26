@@ -12,6 +12,11 @@
 //! - `brushes.tdraw`: a landscape painted with the painterly brushes.
 //! - `room.tdraw`: a room in one-point perspective (floor tiles, wall
 //!   panels and ceiling lights laid onto the planes of the default grid).
+//! - `builder.tdraw`: the overlapping outlines of a weather icon (sun,
+//!   cloud, rain), for the Shape Builder.
+//! - `stickers.tdraw`: a sheet of stickers, for TraceCut.
+//! - `generators.tdraw`: an empty page with a title, for the Shape
+//!   Generator.
 //!
 //! Everything is drawn here from scratch; the fonts are open fonts (Inter
 //! and Lora) and fall back to the system's when missing.
@@ -72,6 +77,18 @@ impl Build {
         let layer = self.layer;
         if let Ok(l) = self.doc.layer_mut(layer) {
             l.shapes.push(s);
+        }
+    }
+
+    /// Put the last `n` shapes of the current layer in a group.
+    fn group_last(&mut self, n: usize, name: &str) {
+        let layer = self.layer;
+        let id = self.doc.ids_mut().shape();
+        if let Ok(l) = self.doc.layer_mut(layer) {
+            let children = l.shapes.split_off(l.shapes.len().saturating_sub(n));
+            let mut g = Shape::new(id, ShapeKind::Group { children });
+            g.name = Some(name.into());
+            l.shapes.push(g);
         }
     }
 
@@ -1283,6 +1300,98 @@ fn room(dir: &Path) {
     b.save(dir, "room.tdraw");
 }
 
+/// The overlapping outlines of a weather icon, ready for the Shape
+/// Builder: a sun behind a cloud of three circles on a base, and drops.
+fn builder(dir: &Path) {
+    let mut b = Build::new("Shape Builder", Size::new(297.0, 210.0));
+    b.layer("Icon");
+    let ink = hex("#2B3045");
+    let line = |b: &mut Build, kind: ShapeKind, name: &str| {
+        let mut s = b.shape(kind);
+        s.stroke = Some(Stroke::new(ink, 0.8));
+        b.add(s, name);
+    };
+    line(&mut b, ellipse(176.0, 132.0, 34.0, 34.0), "Sun");
+    line(&mut b, ellipse(112.0, 104.0, 30.0, 30.0), "Cloud left");
+    line(&mut b, ellipse(150.0, 118.0, 38.0, 38.0), "Cloud top");
+    line(&mut b, ellipse(192.0, 98.0, 26.0, 26.0), "Cloud right");
+    line(&mut b, rect(92.0, 72.0, 214.0, 98.0, 13.0), "Cloud base");
+    for (i, x) in [118.0, 150.0, 182.0].iter().enumerate() {
+        line(
+            &mut b,
+            polygon(&[(*x, 64.0), (x - 7.0, 48.0), (x + 7.0, 48.0)]),
+            &format!("Drop {} tip", i + 1),
+        );
+        line(&mut b, ellipse(*x, 46.0, 7.0, 7.0), &format!("Drop {}", i + 1));
+    }
+    b.save(dir, "builder.tdraw");
+}
+
+/// A sheet of stickers for TraceCut: a badge, a star, a heart and a
+/// rounded label, each in its own colours.
+fn stickers(dir: &Path) {
+    let mut b = Build::new("Stickers", Size::new(297.0, 210.0));
+    b.layer("Stickers");
+    // Badge: a sunburst ring with a word.
+    let mut ring = b.shape(star(70.0, 140.0, 40.0, 18, 0.18));
+    ring.fill = fountain(FountainKind::Radial, 0.0, &[(0.0, "#FFD166"), (1.0, "#F4A100")]);
+    b.add(ring, "Badge ring");
+    let mut disc = b.shape(ellipse(70.0, 140.0, 29.0, 29.0));
+    disc.fill = Fill::Solid(hex("#1F2437"));
+    b.add(disc, "Badge disc");
+    let mut w = span("FRESH", SANS, 15.0);
+    w.bold = true;
+    let mut t = b.shape(artistic(vec![w], 70.0, 135.0, TextAlign::Center));
+    t.fill = Fill::Solid(hex("#FFD166"));
+    b.add(t, "Badge word");
+    b.group_last(3, "Badge");
+    // Star.
+    let mut st = b.shape(star(160.0, 142.0, 38.0, 5, 0.55));
+    st.fill = fountain(FountainKind::Linear, 90.0, &[(0.0, "#7B5CFF"), (1.0, "#C77DFF")]);
+    b.add(st, "Star");
+    let mut dot = b.shape(ellipse(160.0, 140.0, 9.0, 9.0));
+    dot.fill = Fill::Solid(hex("#FFFFFF"));
+    b.add(dot, "Star dot");
+    b.group_last(2, "Star sticker");
+    // Heart: two circles and a point, as one curve.
+    let mut p = BezPath::new();
+    p.move_to((240.0, 104.0));
+    p.curve_to((214.0, 124.0), (206.0, 140.0), (214.0, 154.0));
+    p.curve_to((222.0, 167.0), (238.0, 166.0), (240.0, 152.0));
+    p.curve_to((242.0, 166.0), (258.0, 167.0), (266.0, 154.0));
+    p.curve_to((274.0, 140.0), (266.0, 124.0), (240.0, 104.0));
+    p.close_path();
+    let mut h = b.shape(ShapeKind::Path { path: p, closed: true });
+    h.fill = fountain(FountainKind::Linear, 90.0, &[(0.0, "#E0475B"), (1.0, "#FF8FA3")]);
+    b.add(h, "Heart");
+    // Rounded label with two lines.
+    let mut lab = b.shape(rect(40.0, 30.0, 257.0, 78.0, 14.0));
+    lab.fill = fountain(FountainKind::Linear, 0.0, &[(0.0, "#06D6A0"), (1.0, "#118AB2")]);
+    b.add(lab, "Label");
+    let mut l1 = span("Hand made with care", SANS, 20.0);
+    l1.bold = true;
+    let mut t = b.shape(artistic(vec![l1], 148.5, 56.0, TextAlign::Center));
+    t.fill = Fill::Solid(hex("#FFFFFF"));
+    b.add(t, "Label title");
+    let mut l2 = span("small batch \u{00B7} since 2026", SERIF, 11.0);
+    l2.italic = true;
+    let mut t = b.shape(artistic(vec![l2], 148.5, 40.0, TextAlign::Center));
+    t.fill = Fill::Solid(hex("#E8FFF8"));
+    b.add(t, "Label line");
+    b.group_last(3, "Label sticker");
+    b.save(dir, "stickers.tdraw");
+}
+
+/// An empty page with a title, for the Shape Generator to fill.
+fn generators(dir: &Path) {
+    let mut b = Build::new("Patterns", Size::new(297.0, 210.0));
+    b.layer("Patterns");
+    let mut bg = b.shape(rect(0.0, 0.0, 297.0, 210.0, 0.0));
+    bg.fill = Fill::Solid(hex("#FBFAF7"));
+    b.add(bg, "Paper");
+    b.save(dir, "generators.tdraw");
+}
+
 fn main() {
     tracedraw_text::install();
     let dir = PathBuf::from(std::env::args().nth(1).unwrap_or_else(|| "showcase".into()));
@@ -1298,4 +1407,7 @@ fn main() {
     leaf(&dir);
     brushes(&dir);
     room(&dir);
+    builder(&dir);
+    stickers(&dir);
+    generators(&dir);
 }

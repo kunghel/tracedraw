@@ -144,6 +144,22 @@ it, with nothing changed in the drawing, Undo puts the selection back as
 it was and Redo makes it again. Once the drawing changes, Undo goes back
 to the drawing's own steps.
 
+### Select Same {#select-same}
+
+Open [[docker.select_same]] from the Edit menu or Window > Panels.
+Select one or more reference objects, then check the
+properties to compare: fill, outline color, outline width, object type,
+dimensions, font family or font size. All checked properties must match the
+same reference object. With multiple references, matching any one is enough.
+
+Fill and object type are checked by default. Dimensions compare page-space
+width and height with a default tolerance of 0.5 mm, with equal, larger and
+smaller comparisons. Search the current page or only the current layer, and
+optionally exclude groups and clip frames. Hidden or locked objects stay out.
+
+Press [[same.apply]] to replace the selection with the matches. Undo restores
+the previous selection; selecting matches does not change or dirty the drawing.
+
 ## The Freehand Pick tool {#freehand-pick}
 
 The [[tool.freehand_pick]] tool works like the [[tool.pick]] tool, but a drag

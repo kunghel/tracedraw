@@ -11,6 +11,7 @@
 //! - [`nest`]: placing objects on sheets and rolls with the least waste.
 //! - [`calc`]: cutting time and cost.
 //! - [`cnc`]: toolpaths and G-code for CNC routers and mills.
+//! - [`laser`]: G-code for lasers, framing, material tests and clean DXF.
 //! - [`eyelets`]: eyelet (grommet) marks along an edge.
 //! - [`boxes`]: the panels of a box with finger joints.
 //! - [`tray`]: the flat pattern of a tray folded from composite panel.
@@ -24,6 +25,7 @@ pub mod cnc;
 pub mod crossings;
 pub mod cut;
 pub mod eyelets;
+pub mod laser;
 pub mod measure;
 pub mod nest;
 pub mod tray;
@@ -70,6 +72,16 @@ fn collect(shape: &Shape, parent: Affine, depth: usize, out: &mut Vec<BezPath>) 
             }
         }
         ShapeKind::ClipFrame { frame, .. } => collect(frame, t, depth + 1, out),
+        // A picture with see-through pixels: round what shows (#3245).
+        ShapeKind::Bitmap { rect, png, .. } => {
+            let p = match tracedraw_core::alpha_outline::opaque_outline(png, *rect) {
+                Some(a) => t * a,
+                None => t * shape.local_path(),
+            };
+            if !p.elements().is_empty() {
+                out.push(p);
+            }
+        }
         _ => {
             let p = t * shape.local_path();
             if !p.elements().is_empty() {

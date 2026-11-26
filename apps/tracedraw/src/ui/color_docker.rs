@@ -9,6 +9,7 @@
 //! Spot Colors, Add to Color Styles Palette). When the selection changes,
 //! the new color becomes the selected object's fill.
 
+use crate::ui::btn_icons::IconUi;
 use crate::app::App;
 use crate::i18n::{tr, trf};
 use crate::theme::Tokens;
@@ -895,7 +896,7 @@ fn options_menu(app: &mut App, ui: &mut Ui) {
         app.color_docker.lock = lock;
     }
     ui.separator();
-    if ui.button(tr("docker.reset_panel")).clicked() {
+    if ui.ibutton("docker.reset_panel").clicked() {
         reset(app);
         ui.close();
     }
@@ -1147,7 +1148,7 @@ fn actions(app: &mut App, ui: &mut Ui, c: Color) {
     });
     if let Some(ec) = app.eyedropper_color {
         if ui
-            .add(egui::Button::new(trf("docker.use_sampled", &[("c", &ec.to_hex())])).small())
+            .add(crate::ui::btn_icons::Ib::with_text("docker.use_sampled", trf("docker.use_sampled", &[("c", &ec.to_hex())])).small())
             .rich_tip(crate::ui::tips::keyed("docker.use_sampled_tip"))
             .clicked()
         {
@@ -1159,21 +1160,21 @@ fn actions(app: &mut App, ui: &mut Ui, c: Color) {
 /// The items of the "..." menu; `has`: something is selected.
 fn more_actions(app: &mut App, ui: &mut Ui, c: Color, has: bool) {
     if ui
-        .add_enabled(has, egui::Button::new(tr("docker.no_fill")))
+        .add_enabled(has, crate::ui::btn_icons::Ib::new("docker.no_fill"))
         .clicked()
     {
         app.apply_fill(Fill::None);
         ui.close();
     }
     if ui
-        .add_enabled(has, egui::Button::new(tr("docker.no_outline_action")))
+        .add_enabled(has, crate::ui::btn_icons::Ib::new("docker.no_outline_action"))
         .clicked()
     {
         app.apply_outline_color(None);
         ui.close();
     }
     if ui
-        .add_enabled(has, egui::Button::new(tr("docker.swap_colors")))
+        .add_enabled(has, crate::ui::btn_icons::Ib::new("docker.swap_colors"))
         .clicked()
     {
         app.swap_colors();
@@ -1182,7 +1183,7 @@ fn more_actions(app: &mut App, ui: &mut Ui, c: Color, has: bool) {
     // Two objects exchange their fills; each outline takes its own
     // object's fill colour (#3770).
     if ui
-        .add_enabled(app.selection.len() == 2, egui::Button::new(tr("docker.swap_fills")))
+        .add_enabled(app.selection.len() == 2, crate::ui::btn_icons::Ib::new("docker.swap_fills"))
         .rich_tip(crate::ui::tips::keyed("docker.swap_fills"))
         .clicked()
     {
@@ -1190,7 +1191,7 @@ fn more_actions(app: &mut App, ui: &mut Ui, c: Color, has: bool) {
         ui.close();
     }
     if ui
-        .add_enabled(has, egui::Button::new(tr("docker.outline_from_fill")))
+        .add_enabled(has, crate::ui::btn_icons::Ib::new("docker.outline_from_fill"))
         .rich_tip(crate::ui::tips::keyed("docker.outline_from_fill"))
         .clicked()
     {
@@ -1198,17 +1199,17 @@ fn more_actions(app: &mut App, ui: &mut Ui, c: Color, has: bool) {
         ui.close();
     }
     ui.separator();
-    if ui.button(tr("docker.add_to_document_palette")).clicked() {
+    if ui.ibutton("docker.add_to_document_palette").clicked() {
         app.add_to_document_palette(c);
         ui.close();
     }
-    if ui.button(tr("docker.add_to_spot_colors")).clicked() {
+    if ui.ibutton("docker.add_to_spot_colors").clicked() {
         let name = spot_ink_name(app, c);
         add_ink(app, name, c);
         app.color_docker.new_ink.clear();
         ui.close();
     }
-    if ui.button(tr("docker.add_to_color_styles")).clicked() {
+    if ui.ibutton("docker.add_to_color_styles").clicked() {
         crate::ui::dockers2::add_color_style(app, c);
         ui.close();
     }
@@ -1303,14 +1304,14 @@ fn spot_inks(app: &mut App, ui: &mut Ui, current: Color, with_tint: bool) {
                 }
             }
             if ui
-                .add_enabled(has, egui::Button::new(tr("docker.fill")).small())
+                .add_enabled(has, crate::ui::btn_icons::Ib::new("docker.fill").small())
                 .rich_tip(crate::ui::tips::pair("docker.fill", "docker.ink_fill_desc"))
                 .clicked()
             {
                 app.apply_fill(Fill::Solid(ink.color(tint)));
             }
             if ui
-                .add_enabled(has, egui::Button::new(tr("docker.outline")).small())
+                .add_enabled(has, crate::ui::btn_icons::Ib::new("docker.outline").small())
                 .rich_tip(crate::ui::tips::pair(
                     "docker.outline",
                     "docker.ink_outline_desc",
@@ -1346,7 +1347,7 @@ fn spot_inks(app: &mut App, ui: &mut Ui, current: Color, with_tint: bool) {
         if ui
             .add_enabled(
                 !name.is_empty() && !taken,
-                egui::Button::new(tr("docker.new_ink")),
+                crate::ui::btn_icons::Ib::new("docker.new_ink"),
             )
             .rich_tip(tr("docker.new_ink_tip"))
             .clicked()
@@ -1440,7 +1441,7 @@ fn palette_view(app: &mut App, ui: &mut Ui) -> Option<Color> {
     let mut chosen = app.color_docker.palette.min(app.palettes.len() - 1);
     crate::ui::keynav::ComboBox::from_id_salt("col_palette")
         .selected_text(tr(app.palettes[chosen].name_key()))
-        .width(ui.available_width().min(240.0))
+        .width(crate::ui::docker_form::fit_w(ui, 240.0))
         .show_ui(ui, |ui| {
             for (i, pal) in app.palettes.iter().enumerate() {
                 if ui

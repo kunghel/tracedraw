@@ -60,9 +60,12 @@ pub(crate) fn apply(style: &str, version: u16, shape: &mut Shape, report: &mut P
             }
         }
         let parsed = (|| {
-            let visible = match flag("Visible")? {
-                "0" => false,
-                "1" => true,
+            // An effect that was never hidden has no visibility key
+            // (#1238: 464 of the 1 000 blurred objects of one drawing,
+            // blurred in its reference picture).
+            let visible = match flag("Visible") {
+                Some("0") => false,
+                Some("1") | None => true,
                 _ => return None,
             };
             // One filter layout has been observed. Do not guess at the
@@ -149,6 +152,20 @@ mod tests {
             assert!(shape.raster_fx.is_some());
             assert!(report.warnings.is_empty());
         }
+    }
+
+    #[test]
+    fn effect_without_a_visibility_key_is_visible() {
+        // #1238: an effect that was never hidden has no visibility key.
+        let mut s = stack();
+        s.as_object_mut().unwrap().remove("GaussianBlurEffect_Visible");
+        let (shape, report) = read(s, 27);
+        let fx = shape.raster_fx.expect("blur read");
+        assert!(fx.effects[0].visible);
+        assert!(report.warnings.is_empty());
+        let mut s = stack();
+        s["GaussianBlurEffect_Visible"] = "0".into();
+        assert!(!read(s, 27).0.raster_fx.expect("blur read").effects[0].visible);
     }
 
     #[test]

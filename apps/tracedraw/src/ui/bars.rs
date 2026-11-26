@@ -934,6 +934,10 @@ pub fn background(app: &mut App, ui: &mut Ui, bar: Bar) -> egui::Response {
 /// outside and close it at once (#994).
 fn menu_anywhere(app: &mut App, ui: &mut Ui, bar: Bar, rect: Rect, opened: bool) {
     let id = anywhere_menu_id(bar);
+    if !crate::ui::context_menus::has_visible_items(&app.settings.context_menus, "toolbar") {
+        egui::Popup::close_id(ui.ctx(), id);
+        return;
+    }
     let hit = !opened
         && ui.input(|i| {
             i.pointer.secondary_clicked()
@@ -947,7 +951,11 @@ fn menu_anywhere(app: &mut App, ui: &mut Ui, bar: Bar, rect: Rect, opened: bool)
         .open_memory(hit.then_some(egui::SetOpenCommand::Bool(true)))
         .at_pointer_fixed()
         .style(crate::ui::menus::menu_popup_style)
-        .show(|ui| crate::ui::menus::body(ui, |ui| menu_body(app, ui, bar)));
+        .show(|ui| {
+            let _scope =
+                crate::ui::context_menus::Scope::new(&app.settings.context_menus, "toolbar");
+            crate::ui::menus::body(ui, |ui| menu_body(app, ui, bar))
+        });
 }
 
 /// The popup of [`menu_anywhere`] for `bar`.
@@ -967,20 +975,25 @@ pub fn bar_menu(app: &mut App, resp: &egui::Response, bar: Bar) {
 /// opens Options > Customization > Commands at that command, on its
 /// Shortcut Keys tab, as a right click on a menu row does (#3326, #2504).
 pub fn bar_menu_of(app: &mut App, resp: &egui::Response, bar: Bar, id: Option<&str>) {
-    egui::Popup::context_menu(resp)
-        .id(resp.id.with("bar_menu"))
-        .style(crate::ui::menus::menu_popup_style)
-        .show(|ui| {
-            crate::ui::menus::body(ui, |ui| {
-                if let Some(id) = id {
-                    if crate::ui::menus::item(ui, "bars.button_properties", "", true) {
-                        crate::ui::menus::open_command_properties(app, id);
-                    }
-                    crate::ui::menus::sep(ui);
+    crate::ui::context_menus::filter_popup(
+        egui::Popup::context_menu(resp)
+            .id(resp.id.with("bar_menu"))
+            .style(crate::ui::menus::menu_popup_style),
+        &app.settings.context_menus,
+        "toolbar",
+    )
+    .show(|ui| {
+        let _scope = crate::ui::context_menus::Scope::new(&app.settings.context_menus, "toolbar");
+        crate::ui::menus::body(ui, |ui| {
+            if let Some(id) = id {
+                if crate::ui::menus::item(ui, "bars.button_properties", "", true) {
+                    crate::ui::menus::open_command_properties(app, id);
                 }
-                menu_body(app, ui, bar)
-            })
-        });
+                crate::ui::menus::sep(ui);
+            }
+            menu_body(app, ui, bar)
+        })
+    });
 }
 
 /// The entries of a button size list in the bars' menu > Customize:
@@ -999,30 +1012,45 @@ pub fn size_menu(with_default: bool) -> Vec<(&'static str, Option<crate::setting
 }
 
 fn menu_body(app: &mut App, ui: &mut Ui, bar: Bar) {
-    use crate::ui::menus::{radio_if, sep};
+    use crate::ui::menus::radio_if;
     ui.set_min_width(200.0);
     let current = app.settings.bars.dock(bar);
     let free = !app.settings.bars.locked;
-    if bar == Bar::Palette {
-        // Every place: each side at the window's edge or beside the
-        // drawing, at the left and the right between the two docker
-        // columns (while the side has two), and floating.
-        let now = app.settings.bars.palette_place();
-        for (place, key) in PALETTE_PLACES {
-            let open = place.1 != PaletteSpot::Between || two_columns(app, place.0);
-            if radio_if(ui, key, "", now == place, free && open) {
-                move_palette(app, place.0, place.1, None);
-            }
-        }
+    let now = app.settings.bars.palette_place();
+    let places: Vec<_> = if bar == Bar::Palette {
+        PALETTE_PLACES.iter().map(|(_, key)| *key).collect()
     } else {
-        for d in bar.docks() {
-            if radio_if(ui, d.key(), "", current == *d, free) {
-                move_bar(app, bar, *d, None);
+        bar.docks().iter().map(|dock| dock.key()).collect()
+    };
+    use crate::ui::menus::TOOLBAR_KEYS;
+    let mut keys = places.clone();
+    keys.extend_from_slice(TOOLBAR_KEYS);
+    keys.extend_from_slice(&["bars.customize", "bars.lock", "bars.reset"]);
+    for key in crate::ui::context_menu_filter::ordered_keys(&keys)
+        .iter()
+        .copied()
+    {
+        if places.contains(&key) {
+            if bar == Bar::Palette {
+                if let Some((place, _)) = PALETTE_PLACES
+                    .iter()
+                    .copied()
+                    .find(|(_, candidate)| *candidate == key)
+                {
+                    let open = place.1 != PaletteSpot::Between || two_columns(app, place.0);
+                    if radio_if(ui, key, "", now == place, free && open) {
+                        move_palette(app, place.0, place.1, None);
+                    }
+                }
+            } else if let Some(dock) = bar.docks().iter().copied().find(|dock| dock.key() == key) {
+                if radio_if(ui, key, "", current == dock, free) {
+                    move_bar(app, bar, dock, None);
+                }
             }
+        } else {
+            common_item(app, ui, key);
         }
     }
-    sep(ui);
-    common_body(app, ui);
 }
 
 /// The menu bar's context menu (discussion #3918): the part of the bars'
@@ -1035,69 +1063,187 @@ pub fn menu_bar_menu(app: &mut App, resp: &egui::Response) {
         .show(|ui| {
             crate::ui::menus::body(ui, |ui| {
                 ui.set_min_width(200.0);
-                common_body(app, ui)
+                let mut keys = crate::ui::menus::TOOLBAR_KEYS.to_vec();
+                keys.extend_from_slice(&["bars.customize", "bars.lock", "bars.reset"]);
+                for key in keys {
+                    common_item(app, ui, key);
+                }
             })
         });
 }
 
-/// The entries of the bars' menu shared by every bar and the menu bar.
-fn common_body(app: &mut App, ui: &mut Ui) {
-    use crate::ui::menus::{check, item, radio, sep, sub};
-    // Every bar, as Window > Toolbars lists them.
-    crate::ui::menus::toolbars_list(app, ui);
-    sep(ui);
-    sub(ui, "bars.customize", |ui| {
-        sub(ui, "bars.default_button_size", |ui| {
-            for (key, size) in size_menu(false) {
-                let Some(size) = size else { continue };
-                if radio(ui, key, "", app.settings.button_size == size) {
-                    app.settings.button_size = size;
-                }
-            }
-        });
-        sub(ui, "bars.toolbox_toolbar", |ui| {
-            if item(ui, "bars.toolbox_reset", "", true) {
-                crate::ui::toolbox::reset_toolbox(app);
-            }
+/// An entry of the bars' menu shared by every bar and the menu bar: a bar
+/// to show or hide, Customize, Lock Toolbars or Reset Toolbars.
+fn common_item(app: &mut App, ui: &mut Ui, key: &str) {
+    use crate::ui::menus::{check, item, sep, TOOLBAR_KEYS};
+    if TOOLBAR_KEYS.contains(&key) {
+        if key == "menu.window.toolbar_menu_bar" {
             sep(ui);
-            sub(ui, "bars.button_size", |ui| {
-                let own = app.settings.toolbox_button_size;
-                for (key, size) in size_menu(true) {
-                    if radio(ui, key, "", own == size) {
-                        app.settings.toolbox_button_size = size;
+        }
+        crate::ui::menus::toolbar_item(app, ui, key);
+        return;
+    }
+    match key {
+        "bars.customize" => {
+            sep(ui);
+            customize_menu(app, ui);
+        }
+        "bars.lock" => {
+            sep(ui);
+            let locked = app.settings.bars.locked;
+            if check(ui, key, "", locked) {
+                app.settings.bars.locked = !locked;
+            }
+        }
+        "bars.reset" if item(ui, key, "", true) => {
+            reset(app);
+        }
+        _ => {}
+    }
+}
+
+fn customize_menu(app: &mut App, ui: &mut Ui) {
+    use crate::ui::menus::{item, radio, sep, sub};
+    sub(ui, "bars.customize", |ui| {
+        for menu_key in crate::ui::context_menu_filter::ordered_keys(&[
+            "bars.default_button_size",
+            "bars.toolbox_toolbar",
+            "menu.window.workspace",
+            "bars.customize_options",
+        ])
+        .iter()
+        .copied()
+        {
+            match menu_key {
+                "bars.default_button_size" => {
+                    sub(ui, "bars.default_button_size", |ui| {
+                        let sizes = size_menu(false);
+                        let keys: Vec<_> = sizes.iter().map(|(key, _)| *key).collect();
+                        for key in crate::ui::context_menu_filter::ordered_keys(&keys)
+                            .iter()
+                            .copied()
+                        {
+                            let Some((_, size)) = sizes
+                                .iter()
+                                .copied()
+                                .find(|(candidate, _)| *candidate == key)
+                            else {
+                                continue;
+                            };
+                            let Some(size) = size else { continue };
+                            if radio(ui, key, "", app.settings.button_size == size) {
+                                app.settings.button_size = size;
+                            }
+                        }
+                    });
+                }
+                "bars.toolbox_toolbar" => {
+                    sub(ui, "bars.toolbox_toolbar", |ui| {
+                        for key in crate::ui::context_menu_filter::ordered_keys(&[
+                            "bars.toolbox_reset",
+                            "bars.button_size",
+                            "bars.image_only",
+                            "bars.caption_only",
+                            "bars.caption_right",
+                        ])
+                        .iter()
+                        .copied()
+                        {
+                            match key {
+                                "bars.toolbox_reset" => {
+                                    if item(ui, "bars.toolbox_reset", "", true) {
+                                        crate::ui::toolbox::reset_toolbox(app);
+                                    }
+                                }
+                                "bars.button_size" => {
+                                    sep(ui);
+                                    sub(ui, "bars.button_size", |ui| {
+                                        let own = app.settings.toolbox_button_size;
+                                        let sizes = size_menu(true);
+                                        let keys: Vec<_> =
+                                            sizes.iter().map(|(key, _)| *key).collect();
+                                        for key in
+                                            crate::ui::context_menu_filter::ordered_keys(&keys)
+                                                .iter()
+                                                .copied()
+                                        {
+                                            let Some((_, size)) = sizes
+                                                .iter()
+                                                .copied()
+                                                .find(|(candidate, _)| *candidate == key)
+                                            else {
+                                                continue;
+                                            };
+                                            if radio(ui, key, "", own == size) {
+                                                app.settings.toolbox_button_size = size;
+                                            }
+                                        }
+                                    });
+                                }
+                                _ => {
+                                    if key == "bars.image_only" {
+                                        sep(ui);
+                                    }
+                                    if let Some(c) = crate::settings::Captions::ALL
+                                        .into_iter()
+                                        .find(|caption| caption.key() == key)
+                                    {
+                                        if radio(
+                                            ui,
+                                            c.key(),
+                                            "",
+                                            app.settings.toolbox_captions == c,
+                                        ) {
+                                            app.settings.toolbox_captions = c;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    });
+                }
+                "menu.window.workspace" => {
+                    sub(ui, "menu.window.workspace", |ui| {
+                        for menu_key in crate::ui::context_menu_filter::ordered_keys(&[
+                            "menu.window.workspace_export",
+                            "menu.window.workspace_import",
+                        ])
+                        .iter()
+                        .copied()
+                        {
+                            match menu_key {
+                                "menu.window.workspace_export" => {
+                                    if item(ui, "menu.window.workspace_export", "", true) {
+                                        app.export_workspace_dialog(
+                                            crate::workspace_file::WorkspaceParts::ALL,
+                                        );
+                                    }
+                                }
+                                "menu.window.workspace_import"
+                                    if item(ui, "menu.window.workspace_import", "", true) =>
+                                {
+                                    app.import_workspace_dialog(
+                                        crate::workspace_file::WorkspaceParts::ALL,
+                                        true,
+                                    );
+                                }
+                                _ => {}
+                            }
+                        }
+                    });
+                }
+                "bars.customize_options" => {
+                    sep(ui);
+                    // The Command Bars options: every bar, its lock, the toolbox.
+                    if item(ui, "bars.customize_options", "", true) {
+                        app.options_page = crate::ui::options::OptionsPage::CommandBars;
+                        app.dialog = crate::ui::dialogs::Dialog::Options;
                     }
                 }
-            });
-            sep(ui);
-            for c in crate::settings::Captions::ALL {
-                if radio(ui, c.key(), "", app.settings.toolbox_captions == c) {
-                    app.settings.toolbox_captions = c;
-                }
+                _ => {}
             }
-        });
-        sub(ui, "menu.window.workspace", |ui| {
-            if item(ui, "menu.window.workspace_export", "", true) {
-                app.export_workspace_dialog(crate::workspace_file::WorkspaceParts::ALL);
-            }
-            if item(ui, "menu.window.workspace_import", "", true) {
-                app.import_workspace_dialog(crate::workspace_file::WorkspaceParts::ALL, true);
-            }
-        });
-        sep(ui);
-        // The Command Bars options: every bar, its lock, the toolbox.
-        if item(ui, "bars.customize_options", "", true) {
-            app.options_page = crate::ui::options::OptionsPage::CommandBars;
-            app.dialog = crate::ui::dialogs::Dialog::Options;
         }
     });
-    sep(ui);
-    let locked = app.settings.bars.locked;
-    if check(ui, "bars.lock", "", locked) {
-        app.settings.bars.locked = !locked;
-    }
-    if item(ui, "bars.reset", "", true) {
-        reset(app);
-    }
 }
 
 /// Every bar back at its first place and shown; Lock Toolbars stays as it
@@ -3319,5 +3465,67 @@ mod tests {
         assert_eq!(Bar::Property.row_height_at(ButtonSize::Large), 63.0);
         assert_eq!(Bar::Standard.row_height_at(ButtonSize::ExtraLarge), 56.0);
         assert_eq!(Bar::Property.row_height_at(ButtonSize::ExtraLarge), 71.0);
+    }
+}
+
+#[cfg(test)]
+mod context_menu_settings_tests {
+    use super::*;
+
+    #[test]
+    fn context_menu_order_moves_toolbar_rows_across_original_groups() {
+        let ctx = crate::theme::ui_context();
+        let mut app = App::headless();
+        let first = ["bars.lock", "menu.window.toolbar_standard", "bars.top"];
+        let locked = app.settings.bars.locked;
+        app.settings.context_menus.set_order("toolbar", "", &first);
+        crate::ui::menus::ROWS.with(|rows| rows.borrow_mut().clear());
+        let mut out = ctx.run_ui(Default::default(), |ui| {
+            let _scope =
+                crate::ui::context_menus::Scope::new(&app.settings.context_menus, "toolbar");
+            menu_body(&mut app, ui, Bar::Standard);
+        });
+        out.textures_delta.clear();
+        let rows = crate::ui::menus::ROWS.with(|rows| rows.borrow().clone());
+        let keys: Vec<_> = rows.iter().map(|(key, _)| key.as_str()).collect();
+        assert_eq!(keys.get(..first.len()), Some(first.as_slice()));
+        assert!(rows
+            .windows(2)
+            .all(|pair| pair[0].1.top() <= pair[1].1.top()));
+        assert_eq!(keys.iter().filter(|key| **key == "bars.lock").count(), 1);
+        assert_eq!(app.settings.bars.locked, locked);
+    }
+
+    #[test]
+    fn hidden_toolbar_rows_leave_unscoped_menus_available() {
+        let ctx = crate::theme::ui_context();
+        let mut app = App::headless();
+        for key in ["bars.lock", "menu.window.toolbar_standard"] {
+            app.settings
+                .context_menus
+                .set_visible("toolbar", key, false);
+        }
+        let draw = |app: &mut App, scoped: bool| {
+            crate::ui::menus::ROWS.with(|rows| rows.borrow_mut().clear());
+            let mut out = ctx.run_ui(egui::RawInput::default(), |ui| {
+                let _scope = scoped.then(|| {
+                    crate::ui::context_menus::Scope::new(&app.settings.context_menus, "toolbar")
+                });
+                menu_body(app, ui, Bar::Standard);
+            });
+            out.textures_delta.clear();
+            crate::ui::menus::ROWS.with(|rows| rows.borrow().clone())
+        };
+        let hidden = draw(&mut app, true);
+        assert!(!hidden.iter().any(|(key, _)| key == "bars.lock"));
+        assert!(!hidden
+            .iter()
+            .any(|(key, _)| key == "menu.window.toolbar_standard"));
+        assert!(hidden.iter().any(|(key, _)| key == "bars.reset"));
+        let ordinary = draw(&mut app, false);
+        assert!(ordinary.iter().any(|(key, _)| key == "bars.lock"));
+        assert!(ordinary
+            .iter()
+            .any(|(key, _)| key == "menu.window.toolbar_standard"));
     }
 }

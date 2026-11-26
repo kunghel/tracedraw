@@ -4,6 +4,7 @@
 //! On the page: the drawing outside the area dimmed, the area's dashed
 //! edge and its eight handles.
 
+use crate::ui::btn_icons::IconUi;
 use crate::app::App;
 use crate::crop_tool::{handles, moved};
 use crate::i18n::tr;
@@ -92,10 +93,10 @@ pub fn crop_bar(app: &mut App, ui: &mut Ui) {
         }
     }
     sep(ui);
-    if ui.button(tr("crop.apply")).clicked() {
+    if ui.ibutton("crop.apply").clicked() {
         app.apply_crop();
     }
-    if ui.button(tr("crop.clear")).clicked() {
+    if ui.ibutton("crop.clear").clicked() {
         app.crop_area = None;
     }
     sep(ui);

@@ -98,7 +98,7 @@ damaged file gives no presets and is logged.
 ## Cut tools
 
 The Cut group lists, in this order: Plotter Output, CNC Toolpath,
-Weeding, Bridges, Cut Order, CutContour, Registration Marks, Find
+Laser Output, Weeding, Bridges, Cut Order, CutContour, Registration Marks, Find
 Duplicates and Find Crossings. A new window opens on Plotter Output.
 
 ### Plotter Output
@@ -200,6 +200,74 @@ toolpaths, the passes, the length milled and the time at the feed and
 plunge rates. OK saves a `.nc` file (also `.gcode`, `.ngc`, `.tap`)
 where you say; the drawing does not change.
 
+### Laser Output
+
+G-code for laser cutters and engravers run by GRBL or Marlin, from the
+selection. The geometry is `tracedraw_tracecut::laser`.
+
+- **Laser layers**: each drawn object (groups opened, a clip frame by
+  its frame, outlines as live effects leave them) goes to the layer of
+  its outline colour, `#RRGGBB`, the solid fill's when it has no
+  outline, black otherwise (**Layers by** Colour, at first), or to the
+  document layer it is on (**Layers by** Document layer). The window
+  lists the layers of the selection, each with its colour.
+- **Mode** per layer: **Cut** (at first: 100 %, 8 mm/s, air on),
+  **Score** (30 %, 40 mm/s), **Engrave** (40 %, 120 mm/s, interval
+  0.1 mm) and **Skip**; a new mode starts from its own values. **Power**
+  0 to 100 % of **full power (S)** (1000 for GRBL, 255 for Marlin, set
+  again when the controller changes), **speed** 0.1 to 2000 mm/s,
+  **passes** 1 to 100, **line interval** 0.02 to 10 mm, **air assist**
+  (`M8`/`M9`). The settings are kept per layer name in the tool's
+  settings and presets.
+- **Order**: Engrave layers, then Score, then Cut, each in the order its
+  objects are stacked. Cut and Score outlines (flattened within the
+  curve accuracy, 0.02 mm at first) are planned like Cut Order from where
+  the head is, inner ones first (**Cut inner outlines first**, on at
+  first); a layer with several passes runs all its outlines once per
+  pass.
+- **Engrave**: horizontal lines `interval` apart fill the closed
+  outlines even-odd (holes and counters stay clear), run both ways; each
+  line starts **overscan** (2 mm) before its first stretch and ends that
+  far after its last with `S0`, and the gaps inside a line are crossed
+  with `S0` at the same speed. A layer gets at most 100000 lines (the
+  interval doubles past it).
+- **Program**: comments, `G21`, `G90`, then GRBL `M4 S0` (**dynamic
+  power**, at first) or `M3 S0`, Marlin `M3 I S0` (inline power). Burns
+  are `G1 X Y S F` (S and F written when they change, F in mm/min);
+  moves are `G0 X Y` (GRBL's laser mode keeps the beam off) or Marlin
+  `G0 X Y S0`. The end: `M9` if air was on, `M5` (Marlin `M5 I`) and a
+  move back to X0 Y0. X0 Y0 is the bottom-left corner of what burns (at
+  first) or the ruler origin. Numbers have up to three decimals.
+- **Destination**: a `.gcode` file (also `.nc`, `.ngc`, `.gc`), a port
+  path or `host[:port]` on the network as for Plotter Output. With
+  **Wait for each line's ok** (on) the program goes a line at a time,
+  comments and blank lines left out, each waiting up to 120 s for an
+  answer starting `ok`; `error`, `ALARM` or `!!`, no answer or a closed
+  connection stops the send, sends `M5` and the status line names the
+  line. Off, the program goes in one piece.
+- **Frame**: `M5` (or `M3 S` at **frame power**, 0 % at first), `G0` to
+  the bottom-left corner of what burns and `G1` round its box at **frame
+  speed** (50 mm/s), then `M5`; sent or saved like the program.
+- **Material test**: a grid of **columns x rows** (5 x 5, up to 20 x 20)
+  squares of **square size** (8 mm) and **gap** (2 mm), power from the
+  first to the last column (20 to 100 %), speed from the top row to the
+  bottom one (20 to 100 mm/s), each square engraved (at first), scored or
+  cut; with **Score the values** the power is scored above each column
+  and the speed left of each row in seven-segment digits (at 30 %, 40
+  mm/s). X0 Y0 is the grid's bottom-left corner, labels included.
+- **Save DXF for laser**: an R12 ASCII DXF in millimetres of the layers
+  that run: one `POLYLINE` per outline (curves flattened, closed flag
+  set), an outline repeated (same points within 0.001 mm, any start,
+  either way round) kept once, a DXF layer per laser layer named after
+  it (letters, digits, `-`, `_`) in the nearest of the first DXF
+  colours. No hatches and no text.
+
+Apply shows the cuts in red, scored lines and some of the engraving
+lines as scored lines, and the moves with the beam off; the status line
+gives the layers, the length burnt, the job's size and about how long it
+takes (moves counted at 6000 mm/min). OK saves or sends the program; the
+drawing does not change.
+
 ### Weeding
 
 Extra cuts in the waste, added on OK as one group named Weeding of
@@ -243,6 +311,11 @@ as curves in one undo step ("Cut Order"); the status line gives the
 travel before and after.
 
 ### CutContour
+
+A picture with see-through pixels gets a new cut line round its opaque
+pixels (the outline the contour uses, see `contour.md`), not round its
+box; TraceCut reads pictures by that outline everywhere (#3245,
+`tracecut_cut::tests::a_picture_is_cut_round_its_opaque_pixels`).
 
 Marks the selected objects' outlines as cut lines for print and cut: OK
 gives them an outline in the spot colour named **CutContour** (added to

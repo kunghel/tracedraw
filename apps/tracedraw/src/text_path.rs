@@ -55,7 +55,7 @@ pub fn fit(
     }
     // The path turned and started as text sits on it (in page space,
     // where outside and top are seen), then in the text's local space.
-    let (page_path, closed) = crate::ops2::path_for_text_at(&curve.page_path(), at);
+    let (page_path, closed) = tracedraw_core::text_path::path_for_text_at(&curve.page_path(), at);
     let to_local = Affine::translate(-origin.to_vec2()) * transform.inverse();
     let path = to_local * page_path;
     let (align, offset) = crate::ops2::placement_on(&path, closed, align);
@@ -422,7 +422,7 @@ impl App {
         // highest (or lowest) point of the path.
         let far = 10.0 * b.height().max(b.width()).max(1.0);
         let at = Point::new(b.center().x, if bottom { b.y0 - far } else { b.y1 + far });
-        let (started, closed) = crate::ops2::path_for_text_at(&page, Some(at));
+        let (started, closed) = tracedraw_core::text_path::path_for_text_at(&page, Some(at));
         if !closed {
             return;
         }

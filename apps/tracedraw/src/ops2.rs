@@ -9,7 +9,8 @@ use tracedraw_core::{
     document::{Shape, ShapeKind},
     geometry::{Affine, BezPath, Point, Rect, Shape as _, Size},
     live::Effect,
-    Color, Command, Fill, ShapeId, Stroke, TextSpan,
+    text_path::path_for_text_at,
+    Color, Command, Fill, LeadingUnit, ShapeId, Stroke, TextSpan,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -70,6 +71,11 @@ pub struct StepRepeat {
     /// off the copies go along the other axis only.
     pub use_x: bool,
     pub use_y: bool,
+    /// Copies across and down at once (#4230): `copies` across and
+    /// `copies_down` down, a grid with the selection in its corner.
+    /// Needs both axes on.
+    pub grid: bool,
+    pub copies_down: u32,
     /// The copies go to the left (else right) and up (else down) of the
     /// selection; the distances typed are taken that way (#2572).
     pub left: bool,
@@ -101,6 +107,31 @@ pub struct StepRepeat {
     pub mark_offset: f64,
 }
 
+impl StepRepeat {
+    /// Whether the copies go across and down at once (#4230).
+    pub fn is_grid(&self) -> bool {
+        self.grid && self.use_x && self.use_y
+    }
+
+    /// How far each copy lies from the selection, `step` apart: one
+    /// after another, or with [`StepRepeat::is_grid`] a grid of
+    /// `copies` + 1 across and `copies_down` + 1 down, the selection the
+    /// first place of it, row by row.
+    pub fn offsets(&self, step: tracedraw_core::geometry::Vec2) -> Vec<tracedraw_core::geometry::Vec2> {
+        use tracedraw_core::geometry::Vec2;
+        let across = self.copies.clamp(1, 999);
+        if !self.is_grid() {
+            return (1..=across).map(|k| step * k as f64).collect();
+        }
+        let down = self.copies_down.clamp(1, 999);
+        (0..=down)
+            .flat_map(|j| (0..=across).map(move |i| (i, j)))
+            .filter(|&(i, j)| i > 0 || j > 0)
+            .map(|(i, j)| Vec2::new(step.x * i as f64, step.y * j as f64))
+            .collect()
+    }
+}
+
 impl Default for StepRepeat {
     fn default() -> Self {
         StepRepeat {
@@ -111,6 +142,8 @@ impl Default for StepRepeat {
             mode_y: 0,
             use_x: true,
             use_y: true,
+            grid: false,
+            copies_down: 1,
             left: false,
             up: false,
             fill: false,
@@ -436,7 +469,7 @@ impl App {
         let master = self
             .active_layer()
             .and_then(|l| self.doc().master.iter().find(|m| m.id == l))
-            .map(|m| (m.id, m.scope));
+            .map(|m| m.id);
         // All, odd or even pages with no master layer active: a master
         // layer of its own showing on those pages, in front, holding one
         // field that shows each page's number, as one undo step (#1709).
@@ -487,18 +520,21 @@ impl App {
             return;
         }
         let mut cmds = Vec::new();
-        if let Some((layer, scope)) = master {
+        if let Some(layer) = master {
+            let Ok(master_layer) = self.doc().layer(layer) else {
+                return;
+            };
             // The field lines up as on the page in view, or on the first
             // page the layer shows on when that is not one of them.
             let i = pages
                 .iter()
                 .position(|(_, p)| *p == active)
-                .filter(|i| scope.applies(*i) && self.page_numbers.field().numbers_in(*i, count))
+                .filter(|i| master_layer.applies_to(*i) && self.page_numbers.field().numbers_in(*i, count))
                 .or_else(|| {
                     let first = self.page_numbers.first_page.max(1) - 1;
                     (first..pages.len())
                         .chain(0..first)
-                        .find(|i| scope.applies(*i))
+                        .find(|i| master_layer.applies_to(*i))
                 })
                 .unwrap_or(0);
             let size = pages
@@ -686,6 +722,21 @@ impl App {
     /// Effects panel, which opens.
     pub fn merge_shapes(&mut self) {
         let sel = self.selected_shapes();
+        // A merged group with other objects: they join its merge, rather
+        // than a new merge holding the old one (#4348).
+        if sel.len() >= 2 {
+            if let Some(group) = sel.iter().find(|s| is_merge_group(s)).map(|s| s.id) {
+                let shapes: Vec<ShapeId> = sel
+                    .iter()
+                    .map(|s| s.id)
+                    .filter(|id| *id != group)
+                    .collect();
+                self.run(Command::PlaceInGroup { shapes, group });
+                self.select(vec![group]);
+                self.open_docker(crate::app::DockerTab::Effects);
+                return;
+            }
+        }
         let one_group = sel.len() == 1 && matches!(sel[0].kind, ShapeKind::Group { .. });
         if sel.len() >= 2 {
             self.group_selection();
@@ -719,6 +770,15 @@ impl App {
             true,
         );
         self.open_docker(crate::app::DockerTab::Effects);
+    }
+
+    /// The innermost merged group (Merge Shapes) holding `id`, if any.
+    pub fn merge_group_of(&self, id: ShapeId) -> Option<ShapeId> {
+        let doc = self.doc();
+        doc.ancestors(id)
+            .into_iter()
+            .rev()
+            .find(|g| doc.find_shape(*g).is_some_and(is_merge_group))
     }
 
     /// Add or replace a live effect on the selected objects.
@@ -1576,6 +1636,19 @@ impl App {
         let ShapeKind::ClipFrame { contents, .. } = &clip.kind else {
             return;
         };
+        // A clip frame among the contents of the one being edited: it is
+        // edited inside that one, which is edited again when it finishes
+        // (#4110: the outer one's editing was dropped, its contents left
+        // loose on the page). Not from a symbol's objects.
+        if let Some((edited, _)) = &self.clip_frame_edit {
+            if !self.editing_clip_contents() || *edited == clip.id || self.outside_clip_edit(clip.id) {
+                return;
+            }
+            if let Some((f, o)) = self.clip_frame_edit.take() {
+                let shell = self.clip_edit_shell.take();
+                self.clip_edit_outer.push((f, o, shell));
+            }
+        }
         let ids: Vec<ShapeId> = contents.iter().map(|c| c.id).collect();
         // What is on the page besides: everything else that comes along
         // while editing (the members of a content ungrouped, objects
@@ -1588,6 +1661,12 @@ impl App {
             .filter(|id| *id != clip.id)
             .collect();
         let before = self.engine.last_step_id();
+        // Its effects (an envelope over it all), shadow and opacity stay
+        // with the clip frame, not with the frame that comes out: kept
+        // aside and given back when the editing ends (#4070: the
+        // envelope was lost as soon as a content was clicked in the
+        // Objects docker).
+        self.clip_edit_shell = Some(clip.clone());
         self.run(Command::ExtractContents { clip: clip.id });
         self.mark_clip_edit_step(before, clip.id, &outside, true);
         self.clip_frame_edit = Some((clip.id, outside));
@@ -1667,6 +1746,12 @@ impl App {
             return;
         }
         if mark.begins != undone {
+            // Back into a clip frame inside the one being edited (#4110).
+            if mark.symbol.is_none() && self.editing_clip_contents() {
+                if let Some((f, o)) = self.clip_frame_edit.take().filter(|(f, _)| *f != mark.frame) {
+                    self.clip_edit_outer.push((f, o, None));
+                }
+            }
             self.clip_frame_edit = Some((mark.frame, mark.outside));
             self.symbol_edit = mark.symbol;
             let contents = self.clip_edit_contents();
@@ -1680,6 +1765,20 @@ impl App {
         } else {
             let prev = self.symbol_edit.take();
             self.clip_frame_edit = None;
+            // Out of a clip frame inside another: editing the one round it
+            // again (#4110).
+            if mark.symbol.is_none() && prev.is_none() {
+                if let Some((f, o, shell)) = self.clip_edit_outer.pop() {
+                    if self.doc().find_shape(f).is_some() {
+                        self.clip_frame_edit = Some((f, o));
+                        self.clip_edit_shell = shell;
+                        self.select(vec![mark.frame]);
+                        self.status = tr("status.editing_clip_frame");
+                        return;
+                    }
+                    self.clip_edit_outer.clear();
+                }
+            }
             if let Some(se) = mark.symbol.or(prev) {
                 self.restore_symbol_edit_view(&se);
             } else {
@@ -1757,13 +1856,43 @@ impl App {
     /// clip frame, or out of the one being edited.
     pub fn toggle_clip_frame_edit(&mut self) {
         if self.editing_clip_contents() {
-            self.finish_clip_frame_edit();
+            // A clip frame among the contents picked: into it (#4110).
+            let edited = self.clip_frame_edit.as_ref().map(|(f, _)| *f);
+            let inner = self.selected_shapes().iter().any(|s| {
+                matches!(s.kind, ShapeKind::ClipFrame { .. }) && Some(s.id) != edited
+            });
+            if inner {
+                self.edit_clip_frame();
+            } else {
+                self.finish_clip_frame_edit();
+            }
         } else if self.clip_frame_edit.is_none() {
             self.edit_clip_frame();
         }
     }
 
+    /// Finish editing the contents of the clip frame edited now; when it
+    /// is inside another one being edited, that one is edited again, the
+    /// finished clip frame selected among its contents (#4110).
     pub fn finish_clip_frame_edit(&mut self) {
+        let nested = self.editing_clip_contents() && !self.clip_edit_outer.is_empty();
+        self.finish_clip_frame_edit_level();
+        if !nested {
+            return;
+        }
+        let Some((frame, outside, shell)) = self.clip_edit_outer.pop() else {
+            return;
+        };
+        if self.doc().find_shape(frame).is_none() {
+            self.clip_edit_outer.clear();
+            return;
+        }
+        self.clip_frame_edit = Some((frame, outside));
+        self.clip_edit_shell = shell;
+        self.status = tr("status.editing_clip_frame");
+    }
+
+    fn finish_clip_frame_edit_level(&mut self) {
         let contents = self.clip_edit_contents();
         let Some((frame, outside)) = self.clip_frame_edit.take() else {
             return;
@@ -1798,8 +1927,51 @@ impl App {
         }
         let before = self.engine.last_step_id();
         self.place_inside(contents, frame);
+        if let Some(shell) = self.clip_edit_shell.take().filter(|s| s.id == frame) {
+            self.give_back_clip_look(&shell);
+        }
         self.mark_clip_edit_step(before, frame, &outside, false);
         self.select(vec![frame]);
+    }
+
+    /// The clip frame `frame`, just made again from its edited contents,
+    /// takes back the look `shell` (the clip frame before the editing)
+    /// had: effects, shadow, opacity, name and the rest, in the space of
+    /// its old transform so an envelope bends it as before. Part of the
+    /// step that put the contents back.
+    fn give_back_clip_look(&mut self, shell: &tracedraw_core::Shape) {
+        let has_look = !shell.effects.is_empty()
+            || shell.shadow.is_some()
+            || shell.opacity < 1.0
+            || shell.raster_fx.is_some();
+        if !has_look {
+            return;
+        }
+        let Some(now) = self.doc().find_shape(shell.id).cloned() else {
+            return;
+        };
+        let ShapeKind::ClipFrame { frame, contents } = now.kind else {
+            return;
+        };
+        // Frame and contents moved from the new clip frame's space into
+        // the old one's.
+        let m = shell.transform.inverse() * now.transform;
+        let mut frame = frame;
+        frame.transform_by(m);
+        let contents = contents
+            .into_iter()
+            .map(|mut c| {
+                c.transform_by(m);
+                c
+            })
+            .collect();
+        let mut back = shell.clone();
+        // A picture its bitmap effects made is made again from what it
+        // holds now (its source no longer matches).
+        back.kind = ShapeKind::ClipFrame { frame, contents };
+        let _ = self.engine.amend(&Command::ReplaceShapes {
+            replacements: vec![(shell.id, back)],
+        });
     }
 
     /// The contents of the clip frame being edited: the page's objects
@@ -1885,17 +2057,19 @@ impl App {
     }
 
     /// What the renderer draws in full while the rest fades: the object
-    /// in focus (focus mode), the frame and contents of a clip frame
-    /// edit, or a symbol's objects alone on a clean sheet (visibility 0
-    /// skips the page background and every other object, #981).
+    /// in focus (focus mode), the contents of a clip frame edit (the
+    /// frame fades with the rest), or a symbol's objects alone on a
+    /// clean sheet (visibility 0 skips the page background and every
+    /// other object, #981).
     pub fn render_focus(&self) -> Option<(Vec<ShapeId>, f32)> {
-        if let Some((frame, _)) = &self.clip_frame_edit {
+        if self.clip_frame_edit.is_some() {
             if self.symbol_edit_index().is_some() {
                 return Some((self.clip_edit_contents(), 0.0));
             }
-            let mut all = vec![*frame];
-            all.extend(self.clip_edit_contents());
-            return Some((all, self.focus_visibility()));
+            // The frame fades with everything else (at 0 % visibility
+            // only its dashed outline shows), so the contents show over
+            // it whole (#4375).
+            return Some((self.clip_edit_contents(), self.focus_visibility()));
         }
         self.focus_target()
             .map(|id| (vec![id], self.focus_visibility()))
@@ -1912,7 +2086,7 @@ impl App {
             .iter()
             .flat_map(|l| &l.shapes)
             .any(|s| matches!(s.kind, ShapeKind::ClipFrame { .. }));
-        if !frames {
+        if !frames && !self.drop_new_frame {
             return None;
         }
         let doc = self.doc();
@@ -1924,11 +2098,13 @@ impl App {
         };
         let hit = self.hit_test_where(p, moved)?;
         let top = doc.top_level_of(hit)?;
-        matches!(
-            doc.find_shape(top).map(|s| &s.kind),
-            Some(ShapeKind::ClipFrame { .. })
-        )
-        .then_some(top)
+        let s = doc.find_shape(top)?;
+        // With W held, any closed object on the page: it becomes a clip
+        // frame holding the selection, as a drop on its row in the
+        // Objects panel makes it (#4227).
+        let new_frame =
+            self.drop_new_frame && !s.locked && crate::draw_inside::is_closed_shape(s);
+        (matches!(s.kind, ShapeKind::ClipFrame { .. }) || new_frame).then_some(top)
     }
 
     /// `id` is a clip frame that holds nothing.
@@ -2983,6 +3159,7 @@ impl App {
         let Some(area) = self.convert_to_bitmap_area() else {
             return;
         };
+        let dpi = convert_dpi(area, dpi, o.mode);
         let Some(tmp) = self.selection_alone(area) else {
             return;
         };
@@ -3462,6 +3639,12 @@ impl App {
                     _ => Default::default(),
                 },
             };
+            // Editing a text puts the properties docker into its text
+            // mode, as the property panel does for the object being
+            // edited, with the character section open.
+            self.show_dockers = true;
+            self.docker_tab = crate::app::DockerTab::Properties;
+            self.settings.properties_closed.retain(|s| s != "character");
         }
     }
 
@@ -3610,10 +3793,29 @@ impl App {
             };
             let new_frame = match frame {
                 Some(_) => None,
-                None => Some(Size::new(
-                    local.width().max(10.0) + 2.0,
-                    local.height().max(5.0) + 2.0,
-                )),
+                None => {
+                    // The frame height must be at least the typographic line
+                    // height (including leading), not just the glyph bounding
+                    // box.  When the frame is shorter than the text flow the
+                    // layout marks the text as overflowed and disables
+                    // vertical alignment, even though a single line fits
+                    // visually.  Compute the line height for the first span.
+                    const MM_PER_PT: f64 = 25.4 / 72.0;
+                    let size_pt = spans.first().map(|s| s.size_pt).unwrap_or(12.0);
+                    let line_mm = match para.leading_unit {
+                        LeadingUnit::PercentCharHeight => {
+                            para.leading_pct / 100.0 * size_pt * 1.2 * MM_PER_PT
+                        }
+                        LeadingUnit::Points => para.leading_pct * MM_PER_PT,
+                        LeadingUnit::PercentPointSize => {
+                            para.leading_pct / 100.0 * size_pt * MM_PER_PT
+                        }
+                    };
+                    Some(Size::new(
+                        local.width().max(10.0) + 2.0,
+                        local.height().max(line_mm).max(5.0) + 2.0,
+                    ))
+                }
             };
             // A first guess from the box, then the first letter's place.
             let guess = match (frame, new_frame) {
@@ -4675,6 +4877,23 @@ impl App {
             }
             return;
         }
+        // A script that asks the user for a value runs on a thread of its
+        // own, which waits for the input box (#4139).
+        if !crate::files::WEB && crate::scripting::vba_run::asks_user(src) {
+            if self.macros.run.is_some() {
+                self.status = tr("macros.already_running");
+                return;
+            }
+            match crate::scripting::vba_run::start_script(self, src, None, None, "Scripts".into())
+            {
+                Ok(run) => {
+                    self.macros.run = Some(run);
+                    self.macros.applied = None;
+                }
+                Err(e) => self.scripts_output.push(format!("Error: {e}")),
+            }
+            return;
+        }
         let result = crate::scripting::run(self, src);
         match result {
             Ok(out) => {
@@ -5603,14 +5822,13 @@ impl App {
         let Some(step) = self.step_and_repeat_step() else {
             return;
         };
-        let (dx, dy) = (step.x, step.y);
-        let sr = self.step_repeat.clone();
+        let offsets = self.step_repeat.offsets(step);
         let Some(layer) = self.active_layer() else {
             return;
         };
         let mut cmds = Vec::new();
         let mut new_sel = Vec::new();
-        for k in 1..=sr.copies.max(1) {
+        for d in offsets {
             // Each copy and every object inside it (a group's or a
             // PowerClip's) take new ids, as Duplicate gives them: the
             // objects inside kept their originals' ids, so a drawing had
@@ -5619,7 +5837,7 @@ impl App {
             for s in &shapes {
                 let id = self.engine.new_shape_id();
                 let mut c = crate::app::reid_pub(s.clone(), id, &mut self.engine);
-                c.transform_by(Affine::translate((dx * k as f64, dy * k as f64)));
+                c.transform_by(Affine::translate(d));
                 new_sel.push(c.id);
                 round.push(c);
             }
@@ -5666,6 +5884,35 @@ fn ink_planes(
         }
     }
     Some(planes)
+}
+
+/// The most pixels Convert to Bitmap makes: a larger picture takes a
+/// lower resolution. A CMYK one is worked out from four more renders, one
+/// per ink, and takes fewer; a large sign at the resolution asked for ran
+/// out of memory and closed the program (#4308).
+const CONVERT_MAX_PIXELS: f64 = 120_000_000.0;
+const CONVERT_MAX_PIXELS_CMYK: f64 = 40_000_000.0;
+
+/// The resolution Convert to Bitmap renders `area` (mm) at for `dpi`
+/// asked in `mode`: `dpi`, or lower when the picture would pass the
+/// pixels the mode allows ([`CONVERT_MAX_PIXELS`]).
+fn convert_dpi(area: Rect, dpi: f64, mode: crate::bitmap_modes::ConvertMode) -> f64 {
+    let budget = if mode == crate::bitmap_modes::ConvertMode::Cmyk {
+        CONVERT_MAX_PIXELS_CMYK
+    } else {
+        CONVERT_MAX_PIXELS
+    };
+    let px = |mm: f64, d: f64| (mm * d / 25.4).ceil().max(1.0);
+    let pixels = px(area.width(), dpi) * px(area.height(), dpi);
+    if !pixels.is_finite() || pixels <= budget {
+        return dpi;
+    }
+    // A little under, so the rounding up of each side stays in.
+    let mut d = dpi * (budget / pixels).sqrt() * 0.999;
+    while d > 1e-3 && px(area.width(), d) * px(area.height(), d) > budget {
+        d *= 0.99;
+    }
+    d
 }
 
 /// Most different inks a CMYK bitmap's pixels are worked out from one by
@@ -5789,116 +6036,6 @@ fn tiny_skia_white(w: u32, h: u32) -> tiny_skia::Pixmap {
         .unwrap_or_else(|| tiny_skia::Pixmap::new(1, 1).expect("1x1 pixmap"));
     pm.fill(tiny_skia::Color::WHITE);
     pm
-}
-
-/// The path text is fitted to, in page space: its first subpath, and for a
-/// closed one turned to run clockwise (so the letters stand on its
-/// outside) and started at the point nearest to `at` (where the path was
-/// clicked), or at its highest point without one. Returns the path and
-/// whether it is closed.
-pub fn path_for_text_at(path: &BezPath, at: Option<Point>) -> (BezPath, bool) {
-    use kurbo::{ParamCurve, ParamCurveExtrema, ParamCurveNearest, PathSeg};
-    let mut first = BezPath::new();
-    let mut closed = false;
-    for el in path.elements() {
-        match el {
-            tracedraw_core::geometry::PathEl::MoveTo(_) if !first.elements().is_empty() => break,
-            tracedraw_core::geometry::PathEl::ClosePath => {
-                closed = true;
-                break;
-            }
-            e => first.push(*e),
-        }
-    }
-    let mut segs: Vec<PathSeg> = first.segments().collect();
-    if let (Some(a), Some(b)) = (segs.first(), segs.last()) {
-        if (a.start() - b.end()).hypot() < 1e-6 && segs.len() > 1 {
-            closed = true;
-        }
-    }
-    if !closed || segs.is_empty() {
-        return (first, false);
-    }
-    if let (Some(a), Some(b)) = (segs.first(), segs.last()) {
-        if (a.start() - b.end()).hypot() >= 1e-6 {
-            segs.push(PathSeg::Line(tracedraw_core::geometry::Line::new(
-                b.end(),
-                a.start(),
-            )));
-        }
-    }
-    // Shoelace over the flattened outline: positive runs anticlockwise
-    // (y up), whose left side, where letters stand, is the inside.
-    let mut area = 0.0;
-    let mut prev: Option<Point> = None;
-    let mut start: Option<Point> = None;
-    tracedraw_core::geometry::flatten(&first, 0.1, &mut |el| match el {
-        tracedraw_core::geometry::PathEl::MoveTo(p) => {
-            start = Some(p);
-            prev = Some(p);
-        }
-        tracedraw_core::geometry::PathEl::LineTo(p) => {
-            if let Some(q) = prev {
-                area += q.x * p.y - p.x * q.y;
-            }
-            prev = Some(p);
-        }
-        _ => {}
-    });
-    if let (Some(q), Some(p)) = (prev, start) {
-        area += q.x * p.y - p.x * q.y;
-    }
-    if area > 0.0 {
-        segs = segs.iter().rev().map(|s| s.reverse()).collect();
-    }
-    // The start: the point nearest to `at`, or the highest point (the
-    // segment and parameter where y is largest).
-    let mut best = (0usize, 0.0f64, f64::NEG_INFINITY);
-    match at.filter(|p| p.x.is_finite() && p.y.is_finite()) {
-        Some(p) => {
-            for (i, seg) in segs.iter().enumerate() {
-                let n = seg.nearest(p, 1e-6);
-                if -n.distance_sq > best.2 {
-                    best = (i, n.t, -n.distance_sq);
-                }
-            }
-        }
-        None => {
-            for (i, seg) in segs.iter().enumerate() {
-                let mut ts = vec![0.0, 1.0];
-                ts.extend(seg.extrema());
-                for t in ts {
-                    let y = seg.eval(t).y;
-                    if y > best.2 + 1e-9 {
-                        best = (i, t, y);
-                    }
-                }
-            }
-        }
-    }
-    let (k, t, _) = best;
-    let mut order: Vec<PathSeg> = Vec::new();
-    if t < 1.0 - 1e-9 {
-        order.push(segs[k].subsegment(t..1.0));
-    }
-    order.extend(segs[k + 1..].iter().copied());
-    order.extend(segs[..k].iter().copied());
-    if t > 1e-9 {
-        order.push(segs[k].subsegment(0.0..t));
-    }
-    let mut out = BezPath::new();
-    if let Some(s0) = order.first() {
-        out.move_to(s0.start());
-    }
-    for seg in order {
-        match seg {
-            PathSeg::Line(l) => out.line_to(l.p1),
-            PathSeg::Quad(q) => out.quad_to(q.p1, q.p2),
-            PathSeg::Cubic(c) => out.curve_to(c.p1, c.p2, c.p3),
-        }
-    }
-    out.close_path();
-    (out, true)
 }
 
 /// Where text fitted to `path` (its local space) is placed: on a closed
@@ -6038,7 +6175,9 @@ impl App {
 
     /// Blend the two selected objects: the first becomes the start with a
     /// live Blend effect, the second stays an object of its own, the
-    /// blend's end (see `blend_link`).
+    /// blend's end (see `blend_link`). Three or more objects blend one
+    /// into the next in the order they were picked, a chain of blends in
+    /// one undo step, each with the same settings (#4389).
     pub fn blend_selection(
         &mut self,
         steps: u32,
@@ -6047,37 +6186,40 @@ impl App {
         rotation: f64,
     ) {
         let shapes = self.selected_shapes();
-        if shapes.len() != 2 {
+        if shapes.len() < 2 {
             return;
         }
-        let start = &shapes[0];
-        let Some(end) = self.doc().shape_on_page(shapes[1].id) else {
-            return;
-        };
-        let mut effects = start.effects.clone();
-        effects.retain(|e| !matches!(e, Effect::Blend { .. }));
-        // The steps lie between the two objects in the stacking order.
-        let mut options = self.blend_options;
-        options.steps_below = self.stacked_below(end.id, start.id);
-        effects.push(Effect::Blend {
-            end: Box::new(crate::blend_link::end_copy(&end)),
-            steps,
-            accel_objects,
-            accel_colors,
-            rotation,
-            path: None,
-            rotate_on_path: false,
-            end_id: Some(end.id),
-            options,
-        });
-        let cmds = vec![Command::SetEffects {
-            shape: start.id,
-            effects,
-        }];
+        let mut cmds = Vec::new();
+        for pair in shapes.windows(2) {
+            let start = &pair[0];
+            let Some(end) = self.doc().shape_on_page(pair[1].id) else {
+                return;
+            };
+            let mut effects = start.effects.clone();
+            effects.retain(|e| !matches!(e, Effect::Blend { .. }));
+            // The steps lie between the two objects in the stacking order.
+            let mut options = self.blend_options;
+            options.steps_below = self.stacked_below(end.id, start.id);
+            effects.push(Effect::Blend {
+                end: Box::new(crate::blend_link::end_copy(&end)),
+                steps,
+                accel_objects,
+                accel_colors,
+                rotation,
+                path: None,
+                rotate_on_path: false,
+                end_id: Some(end.id),
+                options,
+            });
+            cmds.push(Command::SetEffects {
+                shape: start.id,
+                effects,
+            });
+        }
         if let Err(e) = self.engine.run_batch("Blend", &cmds) {
             self.status = e.to_string();
         }
-        self.selection = vec![start.id];
+        self.selection = vec![shapes[0].id];
     }
 
     /// Attach a path to the blend of the selected object (click on a curve).
@@ -6786,7 +6928,8 @@ fn effects_reach(s: &Shape) -> f64 {
         .iter()
         .map(|e| match e {
             Effect::OuterShadow { offset, blur, .. } => blur.abs() + offset.hypot(),
-            Effect::Glow { blur, .. } | Effect::GaussianBlur { radius: blur } => blur.abs(),
+            Effect::Glow { blur, .. } => blur.abs(),
+            Effect::GaussianBlur { radius, pins } => tracedraw_core::live::blur_reach(*radius, pins),
             // Whole dots reach half a cell past the edge.
             Effect::Halftone { size, .. } => size.abs(),
             _ => 0.0,
@@ -6849,9 +6992,19 @@ fn scale_base(s: &tracedraw_core::document::Shape) -> Option<(f64, f64)> {
     (bx.is_finite() && by.is_finite() && bx > 1e-8 && by > 1e-8).then_some((bx, by))
 }
 
+/// A group made by Merge Shapes: a group whose live Grow Outline merges
+/// its objects into one outline.
+pub fn is_merge_group(s: &Shape) -> bool {
+    matches!(s.kind, ShapeKind::Group { .. })
+        && s.effects
+            .iter()
+            .any(|e| matches!(e, Effect::OffsetPath { merge: true, .. }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tools::Tool;
 
     /// #3622, #3621: uniform transparency on and off, and the document
     /// palette's eyedropper, run as menu commands (so a shortcut can run
@@ -7667,6 +7820,359 @@ mod tests {
         assert_eq!(
             back.master[0].shapes[0].page_number,
             Some(app.page_numbers.field())
+        );
+    }
+
+    #[test]
+    fn a_page_number_on_a_range_layer_uses_only_its_page_positions() {
+        let mut app = crate::ui::objects_docker::tests::without_desktop();
+        for _ in 0..3 {
+            app.add_page();
+        }
+        app.goto_page(1);
+        app.run(Command::AddRangeLayer {
+            name: "Chapter footer".into(),
+            page_range: tracedraw_core::PageRanges::parse("2-3").expect("range"),
+        });
+        let layer = app.doc().master.last().expect("range layer").id;
+        app.picked_layer = Some(layer);
+        app.insert_page_number(PageNumberWhere::Active);
+        assert_eq!(app.doc().layer(layer).expect("layer").shapes.len(), 1);
+        let shown: Vec<Option<String>> = app
+            .doc()
+            .pages
+            .iter()
+            .map(|page| {
+                app.doc()
+                    .layers_drawn_for_page(page.id)
+                    .expect("drawn layers")
+                    .iter()
+                    .flat_map(|layer| &layer.shapes)
+                    .find_map(|shape| match &shape.kind {
+                        ShapeKind::Text { spans, .. } => {
+                            Some(tracedraw_core::document::spans_text(spans))
+                        }
+                        _ => None,
+                    })
+            })
+            .collect();
+        assert_eq!(shown, [None, Some("2".into()), Some("3".into()), None]);
+    }
+
+    fn app_with_first_page_range() -> (App, tracedraw_core::LayerId) {
+        let mut app = crate::ui::objects_docker::tests::without_desktop();
+        app.add_page();
+        app.goto_page(0);
+        app.run(Command::AddRangeLayer {
+            name: "Chapter header".into(),
+            page_range: tracedraw_core::PageRanges::parse("1").expect("range"),
+        });
+        let layer = app.doc().master.last().expect("range layer").id;
+        app.picked_layer = Some(layer);
+        (app, layer)
+    }
+
+    #[test]
+    fn changing_a_range_command_clears_editing_state_on_an_excluded_page() {
+        let (mut app, layer) = app_with_first_page_range();
+        let shape = app
+            .new_shape(ShapeKind::Rect {
+                rect: kurbo::Rect::new(5.0, 5.0, 20.0, 10.0),
+                radius: 0.0,
+                corners: None,
+            })
+            .expect("range object");
+        app.select(vec![shape]);
+        app.run(Command::SetLayerPageRange {
+            layer,
+            page_range: tracedraw_core::PageRanges::parse("2"),
+        });
+        assert!(app.selection.is_empty());
+        assert_ne!(app.picked_layer, Some(layer));
+        assert!(app.doc().find_shape(shape).is_some());
+        assert!(!app.doc().layer(layer).expect("layer").applies_to(0));
+        app.undo();
+        assert!(app
+            .doc()
+            .layer(layer)
+            .expect("restored layer")
+            .applies_to(0));
+        app.picked_layer = Some(layer);
+        app.focus_on(shape);
+        app.select(vec![shape]);
+        app.redo();
+        assert!(app.selection.is_empty());
+        assert!(app.focus.is_empty());
+        assert_ne!(app.picked_layer, Some(layer));
+        app.undo();
+        app.picked_layer = Some(layer);
+        app.select(vec![shape]);
+        app.run(Command::InsertPage {
+            at: 0,
+            name: None,
+            size: app.page_size(),
+            layer: None,
+            shapes: Vec::new(),
+        });
+        assert_eq!(app.page_index(), 1);
+        assert!(app.selection.is_empty());
+        assert_ne!(app.picked_layer, Some(layer));
+        assert!(app.doc().find_shape(shape).is_some());
+    }
+
+    #[test]
+    fn a_hidden_range_header_finishes_text_editing_and_composition() {
+        let (mut app, layer) = app_with_first_page_range();
+        let shape = app.page_number_text(0, app.page_size());
+        let text = shape.id;
+        app.run(Command::AddShape { layer, shape });
+        app.begin_text_edit(text);
+        assert!(app.text_edit.is_some());
+        app.ime_preedit = "pending composition".into();
+        app.run(Command::SetLayerPageRange {
+            layer,
+            page_range: tracedraw_core::PageRanges::parse("2"),
+        });
+        assert!(app.text_edit.is_none());
+        assert!(app.ime_preedit.is_empty());
+        assert!(app.doc().find_shape(text).is_some());
+    }
+
+    #[test]
+    fn range_page_navigation_finishes_hidden_text_editing() {
+        for multipage in [false, true] {
+            let (mut app, layer) = app_with_first_page_range();
+            app.start_text(Point::new(20.0, 20.0), None);
+            app.insert_text("Header");
+            let text = app.text_edit.as_ref().expect("header editor").shape;
+            app.ime_preedit = "pending composition".into();
+            if multipage {
+                app.multipage = true;
+                app.multipage_activate(app.doc().pages[1].id);
+            } else {
+                app.goto_page(1);
+            }
+            assert_eq!(app.page_index(), 1);
+            assert!(app.text_edit.is_none(), "hidden header editor, {multipage}");
+            assert!(app.ime_preedit.is_empty());
+            assert_ne!(app.picked_layer, Some(layer));
+            let header = app.doc().find_shape(text).expect("saved header").clone();
+            app.insert_text("Hidden edit");
+            assert_eq!(app.doc().find_shape(text), Some(&header));
+            app.start_text(Point::new(30.0, 30.0), None);
+            app.insert_text("Body");
+            let body = app.text_edit.as_ref().expect("body editor").shape;
+            assert_eq!(
+                app.doc().locate(body).expect("body layer").0,
+                app.doc().pages[1].layers[0].id
+            );
+        }
+    }
+
+    #[test]
+    fn range_page_navigation_finishes_curves_and_cancels_crops() {
+        for multipage in [false, true] {
+            let (mut app, layer) = app_with_first_page_range();
+            app.tool = Tool::Bezier;
+            app.curve = Some(crate::app::CurveInProgress {
+                nodes: vec![
+                    (Point::new(5.0, 10.0), None),
+                    (Point::new(30.0, 10.0), None),
+                ],
+                smooth: true,
+                ..Default::default()
+            });
+            app.multipage = multipage;
+            app.goto_page(1);
+            assert!(app.curve.is_none(), "hidden curve, {multipage}");
+            assert_eq!(app.doc().layer(layer).expect("range").shapes.len(), 1);
+            assert!(app
+                .doc()
+                .pages
+                .iter()
+                .all(|page| { page.layers.iter().all(|layer| layer.shapes.is_empty()) }));
+            app.goto_page(0);
+            app.picked_layer = Some(layer);
+            let shape = app.doc().layer(layer).expect("range").shapes[0].clone();
+            app.select(vec![shape.id]);
+            app.crop_area = Some(Rect::new(0.0, 0.0, 10.0, 10.0));
+            app.goto_page(1);
+            assert!(app.crop_area.is_none(), "hidden crop, {multipage}");
+            assert!(app.crop_drag.is_none());
+            assert_eq!(app.doc().find_shape(shape.id), Some(&shape));
+        }
+    }
+
+    #[test]
+    fn range_page_navigation_keeps_editing_on_an_applicable_page() {
+        let (mut app, layer) = app_with_first_page_range();
+        app.run(Command::SetLayerPageRange {
+            layer,
+            page_range: tracedraw_core::PageRanges::parse("1-2"),
+        });
+        app.start_text(Point::new(20.0, 20.0), None);
+        app.insert_text("Shared header");
+        let text = app.text_edit.as_ref().expect("shared editor").shape;
+        app.goto_page(usize::MAX);
+        assert_eq!(app.page_index(), 0);
+        assert_eq!(app.text_edit.as_ref().expect("editor").shape, text);
+        app.goto_page(1);
+        assert_eq!(app.text_edit.as_ref().expect("editor").shape, text);
+    }
+
+    #[test]
+    fn a_range_change_finishes_a_pending_curve_on_its_original_layer() {
+        let (mut app, layer) = app_with_first_page_range();
+        app.tool = Tool::Bezier;
+        app.curve = Some(crate::app::CurveInProgress {
+            nodes: vec![
+                (Point::new(5.0, 10.0), None),
+                (Point::new(30.0, 10.0), None),
+            ],
+            smooth: true,
+            ..Default::default()
+        });
+        app.run(Command::SetLayerPageRange {
+            layer,
+            page_range: tracedraw_core::PageRanges::parse("2"),
+        });
+        assert!(app.curve.is_none());
+        assert_eq!(app.doc().layer(layer).expect("range layer").shapes.len(), 1);
+        assert!(app
+            .doc()
+            .pages
+            .iter()
+            .all(|page| page.layers.iter().all(|l| l.shapes.is_empty())));
+        app.undo();
+        assert!(app
+            .doc()
+            .layer(layer)
+            .expect("restored range")
+            .applies_to(0));
+        assert_eq!(app.doc().layer(layer).expect("saved curve").shapes.len(), 1);
+    }
+
+    #[test]
+    fn a_hidden_range_table_stops_receiving_cell_input() {
+        let (mut app, layer) = app_with_first_page_range();
+        let table = tracedraw_core::Table::new(Rect::new(10.0, 10.0, 100.0, 40.0), 2, 2, None);
+        let id = app
+            .new_shape(ShapeKind::Table(table))
+            .expect("header table");
+        app.select(vec![id]);
+        app.table_edit = Some(crate::table::TableEdit::new(id, vec![(0, 0)], 0));
+        app.tool = Tool::Table;
+        app.cell_insert("Kept");
+        let before = app.doc().find_shape(id).expect("table").kind.clone();
+        app.run(Command::SetLayerPageRange {
+            layer,
+            page_range: tracedraw_core::PageRanges::parse("2"),
+        });
+        assert!(app.table_edit.is_none());
+        app.cell_insert("Leak");
+        assert_eq!(app.doc().find_shape(id).expect("kept table").kind, before);
+    }
+
+    #[test]
+    fn a_range_curve_history_stays_out_of_edit_mode_on_excluded_pages() {
+        let (mut app, layer) = app_with_first_page_range();
+        app.tool = Tool::Bezier;
+        app.curve = Some(crate::app::CurveInProgress {
+            smooth: true,
+            ..Default::default()
+        });
+        // Record the anchor steps the tool would record while drawing.
+        // Three undos should traverse the curve, not remove the test page.
+        for point in [
+            Point::new(5.0, 10.0),
+            Point::new(20.0, 10.0),
+            Point::new(30.0, 20.0),
+            Point::new(40.0, 15.0),
+        ] {
+            app.curve_step();
+            app.curve.as_mut().expect("curve").nodes.push((point, None));
+        }
+        let before = app.engine.history_labels().0.len();
+        app.finish_curve();
+        assert_eq!(app.engine.history_labels().0.len(), before + 3);
+        assert_eq!(app.doc().layer(layer).expect("curve layer").shapes.len(), 1);
+        app.goto_page(1);
+        let excluded_page = app.page;
+        for _ in 0..3 {
+            app.undo();
+            assert_eq!(app.page, excluded_page);
+            assert!(app.curve.is_none());
+            assert!(app.selection.is_empty());
+        }
+        while app.engine.redo_label().is_some() {
+            app.redo();
+            assert_eq!(app.page, excluded_page);
+            assert!(app.curve.is_none());
+            assert!(app.selection.is_empty());
+        }
+        assert_eq!(
+            app.doc().layer(layer).expect("restored curve").shapes.len(),
+            1
+        );
+        assert!(app
+            .doc()
+            .pages
+            .iter()
+            .all(|page| page.layers.iter().all(|l| l.shapes.is_empty())));
+    }
+
+    #[test]
+    fn hiding_a_range_cancels_a_crop_instead_of_cropping_the_page() {
+        let (mut app, layer) = app_with_first_page_range();
+        let kind = ShapeKind::Rect {
+            rect: Rect::new(5.0, 5.0, 25.0, 20.0),
+            radius: 0.0,
+            corners: None,
+        };
+        let shared = app.new_shape(kind.clone()).expect("range object");
+        let own_layer = app.doc().pages[0].layers[0].id;
+        app.picked_layer = Some(own_layer);
+        let ordinary = app.new_shape(kind).expect("ordinary object");
+        let before = app
+            .doc()
+            .find_shape(ordinary)
+            .expect("ordinary object")
+            .clone();
+        app.picked_layer = Some(layer);
+        app.select(vec![shared]);
+        app.tool = Tool::Crop;
+        app.crop_area = Some(Rect::new(10.0, 10.0, 20.0, 20.0));
+        app.run(Command::SetLayerPageRange {
+            layer,
+            page_range: tracedraw_core::PageRanges::parse("2"),
+        });
+        assert!(app.crop_area.is_none());
+        app.apply_crop();
+        assert_eq!(app.doc().find_shape(ordinary), Some(&before));
+    }
+
+    #[test]
+    fn hiding_a_range_finishes_symmetry_editing_before_new_objects() {
+        let (mut app, layer) = app_with_first_page_range();
+        let kind = ShapeKind::Rect {
+            rect: Rect::new(5.0, 5.0, 25.0, 20.0),
+            radius: 0.0,
+            corners: None,
+        };
+        let shape = app.new_shape(kind.clone()).expect("range object");
+        app.select(vec![shape]);
+        app.create_symmetry();
+        assert!(app.symmetry_edit.is_some());
+        app.run(Command::SetLayerPageRange {
+            layer,
+            page_range: tracedraw_core::PageRanges::parse("2"),
+        });
+        assert!(app.symmetry_edit.is_none());
+        assert!(app.selection.is_empty());
+        let ordinary = app.new_shape(kind).expect("ordinary object");
+        assert_eq!(
+            app.doc().locate(ordinary).expect("page layer").0,
+            app.doc().pages[0].layers[0].id
         );
     }
 
@@ -8534,6 +9040,25 @@ mod tests {
         let n = steps(&app);
         app.change_case(CaseMode::Upper);
         assert_eq!(steps(&app), n);
+    }
+
+    /// #4308: a large sign converted to a CMYK bitmap at 300 dpi takes a
+    /// lower resolution that stays within what the mode can make, and a
+    /// small object keeps the resolution asked.
+    #[test]
+    fn convert_to_bitmap_keeps_a_large_picture_within_memory() {
+        use crate::bitmap_modes::ConvertMode;
+        let px = |r: Rect, d: f64| (r.width() * d / 25.4).ceil() * (r.height() * d / 25.4).ceil();
+        let small = Rect::new(0.0, 0.0, 100.0, 100.0);
+        assert_eq!(convert_dpi(small, 300.0, ConvertMode::Cmyk), 300.0);
+        assert_eq!(convert_dpi(small, 300.0, ConvertMode::Rgb), 300.0);
+        let sign = Rect::new(0.0, 0.0, 4000.0, 2500.0);
+        let cmyk = convert_dpi(sign, 300.0, ConvertMode::Cmyk);
+        assert!(cmyk < 300.0 && cmyk > 30.0, "{cmyk}");
+        assert!(px(sign, cmyk) <= CONVERT_MAX_PIXELS_CMYK);
+        assert!(px(sign, cmyk) > CONVERT_MAX_PIXELS_CMYK * 0.95);
+        let rgb = convert_dpi(sign, 300.0, ConvertMode::Rgb);
+        assert!(rgb > cmyk && px(sign, rgb) <= CONVERT_MAX_PIXELS);
     }
 
     /// #2220: a ring with a shadow converted to a bitmap went to the top
@@ -10412,6 +10937,19 @@ mod text_dialog_tests {
             .expect("text");
         app.select(vec![id]);
         app.open_edit_text_dialog();
+        assert!(app.show_dockers, "the properties docker is shown");
+        assert_eq!(
+            app.docker_tab,
+            crate::app::DockerTab::Properties,
+            "the docker follows the text being edited"
+        );
+        assert!(
+            !app.settings
+                .properties_closed
+                .iter()
+                .any(|s| s == "character"),
+            "the character section is open"
+        );
         let Dialog::EditText { shape, text, .. } = &app.dialog else {
             panic!("no dialog: {:?}", std::mem::discriminant(&app.dialog));
         };
@@ -10486,5 +11024,32 @@ mod text_dialog_tests {
             ]
         );
         assert_eq!(app.engine.undo_label(), Some("Edit Text"));
+
+        // The character formatting controls of Edit Text applied to a span.
+        let mut spans = spans.clone();
+        tracedraw_core::spans_apply(&mut spans, 0, 5, |s| {
+            s.outline = Some(tracedraw_core::Stroke::new(
+                tracedraw_core::Color::rgb8(0, 0, 255),
+                0.4,
+            ));
+            s.tracking_pct = 10.0;
+            s.width_pct = 110.0;
+            s.position = tracedraw_core::TextPosition::Superscript;
+            s.all_caps = true;
+            s.background = Some(tracedraw_core::Fill::Solid(tracedraw_core::Color::rgb8(
+                255, 255, 0,
+            )));
+        });
+        app.set_text_spans(id, spans);
+        let ShapeKind::Text { spans, .. } = app.doc().find_shape(id).expect("text").kind.clone()
+        else {
+            panic!("text");
+        };
+        assert_eq!(spans[0].outline.as_ref().map(|o| o.width), Some(0.4));
+        assert_eq!(spans[0].tracking_pct, 10.0);
+        assert_eq!(spans[0].width_pct, 110.0);
+        assert_eq!(spans[0].position, tracedraw_core::TextPosition::Superscript);
+        assert!(spans[0].all_caps);
+        assert!(spans[0].background.is_some());
     }
 }

@@ -23,3 +23,7 @@
 - 其 **颜色**（起初为黑色）。
 
 [[menu.object > menu.object.clear_effect]] 删除阴影。要复制另一个对象的阴影，请使用 [[menu.object > menu.object.copy_effect > menu.object.copy_shadow_from]]。
+
+## 拆分阴影
+
+在 **对象** 菜单中拆分阴影（<kbd>Ctrl+K</kbd>），然后选中拆分得到的阴影。用 [[tool.interactive_fill]] 工具拖动可应用颜色渐变，用 [[tool.transparency]] 工具拖动可应用透明度渐变。两种渐变可独立编辑，阴影会保留原有的羽化边缘。

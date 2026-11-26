@@ -43,6 +43,10 @@ pub enum Error {
     Io(#[from] std::io::Error),
     #[error("zip error: {0}")]
     Zip(#[from] zip::result::ZipError),
+    /// A stream of the package is damaged (its checksum does not match, or
+    /// it ends short); [`container::accept_damaged`] reads what is there.
+    #[error("the file is damaged: {0}")]
+    Damaged(String),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

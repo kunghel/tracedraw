@@ -8,6 +8,7 @@
 //! protection (Security), and list what the preflight found (Issues). OK writes the file. The PDF
 //! itself comes from `tracedraw_io::pdf`. See docs/behavior/publish-to-pdf.md.
 
+use crate::ui::btn_icons::IconUi;
 use crate::app::App;
 use crate::i18n::{tr, trf};
 use crate::theme::Tokens;
@@ -17,7 +18,7 @@ use egui::{Color32, Context, RichText, Ui};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use tracedraw_core::Document;
-use tracedraw_io::pdf::{PdfOptions, PdfStandard};
+use tracedraw_io::pdf::{PdfImages, PdfOptions, PdfStandard};
 use tracedraw_io::pdf_crypt::{Permissions, Security};
 
 /// Width of the dialog's pages.
@@ -28,6 +29,9 @@ const HEIGHT: f32 = 380.0;
 /// Width of the labels in the first column.
 const LABEL_W: f32 = 140.0;
 const ERROR: Color32 = Color32::from_rgb(0xC4, 0x2B, 0x1C);
+
+#[cfg(test)]
+mod range_tests;
 
 /// What goes into the file (Export range).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -78,6 +82,11 @@ pub struct BitmapPrefs {
     pub jpeg_quality: u8,
     /// Compress the pages' text and line art.
     pub compress_content: bool,
+    /// Target file size (#4265): the pictures are compressed harder, and
+    /// downsampled if need be, until the file fits in [`Self::target_mb`].
+    pub target_size: bool,
+    /// The largest file wanted, in megabytes.
+    pub target_mb: f64,
 }
 
 impl Default for BitmapPrefs {
@@ -92,6 +101,8 @@ impl Default for BitmapPrefs {
             jpeg: false,
             jpeg_quality: 85,
             compress_content: true,
+            target_size: false,
+            target_mb: 5.0,
         }
     }
 }
@@ -109,6 +120,92 @@ impl BitmapPrefs {
             compress_content: self.compress_content,
         }
     }
+
+    /// The target file size in bytes, when one is asked for.
+    pub fn target_bytes(&self) -> Option<usize> {
+        (self.target_size && self.target_mb.is_finite() && self.target_mb > 0.0)
+            .then(|| (self.target_mb.clamp(0.01, 10_000.0) * 1024.0 * 1024.0) as usize)
+    }
+}
+
+/// The steps toward a smaller file (#4265), gentlest first: the pictures
+/// as asked, then JPEG at falling quality, then each resolution lower
+/// with JPEG again from good to rough. Resolutions already lower than a
+/// step's stay as they are.
+fn smaller_steps(asked: PdfImages) -> Vec<PdfImages> {
+    let mut out = vec![asked];
+    let start = if asked.jpeg {
+        asked.jpeg_quality.clamp(1, 100)
+    } else {
+        90
+    };
+    let qualities: Vec<u8> = [90u8, 80, 70, 60, 50, 40, 30, 20, 10]
+        .into_iter()
+        .filter(|q| *q <= start)
+        .collect();
+    let cap = |v: Option<f64>, dpi: f64| Some(v.map_or(dpi, |d| d.min(dpi)));
+    for dpi in [None, Some(300.0), Some(200.0), Some(150.0), Some(100.0), Some(72.0)] {
+        for &q in &qualities {
+            let mut s = asked;
+            s.jpeg = true;
+            s.jpeg_quality = q;
+            s.compress_content = true;
+            if let Some(d) = dpi {
+                s.color_dpi = cap(asked.color_dpi, d);
+                s.gray_dpi = cap(asked.gray_dpi, d);
+                s.mono_dpi = cap(asked.mono_dpi, d * 2.0);
+            }
+            if !out.contains(&s) {
+                out.push(s);
+            }
+        }
+    }
+    out
+}
+
+/// The PDF of `doc` no larger than `target` bytes when the pictures can
+/// be made small enough (#4265): the gentlest of [`smaller_steps`] that
+/// fits, found by halving the steps, else the smallest file. The steps
+/// only touch pictures, so a drawing of line art alone keeps its size.
+pub fn pdf_within(
+    doc: &Document,
+    opts: &PdfOptions,
+    target: usize,
+) -> (Vec<u8>, tracedraw_io::pdf::PdfReport) {
+    let steps = smaller_steps(opts.images);
+    let write = |i: usize| {
+        let mut o = opts.clone();
+        o.images = steps[i];
+        tracedraw_io::pdf::document_to_pdf_report(doc, &o)
+    };
+    let first = write(0);
+    if first.0.len() <= target || steps.len() < 2 {
+        return first;
+    }
+    // The smallest file: when even it is too large, it is the answer.
+    let last = steps.len() - 1;
+    let smallest = write(last);
+    if smallest.0.len() > target || smallest.0.len() >= first.0.len() {
+        return if smallest.0.len() < first.0.len() {
+            smallest
+        } else {
+            first
+        };
+    }
+    // Sizes fall along the steps: the first that fits, by halving.
+    let (mut lo, mut hi) = (0, last);
+    let mut best = smallest;
+    while hi - lo > 1 {
+        let mid = (lo + hi) / 2;
+        let r = write(mid);
+        if r.0.len() <= target {
+            hi = mid;
+            best = r;
+        } else {
+            lo = mid;
+        }
+    }
+    best
 }
 
 /// The printers' marks around every page (Prepress tab, #789): drawn by
@@ -225,6 +322,7 @@ pub fn builtin_presets() -> Vec<(&'static str, PdfPreset)> {
                     jpeg: true,
                     jpeg_quality: 75,
                     compress_content: true,
+                    ..BitmapPrefs::default()
                 },
                 ..base.clone()
             },
@@ -300,6 +398,12 @@ pub struct PublishPrefs {
     pub bitmaps: BitmapPrefs,
     /// Printers' marks around the pages (#789).
     pub marks: MarkPrefs,
+    /// Export range "Selected objects" was chosen last: the dialog opens
+    /// on it again while objects are selected (#4141).
+    pub range_selection: bool,
+    /// The page size chosen with Selected objects: the selection's own
+    /// size (true) or the drawing's.
+    pub fit_selection: bool,
 }
 
 impl Default for PublishPrefs {
@@ -327,6 +431,8 @@ impl Default for PublishPrefs {
             subset_below_pct: 80.0,
             bitmaps: BitmapPrefs::default(),
             marks: MarkPrefs::default(),
+            range_selection: false,
+            fit_selection: true,
         }
     }
 }
@@ -447,9 +553,15 @@ impl PublishState {
             tab: Tab::General,
             prefs: app.settings.publish_pdf.clone(),
             file,
-            pages: Pages::All,
+            // The range chosen last when it was Selected objects, while
+            // there is a selection to export (#4141).
+            pages: if app.settings.publish_pdf.range_selection && !app.selection.is_empty() {
+                Pages::Selection
+            } else {
+                Pages::All
+            },
             range: "1".into(),
-            fit_selection: true,
+            fit_selection: app.settings.publish_pdf.fit_selection,
             new_preset: None,
             bleed_mm: m.bleed.max(0.0),
             title: app.document_name(),
@@ -462,6 +574,17 @@ impl PublishState {
             permissions_password: String::new(),
             show_passwords: false,
         }
+    }
+
+    /// The choices OK keeps in the preferences: the dialog's, with the
+    /// export range when it is Selected objects (#4141).
+    pub fn prefs_to_keep(&self) -> PublishPrefs {
+        let mut prefs = self.prefs.clone();
+        prefs.range_selection = self.pages == Pages::Selection;
+        if prefs.range_selection {
+            prefs.fit_selection = self.fit_selection;
+        }
+        prefs
     }
 
     /// PDF/X files cannot be protected: the standards forbid encryption.
@@ -685,8 +808,14 @@ pub fn document_for(app: &App, st: &PublishState) -> Document {
                 crate::export::export_document(app, &export).0
             } else {
                 // The page as it is, with the selected objects only.
-                let mut doc = app.doc().clone();
-                doc.pages.retain(|p| p.id == app.page);
+                let indexes: Vec<_> = app
+                    .doc()
+                    .pages
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(i, p)| (p.id == app.page).then_some(i))
+                    .collect();
+                let mut doc = selected_document_pages(app.doc(), &indexes);
                 for page in &mut doc.pages {
                     for layer in &mut page.layers {
                         layer.shapes.retain(|s| app.selection.contains(&s.id));
@@ -696,20 +825,29 @@ pub fn document_for(app: &App, st: &PublishState) -> Document {
             }
         }
         Pages::Current => {
-            let mut doc = app.doc().clone();
-            doc.pages.retain(|p| p.id == app.page);
-            doc
+            let indexes: Vec<_> = app
+                .doc()
+                .pages
+                .iter()
+                .enumerate()
+                .filter_map(|(i, p)| (p.id == app.page).then_some(i))
+                .collect();
+            selected_document_pages(app.doc(), &indexes)
         }
         Pages::Range => {
-            let mut doc = app.doc().clone();
-            let keep = parse_pages(&st.range, doc.pages.len());
-            let pages = std::mem::take(&mut doc.pages);
-            doc.pages = keep.into_iter().map(|i| pages[i].clone()).collect();
-            doc
+            let keep = parse_pages(&st.range, app.doc().pages.len());
+            selected_document_pages(app.doc(), &keep)
         }
         Pages::Documents => {
+            let others = other_documents(app);
+            if std::iter::once(app.doc())
+                .chain(others.iter().copied())
+                .any(|d| d.master.iter().any(|l| l.page_range.is_some()))
+            {
+                return combine_ranged_documents(app.doc(), &others);
+            }
             let mut doc = app.doc().clone();
-            for other in other_documents(app) {
+            for other in others {
                 // The other drawing's symbols go after these; its symbol
                 // instances are renumbered to match.
                 let offset = doc.symbols.len();
@@ -733,12 +871,150 @@ pub fn document_for(app: &App, st: &PublishState) -> Document {
     }
 }
 
+fn selected_document_pages(doc: &Document, indexes: &[usize]) -> Document {
+    if doc.master.iter().any(|l| l.page_range.is_some()) {
+        return doc.with_master_layers_on_pages(indexes);
+    }
+    let mut out = doc.clone();
+    out.pages = indexes
+        .iter()
+        .filter_map(|i| doc.pages.get(*i).cloned())
+        .collect();
+    out
+}
+
+fn combine_ranged_documents(first: &Document, others: &[&Document]) -> Document {
+    use std::collections::HashMap;
+    use tracedraw_core::{Color, Shape, ShapeKind};
+    fn cached_style(shape: &mut Shape) {
+        shape.style = None;
+        for effect in &mut shape.effects {
+            if let tracedraw_core::live::Effect::Blend { end, .. } = effect {
+                cached_style(end);
+            }
+        }
+        match &mut shape.kind {
+            ShapeKind::Group { children } => children.iter_mut().for_each(cached_style),
+            ShapeKind::ClipFrame { frame, contents } => {
+                cached_style(frame);
+                contents.iter_mut().for_each(cached_style);
+            }
+            _ => {}
+        }
+    }
+    let mut out = first.clone();
+    out.pages.clear();
+    out.master.clear();
+    out.symbols.clear();
+    out.inks.clear();
+    out.fonts.clear();
+    out.comments.clear();
+    out.page_guides_hidden.clear();
+    out.selection_groups.clear();
+    out.saved_view = None;
+    let mut ids = first.ids().clone();
+    for source in std::iter::once(first).chain(others.iter().copied()) {
+        let indexes: Vec<_> = (0..source.pages.len()).collect();
+        let mut copy = source.copy_pages_for_output(&indexes, &mut ids);
+        let mut inks = HashMap::new();
+        for ink in &source.inks {
+            if inks.contains_key(&ink.id) {
+                continue;
+            }
+            let target = out
+                .inks
+                .iter()
+                .find(|i| i.name == ink.name && i.cmyk == ink.cmyk)
+                .map(|i| i.id);
+            let target = target.or_else(|| {
+                let limit = u32::try_from(out.inks.len())
+                    .unwrap_or(u32::MAX)
+                    .saturating_add(1);
+                let id = (1..=limit).find(|id| out.inks.iter().all(|ink| ink.id != *id))?;
+                let mut ink = ink.clone();
+                ink.id = id;
+                out.inks.push(ink);
+                Some(id)
+            });
+            if let Some(target) = target {
+                inks.insert(ink.id, target);
+            }
+        }
+        let color = |c: Color| match c {
+            Color::Spot {
+                ink,
+                tint,
+                c,
+                m,
+                y,
+                k,
+            } => match inks.get(&ink) {
+                Some(id) => Color::Spot {
+                    ink: *id,
+                    tint,
+                    c,
+                    m,
+                    y,
+                    k,
+                },
+                None => Color::Spot {
+                    ink,
+                    tint,
+                    c,
+                    m,
+                    y,
+                    k,
+                }
+                .process(),
+            },
+            _ => c,
+        };
+        let offset = out.symbols.len();
+        for page in &mut copy.pages {
+            if let Some(fill) = &mut page.background {
+                let mut background = Shape::new(
+                    tracedraw_core::ShapeId(0),
+                    ShapeKind::Group {
+                        children: Vec::new(),
+                    },
+                );
+                background.fill = fill.clone();
+                tracedraw_core::color_convert::map_shape_colors(&mut background, &color);
+                *fill = background.fill;
+            }
+            for layer in &mut page.layers {
+                renumber_symbols(&mut layer.shapes, offset);
+                for shape in &mut layer.shapes {
+                    cached_style(shape);
+                    tracedraw_core::color_convert::map_shape_colors(shape, &color);
+                }
+            }
+        }
+        for symbol in &mut copy.symbols {
+            renumber_symbols(std::slice::from_mut(&mut symbol.shape), offset);
+            cached_style(&mut symbol.shape);
+            tracedraw_core::color_convert::map_shape_colors(&mut symbol.shape, &color);
+        }
+        out.pages.extend(copy.pages);
+        out.symbols.extend(copy.symbols);
+        out.comments.extend(copy.comments);
+        out.page_guides_hidden.extend(copy.page_guides_hidden);
+        for font in copy.fonts {
+            if !out.fonts.iter().any(|f| f.family == font.family) {
+                out.fonts.push(font);
+            }
+        }
+    }
+    out.set_ids(ids);
+    out
+}
+
 /// Add `offset` to the symbol numbers of the instances in `shapes`.
 fn renumber_symbols(shapes: &mut [tracedraw_core::Shape], offset: usize) {
     use tracedraw_core::document::ShapeKind;
     for s in shapes {
         match &mut s.kind {
-            ShapeKind::SymbolInstance { index } => *index += offset,
+            ShapeKind::SymbolInstance { index } => *index = index.saturating_add(offset),
             ShapeKind::Group { children } => renumber_symbols(children, offset),
             ShapeKind::ClipFrame { frame, contents } => {
                 renumber_symbols(std::slice::from_mut(frame.as_mut()), offset);
@@ -786,7 +1062,10 @@ pub fn publish(app: &App, st: &PublishState, path: &Path) -> Result<String, Stri
         crate::export::pdfx_profile(app, st.prefs.standard()),
     );
     opts.output_condition = crate::export::output_condition(app, &opts.output_condition);
-    let (pdf, report) = tracedraw_io::pdf::document_to_pdf_report(&doc, &opts);
+    let (pdf, report) = match st.prefs.bitmaps.target_bytes() {
+        Some(target) => pdf_within(&doc, &opts, target),
+        None => tracedraw_io::pdf::document_to_pdf_report(&doc, &opts),
+    };
     crate::files::write(path, pdf).map_err(|e| e.to_string())?;
     let mut msg = trf("status.exported", &[("path", &path.display().to_string())]);
     // Fonts whose licence forbids embedding: their text went as curves.
@@ -863,7 +1142,7 @@ pub fn dialog(app: &mut App, ctx: &Context, st: &mut PublishState, close: &mut b
         if !ok {
             return;
         }
-        app.settings.publish_pdf = st.prefs.clone();
+        app.settings.publish_pdf = st.prefs_to_keep();
         // On Android the system's picker asks where the PDF goes, with
         // the file name of the form; it answers on a later frame.
         if crate::files::ANDROID {
@@ -952,7 +1231,7 @@ fn general(app: &App, ui: &mut Ui, st: &mut PublishState) {
         } else {
             ui.label(st.file.display().to_string());
         }
-        if browse && ui.button(tr("publish.browse")).clicked() {
+        if browse && ui.ibutton("publish.browse").clicked() {
             let name = st
                 .file
                 .file_name()
@@ -1186,6 +1465,21 @@ fn bitmaps(ui: &mut Ui, b: &mut BitmapPrefs) {
             });
         });
         ui.checkbox(&mut b.compress_content, tr("publish.compress_content"));
+        // Target file size (#4265).
+        ui.horizontal(|ui| {
+            ui.checkbox(&mut b.target_size, tr("publish.target_size"))
+                .rich_tip(crate::ui::tips::keyed("publish.target_size"));
+            ui.add_enabled_ui(b.target_size, |ui| {
+                ui.add(
+                    crate::ui::field::NumField::new(&mut b.target_mb)
+                        .range(0.01..=10_000.0)
+                        .speed(0.1)
+                        .max_decimals(2)
+                        .suffix(" MB"),
+                )
+                .rich_tip(crate::ui::tips::keyed("publish.target_size"));
+            });
+        });
         note(ui, "publish.bitmaps_note");
     });
 }
@@ -1405,6 +1699,68 @@ mod tests {
     use super::*;
     use egui::{vec2, Pos2, Rect};
     use tracedraw_core::{geometry::Size, Document};
+
+    /// A drawing with one noisy colour picture of 800 x 800 pixels.
+    fn picture_doc() -> Document {
+        let img = image::RgbImage::from_fn(800, 800, |x, y| {
+            let v = ((x * 31 + y * 17 + (x * y) % 97) % 256) as u8;
+            image::Rgb([v, 255 - v, ((x ^ y) % 256) as u8])
+        });
+        let mut png = std::io::Cursor::new(Vec::new());
+        img.write_to(&mut png, image::ImageFormat::Png).expect("png");
+        let mut doc = Document::new("p", Size::new(100.0, 100.0));
+        let id = doc.ids_mut().shape();
+        let s = tracedraw_core::Shape::new(
+            id,
+            tracedraw_core::document::ShapeKind::Bitmap {
+                rect: tracedraw_core::Rect::new(0.0, 0.0, 100.0, 100.0),
+                width_px: 800,
+                height_px: 800,
+                png: png.into_inner().into(),
+                fx: Default::default(),
+            },
+        );
+        doc.pages[0].layers[0].shapes.push(s);
+        doc
+    }
+
+    /// A target file size makes the file fit, as gently as it can, and a
+    /// target it already meets leaves it as asked (#4265).
+    #[test]
+    fn a_target_size_shrinks_the_pictures_until_the_file_fits() {
+        let doc = picture_doc();
+        let opts = PdfOptions::default();
+        let plain = tracedraw_io::pdf::document_to_pdf_with(&doc, &opts).len();
+        let target = plain / 8;
+        let (pdf, _) = pdf_within(&doc, &opts, target);
+        assert!(pdf.len() <= target, "{} > {target} (plain {plain})", pdf.len());
+        assert!(pdf.starts_with(b"%PDF"));
+        // Gentlest that fits: the next gentler step does not.
+        let steps = smaller_steps(opts.images);
+        let used = steps
+            .iter()
+            .position(|s| {
+                let mut o = opts.clone();
+                o.images = *s;
+                tracedraw_io::pdf::document_to_pdf_with(&doc, &o).len() == pdf.len()
+            })
+            .expect("a step");
+        assert!(used > 0);
+        let mut o = opts.clone();
+        o.images = steps[used - 1];
+        assert!(tracedraw_io::pdf::document_to_pdf_with(&doc, &o).len() > target);
+        // Already small enough: the file as asked.
+        let (same, _) = pdf_within(&doc, &opts, plain * 2);
+        assert_eq!(same.len(), plain);
+        // Prefs: off or nonsense means no target.
+        let mut b = BitmapPrefs::default();
+        assert_eq!(b.target_bytes(), None);
+        b.target_size = true;
+        b.target_mb = 2.0;
+        assert_eq!(b.target_bytes(), Some(2 * 1024 * 1024));
+        b.target_mb = f64::NAN;
+        assert_eq!(b.target_bytes(), None);
+    }
 
     fn app_with_two_pages() -> App {
         let mut app = App::headless();
@@ -1844,5 +2200,38 @@ mod tests {
         let others: usize = other_documents(&app).iter().map(|d| d.pages.len()).sum();
         assert!(others >= 2, "the leaflet is among the others");
         assert_eq!(doc.pages.len(), app.doc().pages.len() + others);
+    }
+
+    /// #4141: Selected objects chosen and OK pressed, the next export
+    /// opens on Selected objects again (with the page size chosen), and
+    /// on Current document when nothing is selected; any other range
+    /// chosen goes back to the old start.
+    #[test]
+    fn the_selected_objects_range_is_remembered() {
+        let mut app = app_with_two_pages();
+        assert_eq!(PublishState::new(&app).pages, Pages::All, "default");
+        let id = app
+            .new_shape(tracedraw_core::document::ShapeKind::Rect {
+                rect: tracedraw_core::Rect::new(10.0, 10.0, 30.0, 20.0),
+                radius: 0.0,
+                corners: None,
+            })
+            .expect("a rectangle");
+        app.select(vec![id]);
+        let mut st = PublishState::new(&app);
+        assert_eq!(st.pages, Pages::All);
+        st.pages = Pages::Selection;
+        st.fit_selection = false;
+        app.settings.publish_pdf = st.prefs_to_keep();
+        let again = PublishState::new(&app);
+        assert_eq!(again.pages, Pages::Selection, "remembered");
+        assert!(!again.fit_selection, "the page size too");
+        app.select(Vec::new());
+        assert_eq!(PublishState::new(&app).pages, Pages::All, "nothing to export");
+        app.select(vec![id]);
+        let mut st = PublishState::new(&app);
+        st.pages = Pages::Current;
+        app.settings.publish_pdf = st.prefs_to_keep();
+        assert_eq!(PublishState::new(&app).pages, Pages::All);
     }
 }

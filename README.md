@@ -15,7 +15,7 @@
   <img alt="Windows, macOS, Linux and the browser" src="https://img.shields.io/badge/Windows%20%C2%B7%20macOS%20%C2%B7%20Linux%20%C2%B7%20Web-native-1f6fc5?style=flat-square">
   <img alt="License: MIT or Apache-2.0" src="https://img.shields.io/badge/license-MIT%20or%20Apache--2.0-444444?style=flat-square">
   <img alt="Status: alpha" src="https://img.shields.io/badge/status-alpha-d97706?style=flat-square">
-  <img alt="20 interface languages" src="https://img.shields.io/badge/interface-20%20languages-7b5cff?style=flat-square">
+  <img alt="21 interface languages" src="https://img.shields.io/badge/interface-21%20languages-7b5cff?style=flat-square">
 </p>
 
 <p align="center">
@@ -63,7 +63,7 @@
   <tr>
     <td width="25%" valign="top">
       <h3>A full desktop workspace</h3>
-      Menu bar, context-sensitive property bar, toolbox with flyouts, 41 dockable panels, colour palette, rulers, guides and a page navigator, all set out for long working sessions.
+      Menu bar, context-sensitive property bar, toolbox with flyouts, 49 dockable panels, colour palette, rulers, guides and a page navigator, all set out for long working sessions.
     </td>
     <td width="25%" valign="top">
       <h3>Native and light</h3>
@@ -71,7 +71,7 @@
     </td>
     <td width="25%" valign="top">
       <h3>Opens your files</h3>
-      A clean-room <code>.cdr</code> reader for format versions 1 to 27 and a writer for versions 7 to 27, plus SVG, PDF, AI, EPS, DXF, PSD, EMF, WMF, HPGL and text documents.
+      A clean-room <code>.cdr</code> reader for format versions 1 to 27 and a writer for versions 7 to 27, plus SVG, PDF, AI, EPS and PostScript, DXF, PSD, EMF, WMF, HPGL, PMD, spreadsheets and text documents.
     </td>
     <td width="25%" valign="top">
       <h3>Ready for scripts and agents</h3>
@@ -97,16 +97,16 @@ or the moon button at the right of the status bar).
       <br>
       <sub>The Shape tool on a leaf, every node selected with its handles.</sub>
       <h3>Curves you can shape</h3>
-      Draw with Freehand, Bezier, Pen, B-Spline, Polyline and 3-Point Curve, then work the nodes: cusp, smooth and symmetrical, add, delete, join, break, extract, reduce, align, line to curve and back, and an elastic mode that moves a whole run of nodes.
+      Draw with Freehand, Bezier, Pen, Curvature Pen, B-Spline, Polyline and 3-Point Curve, then work the nodes: cusp, smooth and symmetrical, add, delete, join, break, extract, reduce, align, line to curve and back, and an elastic mode that moves a whole run of nodes.
       <br><br>
-      Shaping tools (weld, trim, intersect, simplify, front and back minus), Smear, Twirl, Attract, Repel and Roughen, Knife, Eraser, Crop and Segment Delete reshape the rest.
+      Shaping tools (weld, trim, intersect, simplify, front and back minus, and live combinations that stay editable), the Shape Builder (drag across overlapping parts to merge them, Alt to take them away), Join, Smear, Twirl, Attract, Repel and Roughen, Knife, Eraser, Crop and Segment Delete reshape the rest.
     </td>
     <td width="50%" valign="top">
       <img src="docs/images/tracedraw-effects.jpg" alt="A page of six live effects (Blend, Contour, Extrude, Drop Shadow, Envelope and Distort) with the blend selected and the Blend panel open on the right" width="100%">
       <br>
       <sub>Six live effects on one page; the blend's steps and accelerations in its panel.</sub>
       <h3>Effects that stay live</h3>
-      Blend, Contour, Extrude, Drop Shadow, Block Shadow, Envelope, Distort, Perspective, Bevel, Symmetry, twelve Lens types (one runs any bitmap effect over what lies beneath) and Transparency with merge modes. Each one is kept with its object and stays editable from its panel or the property bar: change the steps of a contour, send a blend along a path, move an envelope's nodes.
+      Blend, Contour, Extrude, Drop Shadow, Inner Shadow, Block Shadow, Envelope, Distort, Perspective, Bevel, Symmetry, thirteen Lens types (one runs any bitmap effect over what lies beneath) and Transparency with merge modes. Each one is kept with its object and stays editable from its panel or the property bar: change the steps of a contour, send a blend along a path, move an envelope's nodes.
     </td>
   </tr>
   <tr>
@@ -135,7 +135,7 @@ or the moon button at the right of the status bar).
       <br>
       <sub>Effects &rsaquo; Distort &rsaquo; Swirl, previewed before and after.</sub>
       <h3>Bitmaps, too</h3>
-      Place PNG, JPEG, BMP, GIF, TIFF and WebP images, or turn vectors into a bitmap, then use 98 bitmap effects in fifteen groups, each with its own dialog and a before and after preview. Effects stay in the object's list in the Properties panel, where they can be changed, hidden or removed.
+      Place PNG, JPEG, BMP, GIF, TIFF, WebP and JPEG XL images, or turn vectors into a bitmap, then use 111 bitmap effects in seventeen groups, each with its own dialog and a before and after preview. Effects stay in the object's list in the Properties panel, where they can be changed, hidden or removed.
       <br><br>
       Colour modes, a colour mask, background removal on this computer (no AI needed), straighten, crop and resample complete the set.
     </td>
@@ -144,7 +144,7 @@ or the moon button at the right of the status bar).
       <br>
       <sub>Trace Bitmap with the Flat Colors preset: the bitmap and the curves it becomes.</sub>
       <h3>From pixels to curves</h3>
-      Trace Bitmap turns images into editable curves: Automatic trace in one click, outline tracing in up to 256 colours with background removal, centreline tracing for drawings, and eight presets from technical illustration to high quality image. The dialog previews the trace before it is made.
+      Trace Bitmap turns images into editable curves: Automatic trace in one click, outline tracing in up to 256 colours with background removal, centreline tracing for drawings, eight presets from technical illustration to high quality image, and a Geometric shapes option that turns logo edges into exact straight lines, arcs and circles. The dialog previews the trace before it is made.
     </td>
   </tr>
   <tr>
@@ -153,16 +153,16 @@ or the moon button at the right of the status bar).
       <br>
       <sub>Export as PNG with a preview, the size in pixels and an estimated file size.</sub>
       <h3>Out in any format</h3>
-      SVG, PDF (with PDF/X-1a, X-3 and X-4 and bleed), EPS, AI, DXF, EMF, WMF, HPGL, PSD and HTML, and PNG, JPEG, WebP, GIF, BMP and TIFF at any resolution. The Export dialog previews the result and estimates its size.
+      SVG, PDF (with PDF/X-1a, X-3 and X-4 and bleed), EPS, PostScript, AI, DXF, EMF, WMF, HPGL, PSD and HTML, and PNG, JPEG, JPEG XL, WebP, GIF, BMP and TIFF at any resolution. The Export dialog previews the result and estimates its size.
       <br><br>
-      Print goes through a PDF; Data Merge fills a design from a CSV file.
+      Print goes through a PDF, with imposition, booklets, marks, separations and Preflight checks; Data Merge fills a design from a CSV or XLSX file.
     </td>
     <td width="50%" valign="top">
       <img src="docs/images/tracedraw-languages.jpg" alt="The page of type in TraceDraw with the interface in Japanese: menus, property bar, Text panel and status bar" width="100%">
       <br>
       <sub>The same page with the interface in Japanese.</sub>
       <h3>In your language</h3>
-      English, Chinese (Simplified), Hindi, Spanish, French, Arabic with a right-to-left layout, Bengali, Russian, Portuguese (Brazil), Indonesian, German, Japanese, Chinese (Traditional), Italian, Dutch, Polish, Turkish, Czech, Lao and Vietnamese, with system fonts found for every script. Options &rsaquo; Global switches the language at once.
+      English, Chinese (Simplified), Hindi, Spanish, French, Arabic with a right-to-left layout, Bengali, Russian, Portuguese (Brazil), Indonesian, German, Japanese, Chinese (Traditional), Italian, Dutch, Polish, Turkish, Czech, Lao, Vietnamese and Esperanto, with system fonts found for every script. Options &rsaquo; Global switches the language at once.
     </td>
   </tr>
   <tr>
@@ -197,6 +197,38 @@ or the moon button at the right of the status bar).
       One-, two- and three-point grids with vanishing points you drag. Whatever you draw with a drawing tool lands on the floor, a wall or the ceiling in perspective, as an exact perspective effect you can still edit. Variable-width outlines, focus mode, a multipage view, an export panel for many assets at once and review comments round out the drawing window.
     </td>
   </tr>
+  <tr>
+    <td width="50%" valign="top">
+      <img src="docs/images/tracedraw-builder.webp" alt="The Shape Builder on the overlapping outlines of a weather icon: a drag across the cloud's circles and base lights up every part it crosses, and the Hints panel explains the tool with pictures" width="100%">
+      <br>
+      <sub>The Shape Builder: a drag lights up the parts it will merge.</sub>
+      <h3>Build shapes from overlaps</h3>
+      Select overlapping objects and the Shape Builder shows every part they cut each other into. Drag across parts to merge them into one new object, Alt+drag to take them away, click one to make it an object of its own. Guidelines can cut the parts too, and Combine Live keeps weld, intersect and the minus operations editable as a group.
+    </td>
+    <td width="50%" valign="top">
+      <img src="docs/images/tracedraw-picture.webp" alt="The picture editing mode on the poster: a rectangle selection round the mountains with Hue/Saturation/Lightness previewed inside it, the image toolbox on the left and the Effects panel on the right" width="100%">
+      <br>
+      <sub>Image &rsaquo; Edit Inside: an adjustment previewed inside a selection.</sub>
+      <h3>Edit pictures inside the drawing</h3>
+      A double click turns the window into an image editor for that picture, with its own menus, toolbox and panels: layers with masks and 28 merge modes, rectangle, lasso, magic wand and quick mask selections, brushes, clone, heal, dodge, burn, liquify, gradients, adjustment layers, any bitmap effect inside the selection and its own undo. Finish puts it back as one undo step.
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top">
+      <img src="docs/images/tracedraw-generators.webp" alt="The Shape Generator panel set to Guilloche, with two rosettes of fine wavy lines made on the page, one inside the other in navy and magenta" width="100%">
+      <br>
+      <sub>Object &rsaquo; Create &rsaquo; Shape Generator: two guilloche rosettes.</sub>
+      <h3>Patterns on demand</h3>
+      The Shape Generator makes 24 kinds of vector pattern with a live preview: dot grids, Truchet tiles, tessellations, line waves, wavy rings, field lines, iso blocks, Voronoi cells, stippling, halftone, spirographs, guilloche, fractals, Penrose tilings, hatching and more. Each comes in as ordinary curves or as a pattern fill; Symbol Scatter, Frame Generator and 3D Revolve and Inflate sit beside it.
+    </td>
+    <td width="50%" valign="top">
+      <img src="docs/images/tracedraw-tracecut.webp" alt="The TraceCut window on a sheet of stickers: CutContour with a 3 mm bleed and Merge overlaps, the red cut lines previewed round the badge, the star, the heart and the label" width="100%">
+      <br>
+      <sub>Tools &rsaquo; TraceCut: CutContour lines with a bleed, round each sticker.</sub>
+      <h3>Ready for the cutter</h3>
+      TraceCut prepares drawings for cutting plotters and CNC machines: plotter output in HPGL with knife offset and overcut, G-code toolpaths, CutContour lines that print-and-cut machines find by name, weeding, bridges, registration marks, shape nesting on sheets or rolls, cutting time and cost, eyelets, box makers and folded trays, all previewed before they are applied.
+    </td>
+  </tr>
 </table>
 
 <br>
@@ -206,12 +238,12 @@ or the moon button at the right of the status bar).
 <table>
   <tr>
     <td width="33%" valign="top">
-      <h4>64 tools</h4>
-      Pick &middot; Freehand Pick &middot; Free Transform &middot; Shape &middot; Smooth &middot; Smear &middot; Twirl &middot; Attract &middot; Repel &middot; Smudge &middot; Roughen &middot; Variable Outline &middot; Crop &middot; Knife &middot; Segment Delete &middot; Eraser &middot; Zoom &middot; Pan &middot; Freehand &middot; 2-Point Line &middot; Bezier &middot; Pen &middot; B-Spline &middot; Polyline &middot; 3-Point Curve &middot; Shape Recognition &middot; Sketch &middot; Brush Strokes (preset, brush, sprayer, calligraphic, expression) &middot; Painterly Brush (twelve brushes) &middot; Rectangle and 3-Point Rectangle &middot; Ellipse and 3-Point Ellipse &middot; Polygon &middot; Star &middot; Spiral &middot; Common Shapes &middot; Action Lines &middot; Graph Paper &middot; Text &middot; Table &middot; five dimension tools &middot; three connectors &middot; Drop Shadow &middot; Contour &middot; Blend &middot; Distort &middot; Envelope &middot; Extrude &middot; Block Shadow &middot; Transparency &middot; two eyedroppers &middot; Interactive Fill &middot; Area Fill &middot; Mesh Fill &middot; Outline Pen &middot; Outline Colour
+      <h4>70 tools</h4>
+      Pick &middot; Freehand Pick &middot; Free Transform &middot; Shape &middot; Smooth &middot; Smear &middot; Twirl &middot; Attract &middot; Repel &middot; Smudge &middot; Roughen &middot; Variable Outline &middot; Join &middot; Crop &middot; Knife &middot; Segment Delete &middot; Eraser &middot; Shape Builder &middot; Zoom &middot; Pan &middot; Freehand &middot; 2-Point Line &middot; Bezier &middot; Pen &middot; B-Spline &middot; Curvature Pen &middot; Polyline &middot; 3-Point Curve &middot; Shape Recognition &middot; Sketch &middot; Brush Strokes (preset, brush, sprayer, calligraphic, expression) &middot; Painterly Brush (twelve brushes) &middot; Rectangle and 3-Point Rectangle &middot; Ellipse and 3-Point Ellipse &middot; Polygon &middot; Star &middot; Spiral &middot; Common Shapes &middot; Action Lines &middot; Speech Balloon &middot; Graph Paper &middot; Shape Generator &middot; Text &middot; Table &middot; five dimension tools &middot; three connectors &middot; Edit Anchor &middot; Drop Shadow &middot; Inner Shadow &middot; Contour &middot; Blend &middot; Distort &middot; Envelope &middot; Extrude &middot; Block Shadow &middot; Transparency &middot; two eyedroppers &middot; Interactive Fill &middot; Area Fill &middot; Mesh Fill &middot; Outline Pen &middot; Outline Colour
     </td>
     <td width="33%" valign="top">
-      <h4>41 panels</h4>
-      Properties &middot; Objects &middot; Hints &middot; Transformations &middot; Undo &middot; Align and Distribute &middot; Combine Shapes &middot; Repeat Copies &middot; Text &middot; Glyphs &middot; Colour &middot; Colour Styles &middot; Object Styles &middot; Find and Replace &middot; Scripts &middot; Palettes &middot; Lens &middot; Blend &middot; Contour &middot; Envelope &middot; Extrude &middot; Bevel &middot; Brush Strokes &middot; Color Mask &middot; Object Data &middot; Links &middot; Symbols &middot; Pages &middot; Guidelines &middot; Fonts &middot; Font Sampler &middot; Corners &middot; Join Curves &middot; Coordinates &middot; Vector Mosaic &middot; Picture Mosaic &middot; Shelf &middot; Effects &middot; Export &middot; Comments &middot; AI Generate (with Draw with words)
+      <h4>50 panels</h4>
+      Properties &middot; Objects &middot; Hints &middot; Transformations &middot; Undo &middot; Align and Distribute &middot; Combine Shapes &middot; Repeat Copies &middot; Text &middot; Glyphs &middot; Colour &middot; Colour Styles &middot; Object Styles &middot; Find and Replace &middot; Scripts &middot; Palettes &middot; Lens &middot; Blend &middot; Contour &middot; Envelope &middot; Extrude &middot; Bevel &middot; Brush Strokes &middot; Color Mask &middot; Object Data &middot; Links &middot; Symbols &middot; Pages &middot; Guidelines &middot; Fonts &middot; Font Sampler &middot; Corners &middot; Join Curves &middot; Fit Objects to Path &middot; Coordinates &middot; Vector Mosaic &middot; Picture Mosaic &middot; Shape Generator &middot; Math Shapes &middot; Symbol Scatter &middot; Frame Generator &middot; Mockup &middot; 3D Revolve and Inflate &middot; Shelf &middot; Effects &middot; Export &middot; Comments &middot; AI Generate (with Draw with words) &middot; Macro Manager &middot; Data Merge, plus eight more in the picture editing mode
     </td>
     <td width="33%" valign="top">
       <h4>Documents and pages</h4>
@@ -225,13 +257,27 @@ or the moon button at the right of the status bar).
     </td>
     <td width="33%" valign="top">
       <h4>Formats</h4>
-      Open: <code>.tdraw</code>, <code>.cdr</code> (versions 1 to 27) and its templates, CMX, SVG and SVGZ, PDF and AI, EPS, DXF, PSD, EMF, WMF, HPGL (PLT), TXT, RTF and DOCX, and bitmaps.
+      Open: <code>.tdraw</code>, <code>.cdr</code> (versions 1 to 27) and its templates, CMX, SVG and SVGZ, PDF and AI, EPS and PostScript (PS, PRN), DXF, PSD and PSB, EMF, WMF, HPGL (PLT), TXT, RTF and DOCX, XLSX, CSV and TSV as tables, desktop publishing PMD, PM6 and P65 (text and pictures), and bitmaps (JPEG XL too).
       <br><br>
-      Save and export: <code>.tdraw</code> (compressed JSON; a file saved by TraceDraw 0.47 or newer opens only in 0.47 or newer), <code>.cdr</code> (versions 7 to 27), SVG, PDF, AI, EPS, DXF, EMF, WMF, PLT, PSD, HTML, PNG, JPEG, WebP, GIF, BMP and TIFF.
+      Save and export: <code>.tdraw</code> (compressed JSON; a file saved by TraceDraw 0.47 or newer opens only in 0.47 or newer), <code>.cdr</code> (versions 7 to 27), SVG, PDF, AI, EPS, PostScript (PS, PRN), DXF, EMF, WMF, PLT, PSD, HTML, PNG, JPEG, JPEG XL, WebP, GIF, BMP and TIFF.
     </td>
     <td width="33%" valign="top">
       <h4>The everyday essentials</h4>
       Undo and redo with a history panel &middot; duplicate, clone and repeat copies &middot; align, distribute and order &middot; object and colour styles &middot; find and replace &middot; customisable shortcuts and workspaces &middot; toolbars of your own &middot; an interface size setting &middot; Options with every preference &middot; a splash screen and a welcome screen with recent drawings and templates.
+    </td>
+  </tr>
+  <tr>
+    <td width="33%" valign="top">
+      <h4>Cutting plotters and CNC</h4>
+      TraceCut (Tools &rsaquo; TraceCut): plotter output in HPGL with knife offset, overcut and weeding, G-code toolpaths, CutContour lines kept in PDF, EPS and SVG, registration marks, shape and rectangle nesting, cutting time and cost, eyelets, box makers and folded trays.
+    </td>
+    <td width="33%" valign="top">
+      <h4>Generators</h4>
+      Shape Generator (24 generators, from dot grids and tilings to waves and iso blocks), Math Shapes (a Cartesian plane with the curves of your formulas, and figures from their measures), Symbol Scatter, Frame Generator, product mockups, 3D Revolve and Inflate, charts from data, formulas, QR codes, barcodes, light flares and page numbers, each an ordinary editable object.
+    </td>
+    <td width="33%" valign="top">
+      <h4>Print and production</h4>
+      Print preview of the imposed sheets, booklets with creep, crop and registration marks, separations, overprint, Preflight checks that locate each problem, PDF/X, PDF pictures compressed to a target file size, Data Merge from CSV or XLSX, and a Time Tracker per drawing.
     </td>
   </tr>
 </table>
@@ -344,7 +390,7 @@ see [`docs/behavior/ai-drawing.md`](docs/behavior/ai-drawing.md).
 - **Runs in the browser:** the whole editor compiles to WebAssembly.
 - **Clean-room:** format support from public notes and owned files only;
   no proprietary code or assets.
-- **Tested:** about 5,000 tests, including format round trips,
+- **Tested:** more than 6,000 tests, including format round trips,
   malformed-input tests, effect geometry and interface drawing, plus
   headless visual checks that drive the real app.
 

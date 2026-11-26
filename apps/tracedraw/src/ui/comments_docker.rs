@@ -4,6 +4,7 @@
 //! as a card: number, author, date, text (editable when picked),
 //! replies, a reply field, Resolve or Reopen, and Delete.
 
+use crate::ui::btn_icons::IconUi;
 use crate::app::App;
 use crate::comments::{MarkKind, MARK};
 use crate::i18n::{tr, trf};
@@ -36,7 +37,7 @@ pub fn comments_docker(app: &mut App, ui: &mut Ui) {
         ] {
             let on = app.comments.placing == Some(kind);
             if ui
-                .add_enabled(drawing, egui::Button::new(tr(key)).selected(on))
+                .add_enabled(drawing, crate::ui::btn_icons::Ib::new(key).selected(on))
                 .rich_tip(tr(tip))
                 .clicked()
             {
@@ -186,7 +187,7 @@ pub fn comments_docker(app: &mut App, ui: &mut Ui) {
                             let enter =
                                 r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
                             if (ui
-                                .button(tr("comments.reply"))
+                                .ibutton("comments.reply")
                                 .rich_tip(crate::ui::tips::keyed("comments.reply"))
                                 .clicked()
                                 || enter)

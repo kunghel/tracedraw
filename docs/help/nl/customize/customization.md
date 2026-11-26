@@ -88,3 +88,15 @@ de balk.
   het begin) of het [[options.palette_context_menu]] openen.
 
 Zie [Kleurenpaletten](../color/palettes.md).
+
+## Contextmenu's {#context-menus}
+
+Kies onder Aanpassing [[options.context_menus]] om de 32 locaties van contextmenu's afzonderlijk te beheren. Selecteer een locatie met [[options.context_menu_scene]], gebruik [[options.context_menu_search]] om een bewerking te zoeken en schakel het selectievakje uit om die bewerking op die locatie te verbergen. Bewerkingen blijven in deze lijst staan als de huidige selectie ze niet kan gebruiken.
+
+Standaard zijn alle bewerkingen zichtbaar. Elke locatie heeft eigen keuzes: een objectbewerking op het canvas verbergen verbergt deze niet in het paneel Objecten. Dynamische lijsten, zoals doellagen en lettertypecollecties, worden als één bewerking beheerd, zodat gewijzigde namen uw keuzes niet terugzetten.
+
+[[options.context_menu_reset]] herstelt het geselecteerde menu en [[options.context_menu_reset_all]] herstelt alle menu's. [[dialog.ok]] slaat de keuzes op in de toepassingsinstellingen; [[dialog.cancel]], Escape of de sluitknop herstelt de keuzes van toen Opties werd geopend. Hoofdmenu's, sneltoetsen en het zoeken naar opdrachten blijven de oorspronkelijke opdrachten aanbieden.
+
+Vouw een submenu uit om de ingesprongen onderliggende items te zien. Sleep de greep van een rij, of gebruik [[options.context_menu_move_up]] en [[options.context_menu_move_down]], om items op hetzelfde niveau te rangschikken. Een bovenliggend menu neemt zijn onderliggende items mee; items kunnen niet naar een ander bovenliggend menu worden verplaatst. Bij zoeken blijven de bovenliggende menu’s van overeenkomende items zichtbaar. Herstellen zet zowel zichtbaarheid als volgorde terug; annuleren van Opties herstelt beide naar de toestand bij het openen van het dialoogvenster.
+
+Het menu van de kleurstalen van het documentpalet en de vermelding in Paletbeheer hebben afzonderlijke instellingen. Dynamische doelen behouden hun eigen volgorde; de lijst met documentstijlen blijft tussen de vaste acties in Objectstijlen staan. Nieuwe bewerkingen uit een latere versie blijven zichtbaar en volgen op de opgeslagen items van hetzelfde niveau.

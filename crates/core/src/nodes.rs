@@ -2291,6 +2291,29 @@ pub fn subpath_nodes(path: &BezPath, a: usize) -> Option<Vec<usize>> {
     None
 }
 
+/// Node `a` and the nodes joined to it by a segment on its subpath, the
+/// first and last nodes of a closed subpath joined too: the nodes whose
+/// control handles show when `a` is the one node chosen (#4337).
+pub fn handle_neighbours(path: &BezPath, a: usize) -> Vec<usize> {
+    let Some(ring) = subpath_nodes(path, a) else {
+        return Vec::new();
+    };
+    let Some(k) = ring.iter().position(|&n| n == a) else {
+        return Vec::new();
+    };
+    let closed = segment_into(path, ring[0]).is_some();
+    let mut out = vec![a];
+    let n = ring.len();
+    let prev = if k > 0 { Some(ring[k - 1]) } else { closed.then(|| ring[n - 1]) };
+    let next = if k + 1 < n { Some(ring[k + 1]) } else { closed.then(|| ring[0]) };
+    for m in [prev, next].into_iter().flatten() {
+        if !out.contains(&m) {
+            out.push(m);
+        }
+    }
+    out
+}
+
 /// Join two end nodes with a straight segment (the Shape tool's Extend
 /// Curve to Close): the two ends of one open subpath close it; ends of two
 /// open subpaths make one subpath. `None` when either is not an end of an
@@ -2466,6 +2489,38 @@ fn subpath_start(els: &[PathEl], index: usize) -> Point {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #4337: one chosen node shows its handles and its neighbours'; the
+    /// first and last nodes of a closed subpath are neighbours.
+    #[test]
+    fn the_neighbours_of_a_node_are_on_its_subpath() {
+        let mut p = BezPath::new();
+        p.move_to((0.0, 0.0));
+        p.curve_to((1.0, 5.0), (4.0, 5.0), (5.0, 0.0));
+        p.curve_to((6.0, -5.0), (9.0, -5.0), (10.0, 0.0));
+        p.curve_to((11.0, 5.0), (14.0, 5.0), (15.0, 0.0));
+        p.move_to((0.0, 20.0));
+        p.line_to((5.0, 20.0));
+        let sorted = |v: Vec<usize>| {
+            let mut v = v;
+            v.sort_unstable();
+            v
+        };
+        assert_eq!(sorted(handle_neighbours(&p, 0)), vec![0, 1]);
+        assert_eq!(sorted(handle_neighbours(&p, 2)), vec![1, 2, 3]);
+        assert_eq!(sorted(handle_neighbours(&p, 3)), vec![2, 3]);
+        assert_eq!(sorted(handle_neighbours(&p, 4)), vec![4, 5]);
+        let mut c = BezPath::new();
+        c.move_to((0.0, 0.0));
+        c.curve_to((1.0, 5.0), (4.0, 5.0), (5.0, 0.0));
+        c.curve_to((6.0, -5.0), (9.0, -5.0), (10.0, 0.0));
+        c.curve_to((8.0, 8.0), (2.0, 8.0), (0.0, 0.0));
+        c.close_path();
+        let first = nodes(&c)[0].index;
+        let last = nodes(&c).last().unwrap().index;
+        assert!(handle_neighbours(&c, first).contains(&last));
+        assert!(handle_neighbours(&c, last).contains(&first));
+    }
 
     #[test]
     fn every_segment_gets_a_node_in_its_middle() {

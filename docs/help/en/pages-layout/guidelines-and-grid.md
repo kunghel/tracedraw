@@ -30,6 +30,10 @@ page like a ruled notebook, for lining up text; the **pixel grid**
 ([[menu.view.pixel_grid]]) shows the pixels of the drawing in the
 [[menu.view.pixels]] view from 800% zoom.
 
+## The Grid panel {#grid-panel}
+
+Window > Panels > [[docker.grid]] (or the button in Document options) sets the grid up in one place. [[grid.mode_automatic]] fits the spacing to the zoom in round units; [[grid.mode_basic]] keeps the spacing typed, with subdivisions in each cell; [[grid.mode_advanced]] gives each axis its own spacing, subdivisions, gutter and angle, for isometric, dimetric, trimetric, oblique or custom grids, with optional third-axis lines. A [[grid.preset]] sets a ready grid, and the current grid can be saved under a name for any document. The grid's origin, the colour and opacity of its lines and of its subdivisions are set there too. With [[grid.axis_controls]] on, the Pick tool drags the grid's origin and the ends of its two axes on the canvas; Shift keeps an axis's direction. Snapping follows the grid's subdivisions, gutters and, on an angled grid, its crossings.
+
 ## Guidelines {#guidelines}
 
 Guidelines are lines across the drawing window that objects can snap to.

@@ -206,10 +206,10 @@ impl App {
                 }
                 ui.add_space(6.0);
                 ui.horizontal(|ui| {
-                    if ui.button(crate::i18n::tr("hint.drop_ask_import")).clicked() {
+                    if ui.add(crate::ui::btn_icons::Ib::new("hint.drop_ask_import")).clicked() {
                         (answer, answered) = (Some(true), true);
                     }
-                    if ui.button(crate::i18n::tr("hint.drop_ask_open")).clicked() {
+                    if ui.add(crate::ui::btn_icons::Ib::new("hint.drop_ask_open")).clicked() {
                         (answer, answered) = (Some(false), true);
                     }
                     if ui.button(crate::i18n::tr("dialog.cancel")).clicked() {

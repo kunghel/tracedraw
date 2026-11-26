@@ -1267,7 +1267,7 @@ fn filter_panel(
     if ui
         .add_enabled(
             filter_count(st) > 0,
-            egui::Button::new(tr("font_list.filter_clear")),
+            crate::ui::btn_icons::Ib::new("font_list.filter_clear"),
         )
         .clicked()
     {

@@ -35,7 +35,9 @@ const LABEL: &str = "Edit Picture";
 #[derive(Default)]
 pub struct PixelTextures {
     pub tex: Option<egui::TextureHandle>,
-    pub outline: Option<egui::TextureHandle>,
+    /// The selection's outline: runs of pixel edges, round it clockwise
+    /// (see `pixel_edit::selection_edges`).
+    pub edges: Vec<[(f32, f32); 2]>,
     /// Pixels changed since the picture was last sent to the screen.
     pub dirty: Option<Dirty>,
     /// The whole picture is sent again (new size, undo, preview).
@@ -46,7 +48,27 @@ pub struct PixelTextures {
     pub overlay: Option<egui::TextureHandle>,
     /// The effect preview was shown last frame.
     pub showed_preview: bool,
+    /// The Layers panel's miniatures.
+    pub thumbs: crate::ui::pixel_layers::LayerThumbs,
 }
+
+/// A drag of the Move tool's box.
+#[derive(Debug, Clone, Copy)]
+pub struct MoveDrag {
+    pub handle: crate::pixel_ops::BoxHandle,
+    pub from: (f32, f32),
+    pub start: crate::pixel_ops::Placement,
+    pub b: Dirty,
+}
+
+/// What the Move tool's box was found for: the change, the layer in use,
+/// whether there was a selection and the picture's size.
+pub type PickKey = (u64, usize, bool, (u32, u32));
+
+/// How near a handle of the Move tool's box a press must be, and how far
+/// the turning handle stands over the box, in screen points.
+pub const BOX_GRAB: f32 = 7.0;
+pub const BOX_KNOB: f32 = 22.0;
 
 /// A picture being edited in place.
 pub struct PixelEdit {
@@ -65,10 +87,29 @@ pub struct PixelEdit {
     pub drag_from: Option<(f32, f32)>,
     pub drag_to: Option<(f32, f32)>,
     pub lasso: Vec<(f32, f32)>,
-    /// Move: the layer's pixels when the drag started, and how far the
-    /// drag has moved them.
-    pub move_base: Option<image::RgbaImage>,
-    pub move_by: (i64, i64),
+    /// The pen outline being made (Pen mask), and whether a press is
+    /// pulling the handles of its last point.
+    pub pen: Vec<pixel_edit::PenNode>,
+    pub pen_drag: bool,
+    /// Move: the handle of the box being dragged, where the drag began
+    /// and the placement and box it began on (#4261).
+    pub move_drag: Option<MoveDrag>,
+    /// The placement the Move tool's preview shows, when it shows one.
+    pub placed_for: Option<crate::pixel_ops::Placement>,
+    /// The whole layer's pixels before the Move tool's first placement on
+    /// it, the placements put in since, the layer and the change after
+    /// the last: a later move works from these, so what a move took past
+    /// the picture's edge comes back (#4374). Any other change ends it.
+    pub move_memory: Option<MoveMemory>,
+    /// Counts the changes seen on the screen, for what is kept from them
+    /// (the Move tool's box, the effect preview).
+    pub rev: std::cell::Cell<u64>,
+    /// The Move tool's box as last found, and what it was found for.
+    pub pick_cache: std::cell::Cell<Option<(PickKey, Dirty)>>,
+    /// The change the effect preview was made for.
+    pub preview_rev: u64,
+    /// What Ctrl+C or Ctrl+X took, and where its top left lay (#4263).
+    pub clip: Option<(image::RgbaImage, (u32, u32))>,
     /// The opacity slider of the layer in use is being dragged (its
     /// undo step is already remembered).
     pub layer_drag: bool,
@@ -111,6 +152,10 @@ pub struct PixelEdit {
     /// result shows before Apply.
     pub effect: Option<BitmapEffect>,
     pub preview_on: bool,
+    /// The effect's settings were applied and not changed since: Apply
+    /// waits for a change, so a second click does not apply the effect
+    /// again on its own result (#4376).
+    pub effect_applied: bool,
     pub preview: Option<image::RgbaImage>,
     pub feather_px: u32,
     pub grow_px: i32,
@@ -135,6 +180,48 @@ pub struct PixelEdit {
     /// panels key their remembered sizes by it, so an entry never starts
     /// from the sizes the last one was left at (#3852).
     pub session: u64,
+    /// The text layer being typed into with the Text tool (#4370).
+    pub text_edit: Option<TextEditing>,
+    /// The Text tool dragging a text layer: where the press was and
+    /// where the text stood then.
+    pub text_drag: Option<((f32, f32), (f32, f32))>,
+    /// The settings a new text layer starts with (the property bar's).
+    pub text_opts: crate::pixel_text::PixelText,
+    /// A change of a text layer's settings is under way, its undo step
+    /// already remembered.
+    pub text_undo_open: bool,
+    /// A command waiting for its pixels (and colour) in a small box
+    /// (#4393).
+    pub px_ask: Option<PxAsk>,
+    /// The pixels each such command was last given, and where the last
+    /// stroke of the selection lay.
+    pub ask_px: std::collections::HashMap<crate::ui::pixel_cmds::PixelCmd, f32>,
+    pub stroke_at: crate::pixel_style::StrokeAt,
+    /// A layer style setting is being dragged (its undo step is already
+    /// remembered).
+    pub style_drag: bool,
+}
+
+/// The text layer the Text tool types into.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct TextEditing {
+    pub layer: usize,
+    /// The typing box takes the keyboard on its next frame.
+    pub focus: bool,
+}
+
+/// A selection command asking for its number of pixels first (Feather,
+/// Smooth, Border, Expand, Contract, Stroke, Fill), with what it was
+/// last given (#4393).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PxAsk {
+    pub cmd: crate::ui::pixel_cmds::PixelCmd,
+    pub px: f32,
+    pub color: [u8; 4],
+    pub opacity: f32,
+    pub at: crate::pixel_style::StrokeAt,
+    /// Where the box opens on the screen.
+    pub pos: Option<egui::Pos2>,
 }
 
 impl PixelEdit {
@@ -160,6 +247,7 @@ impl PixelEdit {
         if let Some(b) = b {
             let mut v = self.view.borrow_mut();
             v.dirty = Some(pixel_edit::union(v.dirty, b));
+            self.bump();
         }
     }
 
@@ -167,6 +255,151 @@ impl PixelEdit {
         let mut v = self.view.borrow_mut();
         v.full = true;
         v.sel_changed = true;
+        self.bump();
+    }
+
+    /// A change that shows: what was kept from the pixels is found again.
+    pub fn bump(&self) {
+        self.rev.set(self.rev.get().wrapping_add(1));
+    }
+
+    /// The box the Move tool works on (see `pixel_ops::pick_box`), kept
+    /// until the pixels, the layer in use or the selection change.
+    pub fn move_box(&self) -> Dirty {
+        let key = (
+            self.rev.get(),
+            self.pi.active,
+            self.pi.sel.is_some(),
+            self.pi.img.dimensions(),
+        );
+        if let Some((k, b)) = self.pick_cache.get() {
+            if k == key {
+                return b;
+            }
+        }
+        let b = crate::pixel_ops::pick_box(&self.pi);
+        self.pick_cache.set(Some((key, b)));
+        b
+    }
+
+    /// The Move tool's placement shown on the layer in use while it is
+    /// set (by a drag of the box or by the numbers on the property bar),
+    /// and taken off once it is put in or reset.
+    pub fn sync_place_preview(&mut self) {
+        let want = (self.tool == PixelTool::Move
+            && self.warp.is_none()
+            && !self.placement.is_identity())
+        .then_some(self.placement);
+        if want == self.placed_for {
+            return;
+        }
+        let had = self.placed_for.is_some();
+        self.placed_for = want;
+        match want {
+            Some(p) => {
+                let b = self.move_drag.map(|d| d.b).unwrap_or_else(|| self.move_box());
+                self.preview = self.placed_layer(b, &p).or_else(|| {
+                    crate::pixel_ops::place_image(&self.pi.img, self.pi.sel.as_ref(), b, &p)
+                        .map(|(img, _)| img)
+                });
+                self.view.borrow_mut().full = true;
+            }
+            None if had => {
+                self.preview = None;
+                self.view.borrow_mut().full = true;
+            }
+            None => {}
+        }
+    }
+
+    /// The Move tool's memory of the layer in use, while nothing else
+    /// changed it since the last placement and nothing is selected.
+    fn live_move_memory(&self) -> Option<&MoveMemory> {
+        self.move_memory.as_ref().filter(|m| {
+            m.layer == self.pi.active && m.rev == self.rev.get() && self.pi.sel.is_none()
+        })
+    }
+
+    /// The layer in use with placement `p` about box `b` put in, from the
+    /// pixels the Move tool remembers when it can (#4374).
+    fn placed_layer(&self, b: Dirty, p: &crate::pixel_ops::Placement) -> Option<image::RgbaImage> {
+        let m = self.live_move_memory()?;
+        let mut steps = m.steps.clone();
+        steps.push((b, *p));
+        crate::pixel_ops::place_chain(&m.source, &steps)
+    }
+
+    /// The Move tool's placement put in the layer in use, one undo step.
+    pub fn apply_placement(&mut self, b: Option<Dirty>) {
+        let p = self.placement;
+        self.placement = Default::default();
+        self.move_drag = None;
+        if p.is_identity() {
+            self.sync_place_preview();
+            return;
+        }
+        // A text layer moved as a whole stays text: its place changes
+        // (scaled, turned or mirrored it becomes pixels) (#4370).
+        let shift_only = p.sx == 1.0 && p.sy == 1.0 && p.angle == 0.0 && !p.flip_h && !p.flip_v;
+        if shift_only && self.pi.sel.is_none() && self.active_text().is_some() {
+            self.text_undo_open = false;
+            self.change_text(|t| {
+                t.at.0 += p.dx;
+                t.at.1 += p.dy;
+            });
+            self.text_undo_open = false;
+            self.preview = None;
+            self.placed_for = None;
+            self.view.borrow_mut().full = true;
+            return;
+        }
+        let b = b.unwrap_or_else(|| self.move_box());
+        self.preview = None;
+        self.placed_for = None;
+        let whole_layer = self.pi.sel.is_none();
+        let (source, mut steps) = match self.live_move_memory() {
+            Some(m) => (m.source.clone(), m.steps.clone()),
+            None => (self.pi.img.clone(), Vec::new()),
+        };
+        let from_memory = self.placed_layer(b, &p);
+        let done = match from_memory {
+            Some(img) => self.apply(true, move |pi| {
+                pi.img = img;
+                Some([0, 0, pi.img.width(), pi.img.height()])
+            }),
+            None => self.apply(true, |pi| crate::pixel_ops::place_in(pi, b, &p)),
+        };
+        self.move_memory = (whole_layer && done).then(|| {
+            steps.push((b, p));
+            MoveMemory {
+                layer: self.pi.active,
+                source,
+                steps,
+                rev: self.rev.get(),
+            }
+        });
+        self.view.borrow_mut().full = true;
+    }
+
+    /// The effect open in the Effects panel shown again on the pixels as
+    /// they are now, once a stroke or a change has ended: painting with
+    /// the effect open took its preview off, and the preview did not come
+    /// back until a setting was changed (#4264).
+    pub fn keep_preview_current(&mut self, busy: bool) {
+        if busy
+            || self.effect.is_none()
+            || !self.preview_on
+            || self.warp.is_some()
+            || self.placed_for.is_some()
+            || self.stroke.is_some()
+            || self.mask_stroke.is_some()
+            || self.liquify.is_some()
+            || self.spray.is_some()
+            || self.preview_rev == self.rev.get()
+        {
+            return;
+        }
+        self.refresh_preview();
     }
 
     /// Remember the picture before a change made outside `apply` (the
@@ -181,12 +414,15 @@ impl PixelEdit {
         self.history.push(&self.pi);
         self.changed = true;
         self.preview = None;
+        self.placed_for = None;
+        self.bump();
     }
 
     pub fn set_selection(&mut self, sel: Option<image::GrayImage>) {
         self.step();
         self.pi.sel = sel;
         self.view.borrow_mut().sel_changed = true;
+        self.bump();
     }
 
     pub fn undo(&mut self) {
@@ -197,6 +433,8 @@ impl PixelEdit {
         if self.history.undo(&mut self.pi) {
             self.mark_all();
             self.preview = None;
+            self.placed_for = None;
+            self.placement = Default::default();
         }
     }
 
@@ -205,6 +443,8 @@ impl PixelEdit {
         if self.history.redo(&mut self.pi) {
             self.mark_all();
             self.preview = None;
+            self.placed_for = None;
+            self.placement = Default::default();
         }
     }
 
@@ -215,7 +455,150 @@ impl PixelEdit {
         if self.pi.active_locked() {
             return false;
         }
-        self.apply_all(full, f)
+        // A text layer whose pixels are changed becomes plain pixels.
+        let i = self.pi.active;
+        self.apply_all(full, |pi| {
+            let b = f(pi)?;
+            if let Some(l) = pi.layers.get_mut(i) {
+                l.text = None;
+            }
+            Some(b)
+        })
+    }
+
+    /// The text layer in use, when it is one.
+    pub fn active_text(&self) -> Option<&crate::pixel_text::PixelText> {
+        self.pi.layers.get(self.pi.active)?.text.as_ref()
+    }
+
+    /// Layer `i`'s pixels drawn again from its text.
+    pub fn render_text_layer(&mut self, i: usize) {
+        let (w, h) = self.pi.img.dimensions();
+        let origin = self.pi.origin;
+        let Some(t) = self.pi.layers.get(i).and_then(|l| l.text.clone()) else {
+            return;
+        };
+        let img = t.render(w, h, origin);
+        if i == self.pi.active {
+            self.pi.img = img;
+        } else if let Some(l) = self.pi.layers.get_mut(i) {
+            l.img = img;
+        }
+        self.changed = true;
+        self.mark_all();
+    }
+
+    /// Change the text layer in use with `f` and draw it again; the first
+    /// change of a run is one undo step (#4370).
+    pub fn change_text(&mut self, f: impl FnOnce(&mut crate::pixel_text::PixelText)) {
+        if self.active_text().is_none() {
+            return;
+        }
+        if !self.text_undo_open {
+            self.remember();
+            self.text_undo_open = true;
+        }
+        let i = self.pi.active;
+        if let Some(t) = self.pi.layers.get_mut(i).and_then(|l| l.text.as_mut()) {
+            f(t);
+        }
+        self.render_text_layer(i);
+    }
+
+    /// A new text layer with the property bar's settings, its first
+    /// baseline starting at (x, y), typed into at once.
+    pub fn start_text(&mut self, x: f32, y: f32) {
+        self.end_text();
+        self.remember();
+        self.text_undo_open = true;
+        let mut t = self.text_opts.clone();
+        t.text.clear();
+        t.at = (x + self.pi.origin.0 as f32, y + self.pi.origin.1 as f32);
+        self.pi.add_layer(tr("pixel.text.layer"));
+        let i = self.pi.active;
+        if let Some(l) = self.pi.layers.get_mut(i) {
+            l.text = Some(t);
+        }
+        self.text_edit = Some(TextEditing { layer: i, focus: true });
+        self.mark_all();
+    }
+
+    /// Typing into the text layer `i` (it is used).
+    pub fn edit_text(&mut self, i: usize) {
+        if self.pi.layers.get(i).is_none_or(|l| l.text.is_none()) {
+            return;
+        }
+        if self.text_edit.is_some_and(|e| e.layer == i) {
+            return;
+        }
+        self.end_text();
+        self.pi.set_active(i);
+        self.text_edit = Some(TextEditing { layer: i, focus: true });
+        self.mark_all();
+    }
+
+    /// The typing ends: a text layer left empty goes; one still named as
+    /// new takes its first words as its name.
+    pub fn end_text(&mut self) {
+        let Some(e) = self.text_edit.take() else {
+            return;
+        };
+        self.text_undo_open = false;
+        let Some(l) = self.pi.layers.get(e.layer) else {
+            return;
+        };
+        let Some(t) = l.text.as_ref() else {
+            return;
+        };
+        if t.text.trim().is_empty() {
+            if self.pi.layers.len() > 1 {
+                self.pi.set_active(e.layer);
+                self.pi.delete_layer();
+            } else if let Some(l) = self.pi.layers.get_mut(e.layer) {
+                l.text = None;
+            }
+            self.mark_all();
+            return;
+        }
+        if l.name == tr("pixel.text.layer") {
+            let first: String = t.text.lines().next().unwrap_or("").trim().chars().take(24).collect();
+            if !first.is_empty() {
+                if let Some(l) = self.pi.layers.get_mut(e.layer) {
+                    l.name = first;
+                }
+            }
+        }
+    }
+
+    /// The topmost shown text layer whose letters are under (x, y), or
+    /// whose box is, a few pixels round.
+    pub fn text_layer_at(&self, x: f32, y: f32, slack: f32) -> Option<usize> {
+        (0..self.pi.layers.len()).rev().find(|&i| {
+            let Some(l) = self.pi.layers.get(i) else {
+                return false;
+            };
+            if l.text.is_none() || !l.visible {
+                return false;
+            }
+            let Some(px) = self.pi.layer_pixels(i) else {
+                return false;
+            };
+            crate::pixel_text::shown_box(px).is_some_and(|b| {
+                x >= b[0] as f32 - slack
+                    && y >= b[1] as f32 - slack
+                    && x <= b[2] as f32 + slack
+                    && y <= b[3] as f32 + slack
+            })
+        })
+    }
+
+    /// New selections from the selection tools: feathered by the tool's
+    /// feather (#4393), joined to the one there is.
+    pub fn select_new(&mut self, m: image::GrayImage, mode: SelectMode) {
+        let f = self.opts.sel_feather.round() as u32;
+        let m = if f > 0 { pixel_edit::feather(&m, f) } else { m };
+        let sel = pixel_edit::combine(self.pi.sel.as_ref(), m, mode);
+        self.set_selection(sel);
     }
 
     /// Run an operation on the whole picture (every layer: crop, flip,
@@ -233,6 +616,7 @@ impl PixelEdit {
                 self.history.push(&before);
                 self.changed = true;
                 self.preview = None;
+                self.placed_for = None;
                 if full || self.pi.img.dimensions() != dims {
                     self.mark_all();
                 } else {
@@ -400,11 +784,52 @@ impl PixelEdit {
         }
     }
 
+    /// Ctrl+C, Ctrl+X: the selected pixels of the layer in use kept to be
+    /// pasted where they were, and put on the system clipboard as a
+    /// picture; a cut clears them, one undo step. False when nothing that
+    /// shows is selected (or the layer is locked, for a cut).
+    pub fn copy_pixels(&mut self, cut: bool) -> bool {
+        let Some((img, at)) = pixel_edit::copy_selection(&self.pi) else {
+            return false;
+        };
+        if cut && !self.apply(false, pixel_edit::clear_selection) {
+            return false;
+        }
+        crate::clipboard::write_image(img.clone());
+        self.clip = Some((img, at));
+        true
+    }
+
+    /// Ctrl+V: what Ctrl+C or Ctrl+X took, pasted as a new layer where it
+    /// was taken from; a picture copied in another program goes at the
+    /// selection's top left. Nothing is selected after, so the Move tool
+    /// takes the pasted pixels (#4263).
+    pub fn paste_pixels(&mut self, name: String) -> bool {
+        let sys = crate::clipboard::read_system().image;
+        let (img, at) = match (self.clip.as_ref(), sys) {
+            (Some((c, at)), Some(s)) if s.dimensions() == c.dimensions() => (c.clone(), *at),
+            (Some((c, at)), None) => (c.clone(), *at),
+            (_, Some(s)) => {
+                let at = match self.pi.sel {
+                    Some(_) => self.pi.sel_bounds().map(|b| (b[0], b[1])).unwrap_or((0, 0)),
+                    None => (0, 0),
+                };
+                (s, at)
+            }
+            (None, None) => return false,
+        };
+        self.apply_all(true, |pi| pixel_edit::paste_layer_at(pi, name, &img, at))
+    }
+
     /// The effect being set up, run on the picture inside the selection,
     /// for the preview.
     pub fn refresh_preview(&mut self) {
         self.preview = None;
-        if !self.preview_on {
+        self.preview_rev = self.rev.get();
+        // Just applied: the picture shows its result, not the effect run
+        // on it once more (#4376).
+        if !self.preview_on || self.effect_applied {
+            self.view.borrow_mut().full = true;
             return;
         }
         if let Some(e) = &self.effect {
@@ -417,13 +842,52 @@ impl PixelEdit {
     }
 }
 
+/// What the Move tool keeps of a layer it moved (see
+/// [`PixelEdit::move_memory`]).
+#[derive(Clone)]
+pub struct MoveMemory {
+    pub layer: usize,
+    pub source: image::RgbaImage,
+    pub steps: Vec<(Dirty, crate::pixel_ops::Placement)>,
+    pub rev: u64,
+}
+
 impl App {
+    /// Copy or cut the selected pixels of the picture being edited.
+    pub fn pixel_copy(&mut self, cut: bool) {
+        let Some(pe) = self.pixel_edit.as_mut() else {
+            return;
+        };
+        if pe.target == MaskTarget::Pixels || !cut {
+            if pe.copy_pixels(cut) {
+                self.status = tr("pixel.status.copied");
+                return;
+            }
+        }
+        self.status = if cut && pe.pi.active_locked() {
+            tr("pixel.status.layer_locked")
+        } else {
+            tr("pixel.status.nothing_to_copy")
+        };
+    }
+
+    /// Paste what was copied as a new layer of the picture being edited.
+    pub fn pixel_paste(&mut self) {
+        let Some(pe) = self.pixel_edit.as_mut() else {
+            return;
+        };
+        let name = crate::ui::pixel_bar::new_layer_name(pe);
+        if !pe.paste_pixels(name) {
+            self.status = tr("pixel.status.nothing_to_paste");
+        }
+    }
+
     /// Open the picture `id` for editing in place (Bitmaps > Edit Inside,
     /// a double click on it). False when it is not a picture or its
     /// pixels cannot be read.
     pub fn edit_bitmap_inside(&mut self, id: ShapeId) -> bool {
         if self.pixel_edit.is_some() {
-            self.finish_pixel_edit();
+            self.finish_pixel_edit_now();
         }
         let Some(s) = self.doc().find_shape(id).cloned() else {
             return false;
@@ -462,6 +926,20 @@ impl App {
         let size_px = img.dimensions();
         let img_to_page = img_to_page
             * Affine::scale_non_uniform(w0 / size_px.0.max(1) as f64, h0 / size_px.1.max(1) as f64);
+        // The layers kept from the last Finish on this picture, while
+        // the picture is still what they were put together into (#4112).
+        let mut pi = PixelImage::new(img.clone());
+        let kept = self
+            .pixel_kept
+            .get(id, &png[..])
+            .map(|k| (k.layers.clone(), k.active))
+            .or_else(|| {
+                let (_, text) = s.data.iter().find(|(k, _)| k == crate::pixel_keep::DATA_KEY)?;
+                crate::pixel_keep::load(text, &png[..])
+            });
+        if let Some((layers, active)) = kept {
+            crate::pixel_keep::restore(&mut pi, layers, active);
+        }
         static SESSIONS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let session = SESSIONS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         self.pixel_edit = Some(Box::new(PixelEdit {
@@ -470,7 +948,7 @@ impl App {
             img_to_page,
             rect: *rect,
             size_px,
-            original: std::rc::Rc::new(img.clone()),
+            original: std::rc::Rc::new(img),
             liquify: None,
             spray: None,
             placement: Default::default(),
@@ -478,7 +956,7 @@ impl App {
             depth: None,
             remove: None,
             adjust_drag: false,
-            pi: PixelImage::new(img),
+            pi,
             history: History::default(),
             tool: PixelTool::Brush,
             opts: self.pixel_opts,
@@ -486,8 +964,15 @@ impl App {
             drag_from: None,
             drag_to: None,
             lasso: Vec::new(),
-            move_base: None,
-            move_by: (0, 0),
+            pen: Vec::new(),
+            pen_drag: false,
+            move_drag: None,
+            placed_for: None,
+            move_memory: None,
+            rev: Default::default(),
+            pick_cache: Default::default(),
+            preview_rev: 0,
+            clip: None,
             layer_drag: false,
             target: MaskTarget::Pixels,
             mask_stroke: None,
@@ -500,6 +985,7 @@ impl App {
             changed: false,
             effect: None,
             preview_on: true,
+            effect_applied: false,
             preview: None,
             feather_px: 4,
             grow_px: 2,
@@ -515,6 +1001,17 @@ impl App {
             }),
             hidden: RefCell::new(None),
             lights: Default::default(),
+            text_edit: None,
+            text_drag: None,
+            text_opts: crate::pixel_text::PixelText {
+                color: self.pixel_opts.color,
+                ..Default::default()
+            },
+            text_undo_open: false,
+            px_ask: None,
+            ask_px: Default::default(),
+            stroke_at: Default::default(),
+            style_drag: false,
         }));
         // No selection handles over the pixels being edited.
         self.selection.clear();
@@ -524,8 +1021,31 @@ impl App {
     }
 
     /// Finish editing the picture: its pixels go back into it in one undo
-    /// step (nothing changes when nothing was changed).
+    /// step (nothing changes when nothing was changed). When the layers
+    /// would be put together for good (kept neither in memory nor in the
+    /// file), ask first (#4112).
     pub fn finish_pixel_edit(&mut self) {
+        // A text layer being typed into is done (an empty one goes).
+        if let Some(pe) = self.pixel_edit.as_mut() {
+            pe.end_text();
+        }
+        let Some(pe) = self.pixel_edit.as_ref() else {
+            return;
+        };
+        if pe.changed
+            && pe.pi.is_layered()
+            && !self.settings.pixel_keep_layers
+            && !self.settings.pixel_save_layers
+            && self.settings.warnings.pixel_flatten
+        {
+            self.dialog = crate::ui::dialogs::Dialog::ConfirmPixelFlatten { dont_ask: false };
+            return;
+        }
+        self.finish_pixel_edit_now();
+    }
+
+    /// [`Self::finish_pixel_edit`] without asking.
+    pub fn finish_pixel_edit_now(&mut self) {
         let Some(pe) = self.pixel_edit.take() else {
             return;
         };
@@ -551,6 +1071,17 @@ impl App {
             self.status = tr("pixel.status.unreadable");
             return;
         };
+        // The layers kept while the drawing is open, and in its file when
+        // asked; a picture of one plain layer keeps none.
+        let layered = pe.pi.is_layered();
+        if layered && self.settings.pixel_keep_layers {
+            self.pixel_kept.keep(pe.shape, &png, &pe.pi);
+        } else {
+            self.pixel_kept.forget(pe.shape);
+        }
+        let saved = (layered && self.settings.pixel_save_layers)
+            .then(|| crate::pixel_keep::save(&pe.pi, &png))
+            .flatten();
         let (w, h) = pixels.dimensions();
         // The box of the pixels as they are now, in the object's own
         // space: a crop keeps the pixels where they were.
@@ -578,10 +1109,14 @@ impl App {
             });
         }
         // A linked picture would be read again from its file over the
-        // edit: it stands alone now.
-        if s.data.iter().any(|(k, _)| k == "bitmap.link") {
-            let mut data = s.data.clone();
-            data.retain(|(k, _)| k != "bitmap.link");
+        // edit: it stands alone now. Layers saved before give way to the
+        // ones of this edit (or to none).
+        let mut data = s.data.clone();
+        data.retain(|(k, _)| k != "bitmap.link" && k != crate::pixel_keep::DATA_KEY);
+        if let Some(text) = saved {
+            data.push((crate::pixel_keep::DATA_KEY.to_string(), text));
+        }
+        if data != s.data {
             cmds.push(Command::SetObjectData {
                 shape: pe.shape,
                 data,
@@ -653,9 +1188,29 @@ impl App {
         let Some(pe) = self.pixel_edit.as_mut() else {
             return;
         };
+        // The Move tool's preview goes with the tool; the effect open in
+        // the Effects panel shows on the pixels as they are once nothing
+        // is being dragged.
+        if pe.tool != PixelTool::Move {
+            pe.sync_place_preview();
+        }
+        let busy = response.is_pointer_button_down_on();
+        pe.keep_preview_current(busy);
+        // A run of changes to a text layer's settings ends once nothing
+        // is held and nothing is typed into it.
+        if pe.text_edit.is_none() && !response.ctx.input(|i| i.pointer.any_down()) {
+            pe.text_undo_open = false;
+        }
+        // The typing ends when another tool is taken.
+        if pe.tool != PixelTool::Text && pe.text_edit.is_some() {
+            pe.end_text();
+        }
         let Some((x, y)) = px else {
             if response.drag_stopped() {
                 pe.lights.end_stroke();
+                if let Some(d) = pe.move_drag.take() {
+                    pe.apply_placement(Some(d.b));
+                }
                 pixel_release(pe, mods);
             }
             return;
@@ -668,6 +1223,47 @@ impl App {
         let inside = x >= 0.0 && y >= 0.0 && x < w as f32 && y < h as f32;
         let mode = select_mode(pe.opts.sel_mode, mods);
         let tool = pe.tool;
+        // The Text tool: a click on a text layer types into it, a drag
+        // of one moves it, a click elsewhere starts a new one (#4370).
+        if tool == PixelTool::Text {
+            let slack = 4.0 / screen_per_px.max(1e-6);
+            let pressed = response.contains_pointer()
+                && response.ctx.input(|i| i.pointer.primary_pressed());
+            if pressed {
+                pe.text_drag = None;
+                if let Some(i) = pe.text_layer_at(x, y, slack) {
+                    let at = pe.pi.layers.get(i).and_then(|l| l.text.as_ref()).map(|t| t.at);
+                    if let Some(at) = at {
+                        pe.edit_text(i);
+                        pe.text_drag = Some(((x, y), at));
+                    }
+                }
+            }
+            if dragged {
+                if let Some(((px0, py0), at)) = pe.text_drag {
+                    let (dx, dy) = (x - px0, y - py0);
+                    if dx.abs() + dy.abs() > 0.5 {
+                        pe.change_text(|t| t.at = (at.0 + dx, at.1 + dy));
+                    }
+                }
+                response.ctx.set_cursor_icon(egui::CursorIcon::Grabbing);
+            } else if pe.text_layer_at(x, y, slack).is_some() {
+                response.ctx.set_cursor_icon(egui::CursorIcon::Move);
+            } else {
+                response.ctx.set_cursor_icon(egui::CursorIcon::Text);
+            }
+            if clicked && pe.text_drag.is_none() && inside {
+                pe.start_text(x, y);
+            } else if clicked {
+                if let Some(e) = pe.text_edit.as_mut() {
+                    e.focus = true;
+                }
+            }
+            if stopped || clicked {
+                pe.text_drag = None;
+            }
+            return;
+        }
         // Alt+click sets the source of the clone and heal brushes.
         if matches!(tool, PixelTool::Clone | PixelTool::Heal) && mods.alt {
             if clicked || started {
@@ -747,38 +1343,53 @@ impl App {
                     | PixelTool::ColorToClear
             )
             || tool.is_liquify();
+        // Painting on a text layer makes it plain pixels first (one
+        // undo step back brings the text again).
+        if paints && tool != PixelTool::Move && (started || clicked) && pe.active_text().is_some() && !pe.pi.active_locked() {
+            pe.remember();
+            let i = pe.pi.active;
+            if let Some(l) = pe.pi.layers.get_mut(i) {
+                l.text = None;
+            }
+            self.status = tr("pixel.status.text_to_pixels");
+        }
         if paints && pe.pi.active_locked() {
             if started || clicked {
-                self.status = tr("pixel.status.layer_locked");
+                // An adjustment layer has no pixels to paint: say so,
+                // rather than that it is locked (#4264).
+                self.status = if pe.pi.active_lock_box() {
+                    tr("pixel.status.layer_locked")
+                } else {
+                    tr("pixel.status.adjust_layer")
+                };
             }
             return;
         }
         if tool == PixelTool::Warp {
-            if pe.warp.is_none() && (started || clicked) {
+            let pressed = response.contains_pointer()
+                && response.ctx.input(|i| i.pointer.primary_pressed());
+            if pe.warp.is_none() && (pressed || started || clicked) {
                 pe.start_warp();
             }
-            // Points within 12 screen pixels of the press are taken.
-            let grab = 12.0 / screen_per_px.max(1e-6);
-            if started {
-                let pick = pe.warp.as_ref().and_then(|w| {
-                    let near = w
-                        .pts
-                        .iter()
-                        .enumerate()
-                        .map(|(k, p)| (k, (p.0 - x).hypot(p.1 - y)))
-                        .min_by(|a, b| a.1.total_cmp(&b.1))?;
-                    (near.1 <= grab).then_some(near.0)
-                });
-                if let Some(w) = pe.warp.as_mut() {
-                    w.drag = pick;
+            // The nearest point within a few screen points of the press is
+            // taken, where the button went down rather than where the drag
+            // was first noticed, so a quick drag still takes it (#4116).
+            let grab = crate::pixel_warp::GRAB_RADIUS / screen_per_px.max(1e-6);
+            if let Some(w) = pe.warp.as_mut() {
+                if pressed {
+                    w.take(x, y, grab);
+                } else if dragged {
+                    w.drag_to(x, y);
                 }
-            } else if dragged {
-                if let Some(w) = pe.warp.as_mut() {
-                    if let Some(k) = w.drag {
-                        if let Some(p) = w.pts.get_mut(k) {
-                            *p = (x, y);
-                        }
-                    }
+                let cursor = if w.drag.is_some() && dragged {
+                    Some(egui::CursorIcon::Grabbing)
+                } else if w.pick(x, y, grab).is_some() {
+                    Some(egui::CursorIcon::Grab)
+                } else {
+                    None
+                };
+                if let Some(c) = cursor {
+                    response.ctx.set_cursor_icon(c);
                 }
             }
             if stopped {
@@ -790,25 +1401,7 @@ impl App {
             return;
         }
         if tool == PixelTool::Move {
-            if started {
-                pe.step();
-                pe.move_base = Some(pe.pi.img.clone());
-                pe.move_by = (0, 0);
-                pe.drag_from = Some((x, y));
-            } else if dragged {
-                if let (Some(base), Some(from)) = (pe.move_base.as_ref(), pe.drag_from) {
-                    let by = ((x - from.0).round() as i64, (y - from.1).round() as i64);
-                    if by != pe.move_by {
-                        pe.move_by = by;
-                        pe.pi.img = pixel_edit::offset_image(base, by.0, by.1);
-                        pe.view.borrow_mut().full = true;
-                    }
-                }
-            }
-            if stopped {
-                pe.move_base = None;
-                pe.drag_from = None;
-            }
+            move_input(pe, response, x, y, mods, screen_per_px);
             return;
         }
         if tool == PixelTool::Light {
@@ -941,6 +1534,31 @@ impl App {
                 };
                 pe.step();
                 let mut s = Stroke::new(tool, pe.opts, &pe.pi, offset);
+                if matches!(tool, PixelTool::Clone | PixelTool::Heal) {
+                    // The source turned, scaled and mirrored, from the
+                    // layer or what is seen (#4394).
+                    let o = pe.opts;
+                    let src = pe.clone_src.unwrap_or((x + offset.0, y + offset.1));
+                    let anchor = if o.clone_aligned {
+                        (src.0 - offset.0, src.1 - offset.1)
+                    } else {
+                        (x, y)
+                    };
+                    let xform = pixel_edit::CloneXform {
+                        anchor,
+                        src,
+                        angle: o.clone_angle,
+                        scale: o.clone_scale,
+                        flip_h: o.clone_flip_h,
+                        flip_v: o.clone_flip_v,
+                    };
+                    let sample = match o.clone_sample {
+                        pixel_edit::CloneSample::Layer => None,
+                        pixel_edit::CloneSample::Below => Some(std::rc::Rc::new(pe.pi.composite_below())),
+                        pixel_edit::CloneSample::All => Some(std::rc::Rc::new(pe.pi.composite())),
+                    };
+                    s = s.with_clone(xform, sample);
+                }
                 if tool == PixelTool::Restore {
                     s = s.with_original(pe.original.clone());
                 }
@@ -1017,6 +1635,42 @@ impl App {
                     pe.lasso.push((x, y));
                 }
             }
+            PixelTool::PenMask => {
+                // A press sets a point, a drag from it pulls its handles
+                // (Alt the one going on only); a double click, or a
+                // press on the first point, closes it.
+                let spp = screen_per_px.max(1e-6);
+                let near = |p: (f32, f32), r: f32| (p.0 - x).hypot(p.1 - y) * spp <= r;
+                let pressed = response.contains_pointer()
+                    && response.ctx.input(|i| i.pointer.primary_pressed());
+                if response.double_clicked() {
+                    pe.pen_drag = false;
+                    if pe.pen.len() > 2 {
+                        close_pen(pe, mode);
+                    }
+                } else if pressed {
+                    if pe.pen.len() > 2 && pe.pen.first().is_some_and(|f| near(f.p, 8.0)) {
+                        pe.pen_drag = false;
+                        close_pen(pe, mode);
+                    } else if pe.pen.last().is_some_and(|l| near(l.p, 3.0)) {
+                        // The second press of a double click.
+                        pe.pen_drag = false;
+                    } else {
+                        pe.pen.push(pixel_edit::PenNode::corner((x, y)));
+                        pe.pen_drag = true;
+                    }
+                } else if dragged && pe.pen_drag {
+                    if let Some(l) = pe.pen.last_mut() {
+                        l.out = (x - l.p.0, y - l.p.1);
+                        if !mods.alt {
+                            l.inn = (-l.out.0, -l.out.1);
+                        }
+                    }
+                }
+                if stopped || clicked {
+                    pe.pen_drag = false;
+                }
+            }
             PixelTool::EdgeMask => {
                 let reach = pe.opts.magnet_reach;
                 if started {
@@ -1065,8 +1719,7 @@ impl App {
                     pe.opts.tolerance,
                     pe.opts.contiguous,
                 ) {
-                    let sel = pixel_edit::combine(pe.pi.sel.as_ref(), m, mode);
-                    pe.set_selection(sel);
+                    pe.select_new(m, mode);
                 }
             }
             PixelTool::Fill if clicked && inside => {
@@ -1097,9 +1750,36 @@ impl App {
                     let mode = pe.opts.sel_mode;
                     close_freehand(pe, mode);
                 }
+                Some(pe) if pe.tool == PixelTool::PenMask && pe.pen.len() > 2 => {
+                    let mode = pe.opts.sel_mode;
+                    close_pen(pe, mode);
+                }
                 Some(pe) if pe.warp.is_some() => pe.apply_warp(),
+                Some(pe) if pe.tool == PixelTool::Move && !pe.placement.is_identity() => {
+                    pe.apply_placement(None)
+                }
                 _ => self.finish_pixel_edit(),
             }
+            return;
+        }
+        // Copy, cut and paste: the windowing layer gives Ctrl+C, Ctrl+X
+        // and Ctrl+V as copy, cut and paste events (a paste event only
+        // while the system clipboard holds text), not key presses.
+        let (copy_ev, cut_ev, paste_text) =
+            ctx.input(|i| crate::interaction::clipboard_events(&i.events));
+        let seen = &mut self.paste_seen;
+        let paste_bare =
+            ctx.input(|i| crate::interaction::paste_without_text(&i.events, seen).is_some());
+        if pressed(Key::C, cmd) || copy_ev {
+            self.pixel_copy(false);
+            return;
+        }
+        if pressed(Key::X, cmd) || cut_ev {
+            self.pixel_copy(true);
+            return;
+        }
+        if pressed(Key::V, cmd) || paste_text.is_some() || paste_bare {
+            self.pixel_paste();
             return;
         }
         // The zoom of the image window.
@@ -1137,8 +1817,14 @@ impl App {
         if pressed(Key::Escape, Modifiers::NONE) {
             // Esc leaves a warp off first, then drops the selection, then
             // ends the editing (an outline being clicked goes first).
-            if !pe.lasso.is_empty() {
+            if !pe.lasso.is_empty() || !pe.pen.is_empty() {
                 pe.lasso.clear();
+                pe.pen.clear();
+                pe.pen_drag = false;
+            } else if pe.tool == PixelTool::Move && !pe.placement.is_identity() {
+                pe.placement = Default::default();
+                pe.move_drag = None;
+                pe.sync_place_preview();
             } else if pe.warp.is_some() {
                 pe.cancel_warp();
             } else if pe.pi.sel.is_some() {
@@ -1162,6 +1848,10 @@ impl App {
             let (w, h) = pe.pi.img.dimensions();
             let inv = pixel_edit::invert(pe.pi.sel.as_ref(), w, h);
             pe.set_selection(Some(inv));
+        } else if !pe.pen.is_empty() && pressed(Key::Backspace, Modifiers::NONE) {
+            // Backspace takes the pen outline's last point back.
+            pe.pen.pop();
+            pe.pen_drag = false;
         } else if pressed(Key::Delete, Modifiers::NONE) || pressed(Key::Backspace, Modifiers::NONE)
         {
             pe.apply(false, pixel_edit::clear_selection);
@@ -1184,6 +1874,115 @@ impl App {
     }
 }
 
+/// The Move tool's box round what it moves: its outline, the square
+/// handles that scale and the round one above that turns (#4261).
+fn draw_move_box(pe: &PixelEdit, painter: &egui::Painter, map: &dyn Fn(f32, f32) -> egui::Pos2) {
+    use crate::pixel_ops;
+    let b = pe.move_drag.map(|d| d.b).unwrap_or_else(|| pe.move_box());
+    let p = pe.placement;
+    let spp = map(0.0, 0.0).distance(map(1.0, 0.0)).max(1e-6);
+    let to_screen = |q: (f32, f32)| map(q.0, q.1);
+    let blue = egui::Color32::from_rgb(0x1E, 0x7C, 0xE8);
+    let corners = pixel_ops::placed_corners(b, &p).map(to_screen);
+    let mut ring = corners.to_vec();
+    ring.push(corners[0]);
+    painter.add(egui::Shape::line(ring.clone(), egui::Stroke::new(3.0, egui::Color32::from_white_alpha(160))));
+    painter.add(egui::Shape::line(ring, egui::Stroke::new(1.0, blue)));
+    let (knob, top) = pixel_ops::rotate_handle(b, &p, BOX_KNOB / spp);
+    let (knob, top) = (to_screen(knob), to_screen(top));
+    painter.line_segment([top, knob], egui::Stroke::new(1.0, blue));
+    painter.circle(knob, 4.5, egui::Color32::WHITE, egui::Stroke::new(1.2, blue));
+    for (_, q) in pixel_ops::scale_handles(b, &p) {
+        painter.rect(
+            egui::Rect::from_center_size(to_screen(q), egui::vec2(7.0, 7.0)),
+            0.0,
+            egui::Color32::WHITE,
+            egui::Stroke::new(1.2, blue),
+            egui::StrokeKind::Middle,
+        );
+    }
+}
+
+/// The Move tool: a box with handles round the selected pixels (the
+/// layer's pixels that are not clear with nothing selected). A drag inside
+/// it, or anywhere away from its handles, moves them; the corners and the
+/// middles of the sides scale (a corner keeps the width to the height
+/// while Keep ratio is on, Shift the other way); the round handle above
+/// it, or just outside a corner, turns (Shift in steps of 15 degrees).
+/// The pixels follow the drag and go into the layer on release, one undo
+/// step (#4261, #4263).
+fn move_input(
+    pe: &mut PixelEdit,
+    response: &Response,
+    x: f32,
+    y: f32,
+    mods: Modifiers,
+    screen_per_px: f32,
+) {
+    use crate::pixel_ops::{self, BoxHandle};
+    let spp = screen_per_px.max(1e-6);
+    let (grab, knob) = (BOX_GRAB / spp, BOX_KNOB / spp);
+    let pressed =
+        response.contains_pointer() && response.ctx.input(|i| i.pointer.primary_pressed());
+    let dragged = response.dragged_by(PointerButton::Primary);
+    let released = response.drag_stopped_by(PointerButton::Primary)
+        || response.clicked_by(PointerButton::Primary)
+        || (pe.move_drag.is_some() && !response.ctx.input(|i| i.pointer.primary_down()));
+    let b = pe.move_drag.map(|d| d.b).unwrap_or_else(|| pe.move_box());
+    let hover = pe
+        .move_drag
+        .map(|d| d.handle)
+        .unwrap_or_else(|| pixel_ops::box_hit(b, &pe.placement, x, y, grab, knob));
+    response.ctx.set_cursor_icon(match hover {
+        BoxHandle::Move => egui::CursorIcon::Move,
+        BoxHandle::Rotate => egui::CursorIcon::Alias,
+        BoxHandle::Scale(ix, iy) => {
+            // The handle's direction once the box is turned.
+            let a = (iy as f32).atan2(ix as f32) + pe.placement.angle.to_radians();
+            let k = ((a.to_degrees().rem_euclid(180.0) + 22.5) / 45.0) as i32 % 4;
+            match k {
+                0 => egui::CursorIcon::ResizeHorizontal,
+                1 => egui::CursorIcon::ResizeNwSe,
+                2 => egui::CursorIcon::ResizeVertical,
+                _ => egui::CursorIcon::ResizeNeSw,
+            }
+        }
+    });
+    if pressed && pe.move_drag.is_none() {
+        pe.move_drag = Some(MoveDrag {
+            handle: hover,
+            from: (x, y),
+            start: pe.placement,
+            b,
+        });
+    } else if dragged {
+        if let Some(d) = pe.move_drag {
+            let lock = response
+                .ctx
+                .data(|m| m.get_temp::<bool>(egui::Id::new("pixel_place_lock")))
+                .unwrap_or(true);
+            pe.placement = pixel_ops::drag_box(
+                d.b,
+                &d.start,
+                d.handle,
+                d.from,
+                (x, y),
+                lock != mods.shift,
+                mods.shift,
+            );
+        }
+    }
+    if released {
+        if let Some(d) = pe.move_drag.take() {
+            if pe.placement != d.start {
+                pe.apply_placement(Some(d.b));
+                return;
+            }
+        }
+    }
+    pe.sync_place_preview();
+}
+
 /// How a new selection joins the one there is: Shift adds, Ctrl takes
 /// away, Shift and Ctrl keep where only one is; else the mode chosen on
 /// the property bar.
@@ -1202,8 +2001,17 @@ pub fn close_freehand(pe: &mut PixelEdit, mode: SelectMode) {
     let pts = std::mem::take(&mut pe.lasso);
     let (w, h) = pe.pi.img.dimensions();
     if let Some(m) = pixel_edit::lasso_mask(w, h, &pts) {
-        let sel = pixel_edit::combine(pe.pi.sel.as_ref(), m, mode);
-        pe.set_selection(sel);
+        pe.select_new(m, mode);
+    }
+}
+
+/// Close the pen outline into a selection.
+pub fn close_pen(pe: &mut PixelEdit, mode: SelectMode) {
+    let nodes = std::mem::take(&mut pe.pen);
+    pe.pen_drag = false;
+    let (w, h) = pe.pi.img.dimensions();
+    if let Some(m) = pixel_edit::lasso_mask(w, h, &pixel_edit::pen_polygon(&nodes, true)) {
+        pe.select_new(m, mode);
     }
 }
 
@@ -1227,14 +2035,12 @@ fn pixel_release(pe: &mut PixelEdit, mods: Modifiers) {
                 pixel_edit::ellipse_mask(w, h, a, b)
             };
             if let Some(m) = m {
-                let sel = pixel_edit::combine(pe.pi.sel.as_ref(), m, mode);
-                pe.set_selection(sel);
+                pe.select_new(m, mode);
             }
         }
         PixelTool::Lasso => {
             if let Some(m) = pixel_edit::lasso_mask(w, h, &lasso) {
-                let sel = pixel_edit::combine(pe.pi.sel.as_ref(), m, mode);
-                pe.set_selection(sel);
+                pe.select_new(m, mode);
             }
         }
         PixelTool::Gradient => {
@@ -1259,8 +2065,7 @@ fn pixel_release(pe: &mut PixelEdit, mods: Modifiers) {
                 return;
             };
             if let Some(m) = crate::pixel_ops::band_mask(w, h, a, b, pe.opts.band_soft) {
-                let sel = pixel_edit::combine(pe.pi.sel.as_ref(), m, mode);
-                pe.set_selection(sel);
+                pe.select_new(m, mode);
             }
         }
         PixelTool::Shape => {
@@ -1326,7 +2131,9 @@ pub fn draw_mapped(
         }
         v.full = false;
         v.dirty = None;
+        v.thumbs.stale = true;
     } else if let Some(b) = v.dirty.take() {
+        v.thumbs.stale = true;
         let (x0, y0) = (b[0].min(w), b[1].min(h));
         let (x1, y1) = (b[2].min(w), b[3].min(h));
         if x1 > x0 && y1 > y0 {
@@ -1357,14 +2164,12 @@ pub fn draw_mapped(
     }
     v.showed_preview = preview;
     if v.sel_changed {
-        v.outline = pe.pi.sel.as_ref().map(|m| {
-            let o = pixel_edit::selection_outline(m);
-            let img = egui::ColorImage::from_rgba_unmultiplied(
-                [o.width() as usize, o.height() as usize],
-                o.as_raw(),
-            );
-            ctx.load_texture("pixel_edit_outline", img, opts)
-        });
+        v.edges = pe
+            .pi
+            .sel
+            .as_ref()
+            .map(pixel_edit::selection_edges)
+            .unwrap_or_default();
         v.sel_changed = false;
     }
     let corners = [
@@ -1428,10 +2233,10 @@ pub fn draw_mapped(
     if let Some(t) = &v.overlay {
         painter.add(quad(t.id()));
     }
-    if pe.target != MaskTarget::QuickMask {
-        if let Some(t) = &v.outline {
-            painter.add(quad(t.id()));
-        }
+    // While the Move tool's pixels follow a drag, the box shows where
+    // they go in place of the selection's outline.
+    if pe.target != MaskTarget::QuickMask && !v.edges.is_empty() && pe.placed_for.is_none() {
+        marching_ants(painter, &v.edges, map);
     }
     // The picture's edge.
     let edge = egui::Stroke::new(1.0, egui::Color32::from_rgb(0x1E, 0x7C, 0xE8));
@@ -1528,10 +2333,28 @@ pub fn draw_mapped(
                 .collect();
             painter.add(egui::Shape::line(pts, line));
         }
-        for p in &wp.pts {
+        // The point the pointer would take shows larger and filled.
+        let hot = wp.drag.or_else(|| {
+            let ptr = to_screen(pointer?);
+            wp.pts
+                .iter()
+                .enumerate()
+                .map(|(k, p)| (k, to_screen(*p).distance(ptr)))
+                .filter(|(_, d)| *d <= crate::pixel_warp::GRAB_RADIUS)
+                .min_by(|a, b| a.1.total_cmp(&b.1))
+                .map(|(k, _)| k)
+        });
+        for (k, p) in wp.pts.iter().enumerate() {
             let c = to_screen(*p);
-            painter.circle(c, 4.0, egui::Color32::WHITE, line);
+            if hot == Some(k) {
+                painter.circle(c, 6.0, line.color, egui::Stroke::new(1.5, egui::Color32::WHITE));
+            } else {
+                painter.circle(c, 4.0, egui::Color32::WHITE, line);
+            }
         }
+    }
+    if pe.tool == PixelTool::Move && pe.warp.is_none() {
+        draw_move_box(pe, painter, map);
     }
     if pe.lasso.len() > 1 {
         let pts: Vec<_> = pe.lasso.iter().map(|p| to_screen(*p)).collect();
@@ -1545,6 +2368,47 @@ pub fn draw_mapped(
         }
         if let Some(f) = pe.lasso.first() {
             painter.circle(to_screen(*f), 4.0, egui::Color32::WHITE, ink);
+        }
+    }
+    // The pen outline: its curve so far, on to the pointer, its points,
+    // the first one round, and the handles of the last.
+    if pe.tool == PixelTool::PenMask && !pe.pen.is_empty() {
+        let line: Vec<_> = pixel_edit::pen_polygon(&pe.pen, false)
+            .into_iter()
+            .map(to_screen)
+            .collect();
+        if line.len() > 1 {
+            painter.add(egui::Shape::line(line, ink));
+        }
+        if let (Some(l), Some(p), false) = (pe.pen.last(), pointer, pe.pen_drag) {
+            let next = [*l, pixel_edit::PenNode::corner(p)];
+            let pts: Vec<_> = pixel_edit::pen_polygon(&next, false)
+                .into_iter()
+                .map(to_screen)
+                .collect();
+            painter.add(egui::Shape::dashed_line(&pts, ink, 4.0, 3.0));
+        }
+        for n in &pe.pen {
+            let c = to_screen(n.p);
+            painter.rect(
+                egui::Rect::from_center_size(c, egui::vec2(6.0, 6.0)),
+                0.0,
+                egui::Color32::WHITE,
+                ink,
+                egui::StrokeKind::Middle,
+            );
+        }
+        if let Some(f) = pe.pen.first() {
+            painter.circle(to_screen(f.p), 4.0, egui::Color32::WHITE, ink);
+        }
+        if let Some(l) = pe.pen.last() {
+            for h in [l.inn, l.out] {
+                if h != (0.0, 0.0) {
+                    let e = to_screen((l.p.0 + h.0, l.p.1 + h.1));
+                    painter.line_segment([to_screen(l.p), e], ink);
+                    painter.circle_filled(e, 3.0, ink.color);
+                }
+            }
         }
     }
     // The brush's size under the pointer, and the clone source.
@@ -1587,10 +2451,128 @@ pub fn draw_mapped(
     }
 }
 
+/// Dashes and gaps of the selection outline, in screen points.
+const ANT: f32 = 4.0;
+/// How fast the dashes march round the selection, points a second.
+const ANT_SPEED: f64 = 12.0;
+/// More screen points of outline than this and the dashes stand still
+/// (a selection of thousands of specks), so the screen keeps up.
+const ANT_MOST: f32 = 400_000.0;
+
+/// The selection outline as marching ants: a black line with white
+/// dashes on it that move round the selection, clockwise, a line one
+/// screen point wide at every zoom. Only the runs on the screen are
+/// drawn.
+fn marching_ants(
+    painter: &egui::Painter,
+    edges: &[[(f32, f32); 2]],
+    map: &dyn Fn(f32, f32) -> egui::Pos2,
+) {
+    let clip = painter.clip_rect().expand(2.0);
+    let shown: Vec<(egui::Pos2, egui::Pos2)> = edges
+        .iter()
+        .map(|e| (map(e[0].0, e[0].1), map(e[1].0, e[1].1)))
+        .filter(|(a, b)| clip.intersects(egui::Rect::from_two_pos(*a, *b)))
+        .collect();
+    if shown.is_empty() {
+        return;
+    }
+    let black = egui::Stroke::new(1.0, egui::Color32::BLACK);
+    let white = egui::Stroke::new(1.0, egui::Color32::WHITE);
+    let mut shapes: Vec<egui::Shape> =
+        shown.iter().map(|(a, b)| egui::Shape::line_segment([*a, *b], black)).collect();
+    let length: f32 = shown.iter().map(|(a, b)| (*b - *a).length()).sum();
+    let moving = length <= ANT_MOST;
+    let ctx = painter.ctx();
+    let phase = if moving {
+        (ctx.input(|i| i.time) * ANT_SPEED).rem_euclid(2.0 * ANT as f64) as f32
+    } else {
+        0.0
+    };
+    for (a, b) in shown {
+        ant_dashes(a, b, phase, white, &mut shapes);
+    }
+    painter.extend(shapes);
+    if moving {
+        ctx.request_repaint_after(std::time::Duration::from_millis(50));
+    }
+}
+
+/// The white dashes on the line from `a` to `b`: laid on the line's
+/// own distance along its direction less `phase`, so runs in a line
+/// share one pattern and a larger phase moves them on towards `b`.
+pub(crate) fn ant_dashes(
+    a: egui::Pos2,
+    b: egui::Pos2,
+    phase: f32,
+    stroke: egui::Stroke,
+    out: &mut Vec<egui::Shape>,
+) {
+    let v = b - a;
+    let len = v.length();
+    if len <= 0.0 {
+        return;
+    }
+    let u = v / len;
+    let along = a.x * u.x + a.y * u.y - phase;
+    let mut t = -along.rem_euclid(2.0 * ANT);
+    while t < len {
+        let (d0, d1) = (t.max(0.0), (t + ANT).min(len));
+        if d1 > d0 {
+            out.push(egui::Shape::line_segment([a + u * d0, a + u * d1], stroke));
+        }
+        t += 2.0 * ANT;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use image::{Rgba, RgbaImage};
+    use crate::ui::pixel_cmds::PixelCmd;
+
+    #[test]
+    fn the_pen_closes_its_outline_into_a_selection_and_curves_through_handles() {
+        let (mut app, id) = app_with_picture();
+        app.edit_bitmap_inside(id);
+        let pe = app.pixel_edit.as_mut().unwrap();
+        pe.tool = PixelTool::PenMask;
+        let c = pixel_edit::PenNode::corner;
+        pe.pen = vec![c((1.0, 1.0)), c((10.0, 1.0)), c((10.0, 9.0)), c((1.0, 9.0))];
+        close_pen(pe, SelectMode::Replace);
+        let sel = pe.pi.sel.clone().unwrap();
+        assert_eq!(sel.get_pixel(5, 5)[0], 255);
+        assert_eq!(sel.get_pixel(15, 5)[0], 0);
+        assert!(pe.pen.is_empty() && !pe.pen_drag);
+        // The right side pulled out into a curve reaches further right.
+        let mut bulge = c((10.0, 5.0));
+        bulge.inn = (6.0, -3.0);
+        bulge.out = (-6.0, 3.0);
+        pe.pen = vec![c((1.0, 1.0)), c((10.0, 1.0)), bulge, c((10.0, 9.0)), c((1.0, 9.0))];
+        close_pen(pe, SelectMode::Replace);
+        let sel = pe.pi.sel.clone().unwrap();
+        assert!(sel.get_pixel(11, 3)[0] >= 128, "the curve bulges past the corners");
+        assert_eq!(sel.get_pixel(15, 3)[0], 0);
+    }
+
+    #[test]
+    fn the_ants_dashes_march_along_the_line() {
+        let dashes = |phase: f32| {
+            let mut out = Vec::new();
+            let st = egui::Stroke::new(1.0, egui::Color32::WHITE);
+            ant_dashes(egui::pos2(0.0, 0.0), egui::pos2(16.0, 0.0), phase, st, &mut out);
+            out.iter()
+                .filter_map(|s| match s {
+                    egui::Shape::LineSegment { points, .. } => Some((points[0].x, points[1].x)),
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(dashes(0.0), vec![(0.0, 4.0), (8.0, 12.0)]);
+        // Later on they have moved on along the line.
+        assert_eq!(dashes(2.0), vec![(2.0, 6.0), (10.0, 14.0)]);
+        assert_eq!(dashes(6.0), vec![(0.0, 2.0), (6.0, 10.0), (14.0, 16.0)]);
+    }
 
     /// An app with one 20 x 10 pixel picture, 40 x 20 mm at (10, 10).
     fn app_with_picture() -> (App, ShapeId) {
@@ -1614,6 +2596,67 @@ mod tests {
             ShapeKind::Bitmap { png, .. } => crate::bitmap_fx::decode(png).unwrap(),
             _ => panic!("not a picture"),
         }
+    }
+
+    /// #4376: Apply in the Effects panel runs the effect once; a second
+    /// click does nothing until a setting changes or another effect is
+    /// picked, and the preview stops showing the effect run once more.
+    #[test]
+    fn apply_in_the_effects_panel_runs_the_effect_once() {
+        let (mut app, id) = app_with_picture();
+        app.edit_bitmap_inside(id);
+        let pe = app.pixel_edit.as_mut().unwrap();
+        let before = pe.pi.img.clone();
+        pe.effect = Some(crate::fx::new_effect("invert_colors"));
+        pe.refresh_preview();
+        assert!(pe.preview.is_some());
+        crate::ui::pixel_bar::apply_panel_effect(pe);
+        let once = pe.pi.img.clone();
+        assert_ne!(once, before, "applied");
+        assert!(pe.effect_applied && pe.preview.is_none());
+        crate::ui::pixel_bar::apply_panel_effect(pe);
+        assert_eq!(pe.pi.img, once, "a second Apply does nothing");
+        // A change of a setting lets Apply work again.
+        pe.effect_applied = false;
+        crate::ui::pixel_bar::apply_panel_effect(pe);
+        assert_eq!(pe.pi.img, before, "inverted back");
+    }
+
+    /// #4374: a layer moved partly past the picture's edge and moved back
+    /// comes back whole; a move of its own pixels in between does not
+    /// lose what went past the edge.
+    #[test]
+    fn a_layer_moved_past_the_edge_and_back_comes_back_whole() {
+        let (mut app, id) = app_with_picture();
+        app.edit_bitmap_inside(id);
+        let pe = app.pixel_edit.as_mut().unwrap();
+        pe.tool = PixelTool::Move;
+        let (w, h) = pe.pi.img.dimensions();
+        // Paint a mark in the top left corner.
+        for y in 0..3 {
+            for x in 0..3 {
+                pe.pi.img.put_pixel(x, y, image::Rgba([255, 0, 0, 255]));
+            }
+        }
+        pe.bump();
+        let before = pe.pi.img.clone();
+        let full = [0, 0, w, h];
+        let mv = |dx: f32, dy: f32| crate::pixel_ops::Placement {
+            dx,
+            dy,
+            ..Default::default()
+        };
+        pe.placement = mv(-5.0, -5.0);
+        pe.apply_placement(Some(full));
+        assert_eq!(pe.pi.img.get_pixel(0, 0)[3], before.get_pixel(5, 5)[3]);
+        pe.placement = mv(2.0, 0.0);
+        pe.apply_placement(Some(full));
+        pe.placement = mv(3.0, 5.0);
+        pe.apply_placement(Some(full));
+        assert_eq!(pe.pi.img, before, "the mark came back from past the edge");
+        // Undo goes back one move at a time.
+        pe.undo();
+        assert_eq!(*pe.pi.img.get_pixel(0, 0), *before.get_pixel(5, 5));
     }
 
     #[test]
@@ -1771,6 +2814,76 @@ mod tests {
         );
     }
 
+    /// A picture opened with a second layer painted blue, then finished.
+    fn finish_with_two_layers(app: &mut App, id: ShapeId) {
+        assert!(app.edit_bitmap_inside(id));
+        let pe = app.pixel_edit.as_mut().unwrap();
+        pe.apply_all(true, |pi| {
+            pi.add_layer("top");
+            Some([0, 0, 20, 10])
+        });
+        pe.apply(false, |pi| pixel_edit::fill_selection(pi, [0, 0, 255, 255], 1.0));
+        app.finish_pixel_edit();
+    }
+
+    #[test]
+    fn the_layers_open_again_after_finish_until_the_picture_changes() {
+        let (mut app, id) = app_with_picture();
+        assert!(app.settings.pixel_keep_layers, "on by default");
+        finish_with_two_layers(&mut app, id);
+        assert!(app.pixel_edit.is_none());
+        assert_eq!(pixels(&app, id).get_pixel(3, 3), &Rgba([0, 0, 255, 255]));
+        // Edit Inside again: both layers, the top one in use.
+        assert!(app.edit_bitmap_inside(id));
+        let pe = app.pixel_edit.as_ref().unwrap();
+        assert_eq!(pe.pi.layers.len(), 2);
+        assert_eq!(pe.pi.active, 1);
+        assert_eq!(pe.pi.layer_pixels(0).unwrap().get_pixel(3, 3), &Rgba([255, 255, 255, 255]));
+        assert_eq!(pe.pi.img.get_pixel(3, 3), &Rgba([0, 0, 255, 255]));
+        app.cancel_pixel_edit();
+        // The finish undone: the picture is another, the layers do not fit.
+        app.undo();
+        assert!(app.edit_bitmap_inside(id));
+        assert_eq!(app.pixel_edit.as_ref().unwrap().pi.layers.len(), 1);
+        assert!(app.doc().find_shape(id).unwrap().data.is_empty(), "nothing in the file");
+    }
+
+    #[test]
+    fn layers_saved_in_the_file_open_again_and_flattening_for_good_asks_first() {
+        let (mut app, id) = app_with_picture();
+        app.settings.pixel_keep_layers = false;
+        app.settings.pixel_save_layers = true;
+        finish_with_two_layers(&mut app, id);
+        assert_eq!(app.pixel_kept.len(), 0);
+        let data = app.doc().find_shape(id).unwrap().data.clone();
+        assert!(data.iter().any(|(k, _)| k == crate::pixel_keep::DATA_KEY));
+        assert!(app.edit_bitmap_inside(id));
+        assert_eq!(app.pixel_edit.as_ref().unwrap().pi.layers.len(), 2);
+        app.cancel_pixel_edit();
+        // Kept nowhere: Finish asks, and nothing changes meanwhile.
+        app.settings.pixel_save_layers = false;
+        assert!(app.edit_bitmap_inside(id));
+        let pe = app.pixel_edit.as_mut().unwrap();
+        pe.apply(false, |pi| pixel_edit::fill_selection(pi, [0, 255, 0, 255], 1.0));
+        app.finish_pixel_edit();
+        assert!(matches!(
+            app.dialog,
+            crate::ui::dialogs::Dialog::ConfirmPixelFlatten { .. }
+        ));
+        assert!(app.pixel_edit.is_some());
+        app.finish_pixel_edit_now();
+        assert_eq!(pixels(&app, id).get_pixel(3, 3), &Rgba([0, 255, 0, 255]));
+        assert!(
+            !app.doc().find_shape(id).unwrap().data.iter().any(|(k, _)| k == crate::pixel_keep::DATA_KEY),
+            "the old layers no longer fit and go"
+        );
+        // Told not to ask: it finishes at once.
+        app.dialog = crate::ui::dialogs::Dialog::None;
+        app.settings.warnings.pixel_flatten = false;
+        finish_with_two_layers(&mut app, id);
+        assert!(app.pixel_edit.is_none());
+    }
+
     #[test]
     fn quick_mask_turns_painting_into_a_selection() {
         let (mut app, id) = app_with_picture();
@@ -1810,6 +2923,109 @@ mod tests {
         pe.apply(true, |pi| pixel_edit::apply_effect(pi, &e));
         assert_eq!(pe.pi.img.get_pixel(0, 0)[0], 0);
         assert!(pe.preview.is_none());
+    }
+
+    #[test]
+    fn the_effect_preview_comes_back_after_painting_with_it_open() {
+        // #4264: a Burn stroke with Brightness/Contrast open took the
+        // preview off until a setting changed.
+        let (mut app, id) = app_with_picture();
+        app.edit_bitmap_inside(id);
+        let pe = app.pixel_edit.as_mut().unwrap();
+        pe.effect = Some(crate::fx::new_effect("invert_colors"));
+        pe.refresh_preview();
+        pe.tool = PixelTool::Burn;
+        pe.opts.size = 4.0;
+        pe.opts.hardness = 1.0;
+        pe.step();
+        let mut s = Stroke::new(PixelTool::Burn, pe.opts, &pe.pi, (0.0, 0.0));
+        let b = s.to(&mut pe.pi, 5.0, 5.0);
+        pe.mark(b);
+        assert!(pe.preview.is_none(), "off while painting");
+        pe.keep_preview_current(true);
+        assert!(pe.preview.is_none(), "not while the button is down");
+        pe.keep_preview_current(false);
+        let burnt = pe.pi.img.get_pixel(5, 5)[0];
+        assert!(burnt < 255);
+        let shown = pe.preview.as_ref().expect("the preview is back").get_pixel(5, 5)[0];
+        assert_eq!(shown, 255 - burnt, "the effect runs on the burnt pixels");
+        // Nothing changed since: it is not made again.
+        let rev = pe.preview_rev;
+        pe.keep_preview_current(false);
+        assert_eq!(pe.preview_rev, rev);
+    }
+
+    #[test]
+    fn copy_paste_puts_the_pixels_back_where_they_were_and_move_takes_them() {
+        // #4263: Ctrl+C, Ctrl+V, then the Move tool.
+        let (mut app, id) = app_with_picture();
+        app.edit_bitmap_inside(id);
+        let pe = app.pixel_edit.as_mut().unwrap();
+        pe.apply(false, |pi| {
+            for y in 2..5 {
+                for x in 3..6 {
+                    pi.img.put_pixel(x, y, Rgba([200, 0, 0, 255]));
+                }
+            }
+            Some([0, 0, 20, 10])
+        });
+        pe.set_selection(pixel_edit::rect_mask(20, 10, (3.0, 2.0), (6.0, 5.0)));
+        assert!(pe.copy_pixels(false));
+        // Pasted from what was kept (the system clipboard may hold
+        // anything in a test run).
+        let (img, at) = pe.clip.clone().unwrap();
+        assert_eq!(at, (3, 2));
+        let name = crate::ui::pixel_bar::new_layer_name(pe);
+        assert!(pe.apply_all(true, |pi| pixel_edit::paste_layer_at(pi, name, &img, at)));
+        assert_eq!(pe.pi.layers.len(), 2);
+        assert!(pe.pi.sel.is_none());
+        assert_eq!(*pe.pi.img.get_pixel(3, 2), Rgba([200, 0, 0, 255]));
+        assert_eq!(pe.pi.img.get_pixel(0, 0)[3], 0);
+        // The Move tool's box is the pasted pixels, not the picture.
+        pe.tool = PixelTool::Move;
+        assert_eq!(pe.move_box(), [3, 2, 6, 5]);
+        pe.placement.dx = 10.0;
+        pe.sync_place_preview();
+        assert!(pe.preview.is_some(), "the pixels follow the drag");
+        pe.apply_placement(None);
+        assert!(pe.preview.is_none());
+        assert_eq!(*pe.pi.img.get_pixel(13, 2), Rgba([200, 0, 0, 255]));
+        assert_eq!(pe.pi.img.get_pixel(3, 2)[3], 0);
+        assert_eq!(pe.move_box(), [13, 2, 16, 5]);
+        pe.undo();
+        assert_eq!(*pe.pi.img.get_pixel(3, 2), Rgba([200, 0, 0, 255]));
+    }
+
+    #[test]
+    fn a_cut_clears_the_selected_pixels() {
+        let (mut app, id) = app_with_picture();
+        app.edit_bitmap_inside(id);
+        let pe = app.pixel_edit.as_mut().unwrap();
+        pe.set_selection(pixel_edit::rect_mask(20, 10, (0.0, 0.0), (4.0, 4.0)));
+        assert!(pe.copy_pixels(true));
+        assert_eq!(pe.pi.img.get_pixel(1, 1)[3], 0);
+        assert_eq!(pe.pi.img.get_pixel(8, 8)[3], 255);
+        assert_eq!(pe.clip.as_ref().unwrap().0.dimensions(), (4, 4));
+    }
+
+    #[test]
+    fn the_move_tool_moves_only_the_selected_pixels_and_the_selection() {
+        let (mut app, id) = app_with_picture();
+        app.edit_bitmap_inside(id);
+        let pe = app.pixel_edit.as_mut().unwrap();
+        pe.apply(false, |pi| {
+            pi.img.put_pixel(1, 1, Rgba([0, 0, 255, 255]));
+            Some([0, 0, 20, 10])
+        });
+        pe.set_selection(pixel_edit::rect_mask(20, 10, (0.0, 0.0), (3.0, 3.0)));
+        pe.tool = PixelTool::Move;
+        pe.placement.dx = 5.0;
+        pe.apply_placement(None);
+        assert_eq!(*pe.pi.img.get_pixel(6, 1), Rgba([0, 0, 255, 255]));
+        // What was selected left a clear place; the rest stayed.
+        assert_eq!(pe.pi.img.get_pixel(1, 1)[3], 0);
+        assert_eq!(*pe.pi.img.get_pixel(15, 8), Rgba([255, 255, 255, 255]));
+        assert_eq!(pe.pi.sel_bounds(), Some([5, 0, 8, 3]));
     }
 
     #[test]
@@ -1951,5 +3167,165 @@ mod tests {
         assert_eq!(PixelTool::Attract.liquify_mode(chosen, false), Some(M::Pinch));
         assert_eq!(PixelTool::Repel.liquify_mode(chosen, false), Some(M::Bloat));
         assert_eq!(PixelTool::Brush.liquify_mode(chosen, false), None);
+    }
+
+    /// #4369: a layer's style shows when the layers are put together,
+    /// stays changeable (off again leaves the pixels as they were), is
+    /// copied with the layer and becomes pixels on Merge Down.
+    #[test]
+    fn layer_styles_show_live_and_merge_down_keeps_them() {
+        let (mut app, id) = app_with_picture();
+        app.edit_bitmap_inside(id);
+        let pe = app.pixel_edit.as_mut().unwrap();
+        pe.pi.add_layer("top");
+        let (w, h) = pe.pi.img.dimensions();
+        pe.pi.img = RgbaImage::new(w, h);
+        for y in 3..7 {
+            for x in 6..12 {
+                pe.pi.img.put_pixel(x, y, Rgba([255, 0, 0, 255]));
+            }
+        }
+        let plain = pe.pi.composite();
+        let mut st = crate::pixel_style::LayerStyle::default();
+        st.stroke.on = true;
+        st.stroke.size = 2.0;
+        st.stroke.color = [0, 0, 255];
+        let i = pe.pi.active;
+        pe.pi.layers[i].style = Some(st);
+        assert!(pe.pi.is_layered());
+        let styled = pe.pi.composite();
+        assert_eq!(styled.get_pixel(5, 4), &Rgba([0, 0, 255, 255]), "outline left of the red");
+        assert_eq!(styled.get_pixel(8, 4), &Rgba([255, 0, 0, 255]));
+        // A part of the picture is styled as the whole is.
+        let part = pe.pi.composite_region([4, 2, 8, 6], None).unwrap();
+        assert_eq!(part.get_pixel(1, 2), styled.get_pixel(5, 4));
+        pe.pi.layers[i].style.as_mut().unwrap().on = false;
+        assert_eq!(pe.pi.composite(), plain);
+        pe.pi.layers[i].style.as_mut().unwrap().on = true;
+        pe.pi.duplicate_layer("copy");
+        assert!(pe.pi.layers[pe.pi.active].style.is_some());
+        pe.pi.delete_layer();
+        assert!(pe.pi.merge_down());
+        assert_eq!(pe.pi.img.get_pixel(5, 4), &Rgba([0, 0, 255, 255]));
+    }
+
+    /// #4370: the Text tool's layer keeps its text: changing it draws it
+    /// again, painting on it makes it pixels, an empty one goes when the
+    /// typing ends, and it is saved with the layers.
+    #[test]
+    fn text_layers_stay_text_until_painted_and_empty_ones_go() {
+        tracedraw_text::install();
+        let (mut app, id) = app_with_picture();
+        app.edit_bitmap_inside(id);
+        let pe = app.pixel_edit.as_mut().unwrap();
+        let n = pe.pi.layers.len();
+        pe.tool = PixelTool::Text;
+        pe.start_text(2.0, 8.0);
+        assert_eq!(pe.pi.layers.len(), n + 1);
+        assert!(pe.text_edit.is_some() && pe.active_text().is_some());
+        // Nothing typed: the layer goes when the typing ends.
+        pe.end_text();
+        assert_eq!(pe.pi.layers.len(), n);
+        pe.start_text(2.0, 8.0);
+        pe.change_text(|t| {
+            t.text = "Hi".into();
+            t.size = 8.0;
+        });
+        pe.end_text();
+        assert_eq!(pe.pi.layers.len(), n + 1);
+        let i = pe.pi.active;
+        assert_eq!(pe.pi.layers[i].name, "Hi");
+        let text = pe.active_text().cloned().unwrap();
+        let png = crate::bitmap_fx::encode(&pe.pi.composite()).unwrap();
+        let saved = crate::pixel_keep::save(&pe.pi, &png).unwrap();
+        let (layers, _) = crate::pixel_keep::load(&saved, &png).unwrap();
+        assert_eq!(layers[i].text.as_ref(), Some(&text));
+        // Moved as a whole by the Move tool: still text, further right.
+        pe.placement.dx = 3.0;
+        pe.apply_placement(None);
+        assert_eq!(pe.active_text().unwrap().at.0, text.at.0 + 3.0);
+        // An effect on its pixels makes it plain pixels.
+        pe.apply(false, |pi| pixel_edit::fill_selection(pi, [0, 0, 0, 255], 1.0));
+        assert!(pe.active_text().is_none());
+        pe.undo();
+        assert!(pe.active_text().is_some(), "undo brings the text back");
+    }
+
+    /// #4394: the clone brush copies its source mirrored when asked, and
+    /// from every layer onto a clear one.
+    #[test]
+    fn the_clone_brush_mirrors_and_copies_from_all_layers() {
+        let mut pi = PixelImage::new(RgbaImage::from_fn(40, 10, |x, _| {
+            if x < 20 {
+                Rgba([x as u8 * 10, 0, 0, 255])
+            } else {
+                Rgba([0, 0, 0, 255])
+            }
+        }));
+        let mut opts = BrushOpts { size: 9.0, hardness: 1.0, flow: 1.0, ..Default::default() };
+        opts.clone_flip_h = true;
+        let xform = pixel_edit::CloneXform {
+            anchor: (30.5, 5.5),
+            src: (10.5, 5.5),
+            angle: 0.0,
+            scale: 1.0,
+            flip_h: true,
+            flip_v: false,
+        };
+        let mut s = Stroke::new(PixelTool::Clone, opts, &pi, (-20.0, 0.0)).with_clone(xform, None);
+        s.to(&mut pi, 30.5, 5.5);
+        // Right of the anchor comes from left of the source: mirrored.
+        assert_eq!(pi.img.get_pixel(32, 5)[0], 80);
+        assert_eq!(pi.img.get_pixel(28, 5)[0], 120);
+        // From all layers onto a clear layer.
+        pi.add_layer("clone");
+        let all = std::rc::Rc::new(pi.composite());
+        let plain = pixel_edit::CloneXform { flip_h: false, ..xform };
+        let mut s = Stroke::new(PixelTool::Clone, opts, &pi, (-20.0, 0.0)).with_clone(plain, Some(all));
+        s.to(&mut pi, 30.5, 5.5);
+        assert_eq!(pi.img.get_pixel(30, 5), &Rgba([100, 0, 0, 255]));
+        assert_eq!(pi.img.get_pixel(5, 5)[3], 0, "the rest stays clear");
+        assert_eq!(pi.layers[0].img.get_pixel(5, 5), &Rgba([50, 0, 0, 255]), "beneath unchanged");
+    }
+
+    /// #4391 #4393: the selection's commands from the right-click menu:
+    /// a stroke along its edge, expand and contract by the pixels asked,
+    /// and the tool's feather on new selections.
+    #[test]
+    fn selection_stroke_expand_contract_and_feather() {
+        let (mut app, id) = app_with_picture();
+        app.edit_bitmap_inside(id);
+        let pe = app.pixel_edit.as_mut().unwrap();
+        let (w, h) = pe.pi.img.dimensions();
+        let m = pixel_edit::rect_mask(w, h, (6.0, 3.0), (14.0, 7.0)).unwrap();
+        pe.set_selection(Some(m.clone()));
+        let ask = PxAsk {
+            cmd: PixelCmd::StrokeSelection,
+            px: 1.0,
+            color: [0, 0, 0, 255],
+            opacity: 1.0,
+            at: crate::pixel_style::StrokeAt::Outside,
+            pos: None,
+        };
+        crate::ui::pixel_canvas::run_asked(&mut app, ask);
+        let pe = app.pixel_edit.as_mut().unwrap();
+        assert_eq!(pe.pi.img.get_pixel(5, 4), &Rgba([0, 0, 0, 255]));
+        assert_eq!(pe.pi.img.get_pixel(8, 4), &Rgba([255, 255, 255, 255]));
+        let ask = PxAsk { cmd: PixelCmd::Expand, px: 2.0, ..ask };
+        crate::ui::pixel_canvas::run_asked(&mut app, ask);
+        let pe = app.pixel_edit.as_mut().unwrap();
+        assert_eq!(pe.pi.sel.as_ref().unwrap().get_pixel(4, 4)[0], 255);
+        let ask = PxAsk { cmd: PixelCmd::Contract, px: 3.0, ..ask };
+        crate::ui::pixel_canvas::run_asked(&mut app, ask);
+        let pe = app.pixel_edit.as_mut().unwrap();
+        let sel = pe.pi.sel.clone().unwrap();
+        assert_eq!(sel.get_pixel(6, 4)[0], 0);
+        assert_eq!(sel.get_pixel(10, 5)[0], 255);
+        // The tool's feather softens a new selection's edge.
+        pe.set_selection(None);
+        pe.opts.sel_feather = 2.0;
+        pe.select_new(m, SelectMode::Replace);
+        let v = pe.pi.sel.as_ref().unwrap().get_pixel(6, 5)[0];
+        assert!(v > 0 && v < 255, "{v}");
     }
 }

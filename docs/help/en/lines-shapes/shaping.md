@@ -73,13 +73,15 @@ objects in one undo step:
 The results stay together in a group, without outlines (except for Exclude
 Overlaps, which keeps the top object's outline).
 
-[[menu.object.combine_live]] keeps the objects. It groups them and draws the
-group as one combined curve, in the top object's paint. In the
-[[effect.combine]] entry of the Effects panel, choose [[menu.object.weld]],
-[[menu.object.back_minus_front]] (painted like the bottom object),
-[[menu.object.intersect]] or [[menu.object.exclude]]. Moving or editing an
-object inside the group updates the combined curve, and Convert to Curves
-makes it permanent.
+[[menu.object.combine_live]] keeps the objects. Choose a mode from its
+submenu: [[menu.object.weld]], [[menu.object.back_minus_front]] (painted like
+the bottom object), [[menu.object.front_minus_back]] (painted like the top
+object), [[menu.object.intersect]] or [[menu.object.exclude]]. It groups the
+objects and draws the group as the one curve the mode makes; the mode can be
+changed later in the [[effect.combine]] entry of the Effects panel. The
+objects stay as they are: moving or editing one inside the group updates the
+combined curve, removing the effect from the group (Properties or Effects)
+gives them back, and Convert to Curves makes the result permanent.
 
 ![Break into Pieces: every piece of three overlapping objects, pulled apart here to show them](../../img/lines-shapes-shaping-pieces-1.png)
 
@@ -127,6 +129,11 @@ Open the [[docker.shaping]] panel from
    [[menu.object.intersect]], choose what to keep:
    [[docker.leave_original_source]] and [[docker.leave_original_target]].
    Each operation remembers its own choice.
+   For [[menu.object.weld]], [[menu.object.intersect]],
+   [[menu.object.front_minus_back]] and [[menu.object.back_minus_front]],
+   **Keep live** makes a live combine instead: the objects stay,
+   grouped and editable, and the group shows the result (see
+   [Pieces and live combine](#pieces)).
 3. Select the objects, the target last.
 4. Click the button named after the operation. It stays pale until enough
    objects are selected, and a line says how many are needed.

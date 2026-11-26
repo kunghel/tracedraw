@@ -275,14 +275,69 @@ pub fn parse_palette_xml(xml: &str) -> Vec<(String, Color)> {
                 q: *q,
             },
             ("REGISTRATION", _) => Color::Registration,
-            _ => {
-                log::warn!("document palette colour {name:?} in {cs:?} skipped");
-                continue;
-            }
+            // A colour of a named library or ink (#4229): `cs` is then the
+            // ink's name ("PANTONE 443 C") or a written value
+            // ("C:61 M:0 Y:51 K:0", "R:255 G:0 B:0"). The written value
+            // gives the colour; otherwise four tints are CMYK and three RGB.
+            _ => match spec_color(&cs)
+                .or_else(|| spec_color(&name.to_ascii_uppercase()))
+                .or(match tints.as_slice() {
+                    [c, m, y, k] => Some(Color::Cmyk {
+                        c: *c,
+                        m: *m,
+                        y: *y,
+                        k: *k,
+                    }),
+                    [r, g, b] => Some(Color::Rgb {
+                        r: *r,
+                        g: *g,
+                        b: *b,
+                    }),
+                    // A single value is the ink's tint, not its colour.
+                    _ => None,
+                }) {
+                Some(c) => c,
+                None => {
+                    log::warn!("document palette colour {name:?} in {cs:?} skipped");
+                    continue;
+                }
+            },
         };
         out.push((name, color));
     }
     out
+}
+
+/// A colour written out as its values, `C:61 M:0 Y:51 K:0` (percent) or
+/// `R:255 G:0 B:0` (0 to 255), upper case; `None` for anything else.
+fn spec_color(spec: &str) -> Option<Color> {
+    let mut vals = std::collections::BTreeMap::new();
+    for part in spec.split(|c: char| c.is_whitespace() || c == ',') {
+        let Some((k, v)) = part.split_once(':') else {
+            continue;
+        };
+        let v = v.trim().parse::<f32>().ok().filter(|v| v.is_finite())?;
+        let k = k.trim();
+        if k.len() != 1 {
+            return None;
+        }
+        vals.insert(k.chars().next()?, v);
+    }
+    let get = |k: char, full: f32| vals.get(&k).map(|v| (v / full).clamp(0.0, 1.0));
+    match vals.len() {
+        4 => Some(Color::Cmyk {
+            c: get('C', 100.0)?,
+            m: get('M', 100.0)?,
+            y: get('Y', 100.0)?,
+            k: get('K', 100.0)?,
+        }),
+        3 => Some(Color::Rgb {
+            r: get('R', 255.0)?,
+            g: get('G', 255.0)?,
+            b: get('B', 255.0)?,
+        }),
+        _ => None,
+    }
 }
 
 /// The document information a ZIP file keeps in the XMP packet of
@@ -520,6 +575,52 @@ mod tests {
         assert!(matches!(p[4].1, Color::Yiq { .. }));
         assert!(matches!(p[5].1, Color::Gray { .. }));
         assert_eq!(p[6].1, Color::Registration);
+    }
+
+    #[test]
+    fn document_palette_reads_library_and_written_colours() {
+        let xml = r#"<color name="PANTONE 443 C" cs="PANTONE 443 C" tints="0.1,0.2,0.3,0.4"/>
+<color name="C:61 M:0 Y:51 K:0" cs="C:61 M:0 Y:51 K:0" tints=""/>
+<color name="R:255 G:0 B:0" cs="R:255 G:0 B:0"/>
+<color name="Ink" cs="Spot Ink" tints="0.5,0.25,1"/>
+<color name="Odd" cs="Something" tints="0.5,0.5"/>"#;
+        let p = parse_palette_xml(xml);
+        assert_eq!(p.len(), 4);
+        assert_eq!(p[0].0, "PANTONE 443 C");
+        assert_eq!(
+            p[0].1,
+            Color::Cmyk {
+                c: 0.1,
+                m: 0.2,
+                y: 0.3,
+                k: 0.4
+            }
+        );
+        assert_eq!(
+            p[1].1,
+            Color::Cmyk {
+                c: 0.61,
+                m: 0.0,
+                y: 0.51,
+                k: 0.0
+            }
+        );
+        assert_eq!(
+            p[2].1,
+            Color::Rgb {
+                r: 1.0,
+                g: 0.0,
+                b: 0.0
+            }
+        );
+        assert_eq!(
+            p[3].1,
+            Color::Rgb {
+                r: 0.5,
+                g: 0.25,
+                b: 1.0
+            }
+        );
     }
 
     #[test]

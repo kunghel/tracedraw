@@ -1560,4 +1560,27 @@ mod tests {
         app.undo();
         assert_eq!(top(&app), Some(tracedraw_core::VerticalAlign::Top));
     }
+
+    /// Pointing at a size or a font in a list while typing in a cell shows
+    /// it on the cell's text and, when the pointer leaves, the table is
+    /// there as it was with its text (#4102: the table and everything
+    /// drawn before it went, and did not come back).
+    #[test]
+    fn a_font_preview_while_typing_in_a_cell_leaves_the_table() {
+        let (mut app, id) = app_with_table();
+        app.table_click(id, at(1, 1), false);
+        app.cell_insert("abc");
+        let before = table(&app);
+        let size = app.text_size_pt;
+        app.preview_text("size", Some(crate::ui::font_list::LiveText::Size(size * 3.0)));
+        app.preview_text("size", None);
+        assert!(app.doc().find_shape(id).is_some(), "the table is there");
+        assert_eq!(table(&app), before);
+        assert_eq!(app.cell_text(), "abc");
+        // A size picked for real changes the cell, and one undo takes it back.
+        app.text_size_pt = size * 3.0;
+        app.apply_text_style();
+        assert!(app.doc().find_shape(id).is_some());
+        assert_eq!(app.cell_text(), "abc");
+    }
 }

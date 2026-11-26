@@ -5,6 +5,7 @@
 //! horizontal text); then what to click next. Changes
 //! apply to the selected dimensions and to the ones made next.
 
+use crate::ui::btn_icons::IconUi;
 use crate::app::App;
 use crate::dimensions::{units_choices, ArrowStyle, DimensionStyle, LabelAlong, TextPosition};
 use crate::i18n::tr;
@@ -160,7 +161,10 @@ fn length_field(
 /// lines joined in rounded corners (#641).
 fn options_part(app: &mut App, ui: &mut Ui, style: &DimensionStyle) {
     let button = ui
-        .button(format!("{} \u{23F7}", tr("dimension.options")))
+        .add(crate::ui::btn_icons::Ib::with_text(
+            "dimension.options",
+            format!("{} \u{23F7}", tr("dimension.options")),
+        ))
         .rich_tip(tr("dimension.options"));
     // The menu stays open while its fields are typed in and stepped; a
     // click outside closes it.
@@ -212,6 +216,12 @@ fn options_part(app: &mut App, ui: &mut Ui, style: &DimensionStyle) {
             ui.separator();
             text_background_row(app, ui, style);
             add_dimensions_gap_row(app, ui);
+            // Deleting a measured object takes its dimensions (#4211).
+            ui.checkbox(
+                &mut app.settings.delete_dimensions_with_object,
+                tr("dimension.delete_with_object"),
+            )
+            .rich_tip(crate::ui::tips::keyed("dimension.delete_with_object"));
         });
 }
 
@@ -300,7 +310,7 @@ pub(crate) fn drawing_scale_combo(app: &mut App, ui: &mut Ui, salt: &str) {
                 }
             }
             ui.separator();
-            if ui.button(tr("dimension.drawing_scale_custom")).clicked() {
+            if ui.ibutton("dimension.drawing_scale_custom").clicked() {
                 custom = true;
             }
         })

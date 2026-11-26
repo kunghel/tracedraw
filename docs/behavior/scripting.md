@@ -44,6 +44,17 @@ before the error are kept, as one undo step.
 
 `MsgBox(text)` prints its text to the output; there is no dialog.
 
+### Asking the user for a value
+
+`InputBox(prompt, title, default)` and `prompt(message, default)` show
+the app's input box (the one VBA macros' `InputBox` uses) and wait for
+the answer. `InputBox` gives the typed text, or `""` for Cancel; `prompt`
+gives the typed text, or `null` for Cancel. A script or plugin that uses
+either runs on a thread of its own while the box is up, so the drawing
+keeps the changes it made so far on screen; all of them are still one
+undo step. Where nobody can answer (scripts written by the AI assistant,
+file filters), both give the default at once (`""` without one). (#4139)
+
 ## A first script
 
 A fan of twelve rounded bars, each a little more orange than the one
@@ -116,10 +127,21 @@ global, so a script can start with either form.
 | `CreateEllipse(x, y, w, h)` | on the current layer |
 | `CreateArtisticText(x, y, text, font, sizePt)` | on the current layer |
 | `CreatePath(pathData)` | on the current layer |
+| `Data`, `Properties` | the drawing's own name and value pairs (#4137), see below |
 | `Export(path, format)` | writes the drawing to a file; the file name's extension picks the format (`svg`, `pdf`, `eps`, `ps`, `prn`, `dxf`, `emf`, `wmf`, `plt`, `psd`, `html`, `png`, `tdraw`), and `format` is accepted but not used |
 
 `BeginCommandGroup(name)` and `EndCommandGroup()` are accepted and do
 nothing: a script's changes are one undo step already.
+
+`ActiveDocument.Data` keeps text values by name in the drawing itself, so
+a script or plugin can store its settings, presets or calibration with the
+file instead of in hidden objects. `Get(name)` gives the value (`""` when
+there is none), `Set(name, value)` adds or changes it, `Has(name)`,
+`Remove(name)` and `Clear()` do what they say, `Count` and `Names` list
+them, `Item(indexOrName).Value` reads or writes one (1-based index), and
+a `for ... of` loop walks them. Each change is an undo step of the script
+("Document Data"); the pairs are saved in `.tdraw` files. Macros reach
+the same pairs as `ActiveDocument.Data` or `ActiveDocument.Properties`.
 
 ### Pages, layers
 

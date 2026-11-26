@@ -434,6 +434,11 @@ pub fn warnings_page(app: &mut App, ui: &mut Ui) {
             "options.warn_shelf_remove",
             "options.warn_shelf_remove_tip",
         ));
+    ui.checkbox(&mut w.pixel_flatten, tr("options.warn_pixel_flatten"))
+        .rich_tip(crate::ui::tips::pair(
+            "options.warn_pixel_flatten",
+            "options.warn_pixel_flatten_tip",
+        ));
     if crate::ui::options::DesktopOnly::HardwareAcceleration.shown() {
         ui.checkbox(
             &mut w.hardware_acceleration,

@@ -921,6 +921,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "be1e0bca6c3637f992fc1cc7cbc52a78c1ef6db076dbf1059c4323d6a2048376"
 
 [[package]]
+name = "datamatrix"
+version = "0.3.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b2d3882a013aca40e2e24f0e454ef7a581a50c603d67eded130013ab641a289d"
+dependencies = [
+ "arrayvec",
+ "flagset",
+]
+
+[[package]]
 name = "defmt"
 version = "1.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1326,6 +1336,12 @@ name = "fixedbitset"
 version = "0.5.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1d674e81391d1e1ab681a28d99df07927c6d4aa5b027d7da16ba32d1d21ecd99"
+
+[[package]]
+name = "flagset"
+version = "0.4.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b7ac824320a75a52197e8f2d787f6a38b6718bb6897a35142d749af3c0e8f4fe"
 
 [[package]]
 name = "flate2"
@@ -3396,6 +3412,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d68782463e408eb1e668cf6152704bd856c78c5b6417adaee3203d8f4c1fc9ec"
 
 [[package]]
+name = "qrcode-generator"
+version = "6.1.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "892685c7a313d378de4d0897f7c5be347f296933913219201b8320aca5a5fee1"
+
+[[package]]
 name = "quick-error"
 version = "2.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4460,7 +4482,7 @@ checksum = "06bdbd8cfc056b8d2e2e85f29b56a3bdbecb527cef81eb39e3e7b98af4652770"
 
 [[package]]
 name = "tracedraw"
-version = "0.51.1"
+version = "0.53.0"
 dependencies = [
  "android-activity",
  "android_logger",
@@ -4468,6 +4490,7 @@ dependencies = [
  "base64 0.22.1",
  "boa_engine",
  "csv",
+ "datamatrix",
  "eframe",
  "egui",
  "encoding_rs",
@@ -4481,12 +4504,14 @@ dependencies = [
  "js-sys",
  "jxl-oxide",
  "kurbo",
+ "libc",
  "log",
  "lopdf",
  "matrixmultiply",
  "png",
  "pollster 0.4.0",
  "qrcode",
+ "qrcode-generator",
  "rfd",
  "roxmltree 0.21.1",
  "rqrr",
@@ -4526,7 +4551,7 @@ dependencies = [
 
 [[package]]
 name = "tracedraw-cdr"
-version = "0.51.1"
+version = "0.53.0"
 dependencies = [
  "encoding_rs",
  "flate2",
@@ -4543,7 +4568,7 @@ dependencies = [
 
 [[package]]
 name = "tracedraw-cdr-format"
-version = "0.51.1"
+version = "0.53.0"
 dependencies = [
  "flate2",
  "log",
@@ -4554,7 +4579,7 @@ dependencies = [
 
 [[package]]
 name = "tracedraw-cli"
-version = "0.51.1"
+version = "0.53.0"
 dependencies = [
  "env_logger",
  "flate2",
@@ -4571,7 +4596,7 @@ dependencies = [
 
 [[package]]
 name = "tracedraw-core"
-version = "0.51.1"
+version = "0.53.0"
 dependencies = [
  "base64 0.22.1",
  "flate2",
@@ -4587,12 +4612,13 @@ dependencies = [
 
 [[package]]
 name = "tracedraw-io"
-version = "0.51.1"
+version = "0.53.0"
 dependencies = [
  "aes 0.8.4",
  "base64 0.22.1",
  "cbc 0.1.2",
  "cfb",
+ "encoding_rs",
  "flate2",
  "getrandom 0.3.4",
  "getrandom 0.4.3",
@@ -4620,7 +4646,7 @@ dependencies = [
 
 [[package]]
 name = "tracedraw-render"
-version = "0.51.1"
+version = "0.53.0"
 dependencies = [
  "log",
  "tiny-skia",
@@ -4629,7 +4655,7 @@ dependencies = [
 
 [[package]]
 name = "tracedraw-text"
-version = "0.51.1"
+version = "0.53.0"
 dependencies = [
  "encoding_rs",
  "fontconfig-parser",
@@ -4646,7 +4672,7 @@ dependencies = [
 
 [[package]]
 name = "tracedraw-thumbnailer"
-version = "0.51.1"
+version = "0.53.0"
 dependencies = [
  "tracedraw-cdr",
  "tracedraw-core",
@@ -4658,7 +4684,7 @@ dependencies = [
 
 [[package]]
 name = "tracedraw-tracecut"
-version = "0.51.1"
+version = "0.53.0"
 dependencies = [
  "serde",
  "tracedraw-core",
@@ -4666,14 +4692,14 @@ dependencies = [
 
 [[package]]
 name = "tracedraw-vba"
-version = "0.51.1"
+version = "0.53.0"
 dependencies = [
  "boa_engine",
 ]
 
 [[package]]
 name = "tracedraw-vba-project"
-version = "0.51.1"
+version = "0.53.0"
 dependencies = [
  "cfb",
  "chardetng",

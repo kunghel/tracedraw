@@ -187,6 +187,19 @@ impl Default for Settings3d {
     }
 }
 
+impl Settings3d {
+    /// Every setting back to its default; the mode, the object being edited
+    /// and the art picked stay.
+    pub fn reset(&mut self) {
+        *self = Self {
+            mode: self.mode,
+            editing: self.editing,
+            art: std::mem::take(&mut self.art),
+            ..Self::default()
+        };
+    }
+}
+
 /// The key a 3D object keeps its curve and settings under.
 pub const DATA_KEY: &str = "tracedraw.shape3d";
 

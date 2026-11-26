@@ -62,7 +62,7 @@ fn facts_list_members_with_their_lines() {
     let m = Module::new(
         "Main",
         ModuleKind::Standard,
-        "Sub Go()\r\nActiveDocument.Unit = 3\r\nKill \"a\"\r\nEnd Sub\r\n",
+        "Sub Go()\r\nActiveDocument.Unit = 3\r\nPut #1, 1, x\r\nEnd Sub\r\n",
     );
     let f = module_facts(&m).unwrap();
     assert_eq!(f.members[0].line, 2);

@@ -8,6 +8,37 @@ estampa, e uma moldura de recorte mantém a estampa na camiseta.
 
 ![O desenho posto sobre a foto](../../img/effects-mockup-1-design.png)
 
+## O jeito rápido: o painel Mockup {#panel}
+
+[[menu.effects > menu.effects.mockup]] faz tudo isso num clique, sobre
+dezesseis fotos de produto prontas (camisetas, canecas, garrafa, ecobag,
+almofada, quadro, fachada com letreiro, van, cartões de visita, panfleto,
+bandeira, capinha de celular e caixa) ou sobre uma foto sua.
+
+1. Selecione o desenho.
+2. No painel [[docker.mockup]], clique num produto. A imagem maior mostra
+   onde o desenho vai ficar.
+3. Ajuste **[[docker.mockup_size]]**, **[[docker.mockup_across]]** e
+   **[[docker.mockup_down]]** se precisar e clique em **[[docker.apply]]**.
+
+O desenho se curva sobre o produto (um envelope de malha que segue a
+perspectiva, a volta da caneca ou as ondas da bandeira), pega as dobras, as
+sombras e os brilhos da foto (Deslocar) e, nos produtos claros, o modo de
+mesclagem Multiplicar. Tudo continua editável. Com o mockup selecionado,
+clique noutro produto e em **[[docker.apply]]** de novo para ver nele.
+
+- **[[docker.mockup_shading]]** e **[[docker.mockup_texture]]** deixam a
+  luz e as dobras da foto mais fortes ou mais fracas na estampa.
+- **[[docker.mockup_blend]]**: Multiplicar para produtos claros, Normal para
+  manter as cores da tinta nos escuros.
+- **[[mockup.own_photo]]**: selecione a sua foto junto com o desenho. O
+  desenho vai para o meio da foto; ajuste-o com a ferramenta
+  [[tool.envelope]].
+- **[[docker.mockup_export]]** salva o mockup como JPG para mandar ao
+  cliente, com uma **[[docker.mockup_caption]]** opcional embaixo.
+
+Os passos abaixo fazem o mesmo à mão, sobre uma foto sua.
+
 ## Colocar a foto e o desenho {#place}
 
 1. Escolha [[menu.file > menu.file.import]] e importe a foto de uma camiseta

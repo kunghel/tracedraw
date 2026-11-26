@@ -40,7 +40,7 @@ Status tracked in `docs/features.md`.
 - CLI batch convert (done); installers for Windows, macOS, Linux (done)
 - Signed Windows downloads and a Microsoft Store package: the build signs through SignPath or Azure Artifact Signing and packs an MSIX once the accounts are set up (build ready; signing waits for the accounts, see `code-signing.md`)
 - JavaScript automation with macro recording (done)
-- User interface in 20 languages (done)
+- User interface in 21 languages (done)
 - JSON control channel and MCP server (`tracedraw --mcp`, see `behavior/mcp.md`) (done)
 - WebAssembly build: the same editor in the browser (WebGL 2), published to GitHub Pages and attached to releases (done; see `behavior/web.md`)
 
@@ -51,6 +51,7 @@ Status tracked in `docs/features.md`.
 
 ## M6 Editing, colour and effects (planned)
 - Pick and Shape tool parity: every interaction checked side by side, one behaviour at a time (in progress)
+- Select Same panel: combine appearance, dimensions and text properties, restrict the search to the page or active layer, and undo the resulting selection (#3203; see `behavior/select-same.md`)
 - Extrude: 3D rotation, several lights and bevels (done; see `behavior/extrude.md`)
 - Opacity masks as objects of their own, next to transparency (done: a clip frame drawn as an opacity mask; see `behavior/clip-frame.md`)
 - Artboards: not planned (decided 2026-10-14: pages stay the only drawing areas, as in `.cdr`)

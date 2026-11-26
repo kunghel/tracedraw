@@ -74,11 +74,20 @@ impl MacroProject {
                     )
                 })
                 .collect(),
+            keep_going: false,
         }
     }
 
     pub fn compile(&self) -> Result<vba::Program, vba::CompileError> {
         vba::compile_with(&self.modules(), &self.options())
+    }
+
+    /// [`Self::compile`] for a run: keeping going past what TraceDraw
+    /// cannot do, or not.
+    pub fn compile_for_run(&self, keep_going: bool) -> Result<vba::Program, vba::CompileError> {
+        let mut o = self.options();
+        o.keep_going = keep_going;
+        vba::compile_with(&self.modules(), &o)
     }
 
     /// Write the project to its copy (the code as it is now).
@@ -94,7 +103,6 @@ impl MacroProject {
 pub fn scan(p: &vp::Project) -> Vec<String> {
     let mut out = Vec::new();
     let mut declares = Vec::new();
-    let mut files = false;
     let mut objects = Vec::new();
     let mut shell = false;
     for m in &p.modules {
@@ -125,16 +133,6 @@ pub fn scan(p: &vp::Project) -> Vec<String> {
                 continue;
             }
             let starts = |w: &str| low.starts_with(w);
-            if (starts("open ") && low.contains(" for "))
-                || starts("kill ")
-                || starts("filecopy ")
-                || starts("mkdir ")
-                || starts("rmdir ")
-                || low.contains("freefile")
-                || low.contains(" dir(")
-            {
-                files = true;
-            }
             if low.contains("shell(") || starts("shell ") {
                 shell = true;
             }
@@ -142,7 +140,14 @@ pub fn scan(p: &vp::Project) -> Vec<String> {
             while let Some(i) = rest.find("createobject(\"") {
                 let after = &rest[i + 14..];
                 let name = after.split('"').next().unwrap_or("");
-                if !name.eq_ignore_ascii_case("scripting.dictionary")
+                let known = [
+                    "scripting.dictionary",
+                    "scripting.filesystemobject",
+                    "wscript.shell",
+                    "wscript.network",
+                    "vba.collection",
+                ];
+                if !known.iter().any(|k| name.eq_ignore_ascii_case(k))
                     && !objects
                         .iter()
                         .any(|o: &String| o.eq_ignore_ascii_case(name))
@@ -164,9 +169,6 @@ pub fn scan(p: &vp::Project) -> Vec<String> {
     }
     if !declares.is_empty() {
         out.push(trf("macros.warn_declare", &[("f", &declares.join(", "))]));
-    }
-    if files {
-        out.push(tr("macros.warn_files"));
     }
     if shell {
         out.push(tr("macros.warn_shell"));
@@ -221,6 +223,39 @@ pub fn sub_line(source: &str, name: &str) -> Option<u32> {
     source.lines().enumerate().find_map(|(i, l)| {
         (proc_name(l).is_some_and(|n| n.eq_ignore_ascii_case(name))).then_some(i as u32 + 1)
     })
+}
+
+/// `source` without the `Sub` or `Function` called `name`: from its
+/// first line (with the comment lines right above it) to its `End Sub`
+/// or `End Function`. `None` when no procedure has that name.
+pub fn without_procedure(source: &str, name: &str) -> Option<String> {
+    let lines: Vec<&str> = source.lines().collect();
+    let start = lines
+        .iter()
+        .position(|l| proc_name(l).is_some_and(|n| n.eq_ignore_ascii_case(name)))?;
+    let end = (start..lines.len())
+        .find(|&i| {
+            let l = lines[i].trim().to_ascii_lowercase();
+            l.starts_with("end sub") || l.starts_with("end function")
+        })
+        .unwrap_or(lines.len() - 1);
+    let mut from = start;
+    while from > 0 && lines[from - 1].trim_start().starts_with('\'') {
+        from -= 1;
+    }
+    let mut to = end + 1;
+    // One blank line that separated it from the next goes too.
+    if lines.get(to).is_some_and(|l| l.trim().is_empty()) {
+        to += 1;
+    }
+    let mut out: Vec<&str> = lines[..from].to_vec();
+    out.extend_from_slice(&lines[to..]);
+    let eol = if source.contains("\r\n") { "\r\n" } else { "\n" };
+    let mut text = out.join(eol);
+    if source.ends_with('\n') && !text.is_empty() {
+        text.push_str(eol);
+    }
+    Some(text)
 }
 
 /// The procedure a line declares: `[Public|Private] [Static] Sub|Function
@@ -279,6 +314,9 @@ pub struct MacroState {
     pub prompt: Option<Prompt>,
     /// A run that ended with an error: the error and the project.
     pub error: Option<(RunError, usize)>,
+    /// What the last run kept going past: the macro's name, the steps
+    /// (with how many times each) and the project (#4315).
+    pub skipped: Option<(String, Vec<(RunError, u32)>, usize)>,
     /// Warnings shown before running a project for the first time.
     pub warned: std::collections::BTreeSet<String>,
     /// The drawing's revision after the run's last changes (to add later
@@ -292,6 +330,9 @@ pub struct MacroState {
     pub chosen: Option<(usize, Option<String>, Option<String>)>,
     /// Renaming a project in the manager: (project, the name typed).
     pub renaming: Option<(usize, String)>,
+    /// The manager asks before deleting its chosen row: (project,
+    /// module, macro) (#4409).
+    pub deleting: Option<(usize, Option<String>, Option<String>)>,
     /// Scripts panel: the snippet is VBA, and the other language's text
     /// (swapped in when the language changes).
     pub scripts_vba: bool,
@@ -431,6 +472,31 @@ impl MacroState {
             let p = self.projects.remove(i);
             let _ = std::fs::remove_file(&p.file);
         }
+    }
+
+    /// Delete a module, or one macro of a module, from project `i` and
+    /// save the project's copy (#4409). A form module takes its form
+    /// along.
+    pub fn delete_part(&mut self, i: usize, module: &str, name: Option<&str>) -> Result<(), String> {
+        let p = self.projects.get_mut(i).ok_or("no project")?;
+        let at = p
+            .project
+            .modules
+            .iter()
+            .position(|m| m.name.eq_ignore_ascii_case(module))
+            .ok_or("no module")?;
+        match name {
+            None => {
+                p.project.modules.remove(at);
+                p.project.forms.retain(|f| !f.name.eq_ignore_ascii_case(module));
+            }
+            Some(n) => {
+                let m = &mut p.project.modules[at];
+                m.source = without_procedure(&m.source, n).ok_or("no macro")?;
+            }
+        }
+        p.warnings = scan(&p.project);
+        p.save()
     }
 
     /// Rename project `i` (its name and its copy's file).
@@ -613,7 +679,7 @@ impl App {
         let Some(p) = self.macros.projects.get(project) else {
             return;
         };
-        let program = match p.compile() {
+        let program = match p.compile_for_run(self.settings.macros_keep_going) {
             Ok(prog) => prog,
             Err(e) => {
                 self.macros.error = Some((
@@ -734,9 +800,47 @@ impl App {
         if let Some(on) = c.simulate_overprints {
             self.simulate_overprints = on;
         }
-        for step in c.view_steps {
-            self.run_view_step(step);
+        for (step, selection) in c.view_steps {
+            self.run_view_step_with(step, &selection);
         }
+    }
+
+    /// The system's file dialog a macro asks for (`ScriptTools.GetFileBox`,
+    /// #4315): `filter` is "Name (*.csv)|*.csv|...", `mode` 0 opens, 1
+    /// saves, 2 picks a folder. The macro gets the path, "" for Cancel.
+    fn macro_file_box(&mut self, filter: &str, title: &str, mode: u8, file: &str, folder: &str) {
+        let mut dialog = crate::files::Dialog::new();
+        let parts: Vec<&str> = filter.split('|').collect();
+        for pair in parts.chunks(2) {
+            let [name, pattern] = pair else { continue };
+            let exts: Vec<&str> = pattern
+                .split(';')
+                .filter_map(|p| p.trim().strip_prefix("*."))
+                .filter(|e| !e.is_empty() && *e != "*")
+                .collect();
+            if !exts.is_empty() {
+                dialog = dialog.add_filter(name.trim(), &exts);
+            }
+        }
+        if !title.is_empty() {
+            dialog = dialog.set_title(title);
+        }
+        let start = std::path::Path::new(file);
+        let dir = if !folder.is_empty() {
+            Some(std::path::PathBuf::from(folder))
+        } else {
+            start.parent().filter(|p| !p.as_os_str().is_empty()).map(|p| p.to_path_buf())
+        };
+        if let Some(dir) = dir.filter(|d| d.is_dir()) {
+            dialog = dialog.set_directory(dir);
+        }
+        if let Some(name) = start.file_name() {
+            dialog = dialog.set_file_name(name.to_string_lossy().to_string());
+        }
+        dialog.choose(self, mode, |app, path| {
+            let text = path.map(|p| p.display().to_string()).unwrap_or_default();
+            app.answer_macro(Input::Text(Some(text)));
+        });
     }
 
     /// Answer the message or input box the macro waits for.
@@ -814,6 +918,13 @@ impl App {
                         self.open_url(&url);
                     }
                 }
+                Request::FileBox {
+                    filter,
+                    title,
+                    mode,
+                    file,
+                    folder,
+                } => self.macro_file_box(&filter, &title, mode, &file, &folder),
             }
         }
         if !finished {
@@ -826,6 +937,15 @@ impl App {
         let done = run.finish();
         self.apply_macro_changes(done.changes);
         self.macros.prompt = None;
+        if !done.skipped.is_empty() && name != "Scripts" && !done.stopped {
+            let project = self
+                .macros
+                .projects
+                .iter()
+                .position(|p| name.starts_with(&format!("{}.", p.name())))
+                .unwrap_or(usize::MAX);
+            self.macros.skipped = Some((name.clone(), done.skipped, project));
+        }
         if done.stopped {
             self.status = trf("macros.stopped", &[("name", &name)]);
         } else if let Some(e) = done.error {
@@ -835,7 +955,11 @@ impl App {
                 .iter()
                 .position(|p| name.starts_with(&format!("{}.", p.name())))
                 .unwrap_or(usize::MAX);
-            if name == "Scripts" {
+            if name == "Scripts" && e.number == 0 && e.module.is_empty() {
+                // A JavaScript script's error (#4139).
+                self.scripts_output.push(format!("Error: {}", e.description));
+                self.status = trf("status.script_error", &[("e", &e.description)]);
+            } else if name == "Scripts" {
                 self.scripts_output.push(format!(
                     "Error: Run-time error '{}': {} ({}, line {})",
                     e.number, e.description, e.procedure, e.line
@@ -844,7 +968,13 @@ impl App {
                 self.macros.error = Some((e, project));
             }
         } else if name != "Scripts" {
-            self.status = trf("macros.done", &[("name", &name)]);
+            self.status = match &self.macros.skipped {
+                Some((_, steps, _)) => trf(
+                    "macros.done_skipped",
+                    &[("name", &name), ("n", &steps.len().to_string())],
+                ),
+                None => trf("macros.done", &[("name", &name)]),
+            };
         }
         false
     }
@@ -1119,6 +1249,58 @@ mod tests {
         }
     }
 
+    /// The Macro Manager deletes one macro or a whole module, and the
+    /// project's copy keeps the change (#4409).
+    #[test]
+    fn the_manager_deletes_a_macro_and_a_module() {
+        let code = "Attribute VB_Name = \"Main\"\r\n\
+                    ' Says hello.\r\n\
+                    Sub Hello()\r\n\
+                    MsgBox \"hi\"\r\n\
+                    End Sub\r\n\
+                    \r\n\
+                    Public Function Twice(x)\r\n\
+                    Twice = x * 2\r\n\
+                    End Function\r\n";
+        assert_eq!(
+            without_procedure(code, "hello").as_deref(),
+            Some(
+                "Attribute VB_Name = \"Main\"\r\n\
+                 Public Function Twice(x)\r\n\
+                 Twice = x * 2\r\n\
+                 End Function\r\n"
+            )
+        );
+        assert!(without_procedure(code, "Nope").is_none());
+        let dir = temp("delete");
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut p = project("Del", code, Vec::new());
+        p.modules.push(vp::Module {
+            name: "Extra".into(),
+            kind: vp::ModuleKind::Standard,
+            source: "Sub Other()\r\nEnd Sub\r\n".into(),
+            has_source: true,
+            read_only: false,
+            private: false,
+        });
+        let mut state = MacroState::default();
+        state.projects.push(MacroProject::new(dir.join("Del.gms"), p));
+        state.delete_part(0, "Main", Some("Hello")).unwrap();
+        let names: Vec<String> = state.projects[0].macros().into_iter().map(|(_, n)| n).collect();
+        assert!(!names.iter().any(|n| n == "Hello"), "{names:?}");
+        assert!(names.iter().any(|n| n == "Other"), "{names:?}");
+        state.delete_part(0, "extra", None).unwrap();
+        assert_eq!(state.projects[0].project.modules.len(), 1);
+        assert!(state.delete_part(0, "Extra", None).is_err());
+        // The copy on disk has the change.
+        let bytes = std::fs::read(dir.join("Del.gms")).unwrap();
+        let back = read_project(&[dir.join("Del.gms")]).unwrap();
+        assert!(!bytes.is_empty());
+        assert_eq!(back.modules.len(), 1);
+        assert!(!back.modules[0].source.contains("Sub Hello"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     fn temp(name: &str) -> PathBuf {
         let d =
             std::env::temp_dir().join(format!("tracedraw-macros-{name}-{}", std::process::id()));
@@ -1135,6 +1317,108 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(5));
             assert!(t.elapsed().as_secs() < 20, "the macro did not end");
         }
+    }
+
+    #[test]
+    fn a_macro_writes_and_reads_a_text_file_and_keeps_going() {
+        // #4315: files work, and what TraceDraw cannot do is skipped and
+        // listed instead of stopping the macro.
+        let dir = temp("files");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("ids.txt");
+        let code = format!(
+            "Sub Go()\r\n\
+             Dim i As Long, s As String\r\n\
+             Open \"{p}\" For Output As #1\r\n\
+             For i = 1 To 3: Print #1, \"ID-\" & i: Next\r\n\
+             Close #1\r\n\
+             ActiveDocument.Frobnicate\r\n\
+             Open \"{p}\" For Input As #1\r\n\
+             Do Until EOF(1)\r\n\
+             Line Input #1, s\r\n\
+             ActiveLayer.CreateArtisticText 0, i, s\r\n\
+             i = i + 1\r\n\
+             Loop\r\n\
+             Close #1\r\n\
+             End Sub\r\n",
+            p = path.display()
+        );
+        let mut app = app_with(project("Ids", &code, Vec::new()));
+        let shapes = |app: &App| app.doc().all_layers().map(|l| l.shapes.len()).sum::<usize>();
+        let before = shapes(&app);
+        app.settings.macros_keep_going = true;
+        app.run_macro(0, "Main", "Go");
+        drive(&mut app, |_| {});
+        assert!(app.macros.error.is_none(), "{:?}", app.macros.error);
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "ID-1\r\nID-2\r\nID-3\r\n"
+        );
+        assert_eq!(shapes(&app), before + 3);
+        let (_, steps, project) = app.macros.skipped.clone().expect("skipped steps");
+        assert_eq!(project, 0);
+        assert_eq!(steps.len(), 1);
+        assert!(steps[0].0.description.contains("Frobnicate"), "{steps:?}");
+        assert_eq!(steps[0].0.line, 6);
+        // Off: the same macro stops there with the error.
+        app.macros.skipped = None;
+        app.settings.macros_keep_going = false;
+        app.run_macro(0, "Main", "Go");
+        drive(&mut app, |_| {});
+        let (e, _) = app.macros.error.clone().expect("an error");
+        assert_eq!(e.number, 438);
+        assert!(app.macros.skipped.is_none());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_members_published_macros_use_work() {
+        // #4315: the file box picks the list, texts are found and
+        // replaced, ranges are centred and placed, and guidelines are
+        // added and removed; the macro writes what it saw to a file.
+        let dir = temp("members");
+        std::fs::create_dir_all(&dir).unwrap();
+        let csv = dir.join("names.csv");
+        std::fs::write(&csv, "Ann\r\n").unwrap();
+        let log = dir.join("log.txt");
+        let code = format!(
+            "Sub Go()\r\n\
+             Dim f As String, s As String, t As Shape, r As Shape, b\r\n\
+             f = ScriptTools.GetFileBox(\"CSV (*.csv)|*.csv\", \"Pick\", 0)\r\n\
+             Open f For Input As #1: Line Input #1, s: Close #1\r\n\
+             Set t = ActiveLayer.CreateArtisticText(10, 10, \"Hello NAME\")\r\n\
+             Open \"{log}\" For Output As #2\r\n\
+             Print #2, s; ActivePage.TextFind(\"name\"); ActivePage.TextReplace(\"NAME\", s, True, True)\r\n\
+             Print #2, t.Text.Story.Text\r\n\
+             Set r = ActiveLayer.CreateRectangleRect(CreateRect(0, 0, 2, 1))\r\n\
+             r.SetPositionEx cdrBottomLeft, 1, 1\r\n\
+             Set b = r.BoundingBox\r\n\
+             Print #2, b.Left; b.Bottom; b.Width; b.Height\r\n\
+             ActiveDocument.Unit = cdrInch\r\n\
+             r.AlignRangeToPageCenter cdrAlignHCenter + cdrAlignVCenter\r\n\
+             Print #2, Round(r.CenterX - ActivePage.SizeWidth / 2, 3); Round(r.CenterY - ActivePage.SizeHeight / 2, 3)\r\n\
+             ActivePage.GuidesLayer.CreateGuideAngle 1, 1, 45\r\n\
+             Print #2, ActivePage.GuidesLayer.Shapes.Count;\r\n\
+             ActivePage.GuidesLayer.SelectableShapes.All.Delete\r\n\
+             Print #2, ActivePage.GuidesLayer.Shapes.Count\r\n\
+             Close #2\r\n\
+             End Sub\r\n",
+            log = log.display()
+        );
+        let mut app = app_with(project("Members", &code, Vec::new()));
+        crate::files::test_pick::answer(vec![csv.clone()]);
+        app.settings.macros_keep_going = false;
+        app.run_macro(0, "Main", "Go");
+        drive(&mut app, crate::files::test_save::finish);
+        assert!(app.macros.error.is_none(), "{:?}", app.macros.error);
+        let out = std::fs::read_to_string(&log).unwrap();
+        let lines: Vec<&str> = out.lines().collect();
+        assert_eq!(
+            lines,
+            vec!["AnnTrueTrue", "Hello Ann", " 1  1  2  1 ", " 0  0 ", " 1  0 "],
+            "{out}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
@@ -1187,7 +1471,7 @@ mod tests {
         assert!(w.contains("FindWindow"), "{w}");
         assert!(w.contains("Excel.Application"), "{w}");
         assert!(!w.contains("Scripting.Dictionary"), "{w}");
-        assert_eq!(scan(&p).len(), 3, "{w}");
+        assert_eq!(scan(&p).len(), 2, "{w}");
     }
 
     fn app_with(p: vp::Project) -> App {
@@ -1196,6 +1480,83 @@ mod tests {
         app.macros.loaded = true;
         app.macros.install(p, None).unwrap();
         app
+    }
+
+    #[test]
+    fn a_javascript_script_asks_with_inputbox_and_prompt() {
+        // #4139: the Scripts panel's JavaScript waits for the input box.
+        let mut app = App::headless();
+        let before = app
+            .doc()
+            .all_layers()
+            .map(|l| l.shapes.len())
+            .sum::<usize>();
+        app.run_script(
+            "const n = InputBox('How many?', 'Grid', '2');\n\
+             const w = prompt('Width', '10');\n\
+             const c = prompt('Cancelled?');\n\
+             for (let i = 0; i < Number(n); i++) ActiveLayer.CreateRectangle(i * 20, 0, Number(w), 5);\n\
+             print('made ' + n + ' ' + w + ' ' + c);",
+        );
+        let mut asked = Vec::new();
+        drive(&mut app, |app| {
+            if let Some(Prompt::InputBox {
+                prompt,
+                title,
+                text,
+            }) = app.macros.prompt.take()
+            {
+                asked.push(format!("{title}: {prompt} [{text}]"));
+                let answer = match asked.len() {
+                    1 => Some("3".to_string()),
+                    2 => Some("15".to_string()),
+                    _ => None,
+                };
+                app.answer_macro(Input::Text(answer));
+            }
+        });
+        assert_eq!(
+            asked,
+            vec![
+                "Grid: How many? [2]".to_string(),
+                ": Width [10]".to_string(),
+                ": Cancelled? []".to_string()
+            ]
+        );
+        assert!(
+            app.scripts_output.iter().any(|l| l == "made 3 15 null"),
+            "{:?}",
+            app.scripts_output
+        );
+        let after = app
+            .doc()
+            .all_layers()
+            .map(|l| l.shapes.len())
+            .sum::<usize>();
+        assert_eq!(after, before + 3);
+        // Where nobody can answer, the default comes back.
+        let out = crate::scripting::run(&mut app, "print(InputBox('n', 't', '7') + prompt('x'))")
+            .unwrap();
+        assert_eq!(out, vec!["7".to_string()]);
+    }
+
+    #[test]
+    fn a_javascript_script_error_after_inputbox_is_shown() {
+        let mut app = App::headless();
+        app.run_script("const n = InputBox('n'); nothing_here();");
+        drive(&mut app, |app| {
+            if app.macros.prompt.take().is_some() {
+                app.answer_macro(Input::Text(Some("1".into())));
+            }
+        });
+        assert!(
+            app.scripts_output
+                .iter()
+                .any(|l| l.starts_with("Error: ") && l.contains("nothing_here")),
+            "{:?}",
+            app.scripts_output
+        );
+        assert!(app.macros.error.is_none());
     }
 
     #[test]
@@ -2059,6 +2420,10 @@ mod tests {
                 ),
                 Err(e) => println!("   COMPILE ERROR {e}"),
             }
+            // The Macro Editor's compatibility report.
+            for issue in crate::macro_convert::check(&p.project).issues {
+                println!("   check {:?} line {}: {}", issue.level, issue.line, issue.text);
+            }
             let macros = p.macros();
             for (m, n) in macros {
                 if !wanted.iter().any(|w| w == &format!("{m}.{n}")) {
@@ -2116,6 +2481,14 @@ mod tests {
                     }
                 });
                 let err = app.macros.error.take();
+                if let Some((_, steps, _)) = app.macros.skipped.take() {
+                    for (e, n) in steps {
+                        println!(
+                            "   skipped x{n}: {} {} ({}.{} line {})",
+                            e.number, e.description, e.module, e.procedure, e.line
+                        );
+                    }
+                }
                 let objects: usize = app.doc().all_layers().map(|l| l.shapes.len()).sum();
                 println!(
                     "   run {m}.{n}: {} {:?} objects={objects} out={:?}",

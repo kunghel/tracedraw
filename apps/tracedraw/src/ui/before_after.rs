@@ -1054,7 +1054,7 @@ pub fn steps_row(ui: &mut Ui, can_undo: bool, can_redo: bool, reset: &str) -> St
     ui.add_space(4.0);
     ui.horizontal(|ui| {
         let r = ui
-            .add_sized([80.0, BAR_H], egui::Button::new(tr("dialog.reset")))
+            .add_sized([80.0, BAR_H], crate::ui::btn_icons::Ib::new("dialog.reset"))
             .rich_tip(reset);
         mark(ui, "reset", r.rect);
         out.reset = r.clicked();

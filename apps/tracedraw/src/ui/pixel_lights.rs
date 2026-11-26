@@ -3,6 +3,7 @@
 //! direction and relief, and the light brush. See `pixel_light.rs` and
 //! docs/behavior/edit-inside-picture.md.
 
+use crate::ui::btn_icons::IconUi;
 use crate::i18n::tr;
 use crate::pixel_edit_app::PixelEdit;
 use crate::pixel_light::LightBlend;
@@ -45,14 +46,14 @@ pub fn options(ui: &mut egui::Ui, pe: &mut PixelEdit) {
         pe.lights.active = i;
     }
     if ui
-        .button(tr("pixel.light.add"))
+        .ibutton("pixel.light.add")
         .rich_tip(tr("pixel.light.add_tip"))
         .clicked()
     {
         add = true;
     }
     if ui
-        .add_enabled(n > 1, egui::Button::new(tr("pixel.light.remove")))
+        .add_enabled(n > 1, crate::ui::btn_icons::Ib::new("pixel.light.remove"))
         .clicked()
     {
         remove = true;
@@ -137,7 +138,7 @@ pub fn options(ui: &mut egui::Ui, pe: &mut PixelEdit) {
     ui.checkbox(&mut pe.lights.erase, tr("pixel.light.erase"))
         .rich_tip(tr("pixel.light.erase_tip"));
     if ui
-        .button(tr("pixel.light.fill"))
+        .ibutton("pixel.light.fill")
         .rich_tip(tr("pixel.light.fill_tip"))
         .clicked()
     {
@@ -149,7 +150,7 @@ pub fn options(ui: &mut egui::Ui, pe: &mut PixelEdit) {
         .get(pe.lights.active)
         .is_some_and(|l| l.is_painted());
     if ui
-        .add_enabled(painted, egui::Button::new(tr("pixel.light.clear")))
+        .add_enabled(painted, crate::ui::btn_icons::Ib::new("pixel.light.clear"))
         .clicked()
     {
         pe.clear_light();

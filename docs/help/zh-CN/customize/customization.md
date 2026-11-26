@@ -48,3 +48,25 @@
 - [[options.palette_swatches]]：[[options.palette_no_color]]（打开），以及 [[options.palette_right_button]] 的作用：[[options.palette_set_outline]]（起初选用）或打开 [[options.palette_context_menu]]。
 
 请参阅 [调色板](../color/palettes.md)。
+
+## 右键菜单 {#context-menus}
+
+在“自定义”中选择 [[options.context_menus]]，可以独立管理 32 个位置的右键菜单。
+使用 [[options.context_menu_scene]] 选择位置，再通过
+[[options.context_menu_search]] 查找操作，取消勾选即可在该位置隐藏。
+即使当前选区无法使用某项操作，它仍会显示在管理列表中。
+
+所有操作默认显示，各位置独立保存。例如，在画布中隐藏对象操作，
+不会影响对象面板中的同名操作。目标图层、字体集合等动态列表按整个操作管理，
+名称变化不会重置显示设置。
+
+[[options.context_menu_reset]] 恢复当前菜单，
+[[options.context_menu_reset_all]] 恢复全部菜单。[[dialog.ok]] 会将选择保存到应用设置；
+[[dialog.cancel]]、Escape 或关闭按钮会恢复打开设置时的选择。
+主菜单、快捷键和命令搜索仍可使用原有命令。
+
+展开子菜单即可查看缩进显示的下级项目。拖动行首的手柄，或使用 [[options.context_menu_move_up]] 和 [[options.context_menu_move_down]]，可调整同级项目的顺序。移动父菜单时，其子项会一起移动；项目不能拖入其他父菜单。搜索结果会保留匹配项目的父级路径。恢复菜单会同时重置显示状态和顺序；取消设置会将两者恢复到打开对话框时的状态。
+
+文档调色板的色块菜单与它在调色板管理器中的菜单分别设置。
+动态目标保留自身顺序；“对象样式”中的文档样式列表保留在静态操作之间的位置。
+后续版本新增的操作默认显示，并排在已自定义顺序的同级项目之后。

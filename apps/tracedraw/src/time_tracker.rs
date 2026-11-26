@@ -32,6 +32,9 @@ pub struct Clock {
     last_input: f64,
     /// Seconds counted and not yet written to the drawing.
     pub pending: f64,
+    /// The drawings (their engines' instances) the clock already started
+    /// for on its own (D#4282), so a pause holds.
+    auto_started: Vec<u64>,
 }
 
 impl Clock {
@@ -318,6 +321,7 @@ impl App {
     /// while the clock is counting, so the caller repaints to keep it
     /// going.
     pub fn time_tracker_frame(&mut self, now: f64, input: bool) -> bool {
+        self.auto_start_clock();
         let idle = self.settings.time_tracker.idle_seconds();
         let counted = self.tracker.tick(now, input, idle);
         if counted > 0.0 && self.can_track() {
@@ -399,6 +403,42 @@ impl App {
             self.add_tracked_task();
         } else if tracker.active_task().is_none() {
             self.edit_time_tracker(|t| t.active = Some(0));
+        }
+        self.tracker.running = true;
+    }
+
+    /// Start the clock on its own for a drawing it has not started for
+    /// yet, when Start with Every Drawing is on (D#4282): the drawing gets
+    /// a task when it has none (as a record, not a change of the drawing)
+    /// and the clock runs. Pausing it holds for that drawing.
+    pub fn auto_start_clock(&mut self) {
+        if !self.settings.time_tracker.auto_start || !self.has_document() {
+            return;
+        }
+        let instance = self.engine.instance();
+        if self.tracker.auto_started.contains(&instance) {
+            return;
+        }
+        self.tracker.auto_started.push(instance);
+        if self.tracker.running && self.can_track() {
+            return;
+        }
+        let mut t = self.doc().time_tracker.clone();
+        if t.tasks.is_empty() {
+            let name = new_task_name(&t);
+            t.tasks.push(TrackedTask {
+                name,
+                ..Default::default()
+            });
+        }
+        if t.active_task().is_none() {
+            t.active = Some(0);
+        }
+        if t != self.doc().time_tracker {
+            if let Err(e) = self.engine.run(&Command::SetTimeTracker { tracker: t }) {
+                log::warn!("time tracker: {e}");
+                return;
+            }
         }
         self.tracker.running = true;
     }
@@ -551,6 +591,32 @@ mod tests {
             ..Default::default()
         });
         assert_eq!(new_task_name(&t), "Task 2");
+    }
+
+    /// Start with every drawing (D#4282): off, nothing starts; on, the
+    /// next frame starts the clock with a "Task 1" and no unsaved change;
+    /// paused, it stays paused for that drawing; a new drawing starts it
+    /// again.
+    #[test]
+    fn the_clock_can_start_with_every_drawing() {
+        let mut app = App::headless();
+        let doc = || tracedraw_core::Document::new("t", tracedraw_core::geometry::Size::new(100.0, 100.0));
+        app.open_document(doc(), None);
+        app.time_tracker_frame(0.0, true);
+        assert!(!app.tracker.running, "off by default");
+        app.settings.time_tracker.auto_start = true;
+        app.engine.mark_saved();
+        app.time_tracker_frame(1.0, true);
+        assert!(app.tracker.running);
+        assert_eq!(app.doc().time_tracker.tasks.len(), 1);
+        assert_eq!(app.doc().time_tracker.active, Some(0));
+        assert!(!app.engine.is_dirty(), "a record, not a change");
+        app.toggle_time_clock();
+        app.time_tracker_frame(2.0, true);
+        assert!(!app.tracker.running, "a pause holds");
+        app.open_document(doc(), None);
+        app.time_tracker_frame(3.0, true);
+        assert!(app.tracker.running, "the next drawing starts it");
     }
 
     #[test]

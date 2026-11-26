@@ -43,7 +43,7 @@ End Sub\r\n\
 Sub Broken()\r\n\
     Dim x As Double, y As Double, s As Long\r\n\
     ActiveDocument.GetUserClick x, y, s, 10, False, 0\r\n\
-    Kill \"c:\\temp\\a.txt\"\r\n\
+    Put #1, 1, s\r\n\
     If ActiveDocument.GetUserClick(x, y, s, 10, False, 0) = 0 Then Exit Sub\r\n\
 End Sub\r\n";
 
@@ -95,7 +95,7 @@ fn fix_comments_out_what_is_not_available_and_still_compiles() {
     assert!(
         lines
             .iter()
-            .any(|l| l.trim_start().starts_with("' TODO:") && l.contains("Kill")),
+            .any(|l| l.trim_start().starts_with("' TODO:") && l.contains("Put #1")),
         "{src}"
     );
     assert!(lines

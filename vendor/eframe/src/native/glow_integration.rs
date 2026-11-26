@@ -791,15 +791,21 @@ impl GlowWinitRunning<'_> {
 
         egui_winit.handle_platform_output_with_event_loop(&window, event_loop, platform_output);
 
-        if is_visible {
-            let clipped_primitives = integration.egui_ctx.tessellate(shapes, pixels_per_point);
+        // We may need to switch contexts again, because of immediate viewports.
+        // TraceDraw: a switch the system refused leaves the frame undrawn
+        // and asks for another, its textures kept for it (#3687).
+        let gl_current = !is_visible || {
+            frame_timer.pause();
+            let current = change_gl_context(current_gl_context, not_current_gl_context, gl_surface);
+            frame_timer.resume();
+            current
+        };
+        if !gl_current {
+            window.request_redraw();
+        }
 
-            {
-                // We may need to switch contexts again, because of immediate viewports:
-                frame_timer.pause();
-                change_gl_context(current_gl_context, not_current_gl_context, gl_surface);
-                frame_timer.resume();
-            }
+        if is_visible && gl_current {
+            let clipped_primitives = integration.egui_ctx.tessellate(shapes, pixels_per_point);
 
             let screen_size_in_pixels: [u32; 2] = window.inner_size().into();
 
@@ -1013,11 +1019,20 @@ impl GlowWinitRunning<'_> {
     }
 }
 
+/// Makes the context current on `gl_surface`; false when the system
+/// refused, the frame then not drawn.
+///
+/// TraceDraw: with a context already current it is moved to the surface
+/// in place, where it was made not current and then current again, and
+/// a refusal is no longer a panic. Waking from sleep, Windows refused the
+/// switch once with "The operation completed successfully" (os error 0)
+/// and the program closed while nobody used it (#3687); the context stays
+/// with the window and the next frame tries again.
 fn change_gl_context(
     current_gl_context: &mut Option<glutin::context::PossiblyCurrentContext>,
     not_current_gl_context: &mut Option<glutin::context::NotCurrentContext>,
     gl_surface: &glutin::surface::Surface<glutin::surface::WindowSurface>,
-) {
+) -> bool {
     profiling::function_scope!();
 
     if !cfg!(target_os = "windows") {
@@ -1029,24 +1044,49 @@ fn change_gl_context(
         if let Some(current_gl_context) = current_gl_context {
             profiling::scope!("is_current");
             if gl_surface.is_current(current_gl_context) {
-                return; // Early-out to save a lot of time.
+                return true; // Early-out to save a lot of time.
             }
         }
     }
 
-    let not_current = if let Some(not_current_context) = not_current_gl_context.take() {
-        not_current_context
-    } else {
-        profiling::scope!("make_not_current");
-        current_gl_context
-            .take()
-            .unwrap()
-            .make_not_current()
-            .unwrap()
-    };
+    if let Some(not_current) = not_current_gl_context.take() {
+        profiling::scope!("make_current");
+        match not_current.make_current(gl_surface) {
+            Ok(current) => {
+                *current_gl_context = Some(current);
+                return true;
+            }
+            Err(err) => {
+                // The context is gone with the failed call; nothing can be
+                // drawn without one.
+                panic!("make_current failed: {err}");
+            }
+        }
+    }
 
+    let Some(current) = current_gl_context.as_ref() else {
+        log::error!("make_current: no OpenGL context");
+        return false;
+    };
     profiling::scope!("make_current");
-    *current_gl_context = Some(not_current.make_current(gl_surface).unwrap());
+    match current.make_current(gl_surface) {
+        Ok(()) => true,
+        Err(err) => {
+            log_make_current_failure(&err);
+            false
+        }
+    }
+}
+
+/// Logs a refused context switch, once for a run of refusals in a row
+/// (a window asleep refuses every frame until it wakes).
+fn log_make_current_failure(err: &glutin::error::Error) {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static REFUSED: AtomicU64 = AtomicU64::new(0);
+    let n = REFUSED.fetch_add(1, Ordering::Relaxed);
+    if n.is_power_of_two() || n == 0 {
+        log::warn!("make_current refused ({} times so far): {err}", n + 1);
+    }
 }
 
 impl GlutinWindowContext {
@@ -1429,12 +1469,12 @@ impl GlutinWindowContext {
 
         if let Some(viewport) = self.viewports.get(&viewport_id)
             && let Some(gl_surface) = &viewport.gl_surface
-        {
-            change_gl_context(
+            && change_gl_context(
                 &mut self.current_gl_context,
                 &mut self.not_current_gl_context,
                 gl_surface,
-            );
+            )
+        {
             gl_surface.resize(
                 self.current_gl_context
                     .as_ref()
@@ -1718,9 +1758,14 @@ fn render_immediate_viewport(
 
     let screen_size_in_pixels: [u32; 2] = window.inner_size().into();
 
-    change_gl_context(current_gl_context, not_current_gl_context, gl_surface);
+    // TraceDraw: a switch the system refused skips this frame (#3687).
+    if !change_gl_context(current_gl_context, not_current_gl_context, gl_surface) {
+        return;
+    }
 
-    let current_gl_context = current_gl_context.as_ref().unwrap();
+    let Some(current_gl_context) = current_gl_context.as_ref() else {
+        return;
+    };
 
     if !gl_surface.is_current(current_gl_context) {
         log::error!(

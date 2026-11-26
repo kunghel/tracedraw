@@ -86,3 +86,11 @@ panel opens at its [[qr.section]] section:
 The QR code stays editable: move, scale or turn it as any object and change
 its content later. To make it plain shapes, ungroup it. Content that cannot
 be encoded, or too much of it, changes nothing and shows in red.
+
+The same object can draw two other kinds of 2D code, picked at the top of
+its section:
+
+- Data Matrix: a small square code for labels and parts, read by
+  industrial scanners. Validate reads it back as for a QR code.
+- Rectangular micro QR (rMQR): a long, narrow QR code for thin spaces such
+  as the edge of a box or a cable label. Validate checks its contrast.

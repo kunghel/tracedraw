@@ -2,6 +2,7 @@
 //! dialog (Tools > Time Tracker). The records and the clock are in
 //! `time_tracker.rs`.
 
+use crate::ui::btn_icons::IconUi;
 use crate::app::App;
 use crate::i18n::{tr, trf};
 use crate::theme::Tokens;
@@ -104,7 +105,7 @@ fn paint_play_pause(p: &Painter, r: Rect, running: bool, color: Color32) {
 pub fn toolbar(app: &mut App, ui: &mut Ui) {
     let doc = app.has_document() && !app.show_welcome;
     let now = ui.input(|i| i.time);
-    ui.horizontal(|ui| {
+    crate::ui::toolbar::bar_row(ui, |ui| {
         ui.set_height(28.0);
         // A click on the stopwatch switches between the full bar and its
         // mini form (#3261).
@@ -158,7 +159,7 @@ pub fn toolbar(app: &mut App, ui: &mut Ui) {
                         if !names.is_empty() {
                             ui.separator();
                         }
-                        if ui.selectable_label(false, tr("tracker.new_task")).clicked() {
+                        if ui.iselectable(false, "tracker.new_task").clicked() {
                             add = true;
                         }
                     })
@@ -226,7 +227,7 @@ pub fn toolbar(app: &mut App, ui: &mut Ui) {
             };
             ui.label(trf("tracker.total_is", &[("t", &hms(total))]));
             ui.add(egui::Separator::default().vertical().spacing(10.0));
-            if ui.button(tr("tracker.tasks")).clicked() {
+            if ui.ibutton("tracker.tasks").clicked() {
                 app.dialog = Dialog::TimeTracker(TrackerDialog::default());
             }
         });
@@ -341,14 +342,14 @@ pub fn dialog(app: &mut App, ctx: &egui::Context, st: &mut TrackerDialog, close:
         table(app, ui, st);
         ui.add_space(4.0);
         ui.horizontal(|ui| {
-            if ui.button(tr("tracker.new_task")).clicked() {
+            if ui.ibutton("tracker.new_task").clicked() {
                 st.select(app, None);
                 app.add_tracked_task();
                 st.selected = app.doc().time_tracker.tasks.len().checked_sub(1);
             }
             let has = st.selected.is_some();
             if ui
-                .add_enabled(has, egui::Button::new(tr("tracker.delete")))
+                .add_enabled(has, crate::ui::btn_icons::Ib::new("tracker.delete"))
                 .clicked()
             {
                 if let Some(i) = st.selected {
@@ -371,7 +372,7 @@ pub fn dialog(app: &mut App, ctx: &egui::Context, st: &mut TrackerDialog, close:
             if ui
                 .add_enabled(
                     has && active != st.selected,
-                    egui::Button::new(tr("tracker.make_active")),
+                    crate::ui::btn_icons::Ib::new("tracker.make_active"),
                 )
                 .clicked()
             {
@@ -379,7 +380,7 @@ pub fn dialog(app: &mut App, ctx: &egui::Context, st: &mut TrackerDialog, close:
                 app.edit_time_tracker(|t| t.active = sel);
             }
             if ui
-                .add_enabled(has, egui::Button::new(tr("tracker.reset")))
+                .add_enabled(has, crate::ui::btn_icons::Ib::new("tracker.reset"))
                 .clicked()
             {
                 if let Some(i) = st.selected {
@@ -399,12 +400,12 @@ pub fn dialog(app: &mut App, ctx: &egui::Context, st: &mut TrackerDialog, close:
             }
             ui.add_space(8.0);
             let state = ClockState::of(app, now);
-            let label = tr(if app.tracker.running {
+            let key = if app.tracker.running {
                 "tracker.pause"
             } else {
                 "tracker.record"
-            });
-            if ui.button(label).clicked() {
+            };
+            if ui.add(crate::ui::btn_icons::Ib::new(key)).clicked() {
                 st.select(app, st.selected);
                 app.toggle_time_clock();
             }
@@ -426,13 +427,19 @@ pub fn dialog(app: &mut App, ctx: &egui::Context, st: &mut TrackerDialog, close:
             }
             ui.label(tr("tracker.idle_after"));
         });
+        // Start with every drawing (D#4282).
+        ui.checkbox(
+            &mut app.settings.time_tracker.auto_start,
+            tr("tracker.auto_start"),
+        )
+        .rich_tip(crate::ui::tips::keyed("tracker.auto_start"));
         ui.add_space(10.0);
         ui.horizontal(|ui| {
-            if ui.button(tr("tracker.export_csv")).clicked() {
+            if ui.ibutton("tracker.export_csv").clicked() {
                 st.select(app, st.selected);
                 export(app, Export::Csv);
             }
-            if ui.button(tr("tracker.export_text")).clicked() {
+            if ui.ibutton("tracker.export_text").clicked() {
                 st.select(app, st.selected);
                 export(app, Export::Text);
             }

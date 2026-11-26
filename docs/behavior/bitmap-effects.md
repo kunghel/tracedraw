@@ -142,6 +142,20 @@ later, and removing the last one gives the original back.
   channels draws the other curves thin behind, and Load... and Save keep
   every channel's curve in a JSON file of the settings.
 
+## Blur on the property bar
+
+- Gaussian Blur's dialog opens as the compact settings window (its one
+  value, Reset, presets, OK and Cancel; 360 x 330 at first, at least
+  300 x 260), the blur shown live on the drawing, with no preview panes
+  covering it (#4091, `ui::effect_dialog::compact_effect`).
+- With one object selected that has a Gaussian Blur among its effects,
+  the Pick tool's property bar shows Blur, its radius (0.1 to 250 px, a
+  logarithmic slider). The effect changes when the slider is let go or a
+  value is typed (not at every step of the drag, so a large radius does
+  not make the drag lag), one undo step ("Edit Effect"); the first
+  Gaussian Blur of the list is the one changed (`blur_bar.rs`,
+  `blur_bar::tests::the_bar_changes_the_blur_radius`).
+
 ## Image Adjustments
 
 Effects > Adjust > Image Adjustments opens a larger dialog instead of

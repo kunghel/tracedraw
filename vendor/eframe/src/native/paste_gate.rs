@@ -18,10 +18,10 @@ use std::sync::OnceLock;
 static GATE: OnceLock<fn() -> bool> = OnceLock::new();
 
 /// Ask `gate` before each paste shortcut whether egui-winit may read the
-/// clipboard's text. When it answers `false` the key press is not handed
-/// to egui-winit, which then neither reads the clipboard nor sends a
-/// paste event, as when the clipboard holds no text: the application
-/// sees the key's release and pastes by itself. Set once; later calls
+/// clipboard's text. When it answers `false`, the key press is sent
+/// directly to egui without egui-winit reading the clipboard. The
+/// application handles it immediately with the modifiers held at the
+/// press, even when Ctrl is released before V. Set once; later calls
 /// are ignored.
 #[allow(dead_code)]
 pub fn set_paste_text_gate(gate: fn() -> bool) {
@@ -38,27 +38,116 @@ pub(crate) fn is_paste_key(
     command: bool,
     shift: bool,
 ) -> bool {
-    use winit::keyboard::{Key, KeyCode, NamedKey, PhysicalKey};
-    let from_logical = match logical {
-        Key::Named(NamedKey::Paste) => Some(egui::Key::Paste),
-        Key::Named(NamedKey::Insert) => Some(egui::Key::Insert),
-        // Other named keys are no paste key; egui knows nearly all of them.
-        Key::Named(_) => return false,
-        Key::Character(s) => egui::Key::from_name(s.as_str()),
-        Key::Unidentified(_) | Key::Dead(_) => None,
-    };
-    let key = from_logical.or(match physical {
-        PhysicalKey::Code(KeyCode::KeyV) => Some(egui::Key::V),
-        PhysicalKey::Code(KeyCode::Paste) => Some(egui::Key::Paste),
-        PhysicalKey::Code(KeyCode::Insert) => Some(egui::Key::Insert),
-        _ => None,
-    });
-    match key {
+    match paste_key(logical, physical) {
         Some(egui::Key::Paste) => true,
         Some(egui::Key::V) => command,
         Some(egui::Key::Insert) => cfg!(target_os = "windows") && shift,
         _ => false,
     }
+}
+
+fn paste_key(
+    logical: &winit::keyboard::Key,
+    physical: winit::keyboard::PhysicalKey,
+) -> Option<egui::Key> {
+    use winit::keyboard::{Key, KeyCode, NamedKey, PhysicalKey};
+    let from_logical = match logical {
+        Key::Named(NamedKey::Paste) => Some(egui::Key::Paste),
+        Key::Named(NamedKey::Insert) => Some(egui::Key::Insert),
+        // Other named keys are no paste key; egui knows nearly all of them.
+        Key::Named(_) => return None,
+        Key::Character(s) => egui::Key::from_name(s.as_str()),
+        Key::Unidentified(_) | Key::Dead(_) => None,
+    };
+    from_logical.or(match physical {
+        PhysicalKey::Code(KeyCode::KeyV) => Some(egui::Key::V),
+        PhysicalKey::Code(KeyCode::Paste) => Some(egui::Key::Paste),
+        PhysicalKey::Code(KeyCode::Insert) => Some(egui::Key::Insert),
+        _ => None,
+    })
+}
+
+/// Physical keys that can carry the shortcut on letter and symbol layouts.
+fn physical_paste_key(physical: winit::keyboard::PhysicalKey) -> Option<egui::Key> {
+    use winit::keyboard::{KeyCode, PhysicalKey};
+    let PhysicalKey::Code(code) = physical else {
+        return None;
+    };
+    Some(match code {
+        KeyCode::KeyA => egui::Key::A,
+        KeyCode::KeyB => egui::Key::B,
+        KeyCode::KeyC => egui::Key::C,
+        KeyCode::KeyD => egui::Key::D,
+        KeyCode::KeyE => egui::Key::E,
+        KeyCode::KeyF => egui::Key::F,
+        KeyCode::KeyG => egui::Key::G,
+        KeyCode::KeyH => egui::Key::H,
+        KeyCode::KeyI => egui::Key::I,
+        KeyCode::KeyJ => egui::Key::J,
+        KeyCode::KeyK => egui::Key::K,
+        KeyCode::KeyL => egui::Key::L,
+        KeyCode::KeyM => egui::Key::M,
+        KeyCode::KeyN => egui::Key::N,
+        KeyCode::KeyO => egui::Key::O,
+        KeyCode::KeyP => egui::Key::P,
+        KeyCode::KeyQ => egui::Key::Q,
+        KeyCode::KeyR => egui::Key::R,
+        KeyCode::KeyS => egui::Key::S,
+        KeyCode::KeyT => egui::Key::T,
+        KeyCode::KeyU => egui::Key::U,
+        KeyCode::KeyV => egui::Key::V,
+        KeyCode::KeyW => egui::Key::W,
+        KeyCode::KeyX => egui::Key::X,
+        KeyCode::KeyY => egui::Key::Y,
+        KeyCode::KeyZ => egui::Key::Z,
+        KeyCode::Comma => egui::Key::Comma,
+        KeyCode::Period => egui::Key::Period,
+        KeyCode::Semicolon => egui::Key::Semicolon,
+        KeyCode::Slash => egui::Key::Slash,
+        KeyCode::Backslash => egui::Key::Backslash,
+        KeyCode::Minus => egui::Key::Minus,
+        KeyCode::Equal => egui::Key::Equals,
+        KeyCode::Quote => egui::Key::Quote,
+        KeyCode::Backquote => egui::Key::Backtick,
+        KeyCode::BracketLeft => egui::Key::OpenBracket,
+        KeyCode::BracketRight => egui::Key::CloseBracket,
+        KeyCode::Paste => egui::Key::Paste,
+        KeyCode::Insert => egui::Key::Insert,
+        _ => return None,
+    })
+}
+
+/// A gated shortcut keeps the original key press without asking for text.
+fn gated_key_press(
+    logical: &winit::keyboard::Key,
+    physical: winit::keyboard::PhysicalKey,
+    held: winit::keyboard::ModifiersState,
+    pressed: bool,
+    repeat: bool,
+    may_read: bool,
+) -> Option<egui::Event> {
+    let modifiers = egui::Modifiers {
+        alt: held.alt_key(),
+        ctrl: held.control_key(),
+        shift: held.shift_key(),
+        mac_cmd: cfg!(target_os = "macos") && held.super_key(),
+        command: if cfg!(target_os = "macos") {
+            held.super_key()
+        } else {
+            held.control_key()
+        },
+    };
+    if !pressed || may_read || !is_paste_key(logical, physical, modifiers.command, modifiers.shift)
+    {
+        return None;
+    }
+    Some(egui::Event::Key {
+        key: paste_key(logical, physical)?,
+        physical_key: physical_paste_key(physical),
+        pressed: true,
+        repeat,
+        modifiers,
+    })
 }
 
 thread_local! {
@@ -67,26 +156,26 @@ thread_local! {
         const { std::cell::Cell::new(winit::keyboard::ModifiersState::empty()) };
 }
 
-/// Whether `event` is a real paste key press that the application's gate
-/// keeps from egui-winit. Every window event goes through here, so the
+/// The real paste key press the application's gate keeps from
+/// egui-winit's clipboard read. Every window event goes through here, so the
 /// modifier keys are followed as egui-winit follows them.
 #[allow(dead_code)]
-pub(crate) fn blocks(event: &winit::event::WindowEvent) -> bool {
+pub(crate) fn blocked_key(event: &winit::event::WindowEvent) -> Option<egui::Event> {
     use winit::event::WindowEvent;
     let event = match event {
         WindowEvent::ModifiersChanged(m) => {
             MODIFIERS.with(|cell| cell.set(m.state()));
-            return false;
+            return None;
         }
         WindowEvent::KeyboardInput {
             event,
             is_synthetic: false,
             ..
         } => event,
-        _ => return false,
+        _ => return None,
     };
     if event.state != winit::event::ElementState::Pressed || GATE.get().is_none() {
-        return false;
+        return None;
     }
     let held = MODIFIERS.with(|cell| cell.get());
     // Cmd on macOS, Ctrl elsewhere, as egui's `command`.
@@ -95,12 +184,22 @@ pub(crate) fn blocks(event: &winit::event::WindowEvent) -> bool {
     } else {
         held.control_key()
     };
-    is_paste_key(
+    if !is_paste_key(
         &event.logical_key,
         event.physical_key,
         command,
         held.shift_key(),
-    ) && GATE.get().is_some_and(|may_read| !may_read())
+    ) {
+        return None;
+    }
+    gated_key_press(
+        &event.logical_key,
+        event.physical_key,
+        held,
+        true,
+        event.repeat,
+        GATE.get().is_none_or(|may_read| may_read()),
+    )
 }
 
 #[cfg(test)]
@@ -110,6 +209,86 @@ mod tests {
 
     fn ch(s: &str) -> Key {
         Key::Character(SmolStr::new(s))
+    }
+
+    #[test]
+    fn a_gated_paste_keeps_the_press_and_its_modifiers_without_reading_text() {
+        let physical = PhysicalKey::Code(KeyCode::KeyV);
+        let command = if cfg!(target_os = "macos") {
+            winit::keyboard::ModifiersState::SUPER
+        } else {
+            winit::keyboard::ModifiersState::CONTROL
+        };
+        let held = command | winit::keyboard::ModifiersState::SHIFT;
+        let event = gated_key_press(&ch("V"), physical, held, true, false, false)
+            .expect("the gated shortcut keeps its press");
+        assert!(matches!(event, egui::Event::Key {
+            key: egui::Key::V,
+            physical_key: Some(egui::Key::V),
+            pressed: true,
+            repeat: false,
+            modifiers,
+        } if modifiers.command && modifiers.shift));
+        assert!(gated_key_press(&ch("v"), physical, command, false, false, false).is_none());
+        assert!(gated_key_press(&ch("v"), physical, command, true, false, true).is_none());
+        assert!(gated_key_press(
+            &ch("v"),
+            physical,
+            winit::keyboard::ModifiersState::empty(),
+            true,
+            false,
+            false
+        )
+        .is_none());
+    }
+
+    #[test]
+    fn a_gated_shortcut_keeps_the_layout_and_repeat_information() {
+        let held = if cfg!(target_os = "macos") {
+            winit::keyboard::ModifiersState::SUPER
+        } else {
+            winit::keyboard::ModifiersState::CONTROL
+        };
+        let physical_v = PhysicalKey::Code(KeyCode::KeyV);
+        assert!(matches!(
+            gated_key_press(&ch("м"), physical_v, held, true, true, false),
+            Some(egui::Event::Key {
+                key: egui::Key::V,
+                physical_key: Some(egui::Key::V),
+                repeat: true,
+                ..
+            })
+        ));
+        assert!(matches!(
+            gated_key_press(
+                &ch("v"),
+                PhysicalKey::Code(KeyCode::KeyB),
+                held,
+                true,
+                false,
+                false
+            ),
+            Some(egui::Event::Key {
+                key: egui::Key::V,
+                physical_key: Some(egui::Key::B),
+                ..
+            })
+        ));
+        assert!(gated_key_press(&ch("b"), physical_v, held, true, false, false).is_none());
+        assert!(matches!(
+            gated_key_press(
+                &Key::Named(NamedKey::Paste),
+                PhysicalKey::Code(KeyCode::Paste),
+                held,
+                true,
+                false,
+                false
+            ),
+            Some(egui::Event::Key {
+                key: egui::Key::Paste,
+                ..
+            })
+        ));
     }
 
     #[test]

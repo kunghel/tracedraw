@@ -44,4 +44,26 @@ turned about their centre, with their gradients carried along. Object
 filled, Random palette colors and One color paint every plain fill and
 outline of the copy (inside groups too); unfilled parts stay unfilled.
 
+## Brush
+
+Brush on the drawing (a checkbox at the bottom of the panel, off at first,
+not kept between sessions): while ticked and a group (not locked) is
+selected, a left drag on the drawing goes to the brush instead of the tool;
+a click still reaches the tool, and a move, scale or rotation under way
+keeps the pointer. The pointer shows the nib's circle. Each step works in
+the group's own space on its direct children whose bounds' centre lies
+within the Radius (10 mm at first, 0.5 to 500) of the nib, weighted by
+`(1 - d / radius)^2`; the dose is the step's pointer travel over the
+radius times the Strength (50 % at first, 1 to 100): Move translates by the
+step's travel times the weight and strength; Gather moves toward the nib's
+centre by up to half the distance a step (Alt or Shift: away); Grow scales
+about the child's centre by `1 + dose` (at most 1.5 a step; Alt or Shift
+divides); Turn rotates about it by the dose in radians (at most 0.5; Alt
+or Shift the other way); Tint mixes every plain fill and outline colour
+(inside groups too) toward the colour under the list by the dose; Fade
+lowers the opacity by the dose (Alt or Shift raises it), kept between 5 %
+and 100 %. Gradients move with the copies. The groups are set whole each
+step, so a stroke is one undo step ("Symbol Brush")
+(`symbol_brush::tests`).
+
 Checked by `symbol_scatter::tests`.

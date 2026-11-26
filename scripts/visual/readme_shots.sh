@@ -18,8 +18,8 @@ export DISPLAY=:99
 Xvfb :99 -screen 0 1600x1000x24 >/dev/null 2>&1 & XPID=$!
 trap 'kill $XPID 2>/dev/null || true' EXIT
 sleep 1
-scene() { # scene <name> <drawing or ""> [LANG] [theme] [settings json to merge]
-    local name=$1 file=$2 lang=${3:-en_US.UTF-8} theme=${4:-light} extra=${5:-'{}'}
+scene() { # scene <name> <drawing or ""> [LANG] [theme] [settings json to merge] [jpg or webp]
+    local name=$1 file=$2 lang=${3:-en_US.UTF-8} theme=${4:-light} extra=${5:-'{}'} ext=${6:-jpg}
     # Only the scenes named in $ONLY, when it is set.
     if [ -n "$ONLY" ] && [[ " $ONLY " != *" $name "* ]]; then return; fi
     python3 - "$CONFIG/settings.json" "$theme" "$extra" <<'PY'
@@ -29,14 +29,20 @@ s.update(json.loads(sys.argv[3]))
 json.dump(s, open(sys.argv[1], "w"))
 PY
     (LANG=$lang WINIT_UNIX_BACKEND=x11 TRACEDRAW_NO_SPLASH=1 TRACEDRAW_CONFIG_DIR="$CONFIG" \
-        LIBGL_ALWAYS_SOFTWARE=1 ./target/debug/tracedraw $file >"$SHOTS/$name.log" 2>&1) &
+        LIBGL_ALWAYS_SOFTWARE=1 ./target/debug/tracedraw --renderer=gl $file >"$SHOTS/$name.log" 2>&1) &
     sleep 6
     TRACEDRAW_SHOTS="$SHOTS" python3 scripts/visual/drive.py "scripts/visual/readme/$name.py"
     pkill -x tracedraw 2>/dev/null || true
     sleep 1
     # The window is 1600 x 950 at the top of the 1600 x 1000 screen.
-    convert "$SHOTS/$name.png" -crop 1600x950+0+0 +repage -quality 90 "$OUT/tracedraw-$name.jpg"
-    echo "$OUT/tracedraw-$name.jpg"
+    # The newer shots are WebP at 1000 pixels wide, a quarter of the size.
+    if [ "$ext" = webp ]; then
+        convert "$SHOTS/$name.png" -crop 1600x950+0+0 +repage -resize 1000x -quality 60 \
+            -define webp:method=6 "$OUT/tracedraw-$name.webp"
+    else
+        convert "$SHOTS/$name.png" -crop 1600x950+0+0 +repage -quality 90 "$OUT/tracedraw-$name.jpg"
+    fi
+    echo "$OUT/tracedraw-$name.$ext"
 }
 # The AI service (Google Gemini, which also makes pictures) set up with
 # a placeholder key, for the AI scene (no request is sent).
@@ -54,4 +60,8 @@ scene ai "$DRAWINGS/photo.tdraw" en_US.UTF-8 dark "$AI"
 scene languages "$DRAWINGS/type.tdraw" ja_JP.UTF-8
 scene painterly "$DRAWINGS/brushes.tdraw"
 scene perspective "$DRAWINGS/room.tdraw" en_US.UTF-8 medium_dark
+scene builder "$DRAWINGS/builder.tdraw" en_US.UTF-8 light '{}' webp
+scene picture "$DRAWINGS/photo.tdraw" en_US.UTF-8 medium_dark '{}' webp
+scene generators "$DRAWINGS/generators.tdraw" en_US.UTF-8 light '{}' webp
+scene tracecut "$DRAWINGS/stickers.tdraw" en_US.UTF-8 light '{}' webp
 rm -rf "$SHOTS"

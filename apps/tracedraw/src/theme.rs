@@ -1011,7 +1011,7 @@ pub fn bundled_font_definitions() -> egui::FontDefinitions {
 pub fn needs_system_font(code: &str) -> bool {
     matches!(
         code,
-        "zh-CN" | "zh-TW" | "ja" | "ar" | "hi" | "bn" | "lo" | "vi"
+        "zh-CN" | "zh-TW" | "ja" | "ar" | "hi" | "bn" | "lo" | "vi" | "eo"
     )
 }
 
@@ -1024,8 +1024,9 @@ pub fn ui_script_family(code: &str) -> Option<&'static str> {
         "zh-TW" => Some("Noto Sans TC"),
         "ja" => Some("Noto Sans JP"),
         "lo" => Some("Noto Sans Lao"),
-        // The bundled font lacks the Vietnamese letters with two marks.
-        "vi" => Some("Noto Sans"),
+        // The bundled font lacks the Vietnamese letters with two marks
+        // and the Esperanto ones with a circumflex or a breve.
+        "vi" | "eo" => Some("Noto Sans"),
         _ => None,
     }
 }
@@ -1112,8 +1113,9 @@ const UI_SCRIPT_FONTS: &[&[&str]] = &[
         "Leelawadee UI",
         "Saysettha OT",
     ],
-    // Vietnamese: the letters with two marks (ấ, ể, ợ and the like),
-    // which the bundled font lacks.
+    // Vietnamese and Esperanto: the letters with two marks (ấ, ể, ợ and
+    // the like) and with a circumflex or a breve (ĉ, ŝ, ŭ), which the
+    // bundled font lacks.
     &[
         "Noto Sans",
         "Segoe UI",
@@ -1137,6 +1139,57 @@ const UI_SCRIPT_FONTS: &[&[&str]] = &[
         "Waree",
         "Norasi",
         "FreeSerif",
+    ],
+    // The other scripts of India, for file, layer and page names typed in
+    // them, which showed as boxes (#4277): Malayalam, Tamil, Telugu,
+    // Kannada, Gujarati and Gurmukhi.
+    &[
+        "Noto Sans Malayalam",
+        "Nirmala UI",
+        "Kartika",
+        "Malayalam Sangam MN",
+        "Malayalam MN",
+        "Lohit Malayalam",
+    ],
+    &[
+        "Noto Sans Tamil",
+        "Nirmala UI",
+        "Latha",
+        "Tamil Sangam MN",
+        "Tamil MN",
+        "Lohit Tamil",
+    ],
+    &[
+        "Noto Sans Telugu",
+        "Nirmala UI",
+        "Gautami",
+        "Telugu Sangam MN",
+        "Telugu MN",
+        "Lohit Telugu",
+    ],
+    &[
+        "Noto Sans Kannada",
+        "Nirmala UI",
+        "Tunga",
+        "Kannada Sangam MN",
+        "Kannada MN",
+        "Lohit Kannada",
+    ],
+    &[
+        "Noto Sans Gujarati",
+        "Nirmala UI",
+        "Shruti",
+        "Gujarati Sangam MN",
+        "Gujarati MT",
+        "Lohit Gujarati",
+    ],
+    &[
+        "Noto Sans Gurmukhi",
+        "Nirmala UI",
+        "Raavi",
+        "Gurmukhi Sangam MN",
+        "Gurmukhi MN",
+        "Lohit Gurmukhi",
     ],
 ];
 
@@ -1253,6 +1306,28 @@ mod theme_tests {
         }
     }
 
+    /// The Esperanto interface shows its letters with a circumflex or a
+    /// breve when the system has a font for them (the bundled one has
+    /// none of them).
+    #[test]
+    fn esperanto_letters_have_an_interface_font() {
+        assert!(needs_system_font("eo"));
+        assert_eq!(ui_script_family("eo"), Some("Noto Sans"));
+        let eo = UI_SCRIPT_FONTS
+            .iter()
+            .find(|g| g.first() == Some(&"Noto Sans"))
+            .expect("a group of fonts with the Esperanto letters");
+        if tracedraw_text::fonts().first_face_data(eo).is_some() {
+            let ctx = ui_context();
+            let mut out = ctx.run_ui(Default::default(), |_| {});
+            out.textures_delta.clear();
+            let font = egui::FontId::proportional(14.0);
+            for c in "ĉĝĥĵŝŭĈĜĤĴŜŬ".chars() {
+                assert!(ctx.fonts_mut(|f| f.has_glyph(&font, c)), "{c}");
+            }
+        }
+    }
+
     /// Names typed in Hebrew show in the interface (the file name field,
     /// the recent files, the tabs) when the system has a font for it.
     #[test]
@@ -1312,6 +1387,25 @@ mod theme_tests {
             .find(|g| g.first() == Some(&"Noto Sans Thai"));
         for family in ["Leelawadee UI", "Tahoma", "Thonburi", "Loma"] {
             assert!(thai.is_some_and(|g| g.contains(&family)), "{family}");
+        }
+    }
+
+    /// Names typed in Malayalam and the other scripts of India have an
+    /// interface font on every system (#4277).
+    #[test]
+    fn the_scripts_of_india_have_interface_fonts() {
+        for (lead, families) in [
+            ("Noto Sans Malayalam", ["Nirmala UI", "Malayalam Sangam MN", "Lohit Malayalam"]),
+            ("Noto Sans Tamil", ["Nirmala UI", "Tamil Sangam MN", "Lohit Tamil"]),
+            ("Noto Sans Telugu", ["Nirmala UI", "Telugu Sangam MN", "Lohit Telugu"]),
+            ("Noto Sans Kannada", ["Nirmala UI", "Kannada Sangam MN", "Lohit Kannada"]),
+            ("Noto Sans Gujarati", ["Nirmala UI", "Gujarati Sangam MN", "Lohit Gujarati"]),
+            ("Noto Sans Gurmukhi", ["Nirmala UI", "Gurmukhi Sangam MN", "Lohit Gurmukhi"]),
+        ] {
+            let group = UI_SCRIPT_FONTS.iter().find(|g| g.first() == Some(&lead));
+            for family in families {
+                assert!(group.is_some_and(|g| g.contains(&family)), "{lead}: {family}");
+            }
         }
     }
 
@@ -1582,6 +1676,10 @@ mod glyph_tests {
             ("printers.rs", '\u{2019}'),
             ("printers.rs", '\u{201A}'),
             ("printers.rs", '\u{201B}'),
+            // Symbols a formula typed or pasted may hold (dot operator,
+            // cube root), read by the Math Shapes parser, never shown.
+            ("math_expr.rs", '\u{22C5}'),
+            ("math_expr.rs", '\u{221B}'),
         ];
         // Each family's faces, read from their character maps (egui's own
         // `has_glyph` calls every character of the face holding its

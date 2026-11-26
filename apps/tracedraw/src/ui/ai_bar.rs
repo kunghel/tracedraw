@@ -4,6 +4,7 @@
 //! Draw or Cancel, what the last request did, the panel with the settings
 //! and a button that hides the bar. See docs/behavior/ai-drawing.md.
 
+use crate::ui::btn_icons::IconUi;
 use crate::ai::AiStatus;
 use crate::app::App;
 use crate::i18n::{tr, trf};
@@ -64,7 +65,7 @@ pub fn ai_bar(app: &mut App, ui: &mut Ui) {
             {
                 app.ai_cancel();
             }
-        } else if ui.button(tr("ai.draw")).clicked() || enter {
+        } else if ui.ibutton("ai.draw").clicked() || enter {
             app.ai_draw();
             // Ready for the next request.
             field.request_focus();
@@ -109,7 +110,7 @@ fn model_list(app: &mut App, ui: &mut Ui) {
             if hidden {
                 ui.checkbox(&mut app.ai.show_all_models, tr("ai.show_all_models"));
             }
-            if ui.button(tr("ai.refresh_models")).clicked() {
+            if ui.ibutton("ai.refresh_models").clicked() {
                 fetch = true;
             }
         })

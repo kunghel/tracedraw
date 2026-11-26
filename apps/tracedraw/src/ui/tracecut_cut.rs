@@ -2,6 +2,7 @@
 //! output (with the test cut), CNC toolpaths, weeding, bridges, cut
 //! order, CutContour and registration marks. See docs/behavior/tracecut.md.
 
+use crate::ui::btn_icons::IconUi;
 use crate::app::Units;
 use crate::i18n::tr;
 use crate::tracecut::{ToolId, TraceCutState};
@@ -10,6 +11,7 @@ use crate::ui::tips::RichTip;
 use crate::ui::tracecut::{length, row};
 use egui::Ui;
 use tracedraw_tracecut::cnc::{self, CncSpec, Milling, Side, Zero};
+use tracedraw_tracecut::laser::{self, Firmware, GroupBy, Mode};
 use tracedraw_tracecut::cut::hpgl::{Machine, Origin, MAX_PASSES};
 use tracedraw_tracecut::cut::marks::MarkStyle;
 use tracedraw_tracecut::cut::order::{Direction, StartAt};
@@ -20,6 +22,12 @@ use tracedraw_tracecut::cut::weed::{WeedMode, MAX_DIVIDERS};
 pub enum Action {
     /// Cut the test square now.
     TestCut,
+    /// Laser Output: run the frame of the job.
+    LaserFrame,
+    /// Laser Output: run the material test grid.
+    LaserTest,
+    /// Laser Output: save the laser lines as a clean DXF.
+    LaserDxf,
 }
 
 /// A plain number field.
@@ -77,6 +85,7 @@ pub fn settings(ui: &mut Ui, units: Units, st: &mut TraceCutState) -> Option<Act
     match st.tool {
         ToolId::PlotterOutput => action = plotter(ui, units, st),
         ToolId::CncToolpath => cnc_settings(ui, units, &mut st.settings.cnc),
+        ToolId::LaserOutput => action = laser_settings(ui, units, st),
         ToolId::Weeding => {
             let s = &mut st.settings.weeding;
             row(ui, &tr("tracecut.weed_mode"), |ui| {
@@ -453,6 +462,294 @@ fn cnc_settings(ui: &mut Ui, units: Units, s: &mut CncSpec) {
     }
 }
 
+/// The i18n key of a laser mode's name.
+fn mode_key(m: Mode) -> &'static str {
+    match m {
+        Mode::Cut => "tracecut.laser_mode_cut",
+        Mode::Score => "tracecut.laser_mode_score",
+        Mode::Engrave => "tracecut.laser_mode_engrave",
+        Mode::Skip => "tracecut.laser_mode_skip",
+    }
+}
+
+/// Where a program goes: a file, a port or the network.
+fn destination_rows(
+    ui: &mut Ui,
+    dest: &mut Destination,
+    port: &mut String,
+    host: &mut String,
+    hint: &str,
+) {
+    if !CAN_SEND {
+        return;
+    }
+    row(ui, &tr("tracecut.destination"), |ui| {
+        for d in Destination::ALL {
+            ui.radio_value(dest, d, tr(d.key()))
+                .rich_tip(crate::ui::tips::keyed(d.key()));
+        }
+    });
+    match dest {
+        Destination::Port => {
+            row(ui, &tr("tracecut.port"), |ui| {
+                ui.add_sized([200.0, 22.0], egui::TextEdit::singleline(port))
+                    .rich_tip(crate::ui::tips::keyed("tracecut.port"));
+            });
+        }
+        Destination::Network => {
+            row(ui, &tr("tracecut.host"), |ui| {
+                ui.add_sized(
+                    [200.0, 22.0],
+                    egui::TextEdit::singleline(host).hint_text(hint),
+                )
+                .rich_tip(crate::ui::tips::keyed("tracecut.host"));
+            });
+        }
+        Destination::File => {}
+    }
+}
+
+/// Laser Output: the firmware, a row of settings per laser layer of the
+/// selection, the beam and curve settings, where the program goes, the
+/// frame, the material test and the DXF.
+fn laser_settings(ui: &mut Ui, units: Units, st: &mut TraceCutState) -> Option<Action> {
+    let mut action = None;
+    let keys = st.laser_keys.clone();
+    let s = &mut st.settings.laser;
+    let before = s.spec.firmware;
+    row(ui, &tr("tracecut.laser_firmware"), |ui| {
+        choice(
+            ui,
+            "laser_firmware",
+            &mut s.spec.firmware,
+            &[
+                (Firmware::Grbl, "tracecut.laser_grbl"),
+                (Firmware::Marlin, "tracecut.laser_marlin"),
+            ],
+            "tracecut.laser_firmware",
+        )
+    });
+    if s.spec.firmware != before {
+        s.spec.max_power = s.spec.firmware.default_max_power();
+    }
+    row(ui, &tr("tracecut.laser_max_power"), |ui| {
+        number(
+            ui,
+            &mut s.spec.max_power,
+            laser::MAX_POWER_RANGE,
+            0,
+            "tracecut.laser_max_power",
+        )
+    });
+    if s.spec.firmware == Firmware::Grbl {
+        row(ui, "", |ui| check(ui, &mut s.spec.dynamic, "tracecut.laser_dynamic"));
+    }
+    row(ui, &tr("tracecut.laser_group_by"), |ui| {
+        choice(
+            ui,
+            "laser_group_by",
+            &mut s.spec.group_by,
+            &[
+                (GroupBy::Color, "tracecut.laser_by_color"),
+                (GroupBy::Layer, "tracecut.laser_by_layer"),
+            ],
+            "tracecut.laser_group_by",
+        )
+    });
+    if keys.is_empty() {
+        row(ui, "", |ui| {
+            ui.label(egui::RichText::new(tr("tracecut.laser_no_layers")).weak())
+        });
+    }
+    for (key, color) in &keys {
+        ui.separator();
+        row(ui, &tr("tracecut.laser_layer"), |ui| {
+            let (r, _) = ui.allocate_exact_size(egui::vec2(14.0, 14.0), egui::Sense::hover());
+            ui.painter().rect_filled(
+                r,
+                2.0,
+                egui::Color32::from_rgb(color[0], color[1], color[2]),
+            );
+            ui.label(egui::RichText::new(key).strong());
+        });
+        let ls = s.spec.layer(key);
+        let mut edit = ls;
+        row(ui, &tr("tracecut.laser_mode"), |ui| {
+            choice(
+                ui,
+                &format!("laser_mode_{key}"),
+                &mut edit.mode,
+                &Mode::ALL.map(|m| (m, mode_key(m))),
+                "tracecut.laser_mode",
+            )
+        });
+        if edit.mode != ls.mode {
+            // A new mode starts from its own power and speed.
+            edit = laser::LayerSpec::for_mode(edit.mode);
+        }
+        if edit.mode != Mode::Skip {
+            row(ui, &tr("tracecut.laser_power"), |ui| {
+                number(ui, &mut edit.power, laser::POWER_RANGE, 1, "tracecut.laser_power")
+            });
+            row(ui, &tr("tracecut.laser_speed"), |ui| {
+                number(ui, &mut edit.speed, laser::SPEED_RANGE, 1, "tracecut.laser_speed")
+            });
+            row(ui, &tr("tracecut.passes"), |ui| {
+                count(ui, &mut edit.passes, laser::PASSES_RANGE, "tracecut.passes")
+            });
+            if edit.mode == Mode::Engrave {
+                row(ui, &tr("tracecut.laser_interval"), |ui| {
+                    length(
+                        ui,
+                        units,
+                        &mut edit.interval,
+                        laser::INTERVAL_RANGE,
+                        "tracecut.laser_interval",
+                    )
+                });
+            }
+            row(ui, "", |ui| check(ui, &mut edit.air, "tracecut.laser_air"));
+        }
+        if edit != ls {
+            *s.spec.layer_mut(key) = edit;
+        }
+    }
+    ui.separator();
+    row(ui, &tr("tracecut.laser_overscan"), |ui| {
+        length(
+            ui,
+            units,
+            &mut s.spec.overscan,
+            laser::OVERSCAN_RANGE,
+            "tracecut.laser_overscan",
+        )
+    });
+    row(ui, &tr("tracecut.cnc_tolerance"), |ui| {
+        length(
+            ui,
+            units,
+            &mut s.spec.tolerance,
+            laser::TOLERANCE_RANGE,
+            "tracecut.cnc_tolerance",
+        )
+    });
+    row(ui, &tr("tracecut.cnc_origin"), |ui| {
+        choice(
+            ui,
+            "laser_origin",
+            &mut s.spec.zero,
+            &[
+                (Zero::JobCorner, "tracecut.cnc_origin_corner"),
+                (Zero::Origin, "tracecut.cnc_origin_ruler"),
+            ],
+            "tracecut.laser_origin",
+        )
+    });
+    row(ui, "", |ui| {
+        check(ui, &mut s.spec.inner_first, "tracecut.inner_first")
+    });
+    destination_rows(
+        ui,
+        &mut s.destination,
+        &mut s.port,
+        &mut s.host,
+        "192.168.1.30:23",
+    );
+    if CAN_SEND && s.destination != Destination::File {
+        row(ui, "", |ui| check(ui, &mut s.wait_ok, "tracecut.laser_wait_ok"));
+    }
+    ui.separator();
+    row(ui, &tr("tracecut.laser_frame_power"), |ui| {
+        number(
+            ui,
+            &mut s.spec.frame_power,
+            laser::POWER_RANGE,
+            1,
+            "tracecut.laser_frame_power",
+        )
+    });
+    row(ui, &tr("tracecut.laser_frame_speed"), |ui| {
+        number(
+            ui,
+            &mut s.spec.frame_speed,
+            laser::SPEED_RANGE,
+            1,
+            "tracecut.laser_frame_speed",
+        );
+        if ui
+            .ibutton("tracecut.laser_frame")
+            .rich_tip(crate::ui::tips::keyed("tracecut.laser_frame"))
+            .clicked()
+        {
+            action = Some(Action::LaserFrame);
+        }
+    });
+    ui.separator();
+    let t = &mut s.spec.test;
+    row(ui, &tr("tracecut.laser_test_mode"), |ui| {
+        choice(
+            ui,
+            "laser_test_mode",
+            &mut t.mode,
+            &[Mode::Engrave, Mode::Score, Mode::Cut].map(|m| (m, mode_key(m))),
+            "tracecut.laser_test_mode",
+        )
+    });
+    row(ui, &tr("tracecut.laser_test_power"), |ui| {
+        number(ui, &mut t.power_min, laser::POWER_RANGE, 1, "tracecut.laser_test_power");
+        ui.label("-");
+        number(ui, &mut t.power_max, laser::POWER_RANGE, 1, "tracecut.laser_test_power");
+    });
+    row(ui, &tr("tracecut.laser_test_speed"), |ui| {
+        number(ui, &mut t.speed_min, laser::SPEED_RANGE, 1, "tracecut.laser_test_speed");
+        ui.label("-");
+        number(ui, &mut t.speed_max, laser::SPEED_RANGE, 1, "tracecut.laser_test_speed");
+    });
+    row(ui, &tr("tracecut.laser_test_steps"), |ui| {
+        count(ui, &mut t.columns, laser::STEPS_RANGE, "tracecut.laser_test_steps");
+        ui.label("x");
+        count(ui, &mut t.rows, laser::STEPS_RANGE, "tracecut.laser_test_steps");
+    });
+    row(ui, &tr("tracecut.laser_test_cell"), |ui| {
+        length(ui, units, &mut t.cell, laser::CELL_RANGE, "tracecut.laser_test_cell")
+    });
+    row(ui, &tr("tracecut.laser_test_gap"), |ui| {
+        length(ui, units, &mut t.gap, laser::GAP_RANGE, "tracecut.laser_test_gap")
+    });
+    if t.mode == Mode::Engrave {
+        row(ui, &tr("tracecut.laser_interval"), |ui| {
+            length(
+                ui,
+                units,
+                &mut t.interval,
+                laser::INTERVAL_RANGE,
+                "tracecut.laser_interval",
+            )
+        });
+    }
+    row(ui, "", |ui| {
+        check(ui, &mut t.labels, "tracecut.laser_test_labels");
+        if ui
+            .ibutton("tracecut.laser_test")
+            .rich_tip(crate::ui::tips::keyed("tracecut.laser_test"))
+            .clicked()
+        {
+            action = Some(Action::LaserTest);
+        }
+    });
+    ui.separator();
+    row(ui, "", |ui| {
+        if ui
+            .ibutton("tracecut.laser_dxf")
+            .rich_tip(crate::ui::tips::keyed("tracecut.laser_dxf"))
+            .clicked()
+        {
+            action = Some(Action::LaserDxf);
+        }
+    });
+    action
+}
+
 /// Plotter Output: the machine and its knife, the order, where the job
 /// goes, and the test cut.
 fn plotter(ui: &mut Ui, units: Units, st: &mut TraceCutState) -> Option<Action> {
@@ -577,7 +874,7 @@ fn plotter(ui: &mut Ui, units: Units, st: &mut TraceCutState) -> Option<Action> 
             "tracecut.test_size",
         );
         if ui
-            .button(tr("tracecut.test_cut"))
+            .ibutton("tracecut.test_cut")
             .rich_tip(crate::ui::tips::keyed("tracecut.test_cut"))
             .clicked()
         {

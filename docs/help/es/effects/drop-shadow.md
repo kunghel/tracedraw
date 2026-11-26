@@ -40,3 +40,7 @@ En la barra de propiedades:
 [[menu.object > menu.object.clear_effect]] quita la sombra. Para copiar la
 sombra de otro objeto, use
 [[menu.object > menu.object.copy_effect > menu.object.copy_shadow_from]].
+
+Seleccione una sombra separada. Arrastre con [[tool.interactive_fill]] para
+aplicar un degradado de color, o con [[tool.transparency]] para variar la
+opacidad a lo largo del arrastre. La sombra conserva sus bordes suaves.

@@ -116,7 +116,7 @@ fn preview(ui: &mut Ui, app: &App) {
 }
 
 pub fn vector_mosaic(app: &mut App, ui: &mut Ui) {
-    ui.spacing_mut().slider_width = 110.0;
+    crate::ui::docker_form::fit_sliders(ui);
     {
         let s = &mut app.vector_mosaic;
         row(ui, &tr("docker.vector_mosaic_density"), |ui| {
@@ -225,7 +225,8 @@ pub fn vector_mosaic(app: &mut App, ui: &mut Ui) {
         row(ui, &tr("docker.vector_mosaic_method"), |ui| {
             crate::ui::keynav::ComboBox::from_id_salt("vector_mosaic_method")
                 .selected_text(tr(s.method.key()))
-                .width(ui.available_width().clamp(120.0, 190.0))
+                .width(crate::ui::docker_form::fit_w(ui, 190.0))
+                .truncate()
                 .show_ui(ui, |ui| {
                     for m in TrackMethod::ALL {
                         ui.selectable_value(&mut s.method, m, tr(m.key()));
@@ -246,31 +247,37 @@ pub fn vector_mosaic(app: &mut App, ui: &mut Ui) {
     let custom = app.vector_mosaic.shape == TileShape::Custom;
     let mut select = false;
     row(ui, &tr("docker.vector_mosaic_shape"), |ui| {
-        let s = &mut app.vector_mosaic;
-        crate::ui::keynav::ComboBox::from_id_salt("vector_mosaic_shape")
-            .selected_text(tr(s.shape.key()))
-            .width(110.0)
-            .show_ui(ui, |ui| {
-                for t in TileShape::ALL {
-                    ui.selectable_value(&mut s.shape, t, tr(t.key()));
-                }
-            })
-            .response
-            .rich_tip(crate::ui::tips::keyed("docker.vector_mosaic_shape"));
-        select = ui
-            .add_enabled(
-                custom && !app.selection.is_empty(),
-                egui::Button::new(tr("docker.vector_mosaic_select")),
-            )
-            .rich_tip(tr("docker.vector_mosaic_select_tip"))
-            .clicked();
+        // Select goes under the list when a narrow panel has no room
+        // beside it (#4323).
+        ui.horizontal_wrapped(|ui| {
+            let s = &mut app.vector_mosaic;
+            crate::ui::keynav::ComboBox::from_id_salt("vector_mosaic_shape")
+                .selected_text(tr(s.shape.key()))
+                .width(crate::ui::docker_form::fit_w(ui, 110.0))
+                .truncate()
+                .show_ui(ui, |ui| {
+                    for t in TileShape::ALL {
+                        ui.selectable_value(&mut s.shape, t, tr(t.key()));
+                    }
+                })
+                .response
+                .rich_tip(crate::ui::tips::keyed("docker.vector_mosaic_shape"));
+            select = ui
+                .add_enabled(
+                    custom && !app.selection.is_empty(),
+                    crate::ui::btn_icons::Ib::new("docker.vector_mosaic_select"),
+                )
+                .rich_tip(tr("docker.vector_mosaic_select_tip"))
+                .clicked();
+        });
     });
     {
         let s = &mut app.vector_mosaic;
         match s.shape {
             TileShape::Glyphs => {
                 indented(ui, |ui| {
-                    ui.horizontal(|ui| {
+                    // The seed goes under the box when the line is full.
+                    ui.horizontal_wrapped(|ui| {
                         ui.checkbox(&mut s.random_glyphs, tr("docker.vector_mosaic_random"))
                             .rich_tip(crate::ui::tips::keyed("docker.vector_mosaic_random"));
                         ui.add_enabled(
@@ -313,8 +320,11 @@ pub fn vector_mosaic(app: &mut App, ui: &mut Ui) {
     let custom = app.vector_mosaic.shape == TileShape::Custom;
     let ready = !app.selection.is_empty() && (!custom || app.vector_mosaic.custom.is_some());
     let tip = crate::ui::tips::pair("docker.apply", "docker.vector_mosaic_apply_desc");
-    if crate::ui::docker_form::wide_button(ui, &tr("docker.apply"), ready, &tip) {
+    if crate::ui::docker_form::wide_button(ui, "docker.apply", ready, &tip) {
         let s = app.vector_mosaic.clone();
         app.apply_vector_mosaic(&s);
+    }
+    if crate::ui::docker_form::reset_button(ui) {
+        app.vector_mosaic.reset();
     }
 }

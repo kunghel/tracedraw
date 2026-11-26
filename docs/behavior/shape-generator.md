@@ -40,6 +40,12 @@ the settings) and `ui/shape_gen_docker.rs`. Issues #3412 and #3413.
 - Tessellation: tiles laid over the box's circumscribed square, turned by
   Rotation about the middle, kept when their middle is inside; Gap shrinks
   each tile towards its middle by half the gap (inradius ratio).
+  Masonry: bricks Tile x Tile / 2, every other row moved half a brick.
+  Pinwheel: right triangles with legs Tile and 2 Tile; a 2a x a
+  rectangle of two triangles (a = the circumscribed diameter) is split
+  until the short leg is at most 1.1 Tile: each triangle (right angle R,
+  short leg end S, long leg end L) gives the triangle cut off by R's drop H
+  onto SL (H, S, R) and the four midpoint halves of (H, R, L).
 - Line waves: line i at y = t h; bump e(x) = exp(-(|x - w/2| / (Wave width
   w / 2))^Sharpness); y += (t - 1/2) Spread e + Amplitude e (1 - Fade |2t -
   1|) fbm(u Noise X, i Noise Y). Samples 240 to 40 by Softness; curves
@@ -116,7 +122,15 @@ the settings) and `ui/shape_gen_docker.rs`. Issues #3412 and #3413.
   turned half a sector; the seed picks each ring's petal (teardrop, lobe
   or leaf) and width; a circle at each ring's base.
 - Guilloche: ring k radius base_k + A1 sin(w1 a + k twist) + A2 sin(w2 a -
-  2 k twist), base from the inner to the outer radius.
+  2 k twist), base from the inner to the outer radius. Band layout: line k
+  at y = base_k + A1 sin(w1 x + k twist) + A2 sin(w2 x - 2 k twist) across
+  the width, w = 2 pi round(width / wave length) / width; bases spread
+  over the height less A1 + A2 (the amplitudes shrunk to fit half the
+  height) and 0.2 %. Frame layout: line k follows the rounded rectangle
+  d_k in from the edge (corner radius Band width - d_k, d_k spread over the
+  band less the amplitudes), moved along its normal by the same two waves,
+  counted on the band's middle line and measured as a share of each
+  line's length so they keep step.
 - Tree: segment, then two branches at -+ angle (times 1 -+ jitter) and
   length x ratio (times 1 -+ jitter / 2), down the levels.
 - L-systems: presets Koch F--F--F, F=F+F--F+F, 60 degrees; Sierpinski A,
@@ -135,6 +149,69 @@ the settings) and `ui/shape_gen_docker.rs`. Issues #3412 and #3413.
   contact angle to the edge, stopped where it meets the neighbouring
   edge's ray; segments turned by Rotation about the box's middle and
   clipped to the box.
+
+## Packings (`shape_gen_pack.rs`)
+
+- Circle packing: up to max(1000, 40 x Circles) tries at random places
+  (inside the picked outline, even-odd, when one is picked); a try takes
+  the radius min(largest / 2, distance to the box edge or the outline,
+  min over circles in the 3 x 3 buckets of (distance - r - Gap)) and is kept
+  when that is at least smallest / 2. Buckets are one largest circle plus
+  Gap wide, so no farther circle can limit a new one. Outlines or filled.
+- Sunflower spiral: dot i at angle i x Turn and radius c sqrt(i + 1/2);
+  diameter c sqrt(pi) Dot size (1 + (Outer size - 1) t), t = r / (c
+  sqrt(n)); c is chosen so the outer dots fit the box's shorter side.
+  Squares and diamonds turn with their angle.
+- Squares and motifs: round(w / s) x round(h / s) squares (s the shorter
+  side); each splits into four with the split chance (always on the first
+  level when there are two or more) until Levels; each leaf is filled
+  with a random palette colour and gets a random motif (quarter disc from
+  a corner, half disc, disc, ring, diagonal triangle, half-size square,
+  leaf of two quarter arcs, three bars) in another colour, turned a
+  random quarter turn. Gap shrinks each square by half the gap per side.
+  Palette 2 to 6 colours (cream, red, blue, yellow, near black).
+
+## Reaction-diffusion (`shape_gen_rd.rs`)
+
+- Gray-Scott on Detail cells across the longer side, wrapping: u' = u +
+  lap(u) - u v^2 + F (1 - u), v' = v + 0.5 lap(v) + u v^2 - (K + F) v, the
+  Laplacian 0.2 for sides, 0.05 for corners, -1 for the cell. Start u = 1,
+  v = 0 with cells / 120 seeded squares (3 or 5 cells) at u = 0.5, v about
+  0.25. Presets (F, K): spots 0.0367, 0.0649; maze 0.029, 0.057; coral
+  0.0545, 0.062; holes 0.039, 0.058; stripes 0.037, 0.06; custom from the
+  panel. The last grid is kept for the same size, rates, steps and seed.
+- Traced by marching squares at Level % of the highest v, with a ring of
+  empty cells round the grid (shapes close along the box); saddles by the
+  cell's mean; rings run with the inside on their left. Closed Catmull-Rom
+  curves, their control points held in the box. Filled: one compound
+  curve (even-odd, holes open); else one outline per ring. Invert fills
+  the other side of the level.
+
+## Interlace (`shape_gen_knots.rs`)
+
+- Knotwork: round(w / Tile) x round(h / Tile) tiles; strands run along
+  each tile's diamond (between its edge middles). Each inner edge middle
+  is a crossing, or with chance Breaks a wall along the edge (strands turn
+  back) or across it (they pass side by side), half each, chosen from the
+  seed (mirrored both ways when Symmetric); the border is all walls.
+  Control points: each diamond side's middle, each crossing, and at a
+  wall a point 0.18 Tile from the edge's middle; closed Catmull-Rom
+  curves sampled 8 times per span (between control points).
+- Stars: two rays from each polygon edge's middle at the contact angle
+  (74 degrees for ten-point stars), one toward each end. In each polygon
+  every pair of rays meeting inside it is listed (two rays on one line
+  pointing at each other meet half way) and pairs are taken nearest
+  first, each ray once; a ray stops at its meeting. Ten-point stars on
+  Penrose rhombs, eight-point on squares, six-point on hexagons of the
+  tile size. Ray ends at the same place are paired straightest first, then
+  chained into strands.
+- Weaving: every proper crossing between segments (half-open, bucketed);
+  along each strand the crossings alternate over and under, and the two
+  strands at a crossing take opposite turns (spread breadth first; a
+  strand's turn is fixed by the first crossing that reaches it). The strand
+  underneath is cut Band width / 2 / sin(angle) (sin at least 0.3) + Gap
+  each side of the crossing. Bands: the two edges offset by half the band
+  width (mitred corners). Pieces are clipped to the box.
 
 ## Fills inside a shape (`shape_gen_fill.rs`)
 

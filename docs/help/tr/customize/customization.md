@@ -88,3 +88,15 @@ içerir: çubuktan kaldırdığınız bir düğmeyi oradan geri sürükleyin.
   [[options.palette_context_menu]] öğesini açmak.
 
 Bkz. [Renk paletleri](../color/palettes.md).
+
+## Bağlam menüleri {#context-menus}
+
+Özelleştirme altında [[options.context_menus]] seçeneğini kullanarak 32 bağlam menüsü konumunu birbirinden bağımsız yönetin. [[options.context_menu_scene]] ile bir konum seçin, bir işlemi bulmak için [[options.context_menu_search]] alanını kullanın ve o konumda gizlemek için onay kutusunun işaretini kaldırın. Geçerli seçim kullanamasa bile işlemler bu listede kalır.
+
+Tüm işlemler varsayılan olarak görünür. Her konumun kendi seçenekleri vardır: tuvalde bir nesne işlemini gizlemek, Nesneler panelinde gizlemez. Hedef katmanlar ve yazı tipi koleksiyonları gibi dinamik listeler tek bir işlem olarak yönetilir; bu nedenle adlarını değiştirmek seçimlerinizi sıfırlamaz.
+
+[[options.context_menu_reset]] seçili menüyü, [[options.context_menu_reset_all]] ise tüm menüleri geri yükler. [[dialog.ok]] seçimleri uygulama ayarlarına kaydeder; [[dialog.cancel]], Escape veya kapatma düğmesi, Seçenekler açıldığında var olan seçimleri geri yükler. Ana menüler, kısayollar ve komut araması özgün komutları sunmaya devam eder.
+
+Girintili alt öğeleri görmek için bir alt menüyü genişletin. Aynı düzeydeki öğeleri yeniden sıralamak için satırın tutamacını sürükleyin veya [[options.context_menu_move_up]] ve [[options.context_menu_move_down]] düğmelerini kullanın. Bir üst menü taşındığında alt öğeleri de taşınır; öğeler başka bir üst menüye aktarılamaz. Arama, eşleşen öğelerin üst menü yolunu görünür tutar. Menüyü geri yüklemek görünürlüğü ve sıralamayı sıfırlar; Seçenekler’i iptal etmek her ikisini de iletişim kutusu açıldığındaki durumuna döndürür.
+
+Belge paletinin renk örneği menüsü ve Palet Yöneticisindeki girdisi ayrı ayarlara sahiptir. Dinamik hedefler kendi sıralarını korur; belge stilleri listesi Nesne Stilleri içindeki sabit işlemler arasında kalır. Sonraki sürümlerde eklenen yeni işlemler görünür kalır ve aynı düzeyde kaydedilmiş öğelerden sonra yer alır.

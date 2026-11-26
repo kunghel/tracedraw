@@ -394,6 +394,42 @@ The remaining rarer members follow the same rules:
   `UserAssignEx`, `PasteSpecial`, `StartShape`, `Fill.Pattern`,
   `GetPixelColor`, `Quit`, `VBE`.
 
+Two more published macro projects (#4315: a booklet set-up and a
+batch maker of ID cards from a list) were checked the same way, without
+running them. What they call now works too:
+
+- `AlignRangeToPageCenter`, `AlignRangeToPage`, `AlignRangeToShape`,
+  `AlignRangeToPoint`: the same as the `AlignTo...` members, which
+  already move a range as a whole.
+- `SetPositionEx(ReferencePoint, x, y)` and `BoundingBox` (a rectangle
+  with `x`, `y`, `Width`, `Height`, `Left`, `Right`, `Top`, `Bottom`,
+  `CenterX`, `CenterY`); `CreateRect`, `Layer.CreateRectangleRect`.
+- `ShapeRange.OrderReverse`, `Page.SelectShapesFromRectangle` and
+  `Layer.SelectShapesFromRectangle` (inside, or touching with `Touch`).
+- `Page.TextFind(Text, CaseSensitive)` selects the first text object that
+  holds the words (false when none does); `Page.TextReplace(Old, New,
+  CaseSensitive, WholeWord)` replaces them in every text object of the
+  page.
+- `Page.GuidesLayer` and `Document.GuidesLayer` (the master page's,
+  shown on every page): `CreateGuide`, `CreateGuideAngle`, and `Shapes`
+  or `SelectableShapes.All` with `Count`, `Item` and `Delete`. The
+  guidelines are still not a layer in `Layers` (`IsGuidesLayer` stays
+  false there).
+- `StructExportOptions` (`CreateStructExportOptions`): `Export` and
+  `ExportEx` take its `SizeX`, `SizeY` (a width in pixels wins) and
+  `ResolutionX`.
+- `SourceFileVersion` (the object model's version) and `ClearUndoList`
+  (no effect).
+- `ScriptTools.GetFileBox(Filter, Title, Type, File, , Folder)` opens the
+  system's file box (Type 1 saves) with the "Name (*.csv)|*.csv" filters
+  and gives the path, "" for Cancel; `ScriptTools.GetFolder(Folder,
+  Title)` picks a folder. The suite's other name for `ScriptTools` is an
+  alias (below).
+
+Left to keeping going: `FitToFrame`, `ConvertToParagraph`,
+`ConvertToArtistic`, `PrintSettings`, `PrintOut`, the export filter's
+profile flags, and the Windows functions a licence check calls.
+
 ### Other names for members
 
 Some members are called by other programs' names in macros. Those names
@@ -510,6 +546,7 @@ model is documented with scripting.
 | `__host_setting(op, app, section, key, value)` | GetSetting, SaveSetting, DeleteSetting, GetAllSettings; without it settings last for the run |
 | `__host_open(url)` | ShellExecute of a web or mail address; true when it was opened (without it, ShellExecute returns 2) |
 | `__host_download(url, path)` | URLDownloadToFile (into `path`) and URLDownloadToCacheFile (`path` empty): the file written, or "" (without it, they fail) |
+| `__host_fs(op, a, b, c)` | the file system for the file statements, file functions and FileSystemObject: `read`, `write` (`c` "1" appends), `exists` ("f", "d" or ""), `size`, `mtime`, `attr`, `list` (JSON of `{n, d, s}`), `kill` (wildcards; how many went), `mkdir`, `rmdir` (`b` "1": with its contents), `copy` (`c` "1" overwrites), `move`, `cwd`, `env`, `special`; a failure is "\u0001" and the VBA error number (without it, files are not available, error 445) |
 
 ### Supported
 
@@ -543,6 +580,55 @@ IIf, Choose, Switch, GetSetting, SaveSetting, DeleteSetting,
 GetAllSettings, Collection, `CreateObject("Scripting.Dictionary")`
 and the vb constants.
 
+Files (#4315), through `__host_fs`, with paths relative to `CurDir`
+(the user's documents folder until `ChDir`):
+
+- Statements: `Open path For Input | Output | Append | Binary | Random
+  As #n` (Access, Lock and Len are accepted), `Close` (some or all),
+  `Print #` (as `Debug.Print`, numbers with their sign space and a space
+  after), `Write #` (comma separated, text in quotes, `#TRUE#`, dates as
+  `#yyyy-mm-dd#`), `Input #` (fields back as text, numbers or those
+  values), `Line Input #`, `Kill` (wildcards), `MkDir`, `RmDir`,
+  `ChDir`, `FileCopy`, `Name ... As`; `SetAttr` does nothing.
+- Functions: `FreeFile`, `EOF`, `LOF`, `Loc`, `Input(n, #f)`,
+  `FileLen`, `FileDateTime`, `GetAttr` (16 folder, 32 file, plus 1 read
+  only), `CurDir`, `Environ(name)`, and `Dir(path, attributes)` with `*`
+  and `?`, folders with `vbDirectory`, and `Dir()` for the next match.
+- Text is read as UTF-8 when it is (or UTF-16 with its byte order
+  mark), else in the Windows Western code page, and written in that code
+  page when every character fits, else as UTF-8.
+- `CreateObject("Scripting.FileSystemObject")` (and `New
+  FileSystemObject`): `FileExists`, `FolderExists`, `GetFile`,
+  `GetFolder` (`Files`, `SubFolders`, `Name`, `Path`, `Size`,
+  `DateLastModified`, `ParentFolder`, `Copy`, `Move`, `Delete`),
+  `OpenTextFile` (1 read, 2 write, 8 append; `ReadLine`, `ReadAll`,
+  `Read`, `AtEndOfStream`, `Write`, `WriteLine`, `WriteBlankLines`,
+  `Close`), `CreateTextFile`, `CreateFolder`, `CopyFile`, `CopyFolder`,
+  `MoveFile`, `MoveFolder`, `DeleteFile`, `DeleteFolder`, `BuildPath`,
+  `GetFileName`, `GetBaseName`, `GetExtensionName`,
+  `GetParentFolderName`, `GetAbsolutePathName`, `GetTempName`,
+  `GetSpecialFolder` (2: the temporary folder).
+- `CreateObject("WScript.Shell")`: `SpecialFolders("Desktop")` and the
+  other folders, `ExpandEnvironmentStrings`, `Popup` (a message box),
+  `CurrentDirectory`; `Run` and `Exec` are not available.
+  `CreateObject("WScript.Network")`: `UserName`, `ComputerName`,
+  `UserDomain`.
+
+### Keeping going
+
+`Options::keep_going` (the Macro Manager's "Keep going past what
+TraceDraw can't do", on unless turned off) compiles every statement so
+that when it stops on something TraceDraw cannot do (error 445 "Not
+supported", 438 a member the object lacks, 429 an object of another
+program, 453 a Windows function, or a member the object model names as
+not available), and no error handler of the procedure takes the error,
+the statement is skipped and the macro goes on. "Object required"
+errors (91, 424) that come after such a skip are skipped too, as they
+follow from it. Any other error stops the macro as before. The skipped
+steps are kept in `__v.skipped` (number, description, module,
+procedure, line and how many times), and when the macro ends the app
+lists them; a click on one opens the Macro Editor at its line.
+
 ### Not supported
 
 These compile and fail at run time with error 445
@@ -561,10 +647,10 @@ These compile and fail at run time with error 445
   whose path goes back into the buffer the macro passed, and they
   return 0; when nothing comes they return INET_E_DOWNLOAD_FAILURE
   (-2146697200), without an error (#2165).
-- File statements: Open, Close, Print #, Write #, Input #, Line Input,
-  Get, Put, Kill, Name, MkDir, RmDir, ChDir, FileCopy, Dir.
-- COM objects other than `Scripting.Dictionary` (FileSystemObject,
-  Excel, Word, Shell...).
+- Binary file statements: Get, Put, Seek, Lock, Unlock, Width, and
+  LSet and RSet.
+- COM objects other than `Scripting.Dictionary`, `FileSystemObject`,
+  `WScript.Shell` and `WScript.Network` (Excel, Word, Shell.Application...).
 - GoSub/Return, On x GoTo/GoSub, AddressOf, Implements.
 - RaiseEvent does nothing; WithEvents is ignored; Class_Terminate is
   not called.
@@ -581,8 +667,16 @@ These compile and fail at run time with error 445
   selected shape is visited once (test `walks_the_selection...`).
 - Given `On Error GoTo H` and a handler that fixes the divisor and calls
   `Resume`, then the failed statement runs again and succeeds.
-- Given `Open "x" For Output As #1`, then the run stops with error 445
-  naming the Open statement.
+- Given a host without files, when `Open "x" For Output As #1` runs,
+  then the run stops with error 445 "Not supported in TraceDraw: files".
+- Given lines written with `Print #` and `Write #`, when they are read
+  with `Line Input #` and `Input #`, then the same text and values come
+  back (tests `files.rs`, also `Dir` through a folder, `FileCopy`,
+  `Name`, `Kill` and the FileSystemObject).
+- Given keep going, when a macro calls a member the object lacks, makes
+  an Excel object and uses it, then it goes on to the end and those
+  three steps are listed; a division by zero still stops it, and an
+  `On Error GoTo` handler still takes the error.
 - Given `Tool.Place(label:="L", y:=2, x:=1)` with `__params`, then the
   host receives `(1, 2, "L")`.
 

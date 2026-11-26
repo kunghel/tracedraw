@@ -7,6 +7,7 @@
 //! bevel. They show the selected extrusion and edit the selected
 //! extrusions live.
 
+use crate::ui::btn_icons::IconUi;
 use crate::app::App;
 use crate::extrude_tool::{kind_key, ExtrudeColor};
 use crate::i18n::tr;
@@ -231,7 +232,7 @@ pub fn extrude_space(app: &mut App, ui: &mut Ui) {
         if ui
             .add_enabled(
                 s.rotation != [0.0; 3],
-                egui::Button::new(tr("docker.reset")),
+                crate::ui::btn_icons::Ib::new("docker.reset"),
             )
             .clicked()
         {
@@ -320,21 +321,21 @@ pub fn extrude_actions(app: &mut App, ui: &mut Ui) {
     ui.horizontal(|ui| {
         if bare
             && ui
-                .button(tr("docker.apply"))
+                .ibutton("docker.apply")
                 .rich_tip(crate::ui::tips::pair("docker.apply", "extrude.apply_desc"))
                 .clicked()
         {
             app.add_extrusion();
         }
         if ui
-            .add_enabled(extruded, egui::Button::new(tr("extrude.clear")))
+            .add_enabled(extruded, crate::ui::btn_icons::Ib::new("extrude.clear"))
             .rich_tip(crate::ui::tips::keyed("extrude.clear"))
             .clicked()
         {
             app.clear_extrusion();
         }
         if ui
-            .add_enabled(extruded, egui::Button::new(tr("docker.break_apart")))
+            .add_enabled(extruded, crate::ui::btn_icons::Ib::new("docker.break_apart"))
             .rich_tip(crate::ui::tips::pair(
                 "docker.break_apart",
                 "toolbar.effect_break_apart_desc",
@@ -349,7 +350,7 @@ pub fn extrude_actions(app: &mut App, ui: &mut Ui) {
 /// The bar.
 pub fn extrude_bar(app: &mut App, ui: &mut Ui) {
     extrude_controls(app, ui);
-    ui.menu_button(tr("extrude.space_menu"), |ui| {
+    ui.imenu_button("extrude.space_menu", |ui| {
         ui.vertical(|ui| extrude_space(app, ui));
     })
     .response
@@ -714,7 +715,7 @@ pub fn extrude_docker(app: &mut App, ui: &mut Ui) {
             if ui
                 .add_enabled(
                     s.rotation != [0.0; 3],
-                    egui::Button::new(tr("docker.reset")),
+                    crate::ui::btn_icons::Ib::new("docker.reset"),
                 )
                 .clicked()
             {

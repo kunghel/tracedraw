@@ -1,6 +1,7 @@
 //! Welcome Screen: Get Started (new, open, recent documents), Workspace,
 //! What's New, Learn, Templates.
 
+use crate::ui::btn_icons::IconUi;
 use crate::app::{App, WelcomeTab};
 use crate::i18n::{tr, trf};
 use crate::theme::Tokens;
@@ -26,6 +27,18 @@ pub(crate) const HISTORY_LEN: usize = 10;
 /// section) and drop the last row; a test checks that the top row is the
 /// version being built.
 pub(crate) const RELEASES: &[Release] = &[
+    Release {
+        version: "0.53.0",
+        date: "2026-11-26",
+        title: "welcome.news.v0_53_0_title",
+        body: "welcome.news.v0_53_0_body",
+    },
+    Release {
+        version: "0.52.0",
+        date: "2026-11-24",
+        title: "welcome.news.v0_52_0_title",
+        body: "welcome.news.v0_52_0_body",
+    },
     Release {
         version: "0.51.1",
         date: "2026-11-23",
@@ -73,18 +86,6 @@ pub(crate) const RELEASES: &[Release] = &[
         date: "2026-11-16",
         title: "welcome.news.v0_48_0_title",
         body: "welcome.news.v0_48_0_body",
-    },
-    Release {
-        version: "0.47.0",
-        date: "2026-11-16",
-        title: "welcome.news.v0_47_0_title",
-        body: "welcome.news.v0_47_0_body",
-    },
-    Release {
-        version: "0.46.0",
-        date: "2026-11-14",
-        title: "welcome.news.v0_46_0_title",
-        body: "welcome.news.v0_46_0_body",
     },
 ];
 
@@ -605,11 +606,19 @@ fn recent_row(app: &mut App, ui: &mut Ui, path: &std::path::Path, look: &RowLook
             action = RecentAction::Remove;
         }
     }
-    resp.context_menu(|ui| {
-        if ui
-            .button(tr("welcome.remove_recent"))
-            .rich_tip(crate::ui::tips::keyed("welcome.remove_recent"))
-            .clicked()
+    crate::ui::context_menus::filter_popup(
+        egui::Popup::context_menu(&resp),
+        &app.settings.context_menus,
+        "recent_file",
+    )
+    .show(|ui| {
+        let _menu =
+            crate::ui::context_menus::Scope::new(&app.settings.context_menus, "recent_file");
+        if crate::ui::context_menus::show_item(ui, "welcome.remove_recent")
+            && ui
+                .ibutton("welcome.remove_recent")
+                .rich_tip(crate::ui::tips::keyed("welcome.remove_recent"))
+                .clicked()
         {
             action = RecentAction::Remove;
             ui.close();
@@ -761,12 +770,12 @@ fn templates(app: &mut App, ui: &mut Ui) {
                 }
             }
             ui.add_space(6.0);
-            if ui.button(tr("tpl.more")).clicked() {
+            if ui.ibutton("tpl.more").clicked() {
                 app.open_template_dialog();
             }
             ui.add_space(12.0);
             ui.strong(tr("welcome.my_templates"));
-            if ui.button(tr("welcome.open_template")).clicked() {
+            if ui.ibutton("welcome.open_template").clicked() {
                 crate::files::Dialog::new()
                     .add_filter("TraceDraw template", &["tdt", "tdraw"])
                     .pick_file(app, |app, p| app.open_as_template(p));
@@ -1283,5 +1292,84 @@ mod tests {
             cursor_over(&mut app, &tr(RELEASES[0].body)),
             egui::CursorIcon::Text
         );
+    }
+}
+
+#[cfg(test)]
+mod hidden_recent_popup_tests {
+    use super::*;
+
+    fn frame(app: &mut App, ctx: &egui::Context, events: Vec<egui::Event>) {
+        let mut output = ctx.run_ui(
+            egui::RawInput {
+                screen_rect: Some(egui::Rect::from_min_size(
+                    egui::Pos2::ZERO,
+                    egui::vec2(1200.0, 600.0),
+                )),
+                events,
+                ..Default::default()
+            },
+            |ui| {
+                egui::CentralPanel::default().show(ui, |ui| welcome_screen(app, ui));
+            },
+        );
+        output.textures_delta.clear();
+    }
+
+    fn right_click(app: &mut App, ctx: &egui::Context, position: egui::Pos2) {
+        frame(app, ctx, vec![egui::Event::PointerMoved(position)]);
+        for pressed in [true, false] {
+            frame(
+                app,
+                ctx,
+                vec![egui::Event::PointerButton {
+                    pos: position,
+                    button: egui::PointerButton::Secondary,
+                    pressed,
+                    modifiers: egui::Modifiers::NONE,
+                }],
+            );
+        }
+        frame(app, ctx, Vec::new());
+    }
+
+    #[test]
+    fn hidden_recent_menu_closes_without_removing_the_file_or_reopening() {
+        let path = std::path::PathBuf::from("missing-context-menu-recent.tdraw");
+        let mut app = App::headless();
+        app.show_welcome = true;
+        app.welcome_tab = WelcomeTab::GetStarted;
+        app.settings.recent_files = vec![path.clone()];
+        let ctx = crate::theme::ui_context();
+        frame(&mut app, &ctx, Vec::new());
+        frame(&mut app, &ctx, Vec::new());
+        let position = ctx
+            .read_response(recent_row_id(&path))
+            .expect("recent row")
+            .rect
+            .center();
+        right_click(&mut app, &ctx, position);
+        assert!(egui::Popup::is_any_open(&ctx), "default menu opens");
+        app.settings
+            .context_menus
+            .set_visible("recent_file", "welcome.remove_recent", false);
+        frame(&mut app, &ctx, Vec::new());
+        assert!(
+            !egui::Popup::is_any_open(&ctx),
+            "existing empty menu closes"
+        );
+        right_click(&mut app, &ctx, position);
+        assert!(!egui::Popup::is_any_open(&ctx), "hidden menu stays closed");
+        assert_eq!(app.settings.recent_files, vec![path]);
+        app.settings
+            .context_menus
+            .set_visible("recent_file", "welcome.remove_recent", true);
+        frame(&mut app, &ctx, Vec::new());
+        assert!(
+            !egui::Popup::is_any_open(&ctx),
+            "restoring does not reopen it"
+        );
+        right_click(&mut app, &ctx, position);
+        assert!(egui::Popup::is_any_open(&ctx), "a fresh click opens it");
     }
 }

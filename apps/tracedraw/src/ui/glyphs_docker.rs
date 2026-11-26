@@ -618,7 +618,7 @@ pub fn glyphs(app: &mut App, ui: &mut Ui) {
     });
     let copy = ui.add_enabled(
         app.glyph_picked.is_some(),
-        egui::Button::new(tr("menu.edit.copy"))
+        crate::ui::btn_icons::Ib::new("menu.edit.copy")
             .min_size(Vec2::new(ui.available_width(), sp.interact_size.y)),
     );
     if copy.clicked() {

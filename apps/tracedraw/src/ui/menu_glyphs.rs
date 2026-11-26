@@ -176,10 +176,13 @@ pub fn for_key(key: &str) -> Option<Glyph> {
         "menu.edit.duplicate" => Duplicate,
         "menu.edit.clone" => Clone,
         "menu.edit.select_all_objects" => SelectAll,
+        "docker.select_same" => SelectAll,
         "menu.edit.find_and_replace" => Find,
         "menu.edit.step_and_repeat" => StepRepeat,
         "menu.edit.copy_properties_from" => CopyProperties,
-        "menu.edit.paste_special" | "menu.edit.paste_in_view" => PasteSpecial,
+        "menu.edit.paste_special" | "menu.edit.paste_in_view" | "menu.edit.paste_at_pointer" => {
+            PasteSpecial
+        }
         "menu.edit.repeat" => Repeat,
         "menu.layout.insert_page" => PageInsert,
         "menu.layout.delete_page" | "page_tab.delete" => PageDelete,
@@ -219,7 +222,7 @@ pub fn for_key(key: &str) -> Option<Glyph> {
         "menu.object.unlock_all" => UnlockAll,
         "menu.object.convert_outline_to_object" => OutlineToObject,
         "menu.object.join_curves" => JoinCurves,
-        "menu.object.add_perspective" => Perspective,
+        "menu.object.add_perspective" | "menu.effects.mockup" => Perspective,
         "menu.object.clear_transformations" => ClearTransform,
         "menu.object.properties" => Properties,
         "menu.object.objects" => ObjectsDocker,

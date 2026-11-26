@@ -23,6 +23,25 @@ Cada linha da lista tem:
 Cada alteração é um passo de desfazer. Cada efeito continua sendo editado com a
 própria ferramenta ou painel.
 
+## Arredondar cantos e Fatiar {#outline-effects}
+
+Duas entradas dos efeitos de camada, no alto do painel, refazem o contorno
+como ele é desenhado, e o objeto continua como era (um texto continua
+editável):
+
+- **[[effect.round_corners]]** arredonda todos os cantos de uma curva, das
+  curvas de um grupo ou das letras de um texto com um raio. **Até** limita
+  aos cantos mais agudos que um ângulo (180° pega todos) e os botões
+  **Cantos** escolhem todos, só os externos ou só os internos.
+- **[[effect.slice]]** corta o objeto em tiras paralelas: quantidade, ângulo
+  dos cortes e vão entre elas; **Deslocamento** desliza cada tira ao longo do
+  corte, alternado ou aleatório; **Giro** gira cada tira um pouco ao acaso;
+  **Semente** escolhe outra variação; **Arredondar** arredonda os cantos das
+  tiras.
+
+[[menu.object.convert_to_curves]] (ou Separar) transforma o resultado em
+curvas comuns.
+
 Acima da lista, os efeitos de camada são ligados com suas caixas e ajustados à
 direita, ao vivo na página. **Transformar** desenha cópias do objeto, cada
 uma a anterior escalada (**Escala H** e **V**, em

@@ -216,13 +216,13 @@ End Sub
 
 #[test]
 fn unsupported_statements_fail_at_run_time_with_a_clear_message() {
+    // A host without files (#4315: the app has them).
     let e = run_err("Sub Main()\n Open \"c:\\x.txt\" For Output As #1\nEnd Sub");
-    assert!(
-        e.contains("Not supported in TraceDraw: Open statement"),
-        "{e}"
-    );
+    assert!(e.contains("Not supported in TraceDraw: files"), "{e}");
+    let e = run_err("Sub Main()\n Put #1, 1, x\nEnd Sub");
+    assert!(e.contains("Not supported in TraceDraw: Put statement"), "{e}");
     let e = run_err(
-        "Sub Main()\n Dim fso\n Set fso = CreateObject(\"Scripting.FileSystemObject\")\nEnd Sub",
+        "Sub Main()\n Dim xl\n Set xl = CreateObject(\"Excel.Application\")\nEnd Sub",
     );
     assert!(e.contains("'429'"), "{e}");
 }

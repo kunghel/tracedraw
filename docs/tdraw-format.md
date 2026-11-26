@@ -29,7 +29,11 @@ plain JSON, which diffs as text.
 
 A file of 8 MB or more opens on a worker thread (`opening.rs`); after
 half a second a window shows how much of it is read, then that the
-drawing is being built, with Cancel.
+drawing is being built, with Cancel. A `.cdr` or `.cmx` opens the same
+way whatever its size: a file of many objects can be small and still
+take the interface down with it. Pictures of a `.cdr` are sampled to
+the free RAM and the 32 768 px pixmap side as they are read, and large
+bitmaps decode their rows across parallel bands.
 
 Groups inside groups: a file may nest 16,384 brackets deep
 (`MAX_JSON_DEPTH`), some 5,000 groups inside groups, and a drawing nested

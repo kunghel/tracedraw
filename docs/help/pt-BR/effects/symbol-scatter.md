@@ -40,3 +40,19 @@ Abra o painel [[docker.symbol_scatter]] em
 As cópias vêm como um grupo por cima, selecionado, e um desfazer as remove.
 Cada Aplicar faz no máximo 5000 cópias; aumente o espaçamento para objetos
 grandes.
+
+Marque **Pincel no desenho** no fim do painel para retocar à mão um grupo de
+cópias. Selecione o grupo, escolha um **Pincel** e arraste sobre as cópias:
+as que estão sob o pincel mudam, mais as mais perto do centro, e o arrasto
+inteiro é um passo de desfazer.
+
+- **Mover** leva as cópias junto com o ponteiro.
+- **Juntar** puxa-as para o pincel; segure <kbd>Alt</kbd> para espalhá-las.
+- **Aumentar** deixa-as maiores; <kbd>Alt</kbd> deixa-as menores.
+- **Girar** gira-as; <kbd>Alt</kbd> gira para o outro lado.
+- **Tingir** leva as cores delas para a cor embaixo da lista.
+- **Esmaecer** deixa-as mais transparentes; <kbd>Alt</kbd>, mais opacas.
+
+**Raio** é até onde o pincel alcança e **Força** quanto cada arrasto muda.
+Com a caixa marcada e um grupo selecionado, os arrastos no desenho vão para o
+pincel; um clique continua selecionando.

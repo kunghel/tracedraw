@@ -1011,7 +1011,9 @@ fn fill_shape(
     // An object named `<Field>` of a picture or QR field: a placeholder
     // the Print Merge docker made, or a shape of the user's made the
     // field's frame (#378, #437), on the page or inside a group (#460).
-    if text_of(s).is_none() && (top || !matches!(s.kind, ShapeKind::Group { .. })) {
+    if text_of(s).is_none()
+        && (top || s.qr.is_some() || !matches!(s.kind, ShapeKind::Group { .. }))
+    {
         if let Some(i) = s.name.as_deref().and_then(|n| whole_field(st, n)) {
             if top {
                 named_placeholder(st, layer, s, i, value_of(i), keep, new_id, cmds);
@@ -1288,6 +1290,15 @@ fn named_placeholder(
                 frame: s.id,
             });
         }
+        // A QR code object (Object > Insert > QR Code) named `<Field>`:
+        // each record's code is made the same way, with the object's
+        // background, quiet zone, colours and outline, at the same size,
+        // not as a plain black path (#4396).
+        FieldKind::Qr if s.qr.is_some() && !value.trim().is_empty() => {
+            if let Some(kind) = merged_qr_object(s, value, new_id) {
+                cmds.extend(kind);
+            }
+        }
         FieldKind::Qr => match replacement(&FieldKind::Qr, value, local_box(s), &[], false) {
             Some((kind, fill)) => {
                 cmds.push(Command::SetShapeKind { shape: s.id, kind });
@@ -1304,6 +1315,47 @@ fn named_placeholder(
         },
         _ => {}
     }
+}
+
+/// The commands that make the QR code object `s` encode `value`: new
+/// children at the same top-left corner, the pixel size changed so the
+/// code keeps its width, and the object's settings. `None` when the value
+/// does not fit in a code.
+fn merged_qr_object(
+    s: &Shape,
+    value: &str,
+    new_id: &mut dyn FnMut() -> tracedraw_core::ShapeId,
+) -> Option<Vec<Command>> {
+    let old = s.qr.as_deref()?;
+    let mut qr = old.clone();
+    if !matches!(qr.kind, tracedraw_core::QrKind::Url | tracedraw_core::QrKind::Text) {
+        qr.kind = tracedraw_core::QrKind::Text;
+    }
+    qr.fields = vec![value.trim().to_string()];
+    let width = |q: &tracedraw_core::QrCode| {
+        crate::qr::modules(&q.payload(), q.symbol)
+            .ok()
+            .map(|g| crate::qr::size_mm(&g, q).0)
+    };
+    let (was, now) = (width(old), width(&qr)?);
+    if let Some(was) = was.filter(|w| *w > 0.0) {
+        qr.pixel_mm *= was / now;
+    }
+    let anchor = crate::qr::top_left(s).unwrap_or_else(|| {
+        let b = local_box(s);
+        tracedraw_core::geometry::Point::new(b.x0, b.y1)
+    });
+    let kids = crate::qr::code_children(&qr, anchor, new_id).ok()?;
+    Some(vec![
+        Command::SetShapeKind {
+            shape: s.id,
+            kind: ShapeKind::Group { children: kids },
+        },
+        Command::SetQrCode {
+            shape: s.id,
+            qr: Some(Box::new(qr)),
+        },
+    ])
 }
 
 /// [`named_placeholder`] for a picture field's frame inside a group, where
@@ -1833,6 +1885,44 @@ mod tests {
         let second = &doc.pages[2];
         let n: usize = second.layers.iter().map(|l| l.shapes.len()).sum();
         assert_eq!(n, 1);
+    }
+
+    /// #4396: a QR code object named `<Link>` keeps its look on every
+    /// record: a QR code object with its background and colours, as wide
+    /// as before, encoding the record's value.
+    #[test]
+    fn a_qr_code_object_field_keeps_its_look() {
+        let mut app = App::headless();
+        let id = app.insert_qr_code().expect("qr object");
+        let red = Fill::Solid(Color::Rgb {
+            r: 0.8,
+            g: 0.1,
+            b: 0.1,
+        });
+        let mut look = app.doc().find_shape(id).and_then(|s| s.qr.as_deref().cloned()).unwrap();
+        look.dark = red.clone();
+        app.set_qr_code(id, look).expect("recoloured");
+        app.run(Command::SetShapeName {
+            shape: id,
+            name: Some("<Link>".into()),
+        });
+        let before = app.doc().find_shape(id).cloned().unwrap();
+        let pages_before = app.doc().pages.len();
+        perform(&mut app, &state());
+        let doc = app.doc();
+        assert_eq!(doc.pages.len(), pages_before + 2);
+        let code = doc.pages[1]
+            .layers
+            .iter()
+            .flat_map(|l| &l.shapes)
+            .find(|s| s.qr.is_some())
+            .expect("still a QR code object");
+        let qr = code.qr.as_deref().unwrap();
+        assert_eq!(qr.payload(), "https://a.example");
+        assert_eq!(qr.dark, red);
+        let w = |s: &Shape| s.bounds().width();
+        assert!((w(code) - w(&before)).abs() < 1e-6, "{} vs {}", w(code), w(&before));
+        assert!(matches!(&code.kind, ShapeKind::Group { children } if children.len() == 2));
     }
 
     /// #2796: Insert Field shows a sample QR code to paint and to Place

@@ -3,6 +3,7 @@
 //! angle, Rounded), the rounded corners' radius, then the outline (width,
 //! style, arrowheads) of the selected connectors.
 
+use crate::ui::btn_icons::IconUi;
 use crate::app::App;
 use crate::connectors::ConnectorKind;
 use crate::i18n::tr;
@@ -46,7 +47,7 @@ pub fn connector_bar(app: &mut App, ui: &mut Ui) {
         ConnectorKind::Rounded,
     ] {
         if ui
-            .selectable_label(shown == kind, tr(kind_key(kind)))
+            .iselectable(shown == kind, kind_key(kind))
             .rich_tip(crate::ui::tips::keyed(kind_key(kind)))
             .clicked()
         {

@@ -4,6 +4,7 @@
 //! `$XDG_CONFIG_HOME/tracedraw`).
 
 use serde::{Deserialize, Serialize};
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::PathBuf;
 
 /// How large the buttons of the bars are (the bars' menu > Customize),
@@ -142,9 +143,186 @@ pub struct PageSizePreset {
     pub height_mm: f64,
 }
 
+/// Right-click menu visibility and sibling order, keyed by stable identifiers.
+/// Empty preferences preserve all existing rows, including later commands.
+/// Order paths name each enclosing submenu, so repeated actions are independent.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(from = "ContextMenuPreferencesData")]
+pub struct ContextMenuPreferences {
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    hidden: BTreeMap<String, BTreeSet<String>>,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    order: BTreeMap<String, BTreeMap<String, Vec<String>>>,
+}
+
+/// Read the original visibility-only map as well as the extended preferences.
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum ContextMenuPreferencesData {
+    Legacy(BTreeMap<String, BTreeSet<String>>),
+    Structured {
+        #[serde(default)]
+        hidden: BTreeMap<String, BTreeSet<String>>,
+        #[serde(default)]
+        order: BTreeMap<String, BTreeMap<String, Vec<String>>>,
+    },
+}
+
+impl From<ContextMenuPreferencesData> for ContextMenuPreferences {
+    fn from(data: ContextMenuPreferencesData) -> Self {
+        let (mut hidden, mut order) = match data {
+            ContextMenuPreferencesData::Legacy(hidden) => (hidden, BTreeMap::new()),
+            ContextMenuPreferencesData::Structured { hidden, order } => (hidden, order),
+        };
+        hidden.retain(|_, items| !items.is_empty());
+        order.retain(|_, branches| {
+            branches.retain(|_, items| {
+                let mut seen = BTreeSet::new();
+                items.retain(|key| !key.is_empty() && seen.insert(key.clone()));
+                !items.is_empty()
+            });
+            !branches.is_empty()
+        });
+        Self { hidden, order }
+    }
+}
+
+impl ContextMenuPreferences {
+    /// Whether a row is shown in this menu. Other menus are independent.
+    pub fn is_visible(&self, menu: &str, item: &str) -> bool {
+        self.hidden
+            .get(menu)
+            .is_none_or(|items| !items.contains(item))
+    }
+
+    /// Whether this menu has any saved changes, including newer operations.
+    pub fn has_overrides(&self, menu: &str) -> bool {
+        self.hidden.get(menu).is_some_and(|items| !items.is_empty()) || self.has_order(menu)
+    }
+
+    /// Whether any sibling group in this menu has a custom order.
+    pub fn has_order(&self, menu: &str) -> bool {
+        self.order
+            .get(menu)
+            .is_some_and(|branches| !branches.is_empty())
+    }
+
+    /// The root has an empty path; nested paths join stable parent keys with `/`.
+    pub fn order(&self, menu: &str, parent_path: &str) -> &[String] {
+        self.order
+            .get(menu)
+            .and_then(|branches| branches.get(parent_path))
+            .map_or(&[], Vec::as_slice)
+    }
+
+    /// Save sibling keys once. An empty order restores this branch's defaults.
+    pub fn set_order(&mut self, menu: &str, parent_path: &str, items: &[&str]) {
+        let mut seen = BTreeSet::new();
+        let mut items: Vec<String> = items
+            .iter()
+            .filter(|key| !key.is_empty() && seen.insert(**key))
+            .map(|key| (*key).to_owned())
+            .collect();
+        if items.is_empty() {
+            if let Some(branches) = self.order.get_mut(menu) {
+                branches.remove(parent_path);
+                if branches.is_empty() {
+                    self.order.remove(menu);
+                }
+            }
+        } else {
+            // Editing in an older version must not discard keys it cannot
+            // display. Resetting the branch explicitly still clears them.
+            let retained: Vec<_> = self
+                .order(menu, parent_path)
+                .iter()
+                .filter(|key| !items.contains(key))
+                .cloned()
+                .collect();
+            items.extend(retained);
+            self.order
+                .entry(menu.to_owned())
+                .or_default()
+                .insert(parent_path.to_owned(), items);
+        }
+    }
+
+    /// Unknown saved keys stay in storage but never create rows. New operations
+    /// follow the saved siblings in their own default order.
+    pub fn ordered_items<'a>(
+        &self,
+        menu: &str,
+        parent_path: &str,
+        defaults: &[&'a str],
+    ) -> Vec<&'a str> {
+        let saved = self.order(menu, parent_path);
+        let mut items = defaults.to_vec();
+        if !saved.is_empty() {
+            items.sort_by_key(|key| {
+                saved
+                    .iter()
+                    .position(|item| item == key)
+                    .unwrap_or(usize::MAX)
+            });
+        }
+        items
+    }
+
+    /// Change only this row's visibility, keeping default preferences compact.
+    pub fn set_visible(&mut self, menu: &str, item: &str, visible: bool) {
+        if visible {
+            if let Some(items) = self.hidden.get_mut(menu) {
+                items.remove(item);
+                if items.is_empty() {
+                    self.hidden.remove(menu);
+                }
+            }
+        } else {
+            self.hidden
+                .entry(menu.to_owned())
+                .or_default()
+                .insert(item.to_owned());
+        }
+    }
+
+    /// Restore this menu without affecting any other menu's choices.
+    pub fn reset_menu(&mut self, menu: &str) {
+        self.hidden.remove(menu);
+        self.order.remove(menu);
+    }
+
+    /// Restore every menu's default visibility and sibling order.
+    pub fn reset_all(&mut self) {
+        self.hidden.clear();
+        self.order.clear();
+    }
+
+    pub fn is_default(&self) -> bool {
+        self.hidden.is_empty() && self.order.is_empty()
+    }
+
+    /// A menu drawing scope owns its filters without borrowing the app.
+    pub(crate) fn hidden_items(&self, menu: &str) -> BTreeSet<String> {
+        self.hidden.get(menu).cloned().unwrap_or_default()
+    }
+
+    /// A drawing scope owns its orders without retaining an app borrow.
+    pub(crate) fn menu_orders(&self, menu: &str) -> BTreeMap<String, Vec<String>> {
+        self.order.get(menu).cloned().unwrap_or_default()
+    }
+}
+
+/// The most seconds Options > General can keep the splash screen up
+/// (#4340).
+pub const SPLASH_MAX_SECONDS: f32 = 10.0;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
+    /// Macros keep going past what TraceDraw cannot do (the step is
+    /// skipped and listed when the macro ends) instead of stopping with an
+    /// error (#4315).
+    pub macros_keep_going: bool,
     /// Edit > Select Similar > Close Look: how far apart colours, outline
     /// widths and opacity may be, 0 to 100 %.
     pub similar_tolerance: u32,
@@ -152,6 +330,11 @@ pub struct Settings {
     pub recent_files: Vec<PathBuf>,
     pub workspace: String,
     pub show_welcome_on_start: bool,
+    /// Help > Mark New Features, kept across starts and updates (#4325).
+    pub mark_new_features: bool,
+    /// The version of the last start: the first start of a newer one
+    /// opens What's New when Mark New Features is on (#4325).
+    pub last_run_version: String,
     /// The Welcome Screen tab was closed: it shows as its house alone
     /// until the Welcome Screen is shown again (#677).
     pub welcome_tab_closed: bool,
@@ -188,6 +371,10 @@ pub struct Settings {
     /// system's program for PNG files, #593).
     #[serde(default)]
     pub bitmap_editor: String,
+    /// The program Edit in Spreadsheet opens a table's workbook in (a
+    /// path; empty for the system's program for `.xlsx` files, #4144).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub spreadsheet_editor: String,
     pub last_dir: Option<PathBuf>,
     /// The folder of pictures the bitmap pattern picker lists as tiles
     /// (#3323).
@@ -310,6 +497,11 @@ pub struct Settings {
     /// Options > General: show the splash screen while TraceDraw starts.
     #[serde(default = "default_true")]
     pub show_splash: bool,
+    /// Options > General: the least time, in seconds, the splash screen
+    /// stays up so its name and version can be read (#4340); 0, the
+    /// default, lets it go as soon as the program is ready.
+    #[serde(default)]
+    pub splash_seconds: f32,
     /// Options > General: draw the window with the graphics card (off:
     /// its software adapter), from the next start (#445).
     #[serde(default = "default_true")]
@@ -325,6 +517,11 @@ pub struct Settings {
     /// not ("software" or "gl"); cleared when the choice changes.
     #[serde(default)]
     pub working_renderer: String,
+    /// The OpenGL renderer once read back drawn on this computer: later
+    /// starts skip the check of its frames, so a slow first frame (a heavy
+    /// drawing still loading) is never taken for a blind driver (#4236).
+    #[serde(default)]
+    pub gl_drawn: bool,
     /// Options > General, Linux: on a Wayland desktop that leaves the
     /// title bar to the application, open the window through XWayland so
     /// that the desktop draws its own and file drops arrive, from the
@@ -366,6 +563,10 @@ pub struct Settings {
     /// do not fit (#2902).
     #[serde(default)]
     pub docker_tabs_icons_only: bool,
+    /// Grid settings saved under a name in the Grid panel (#4395), for
+    /// any document.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub grid_presets: Vec<GridPreset>,
     /// Customization > Appearance > Theme: "light", "medium_light",
     /// "medium_dark" or "dark".
     #[serde(default)]
@@ -377,6 +578,9 @@ pub struct Settings {
     /// changed (see ui/bar_items.rs).
     #[serde(default)]
     pub bar_items: std::collections::BTreeMap<String, Vec<String>>,
+    /// Customization > Context Menus: hidden rows for each right-click location.
+    #[serde(default, skip_serializing_if = "ContextMenuPreferences::is_default")]
+    pub context_menus: ContextMenuPreferences,
     /// The main window as it was left: maximized, else its inner size in
     /// points ([0, 0] until the first exit).
     #[serde(default = "default_true")]
@@ -433,6 +637,11 @@ pub struct Settings {
     /// in the full-screen preview (F9), white at first (#3930).
     #[serde(default = "default_preview_background")]
     pub preview_background: [u8; 3],
+    /// Options > Display > Full-screen preview: F9 shows the whole page
+    /// filling the screen instead of the drawing at the zoom it has in
+    /// the window (#4239). Off at first.
+    #[serde(default)]
+    pub preview_fit_page: bool,
     /// Document Setup > Layout > Margins: the four page margins linked,
     /// so changing one sets all four to it (#4030).
     #[serde(default)]
@@ -534,6 +743,9 @@ pub struct Settings {
     /// How far Object > Insert > Add Dimensions puts its dimension lines
     /// from the measured box, mm (#3530).
     pub add_dimensions_gap: f64,
+    /// Deleting an object deletes the dimensions that measure it too
+    /// (the dimension bar's more options, #4211). Off: they stay.
+    pub delete_dimensions_with_object: bool,
     /// Options > Tools > Connector: an object's own nodes are anchors
     /// too, besides its side midpoints and custom anchors (#1436).
     pub connector_geometric_anchors: bool,
@@ -581,6 +793,12 @@ pub struct Settings {
     /// off, each notch zooms at once (#1648, #895).
     #[serde(default = "default_true")]
     pub smooth_zoom: bool,
+    /// Options > Zoom, Pan: going to another page shows the same part of
+    /// it, at the same zoom, as the page left (the top right corner of
+    /// page 1 gives the top right corner of page 2); off (the default),
+    /// each page comes back where it was left, else centred.
+    #[serde(default)]
+    pub same_view_on_every_page: bool,
     /// Options > Tools > Zoom/Pan > Light zoom: for slow computers. A
     /// wheel notch zooms at once (no glide) and the drawing is drawn
     /// anew once, after the zoom stops, instead of at every step; the
@@ -667,6 +885,15 @@ pub struct Settings {
     /// from before it came (once; closed after, it stays closed).
     #[serde(default)]
     pub pixel_hints_added: bool,
+    /// The image editing mode's layers stay after Finish while the
+    /// drawing is open: Edit Inside on the picture again opens them
+    /// (#4112). Turned off, they go and their memory is freed.
+    #[serde(default = "default_true")]
+    pub pixel_keep_layers: bool,
+    /// The image editing mode's layers are saved with the picture in the
+    /// drawing's file too (#4112), off by default: the file grows.
+    #[serde(default)]
+    pub pixel_save_layers: bool,
     /// The font lists' fonts used last, newest first.
     #[serde(default)]
     pub recent_fonts: Vec<String>,
@@ -688,6 +915,13 @@ pub struct Settings {
     /// The Properties docker's sections closed ("outline", "fill" ...).
     #[serde(default)]
     pub properties_closed: Vec<String>,
+    /// The Properties docker in its classic layout: one section at a
+    /// time, picked by the tabs at the top, the outline in short rows.
+    #[serde(default)]
+    pub properties_classic: bool,
+    /// The section the classic layout shows ("outline", "fill" ...).
+    #[serde(default)]
+    pub properties_tab: String,
     /// The Properties docker marks a section whose values come from the
     /// object's linked object style (#1439).
     #[serde(default = "default_true")]
@@ -857,6 +1091,9 @@ pub struct Settings {
     /// The looks saved in the Effects docker's Presets (#2160).
     #[serde(default)]
     pub style_presets: Vec<crate::style_presets::StylePreset>,
+    /// The outlines saved in the Outline Pen dialog's Presets (#4090).
+    #[serde(default)]
+    pub outline_presets: Vec<crate::outline_presets::OutlinePreset>,
     /// The settings saved in a bitmap effect's dialog, by effect (#1129).
     #[serde(default)]
     pub fx_presets: Vec<crate::ui::effect_dialog::FxPreset>,
@@ -864,6 +1101,15 @@ pub struct Settings {
     /// seen on the drawing instead of in Before and After panes (#2799).
     #[serde(default)]
     pub fx_settings_only: bool,
+    /// A bitmap effect's settings open in the Effects docker beside the
+    /// drawing, the effect seen on the drawing, instead of in a dialog
+    /// (#4253). Off: the dialog, as before.
+    #[serde(default)]
+    pub fx_in_panel: bool,
+    /// The Shaping docker's Weld, Intersect and the two Minus operations
+    /// make a live combine that keeps the objects (#4266).
+    #[serde(default)]
+    pub shaping_live: bool,
     /// The programs of Object > Insert > Insert Object, each opened with
     /// one click (#1025).
     pub object_apps: Vec<crate::insert_object::ObjectApp>,
@@ -912,7 +1158,18 @@ pub struct DockerSetup {
     /// The dockers shown under the front one of a column (#2312).
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub stacks: Vec<StackSetup>,
+    /// The dockers locked in front of their column (#3953).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub locked: Vec<String>,
     pub floating: Vec<FloatingSetup>,
+}
+
+/// A grid saved under a name in the Grid panel (#4395).
+#[derive(Debug, Clone, PartialEq, Default, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct GridPreset {
+    pub name: String,
+    pub grid: tracedraw_core::document::GridSettings,
 }
 
 /// A docker stacked under the front one of a column: the column ("right",
@@ -924,6 +1181,10 @@ pub struct StackSetup {
     pub column: String,
     pub tab: String,
     pub split: f32,
+    /// The name keys of the lower group's tabs in order, `tab` among
+    /// them (#4372); empty when the lower part holds `tab` alone.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub group: Vec<String>,
 }
 
 /// A floating docker as it was left: its name key, the window's top left
@@ -1324,6 +1585,12 @@ pub struct NodePrefs {
     /// (#3038). On by default, so the parts of a broken curve show which
     /// way a cutting plotter follows them (#2578).
     pub show_direction: bool,
+    /// With the Pick tool, one selected object marks every node (a
+    /// picture its four corners, a clip frame its own outline) and a
+    /// selection of several marks each object once at its first node,
+    /// pictures and clip frames too (#3258). Off by default: only where
+    /// each outline starts is marked, as before (#1145).
+    pub mark_every_node: bool,
     /// How near, in screen pixels, a press must land on a node or a
     /// control handle to take it (Shape tool, and the curve tools'
     /// nodes).
@@ -1369,6 +1636,7 @@ impl Default for NodePrefs {
             secondary_rgb: [0xFF, 0x00, 0x00],
             unselected_filled: true,
             show_direction: true,
+            mark_every_node: false,
             pick_distance: 6.0,
             object_pick_distance: 3.0,
             corner_widgets: true,
@@ -1722,6 +1990,9 @@ pub struct TimeTrackerPrefs {
     /// The toolbar in its mini form: the stopwatch, the task's time, the
     /// record button and its light only, to sit beside other bars (#3261).
     pub mini: bool,
+    /// The clock starts on its own for every drawing opened or begun
+    /// (D#4282); pausing it holds for that drawing.
+    pub auto_start: bool,
 }
 
 impl Default for TimeTrackerPrefs {
@@ -1730,6 +2001,7 @@ impl Default for TimeTrackerPrefs {
             show_bar: false,
             idle_minutes: 5,
             mini: false,
+            auto_start: false,
         }
     }
 }
@@ -2170,6 +2442,9 @@ pub struct ViewPrefs {
     pub mode: String,
     /// The grid page shows lines per unit instead of their spacing.
     pub grid_frequency: bool,
+    /// View > Multipage View: kept on, the drawings opened next show
+    /// every page too, instead of only the first (#3724).
+    pub multipage: bool,
 }
 
 impl Default for ViewPrefs {
@@ -2190,6 +2465,7 @@ impl Default for ViewPrefs {
             rasterize_complex_effects: true,
             mode: "enhanced".into(),
             grid_frequency: false,
+            multipage: false,
         }
     }
 }
@@ -2429,11 +2705,14 @@ impl PageLook {
 impl Default for Settings {
     fn default() -> Self {
         Settings {
+            macros_keep_going: true,
             similar_tolerance: 10,
             language: String::new(),
             recent_files: Vec::new(),
             workspace: "default".into(),
             show_welcome_on_start: true,
+            mark_new_features: false,
+            last_run_version: String::new(),
             welcome_tab_closed: false,
             crop_picture_pixels: true,
             table: Default::default(),
@@ -2450,6 +2729,7 @@ impl Default for Settings {
             node_shortcuts: Vec::new(),
             command_icons: Vec::new(),
             bitmap_editor: String::new(),
+            spreadsheet_editor: String::new(),
             last_dir: None,
             pattern_folder: None,
             last_export_dir: None,
@@ -2483,6 +2763,7 @@ impl Default for Settings {
             selection_bar_mouse: false,
             preview_page_border: true,
             preview_background: default_preview_background(),
+            preview_fit_page: false,
             preview_background_custom: false,
             page_margins_linked: false,
             page_look: PageLook::default(),
@@ -2509,6 +2790,7 @@ impl Default for Settings {
             spiral_expansion: 100,
             angular_dimension: Default::default(),
             add_dimensions_gap: crate::dimensions::ADD_DIMENSIONS_GAP,
+            delete_dimensions_with_object: false,
             connector_geometric_anchors: false,
             connector_gap: 0.0,
             upgrades: UPGRADES,
@@ -2520,6 +2802,7 @@ impl Default for Settings {
             wheel_zoom_centers: false,
             ctrl_wheel_zooms: false,
             smooth_zoom: true,
+            same_view_on_every_page: false,
             light_zoom: false,
             benchmarks: Vec::new(),
             benchmark_resume: None,
@@ -2551,10 +2834,12 @@ impl Default for Settings {
             toolbox_captions: Captions::ImageOnly,
             ui_size: 0.0,
             show_splash: true,
+            splash_seconds: 0.0,
             hardware_acceleration: true,
             gpu_adapter: String::new(),
             gpu_effects: false,
             working_renderer: String::new(),
+            gl_drawn: false,
             system_title_bar: true,
             system_save_dialog: default_system_save_dialog(),
             center_dialogs: true,
@@ -2563,9 +2848,11 @@ impl Default for Settings {
             menu_opacity: default_menu_opacity(),
             colored_icons: false,
             docker_tabs_icons_only: false,
+            grid_presets: Vec::new(),
             theme: String::new(),
             bars: crate::ui::bars::BarLayout::default(),
             bar_items: Default::default(),
+            context_menus: ContextMenuPreferences::default(),
             window_maximized: true,
             window_size: [0.0, 0.0],
             time_tracker: TimeTrackerPrefs::default(),
@@ -2576,12 +2863,16 @@ impl Default for Settings {
             dockers: None,
             pixel_dockers: None,
             pixel_hints_added: false,
+            pixel_keep_layers: true,
+            pixel_save_layers: false,
             recent_fonts: Vec::new(),
             font_filter_open: false,
             font_english_names: true,
             show_recent_fonts: true,
             recent_font_count: default_recent_font_count(),
             properties_closed: Vec::new(),
+            properties_classic: false,
+            properties_tab: String::new(),
             style_indicators: true,
             saved_transparencies: Vec::new(),
             text_sections_closed: Vec::new(),
@@ -2626,8 +2917,11 @@ impl Default for Settings {
             path_tick_mm: default_path_tick(),
             screen_margins: crate::ui::screen_margins::ScreenMargins::default(),
             style_presets: Vec::new(),
+            outline_presets: Vec::new(),
             fx_presets: Vec::new(),
             fx_settings_only: false,
+            fx_in_panel: false,
+            shaping_live: false,
             object_apps: Vec::new(),
             object_apps_insert_saved: false,
             picture_captions: Default::default(),
@@ -2900,9 +3194,50 @@ impl Settings {
         if crate::files::WEB {
             return;
         }
-        self.recent_files.retain(|p| p != path);
+        self.recent_files.retain(|p| !same_document(p, path));
         self.recent_files.insert(0, path.to_path_buf());
         self.recent_files.truncate(10);
+    }
+}
+
+/// Whether two paths name the same document: the system's file manager
+/// and the open dialog can spell one file differently (letter case, a
+/// `\\?\` prefix, `/` for `\`, `.` or `..` steps), which listed it twice
+/// in the recent documents (#4408).
+pub fn same_document(a: &std::path::Path, b: &std::path::Path) -> bool {
+    if a == b || path_key(a, cfg!(windows)) == path_key(b, cfg!(windows)) {
+        return true;
+    }
+    matches!(
+        (std::fs::canonicalize(a), std::fs::canonicalize(b)),
+        (Ok(ca), Ok(cb)) if ca == cb
+    )
+}
+
+/// `path` spelled one way: `\\?\` dropped, `\` as `/`, `.` and `..`
+/// steps resolved, and on Windows (`fold`) in lower case.
+fn path_key(path: &std::path::Path, fold: bool) -> String {
+    let s = path.to_string_lossy();
+    let s = s.strip_prefix(r"\\?\UNC\").map(|r| format!(r"\\{r}")).unwrap_or_else(|| {
+        s.strip_prefix(r"\\?\").unwrap_or(&s).to_string()
+    });
+    let s = if fold { s.replace('\\', "/") } else { s };
+    let mut parts: Vec<&str> = Vec::new();
+    let absolute = s.starts_with('/');
+    for part in s.split('/') {
+        match part {
+            "" | "." => {}
+            ".." => {
+                parts.pop();
+            }
+            p => parts.push(p),
+        }
+    }
+    let joined = format!("{}{}", if absolute { "/" } else { "" }, parts.join("/"));
+    if fold {
+        joined.to_lowercase()
+    } else {
+        joined
     }
 }
 
@@ -3046,6 +3381,32 @@ fn default_focus_visibility() -> u8 {
 
 #[cfg(test)]
 mod tests {
+    /// The same drawing opened from the file manager and from File >
+    /// Open, spelled differently, is listed once (#4408).
+    #[test]
+    fn a_document_opened_two_ways_is_listed_once() {
+        use std::path::Path;
+        let key = |p: &str| super::path_key(Path::new(p), true);
+        assert_eq!(key(r"C:\Users\Ann\Logo.tdraw"), key(r"c:\users\ann\logo.tdraw"));
+        assert_eq!(key(r"\\?\C:\Users\Ann\Logo.tdraw"), key("C:/Users/Ann/Logo.tdraw"));
+        assert_eq!(key(r"C:\Users\Ann\.\x\..\Logo.tdraw"), key(r"C:\Users\Ann\Logo.tdraw"));
+        assert_ne!(key(r"C:\Users\Ann\Logo.tdraw"), key(r"C:\Users\Ann\Logo2.tdraw"));
+        // Elsewhere letter case tells files apart.
+        let plain = |p: &str| super::path_key(Path::new(p), false);
+        assert_ne!(plain("/home/ann/Logo.tdraw"), plain("/home/ann/logo.tdraw"));
+        assert_eq!(plain("/home/ann/./Logo.tdraw"), plain("/home/ann/Logo.tdraw"));
+        let dir = std::env::temp_dir().join(format!("td-recent-4408-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let file = dir.join("a.tdraw");
+        let _ = std::fs::write(&file, b"x");
+        let mut s = super::Settings::default();
+        s.recent_files.clear();
+        s.touch_recent(&file);
+        s.touch_recent(&dir.join(".").join("a.tdraw"));
+        assert_eq!(s.recent_files.len(), 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     /// Stored defaults from an earlier version (RGB black text, and any
     /// other field of their time) give a CMYK drawing CMYK black text and
     /// an RGB drawing RGB black text; a colour of the user's own stays.
@@ -3913,5 +4274,190 @@ mod tests {
         app.settings = Settings::default();
         app.save_as_dialog();
         assert!(matches!(app.dialog, crate::ui::dialogs::Dialog::SaveAs(_)));
+    }
+}
+
+#[cfg(test)]
+mod context_menu_preference_tests {
+    use super::{ContextMenuPreferences, Settings};
+
+    #[test]
+    fn older_settings_show_existing_and_future_context_menu_rows() {
+        let settings: Settings = serde_json::from_str("{}").expect("old settings");
+        assert!(settings.context_menus.is_default());
+        assert!(settings
+            .context_menus
+            .is_visible("canvas_object", "menu.edit.copy"));
+        assert!(settings
+            .context_menus
+            .is_visible("future_menu", "future.command"));
+    }
+
+    #[test]
+    fn hidden_context_menu_rows_survive_settings_serialization() {
+        let mut settings = Settings::default();
+        settings
+            .context_menus
+            .set_visible("canvas_object", "menu.edit.copy", false);
+        settings
+            .context_menus
+            .set_visible("page_tabs", "menu.layout.rename_page", false);
+        let encoded = serde_json::to_string(&settings).expect("saved settings");
+        let restored: Settings = serde_json::from_str(&encoded).expect("restored settings");
+        assert_eq!(settings.context_menus, restored.context_menus);
+        assert!(!restored
+            .context_menus
+            .is_visible("canvas_object", "menu.edit.copy"));
+        assert!(restored
+            .context_menus
+            .is_visible("canvas_text", "menu.edit.copy"));
+        assert!(restored
+            .context_menus
+            .is_visible("canvas_object", "new.command"));
+    }
+
+    #[test]
+    fn restoring_one_context_menu_keeps_other_hidden_rows() {
+        let mut prefs = ContextMenuPreferences::default();
+        prefs.set_visible("canvas_object", "menu.edit.copy", false);
+        prefs.set_visible("canvas_text", "menu.edit.copy", false);
+        prefs.reset_menu("canvas_object");
+        assert!(prefs.is_visible("canvas_object", "menu.edit.copy"));
+        assert!(!prefs.is_visible("canvas_text", "menu.edit.copy"));
+        prefs.reset_all();
+        assert!(prefs.is_default());
+        assert!(prefs.is_visible("canvas_text", "menu.edit.copy"));
+    }
+
+    #[test]
+    fn menu_overrides_include_unknown_operations_but_not_empty_sets() {
+        let mut prefs: ContextMenuPreferences = serde_json::from_str(
+            r#"{"canvas_page":["future.command"],"canvas_object":[],"future_menu":["future.other"]}"#,
+        )
+        .expect("preferences from a newer version");
+        assert!(prefs.has_overrides("canvas_page"));
+        assert!(prefs.has_overrides("future_menu"));
+        assert!(!prefs.has_overrides("canvas_object"));
+        assert!(!prefs.has_overrides("canvas_text"));
+        prefs.reset_menu("canvas_page");
+        assert!(!prefs.has_overrides("canvas_page"));
+        assert!(prefs.is_visible("canvas_page", "future.command"));
+        assert!(prefs.has_overrides("future_menu"));
+        assert!(!prefs.is_visible("future_menu", "future.other"));
+    }
+
+    #[test]
+    fn showing_the_last_hidden_row_removes_the_menu_override() {
+        let mut prefs = ContextMenuPreferences::default();
+        prefs.set_visible("canvas_object", "menu.edit.copy", true);
+        assert!(prefs.is_default());
+        prefs.set_visible("canvas_object", "menu.edit.copy", false);
+        prefs.set_visible("canvas_object", "menu.edit.copy", false);
+        assert_eq!(prefs.hidden_items("canvas_object").len(), 1);
+        prefs.set_visible("canvas_object", "menu.edit.copy", true);
+        assert!(prefs.is_default());
+        assert_eq!(serde_json::to_string(&prefs).expect("preferences"), "{}");
+    }
+
+    #[test]
+    fn stable_context_menu_action_keys_do_not_depend_on_target_names() {
+        let prefs: ContextMenuPreferences =
+            serde_json::from_str(r#"{"objects_object":["docker.move_to_layer"]}"#)
+                .expect("stable action keys");
+        assert!(!prefs.is_visible("objects_object", "docker.move_to_layer"));
+        assert!(prefs.is_visible("objects_object", "Layer 1"));
+        assert!(prefs.is_visible("objects_object", "Layer 2"));
+        assert!(prefs.is_visible("canvas_object", "docker.move_to_layer"));
+    }
+
+    #[test]
+    fn context_menu_orders_round_trip_without_changing_legacy_visibility() {
+        let mut prefs: ContextMenuPreferences =
+            serde_json::from_str(r#"{"canvas_object":["menu.edit.copy"]}"#)
+                .expect("legacy visibility preferences");
+        prefs.set_order("canvas_object", "", &["menu.edit.delete", "menu.edit.copy"]);
+        prefs.set_order(
+            "canvas_object",
+            "menu.object.order",
+            &["menu.object.back_one", "menu.object.forward_one"],
+        );
+        let encoded = serde_json::to_string(&prefs).expect("saved preferences");
+        let restored: ContextMenuPreferences = serde_json::from_str(&encoded).expect("preferences");
+        assert_eq!(prefs, restored);
+        assert!(!restored.is_visible("canvas_object", "menu.edit.copy"));
+        assert!(restored.is_visible("canvas_object", "menu.edit.delete"));
+        assert_eq!(
+            restored.order("canvas_object", ""),
+            ["menu.edit.delete", "menu.edit.copy"]
+        );
+        assert!(restored.has_order("canvas_object"));
+        assert!(!restored.has_order("canvas_text"));
+    }
+
+    #[test]
+    fn context_menu_sibling_order_is_isolated_by_complete_parent_path() {
+        let mut prefs = ContextMenuPreferences::default();
+        let first = "bars.customize/bars.default_button_size";
+        let second = "bars.customize/bars.toolbox_toolbar/bars.button_size";
+        let defaults = ["bars.size_small", "bars.size_medium", "bars.size_large"];
+        prefs.set_order(
+            "toolbar",
+            first,
+            &["bars.size_large", "bars.size_small", "bars.size_medium"],
+        );
+        assert_eq!(
+            prefs.ordered_items("toolbar", first, &defaults),
+            ["bars.size_large", "bars.size_small", "bars.size_medium"]
+        );
+        assert_eq!(prefs.ordered_items("toolbar", second, &defaults), defaults);
+        assert_eq!(prefs.ordered_items("palette", first, &defaults), defaults);
+        assert_eq!(prefs.menu_orders("toolbar").len(), 1);
+        assert!(prefs.has_overrides("toolbar"));
+    }
+
+    #[test]
+    fn context_menu_order_ignores_unknown_keys_and_keeps_new_rows_in_default_order() {
+        let mut prefs = ContextMenuPreferences::default();
+        prefs.set_order("menu", "", &["future.action", "c", "a", "c", ""]);
+        assert_eq!(prefs.order("menu", ""), ["future.action", "c", "a"]);
+        assert_eq!(
+            prefs.ordered_items("menu", "", &["a", "b", "c", "d"]),
+            ["c", "a", "b", "d"]
+        );
+        prefs.set_order("menu", "", &["a", "c", "b", "d"]);
+        assert!(prefs
+            .order("menu", "")
+            .contains(&"future.action".to_owned()));
+        prefs.set_order("menu", "", &[]);
+        assert!(prefs.is_default());
+    }
+
+    #[test]
+    fn context_menu_order_input_normalizes_duplicate_and_empty_entries() {
+        let prefs: ContextMenuPreferences = serde_json::from_str(
+            r#"{"hidden":{"empty":[]},"order":{"menu":{"": ["b","a","b",""]},"empty":{"":[]}}}"#,
+        )
+        .expect("preferences with redundant entries");
+        assert_eq!(prefs.order("menu", ""), ["b", "a"]);
+        assert!(!prefs.has_overrides("empty"));
+        assert_eq!(prefs.ordered_items("menu", "", &["a", "b"]), ["b", "a"]);
+    }
+
+    #[test]
+    fn resetting_context_menus_restores_order_and_visibility_together() {
+        let mut prefs = ContextMenuPreferences::default();
+        prefs.set_visible("first", "a", false);
+        prefs.set_order("first", "", &["b", "a"]);
+        prefs.set_order("first", "branch", &["d", "c"]);
+        prefs.set_visible("second", "x", false);
+        prefs.set_order("second", "", &["y", "x"]);
+        prefs.reset_menu("first");
+        assert!(!prefs.has_overrides("first"));
+        assert!(prefs.is_visible("first", "a"));
+        assert!(prefs.has_order("second"));
+        assert!(!prefs.is_visible("second", "x"));
+        prefs.reset_all();
+        assert!(prefs.is_default());
+        assert_eq!(serde_json::to_string(&prefs).expect("preferences"), "{}");
     }
 }

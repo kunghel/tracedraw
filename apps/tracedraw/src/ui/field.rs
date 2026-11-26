@@ -474,6 +474,36 @@ impl<N: Numeric> NumField<'_, N> {
         } else {
             ui.data_mut(|d| d.remove::<f32>(id.with("wheel")));
         }
+        // Up and Down in the box step the value as the arrows do, the
+        // box keeping the keys and the new value selected (#4407).
+        let mut by_key = false;
+        if stepped.is_none() && resp.has_focus() {
+            let key = ui.input_mut(|i| {
+                // The modifiers the key came with.
+                let (key, m) = i.events.iter().find_map(|e| match e {
+                    egui::Event::Key {
+                        key: k @ (egui::Key::ArrowUp | egui::Key::ArrowDown),
+                        pressed: true,
+                        modifiers,
+                        ..
+                    } => Some((*k, *modifiers)),
+                    _ => None,
+                })?;
+                i.consume_key(m, key)
+                    .then_some((if key == egui::Key::ArrowUp { 1.0 } else { -1.0 }, m))
+            });
+            if let Some(k) = key {
+                ui.memory_mut(|m| m.move_focus(egui::FocusDirection::None));
+                // A value typed and not applied yet is where the step starts.
+                if buf != shown {
+                    if let Some(v) = parse(&buf, self.unit_mm) {
+                        *self.value = N::from_f64(v);
+                    }
+                }
+                stepped = Some(k);
+                by_key = true;
+            }
+        }
         if let Some((dir, mods)) = stepped {
             // A whole-number field steps at least one: a step below one
             // rounded back to the value held, so the arrows of Cut into
@@ -505,7 +535,8 @@ impl<N: Numeric> NumField<'_, N> {
             // A value typed and not applied yet goes; the step counts
             // from the value held.
             ui.data_mut(|d| d.remove::<String>(id));
-            if resp.has_focus() {
+            ui.data_mut(|d| d.remove::<String>(shown_id));
+            if resp.has_focus() && !by_key {
                 resp.surrender_focus();
             }
             if v != self.value.to_f64() {
@@ -2011,6 +2042,50 @@ mod tests {
             (false, true),
             "one Tab moves to the next box"
         );
+    }
+
+    /// Up and Down in a focused box step its value by its step and keep
+    /// the box focused, Shift by ten steps (#4407).
+    #[test]
+    fn arrow_keys_step_a_focused_box() {
+        let ctx = egui::Context::default();
+        let mut v = 5.0f64;
+        let key = |k: egui::Key, shift: bool| egui::Event::Key {
+            key: k,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers: egui::Modifiers {
+                shift,
+                ..Default::default()
+            },
+        };
+        let frame = |events: Vec<egui::Event>, focus: bool, v: &mut f64| -> bool {
+            let mut focused = false;
+            let input = egui::RawInput {
+                events,
+                ..Default::default()
+            };
+            let mut out = ctx.run_ui(input, |ui| {
+                let r = ui.add(NumField::new(v).step(1.0));
+                if focus {
+                    r.request_focus();
+                }
+                focused = r.has_focus();
+            });
+            out.textures_delta.clear();
+            focused
+        };
+        frame(Vec::new(), true, &mut v);
+        frame(Vec::new(), false, &mut v);
+        assert!(frame(vec![key(egui::Key::ArrowUp, false)], false, &mut v));
+        assert_eq!(v, 6.0);
+        assert!(frame(vec![key(egui::Key::ArrowDown, false)], false, &mut v));
+        frame(vec![key(egui::Key::ArrowDown, false)], false, &mut v);
+        assert_eq!(v, 4.0);
+        frame(vec![key(egui::Key::ArrowUp, true)], false, &mut v);
+        assert_eq!(v, 14.0);
+        assert!(frame(Vec::new(), false, &mut v), "the box keeps the keys");
     }
 
     #[test]

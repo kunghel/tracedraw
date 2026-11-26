@@ -435,7 +435,15 @@ pub fn sample_outline(data: &[u8], index: u32, text: &str) -> Option<(BezPath, f
             );
         }
         fn close(&mut self) {
-            self.path.close_path();
+            // Only an outline begun is closed (#4119).
+            if self
+                .path
+                .elements()
+                .last()
+                .is_some_and(|e| !matches!(e, kurbo::PathEl::ClosePath))
+            {
+                self.path.close_path();
+            }
         }
     }
     let k = 1.0 / upem;

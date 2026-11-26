@@ -228,6 +228,12 @@ fn ruler_menu(app: &mut App, ui: &mut Ui) {
     let ctx = ui.ctx().clone();
     // A new right click (a new position) opens the menu afresh.
     let pos_id = id.with("pos");
+    if !crate::ui::context_menus::has_visible_items(&app.settings.context_menus, "rulers") {
+        egui::Popup::close_id(&ctx, id);
+        app.ruler_menu = None;
+        ctx.data_mut(|data| data.remove::<Pos2>(pos_id));
+        return;
+    }
     if ctx.data(|d| d.get_temp::<Pos2>(pos_id)) != Some(pos) {
         ctx.data_mut(|d| d.insert_temp(pos_id, pos));
         egui::Popup::open_id(&ctx, id);
@@ -245,6 +251,7 @@ fn ruler_menu(app: &mut App, ui: &mut Ui) {
     .open_memory(None)
     .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
     .show(|ui| {
+        let _scope = crate::ui::context_menus::Scope::new(&app.settings.context_menus, "rulers");
         ui.set_min_width(200.0);
         crate::ui::menus::body(ui, |ui| close = ruler_menu_rows(app, ui))
     });
@@ -259,22 +266,43 @@ fn ruler_menu(app: &mut App, ui: &mut Ui) {
 fn ruler_menu_rows(app: &mut App, ui: &mut Ui) -> bool {
     use crate::ui::menus::{check, item, sep};
     let mut clicked = false;
-    if item(ui, "rulers.ruler_setup", "", true) {
-        app.open_ruler_options();
-        clicked = true;
-    }
-    if item(ui, "rulers.grid_setup", "", true) {
-        app.open_grid_options();
-        clicked = true;
-    }
-    if item(ui, "rulers.guidelines_setup", "", true) {
-        app.open_guidelines_options();
-        clicked = true;
-    }
-    sep(ui);
-    if check(ui, "menu.view.rulers", "Alt+Shift+R", app.show_rulers) {
-        app.show_rulers = !app.show_rulers;
-        clicked = true;
+    for menu_key in crate::ui::context_menu_filter::ordered_keys(&[
+        "rulers.ruler_setup",
+        "rulers.grid_setup",
+        "rulers.guidelines_setup",
+        "menu.view.rulers",
+    ])
+    .iter()
+    .copied()
+    {
+        match menu_key {
+            "rulers.ruler_setup" => {
+                if item(ui, "rulers.ruler_setup", "", true) {
+                    app.open_ruler_options();
+                    clicked = true;
+                }
+            }
+            "rulers.grid_setup" => {
+                if item(ui, "rulers.grid_setup", "", true) {
+                    app.open_grid_options();
+                    clicked = true;
+                }
+            }
+            "rulers.guidelines_setup" => {
+                if item(ui, "rulers.guidelines_setup", "", true) {
+                    app.open_guidelines_options();
+                    clicked = true;
+                }
+            }
+            "menu.view.rulers" => {
+                sep(ui);
+                if check(ui, "menu.view.rulers", "Alt+Shift+R", app.show_rulers) {
+                    app.show_rulers = !app.show_rulers;
+                    clicked = true;
+                }
+            }
+            _ => {}
+        }
     }
     clicked
 }
@@ -767,5 +795,74 @@ mod tests {
                 ("menu.view.rulers".to_string(), None, false),
             ]
         );
+    }
+}
+
+#[cfg(test)]
+mod context_menu_settings_tests {
+    use super::*;
+
+    #[test]
+    fn the_ruler_popup_hides_only_the_requested_setup_action() {
+        let ctx = crate::theme::ui_context();
+        let mut app = App::headless();
+        app.ruler_menu = Some(egui::pos2(32.0, 32.0));
+        app.settings
+            .context_menus
+            .set_visible("rulers", "rulers.ruler_setup", false);
+        let draw = |app: &mut App| {
+            crate::ui::menus::ROWS.with(|rows| rows.borrow_mut().clear());
+            for _ in 0..2 {
+                let mut out = ctx.run_ui(egui::RawInput::default(), |ui| ruler_menu(app, ui));
+                out.textures_delta.clear();
+            }
+            crate::ui::menus::ROWS.with(|rows| rows.borrow().clone())
+        };
+        let hidden = draw(&mut app);
+        assert!(!hidden.iter().any(|(key, _)| key == "rulers.ruler_setup"));
+        for key in [
+            "rulers.grid_setup",
+            "rulers.guidelines_setup",
+            "menu.view.rulers",
+        ] {
+            assert!(hidden.iter().any(|(drawn, _)| drawn == key), "{key}");
+        }
+        app.settings
+            .context_menus
+            .set_visible("rulers", "rulers.ruler_setup", true);
+        let restored = draw(&mut app);
+        assert!(restored.iter().any(|(key, _)| key == "rulers.ruler_setup"));
+    }
+}
+
+#[cfg(test)]
+mod hidden_root_popup_tests {
+    use super::*;
+
+    #[test]
+    fn hiding_every_operation_clears_the_popup_and_pending_menu() {
+        let mut app = App::headless();
+        let position = egui::pos2(30.0, 30.0);
+        app.ruler_menu = Some(position);
+        let definition = crate::ui::context_menus::CATALOG
+            .iter()
+            .find(|menu| menu.id == "rulers")
+            .expect("menu");
+        for key in definition.items {
+            app.settings
+                .context_menus
+                .set_visible(definition.id, key, false);
+        }
+        let context = crate::theme::ui_context();
+        let id = egui::Id::new("ruler_context_menu");
+        egui::Popup::open_id(&context, id);
+        context.data_mut(|data| data.insert_temp(id.with("pos"), position));
+        let mut output = context.run_ui(Default::default(), |ui| ruler_menu(&mut app, ui));
+        output.textures_delta.clear();
+        assert!(app.ruler_menu.is_none());
+        assert!(!egui::Popup::is_id_open(&context, id));
+        assert!(context
+            .data(|data| data.get_temp::<egui::Pos2>(id.with("pos")))
+            .is_none());
     }
 }

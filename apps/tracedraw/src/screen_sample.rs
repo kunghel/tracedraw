@@ -54,7 +54,76 @@ pub fn pixel_average(image: &egui::ColorImage, at: egui::Pos2, ppp: f32, n: u32)
     Some(Color::rgb8(avg(r), avg(g), avg(b)))
 }
 
+/// Whether the pointer was let go outside the window this frame (a press
+/// in the window dragged out of it: the system still reports where).
+pub fn let_go_outside(ctx: &egui::Context) -> bool {
+    let window = ctx.viewport_rect();
+    ctx.input(|i| i.pointer.primary_released() && i.pointer.latest_pos().is_some_and(|p| !window.contains(p)))
+}
+
+/// The colour the screen shows under the system pointer, averaged over a
+/// box of `n` x `n` pixels: outside the window too, the desktop and other
+/// programs (#4083). Only where the system lets a program read the screen
+/// (Windows); `None` elsewhere.
+pub fn desktop_color_at_cursor(n: u32) -> Option<Color> {
+    #[cfg(windows)]
+    {
+        use windows_sys::Win32::Foundation::POINT;
+        use windows_sys::Win32::Graphics::Gdi::{GetDC, GetPixel, ReleaseDC, CLR_INVALID};
+        use windows_sys::Win32::UI::WindowsAndMessaging::GetCursorPos;
+        let mut at = POINT { x: 0, y: 0 };
+        // SAFETY: plain calls with a valid out-pointer; the screen's device
+        // context is released before returning.
+        unsafe {
+            if GetCursorPos(&mut at) == 0 {
+                return None;
+            }
+            let dc = GetDC(0);
+            if dc == 0 {
+                return None;
+            }
+            let n = n.clamp(1, 15) as i32;
+            let half = (n - 1) / 2;
+            let (mut r, mut g, mut b, mut count) = (0u32, 0u32, 0u32, 0u32);
+            for dy in -half..(n - half) {
+                for dx in -half..(n - half) {
+                    let c = GetPixel(dc, at.x + dx, at.y + dy);
+                    if c == CLR_INVALID {
+                        continue;
+                    }
+                    r += c & 0xff;
+                    g += (c >> 8) & 0xff;
+                    b += (c >> 16) & 0xff;
+                    count += 1;
+                }
+            }
+            ReleaseDC(0, dc);
+            if count == 0 {
+                return None;
+            }
+            let avg = |v: u32| ((v + count / 2) / count) as u8;
+            Some(Color::rgb8(avg(r), avg(g), avg(b)))
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = n;
+        None
+    }
+}
+
 impl App {
+    /// The Color Eyedropper let go outside the window: the colour the
+    /// screen shows there goes where a sampled colour goes; where the
+    /// system does not let it be read, the status bar says so (#4083).
+    pub fn sample_desktop(&mut self, outline: bool) {
+        self.eyedropper_screen = false;
+        match desktop_color_at_cursor(self.eyedropper_sample) {
+            Some(c) => self.took_sampled_color(c, outline),
+            None => self.status = crate::i18n::tr("status.screen_sample_failed"),
+        }
+    }
+
     /// Whether a Color Eyedropper click at `p` samples the window's pixel
     /// rather than an object: it samples (it does not apply) and no
     /// object under it gives a colour (#3040).
@@ -143,9 +212,14 @@ impl App {
             .order(egui::Order::Foreground)
             .fixed_pos(rect.min)
             .show(ctx, |ui| {
-                let resp = ui.allocate_rect(rect, egui::Sense::click());
+                let resp = ui.allocate_rect(rect, egui::Sense::click_and_drag());
                 ui.ctx().set_cursor_icon(egui::CursorIcon::Crosshair);
-                if resp.clicked() {
+                // Pressed here and let go outside the window: the desktop's
+                // colour there (#4083).
+                if resp.drag_stopped() && let_go_outside(ui.ctx()) {
+                    let shift = ui.input(|i| i.modifiers.shift);
+                    self.sample_desktop(shift);
+                } else if resp.clicked() || resp.drag_stopped() {
                     if let Some(at) = resp.interact_pointer_pos() {
                         let shift = ui.input(|i| i.modifiers.shift);
                         self.ask_screen_sample(at, shift);

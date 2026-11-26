@@ -39,6 +39,21 @@ repeat and blend settings do not apply; the Transparency tool does not
 offer the type. `.cdr`, SVG and PDF get the closest radial gradient
 (`color_points::tests::color_points_are_added_coloured_moved_and_deleted`).
 
+Each colour point has a spread (#3947, `Fountain::spreads`, 1 by
+default, 0.1 to 10): how far its colour reaches. The chosen point shows
+a ring round it, of radius spread x 15 % of the box diagonal, with a
+handle on its right; dragging the handle sets the spread to the
+pointer's distance from the point over that 15 % (one undo step for the
+drag), and a press on it keeps the point chosen. On the Interactive
+Fill tool's property bar a Colour points type groups the chosen point's
+colour, transparency and Spread (10 to 1000 %, one undo step, "Colour
+Point Spread") and Delete Point between separators; with no point
+chosen it shows how to choose or add one, and the angle and edge pad,
+which the type does not use, are not shown. A point added gets spread
+1; a point deleted takes its spread along
+(`color_points::tests::a_color_point_spread_widens_its_reach`,
+`the_spread_handle_is_dragged_on_the_canvas`).
+
 Blend settings (#1208, the rows after Bilinear and Invert colours in the
 Properties docker): Blend direction as three buttons (the Blend effect's
 words: Direct, Clockwise, Counterclockwise), Steps as a checkbox with
@@ -291,9 +306,11 @@ Bounding box `b` of the object in page space, centre `c`.
   renderer, two passes of the 1-D lower envelope of parabolas), drawn
   smoothed; they do not change with zoom.
 - Color points: no `t`; the colour at `p` is every point's colour
-  weighed by `1 / d²`, `d` the distance from `p` to the point over the
-  box diagonal, so the nearest point counts the most; on a point, its
-  own colour (`Fountain::points_sample`, opacity alike).
+  weighed by `k² / d²`, `d` the distance from `p` to the point over the
+  box diagonal and `k` the point's spread, so the nearest point counts
+  the most and a point with spread 2 weighs at distance `2d` what one
+  with spread 1 weighs at `d`; on a point, its own colour
+  (`Fountain::points_sample`, opacity alike).
 - The stop parameter `s` of `t` (`Fountain::stop_param`), in this order:
   1. Bilinear: `t = 1 - |2t - 1|` (first colour at both ends, last in
      the middle).

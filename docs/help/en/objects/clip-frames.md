@@ -17,6 +17,16 @@ with the right mouse button and choose to place them inside; see
 the frame with the [[tool.pick]] tool holding <kbd>W</kbd> or <kbd>Alt</kbd>
 before you release.
 
+Holding <kbd>W</kbd> while you drag, any closed object under the pointer can
+take the objects too: it becomes a new clip frame holding them, as a drop on
+its row in the Objects panel makes it. A clip frame inside another one takes
+objects the same way, from the page or from the Objects panel.
+
+To give other objects the same contents as a clip frame, select them, choose
+Object > Clip Frame > Copy Contents From and click the clip frame: each
+selected object becomes a clip frame holding a copy of its contents, placed
+as they sit in the frame clicked.
+
 ## Editing what is inside {#edit-contents}
 
 - [[menu.object.clip_frame_edit]] enters the frame: only the objects inside
@@ -47,7 +57,9 @@ on it, also enters it, with the object under the pointer selected; see
 While you edit the contents, the dimmed objects outside the frame cannot be
 picked (by a click, a marquee, Select All or <kbd>Tab</kbd>). Undo stops at
 the start of the edit: undoing past it leaves the edit with the frame as it
-was; redo enters it again, and undoing Finish goes back into it.
+was; redo enters it again, and undoing Finish goes back into it. The frame's
+outline stays in view the whole time, in orange dashes, so the contents can
+be placed where the frame will show them.
 
 ## Drawing inside a shape {#draw-inside}
 

@@ -192,6 +192,16 @@ fn walk_stmt(s: &Stmt, f: &mut ModuleFacts) {
             }
         }
         StmtKind::Unload(x) | StmtKind::Load(x) => e(x, f),
+        StmtKind::File {
+            args,
+            items,
+            targets,
+            ..
+        } => {
+            for x in args.iter().chain(items.iter().map(|(x, _)| x)).chain(targets) {
+                e(x, f);
+            }
+        }
         StmtKind::ReDim { vars, .. } => {
             for (n, _, _) in vars {
                 f.declared.push(n.clone());
@@ -1430,6 +1440,10 @@ impl<'a> Ctx<'a> {
             }
             StmtKind::Unload(_) | StmtKind::Load(_) => {
                 self.todo("Load/Unload: forms stay in the VBA project")
+            }
+            StmtKind::File { op, .. } => {
+                let t = format!("{} statement: files are read and written by the VBA macro", op.word());
+                self.todo(&t);
             }
             StmtKind::Unsupported(w) => {
                 let t = format!("{w} is not available in TraceDraw");

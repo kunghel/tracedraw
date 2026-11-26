@@ -5,6 +5,7 @@
 //! then what to click next. Changes apply to the selected callouts and
 //! to the ones made next.
 
+use crate::ui::btn_icons::IconUi;
 use crate::app::App;
 use crate::callouts::CalloutShape;
 use crate::i18n::tr;
@@ -50,7 +51,7 @@ pub fn callout_bar(app: &mut App, ui: &mut Ui) {
         .show_ui(ui, |ui| {
             let hair = tracedraw_core::Stroke::HAIRLINE;
             if ui
-                .selectable_label((style.width - hair).abs() < 1e-9, tr("toolbar.hairline"))
+                .iselectable((style.width - hair).abs() < 1e-9, "toolbar.hairline")
                 .clicked()
             {
                 width = Some(hair);

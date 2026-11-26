@@ -91,3 +91,15 @@ place. Sous [[options.other]] : [[bars.lock]] et
   [[options.palette_context_menu]].
 
 Voir [Palettes de couleurs](../color/palettes.md).
+
+## Menus contextuels {#context-menus}
+
+Dans Personnalisation, choisissez [[options.context_menus]] pour gérer séparément les 32 emplacements de menus contextuels. Sélectionnez un emplacement avec [[options.context_menu_scene]], puis utilisez [[options.context_menu_search]] pour trouver une opération et décochez sa case pour la masquer à cet emplacement. Les opérations restent dans cette liste même si la sélection actuelle ne peut pas les utiliser.
+
+Toutes les opérations sont visibles par défaut. Chaque emplacement possède ses propres choix : masquer une opération d'objet sur le canevas ne la masque pas dans le panneau Objets. Les listes dynamiques, comme les calques cibles et les collections de polices, sont gérées comme une seule opération ; changer leur nom ne réinitialise donc pas vos choix.
+
+[[options.context_menu_reset]] restaure le menu sélectionné et [[options.context_menu_reset_all]] restaure tous les menus. [[dialog.ok]] enregistre les choix dans les paramètres de l'application ; [[dialog.cancel]], Escape ou le bouton de fermeture restaure les choix présents à l'ouverture des Options. Les menus principaux, les raccourcis et la recherche de commandes continuent de proposer les commandes d'origine.
+
+Développez un sous-menu pour voir ses éléments en retrait. Faites glisser la poignée d’une ligne, ou utilisez [[options.context_menu_move_up]] et [[options.context_menu_move_down]], pour réorganiser les éléments de même niveau. Déplacer un menu parent déplace aussi ses enfants ; un élément ne peut pas changer de parent. La recherche garde visibles les menus parents des résultats. Restaurer un menu réinitialise la visibilité et l’ordre ; annuler les Options rétablit ces deux réglages tels qu’ils étaient à l’ouverture du dialogue.
+
+Le menu des échantillons de la palette du document et son entrée dans le Gestionnaire de palettes ont des réglages distincts. Les cibles dynamiques conservent leur ordre ; la liste des styles du document garde sa place entre les actions statiques des Styles d’objet. Les nouvelles opérations ajoutées dans une version ultérieure restent visibles, après les éléments enregistrés du même niveau.

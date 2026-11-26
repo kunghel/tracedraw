@@ -173,6 +173,11 @@ pub enum Effect {
         color: Color,
         /// Keep a gap between the object and the shadow (overprint trick).
         gap: f64,
+        /// The shadow grown this far, millimetres, all round: it shows
+        /// round the object as well as behind it (#4378); not in older
+        /// files.
+        #[serde(default, skip_serializing_if = "is_zero")]
+        expand: f64,
     },
     /// Inner shadow: a soft shadow cast inside the object, as if the
     /// object were a hole in the page lit from the other side of
@@ -438,8 +443,27 @@ pub enum Effect {
         color: Color,
     },
     /// Gaussian blur (#1141): the object drawn blurred by `radius` mm.
-    /// Drawn by the renderer.
-    GaussianBlur { radius: f64 },
+    /// Drawn by the renderer. With `pins` the blur varies over the
+    /// object: each pin holds its own radius and the radius between them
+    /// changes smoothly from one to the next (`radius` is then what a new
+    /// pin starts with). Older files have no pins.
+    GaussianBlur {
+        radius: f64,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        pins: Vec<BlurPin>,
+    },
+    /// Grain: noise over the object as it is drawn (after its blur),
+    /// `amount` 0..1 strong, grains about `size` mm across, the same in
+    /// every colour channel (`mono`) or apart in each. The grain stays put
+    /// on the page as the view moves; `seed` picks another grain.
+    Grain {
+        amount: f64,
+        size: f64,
+        #[serde(default)]
+        mono: bool,
+        #[serde(default)]
+        seed: u32,
+    },
     /// Fill opacity (#1141): the object itself drawn at `opacity` 0..1
     /// while what its other effects draw keeps its own.
     FillOpacity { opacity: f64 },
@@ -467,6 +491,38 @@ pub enum Effect {
         #[serde(default)]
         strength: f64,
     },
+    /// Round Corners: every corner of the outline (a curve, a group's
+    /// curves, a text's letters) filleted with `radius` mm, only those
+    /// whose sides meet at less than `max_angle` degrees (180: all) and
+    /// only those on `side`. The object itself stays as it is.
+    #[serde(rename = "roundcorners")]
+    RoundCorners {
+        radius: f64,
+        #[serde(default = "straight_angle")]
+        max_angle: f64,
+        #[serde(default)]
+        side: crate::outline_fx::CornerSide,
+    },
+    /// Slice: the outline cut into `count` parallel strips across its box,
+    /// the cuts at `angle` degrees and `gap` mm wide, each strip slid by
+    /// `shift` mm along the cut (one way and the other in turn with
+    /// `alternate`, otherwise by a share from `seed`), turned by a share
+    /// of `turn` degrees and its corners rounded with `radius` mm.
+    Slice {
+        count: u32,
+        angle: f64,
+        gap: f64,
+        #[serde(default)]
+        shift: f64,
+        #[serde(default)]
+        alternate: bool,
+        #[serde(default)]
+        turn: f64,
+        #[serde(default)]
+        seed: u32,
+        #[serde(default)]
+        radius: f64,
+    },
     /// Lens over everything beneath (evaluated by the renderer).
     Lens(Lens),
     /// Non-uniform transparency: the fill's luminance is the opacity.
@@ -476,6 +532,57 @@ pub enum Effect {
         /// Apply to fill, outline or both (0, 1, 2).
         target: u8,
     },
+}
+
+/// A pin of a variable Gaussian blur: where it is, in the object's own
+/// coordinates (it moves, scales and turns with the object), and the blur
+/// radius there, mm.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct BlurPin {
+    pub at: Point,
+    pub radius: f64,
+}
+
+/// The most pins a variable blur keeps.
+pub const MAX_BLUR_PINS: usize = 64;
+
+/// The blur radius (mm) at `p` (object coordinates) of a blur with
+/// `pins`: each pin's radius weighed by the inverse square of the
+/// distance to it, so the radius is the pin's own on a pin and changes
+/// smoothly between them. `None` without pins.
+pub fn pinned_blur_radius(pins: &[BlurPin], p: Point) -> Option<f64> {
+    let mut sum = 0.0;
+    let mut weights = 0.0;
+    for pin in pins {
+        let r = if pin.radius.is_finite() {
+            pin.radius.max(0.0)
+        } else {
+            0.0
+        };
+        let d2 = (pin.at - p).hypot2();
+        if !d2.is_finite() {
+            continue;
+        }
+        if d2 < 1e-12 {
+            return Some(r);
+        }
+        let w = 1.0 / d2;
+        sum += w * r;
+        weights += w;
+    }
+    (weights > 0.0).then(|| sum / weights)
+}
+
+/// How far a Gaussian blur reaches past the object, mm: its radius, or
+/// its widest pin's.
+pub fn blur_reach(radius: f64, pins: &[BlurPin]) -> f64 {
+    if pins.is_empty() {
+        return radius.abs();
+    }
+    pins.iter()
+        .map(|p| p.radius.abs())
+        .filter(|r| r.is_finite())
+        .fold(0.0, f64::max)
 }
 
 /// How a transparency (or a drop shadow) mixes with what lies beneath.
@@ -813,7 +920,22 @@ impl Effect {
                 | Effect::Roughen { .. }
                 | Effect::JitterNodes { .. }
                 | Effect::ShapeFrame { .. }
+                | Effect::RoundCorners { .. }
+                | Effect::Slice { .. }
         )
+    }
+
+    /// A warp that costs milliseconds to work out (an Offset Path with
+    /// smoothing or merging a group, a live Combine of a group's objects):
+    /// kept by [`evaluate`] like the effects that draw objects, as a frame
+    /// asks for it to draw, measure and pick. Worked out again each time,
+    /// a merged group lagged behind an object of it being dragged (#4347).
+    fn costly_warp(&self) -> bool {
+        match self {
+            Effect::OffsetPath { smooth, merge, .. } => *merge || *smooth > 0.0,
+            Effect::Combine { .. } => true,
+            _ => false,
+        }
     }
 
     /// Draws objects made from the outline as it is at its place in the
@@ -832,6 +954,7 @@ impl Effect {
                     | Effect::Glow { .. }
                     | Effect::GaussianBlur { .. }
                     | Effect::Halftone { .. }
+                    | Effect::Grain { .. }
                     | Effect::FillOpacity { .. }
                     | Effect::BlendIf { .. }
                     | Effect::Feather { .. }
@@ -851,6 +974,7 @@ impl Effect {
                 | Effect::Halftone { .. }
                 | Effect::GaussianBlur { .. }
                 | Effect::BlendIf { .. }
+                | Effect::Grain { .. }
         )
     }
 }
@@ -1059,6 +1183,21 @@ pub fn bake_outline_warps(shape: &Shape) -> Option<Shape> {
         .collect();
     let (effects, parked) = Shape::split_stack(rest);
     let mut out = shape.clone();
+    // A group the warps made one curve (Merge Shapes, live Combine) is
+    // painted as the object it took its paint from: the curves keep that
+    // fill and outline, not the group's own empty paint (#4349).
+    let was_container = matches!(
+        shape.kind,
+        ShapeKind::Group { .. } | ShapeKind::ClipFrame { .. }
+    );
+    let now_container = matches!(
+        main.kind,
+        ShapeKind::Group { .. } | ShapeKind::ClipFrame { .. }
+    );
+    if was_container && !now_container {
+        take_paint(&mut out, &main);
+        out.fill_rule = main.fill_rule;
+    }
     let tolerance = refit_tolerance(&main.page_path());
     out.kind = refit_kind(main.kind, tolerance);
     out.effects = effects;
@@ -1216,7 +1355,51 @@ fn warp_outline(e: &Effect, p: &BezPath, b: Rect) -> Option<BezPath> {
         Effect::ShapeFrame { form, pad, radius } => {
             Some(crate::rough::shape_frame(b, *form, *pad, *radius))
         }
+        Effect::RoundCorners { .. } | Effect::Slice { .. } => {
+            Some(rebuild_outline(e, p, b, crate::shaping::FillRule::EvenOdd))
+        }
         _ => None,
+    }
+}
+
+fn straight_angle() -> f64 {
+    180.0
+}
+
+/// Round Corners or Slice on the outline `p` (read with `fill`) in the
+/// box `b` of the whole outline; `p` itself for other effects.
+fn rebuild_outline(e: &Effect, p: &BezPath, b: Rect, fill: crate::shaping::FillRule) -> BezPath {
+    match *e {
+        Effect::RoundCorners {
+            radius,
+            max_angle,
+            side,
+        } => crate::outline_fx::round_corners(p, radius, max_angle, side),
+        Effect::Slice {
+            count,
+            angle,
+            gap,
+            shift,
+            alternate,
+            turn,
+            seed,
+            radius,
+        } => crate::outline_fx::slice(
+            p,
+            b,
+            &crate::outline_fx::SliceParams {
+                count,
+                angle,
+                gap,
+                shift,
+                alternate,
+                turn,
+                seed,
+                radius,
+            },
+            fill,
+        ),
+        _ => p.clone(),
     }
 }
 
@@ -1684,15 +1867,78 @@ pub struct Evaluated {
     pub above: Vec<Shape>,
 }
 
-/// How many evaluations [`evaluate`] remembers: enough for a page with
-/// several contoured or blended objects to keep each one's across the
-/// pointer's moves; with 8 they pushed each other out (#3765).
-const EVALUATION_MEMORY: usize = 32;
+/// How many evaluations [`evaluate`] remembers: enough for a drawing with
+/// dozens of contoured, blended or extruded objects to keep each one's
+/// across frames and the pointer's moves; with 8 they pushed each other
+/// out (#3765), and 32 still left large drawings working every blend out
+/// again each frame (#4193).
+const EVALUATION_MEMORY: usize = 512;
 
-/// The latest evaluations of shapes that draw objects from their outline,
-/// newest last, each with the shape it was made from. Shared by all
-/// threads: the rasteriser works on its own.
-static EVALUATED: std::sync::Mutex<Vec<(Shape, Evaluated)>> = std::sync::Mutex::new(Vec::new());
+/// How many versions of one object are kept: the object and the one being
+/// dragged or edited are both asked for in a frame.
+const VERSIONS_PER_OBJECT: usize = 4;
+
+/// The kept evaluations, by object id, each with the shape it was made
+/// from and when it was last asked for.
+#[derive(Default)]
+struct Evaluations {
+    by_id: std::collections::HashMap<crate::ShapeId, Vec<(Shape, Evaluated, u64)>>,
+    len: usize,
+    tick: u64,
+}
+
+impl Evaluations {
+    fn get(&mut self, shape: &Shape) -> Option<Evaluated> {
+        self.tick += 1;
+        let tick = self.tick;
+        // The id first: a shape of another id never pays the comparison of
+        // whole paths and children. The full comparison still guards the
+        // hit, so a changed shape of the same id is worked out again (#3765).
+        let kept = self.by_id.get_mut(&shape.id)?;
+        let hit = kept.iter_mut().find(|(from, _, _)| from == shape)?;
+        hit.2 = tick;
+        Some(hit.1.clone())
+    }
+
+    fn put(&mut self, shape: &Shape, ev: &Evaluated) {
+        self.tick += 1;
+        let tick = self.tick;
+        let kept = self.by_id.entry(shape.id).or_default();
+        if kept.len() >= VERSIONS_PER_OBJECT {
+            if let Some(i) = (0..kept.len()).min_by_key(|&i| kept[i].2) {
+                kept.remove(i);
+                self.len -= 1;
+            }
+        }
+        kept.push((shape.clone(), ev.clone(), tick));
+        self.len += 1;
+        // Over the limit, the evaluation asked for longest ago goes; this
+        // walks the kept ones, but only when a new one is worked out.
+        while self.len > EVALUATION_MEMORY {
+            let Some((id, i)) = self
+                .by_id
+                .iter()
+                .flat_map(|(id, v)| v.iter().enumerate().map(move |(i, e)| (e.2, *id, i)))
+                .min_by_key(|e| e.0)
+                .map(|(_, id, i)| (id, i))
+            else {
+                break;
+            };
+            if let Some(v) = self.by_id.get_mut(&id) {
+                v.remove(i);
+                if v.is_empty() {
+                    self.by_id.remove(&id);
+                }
+            }
+            self.len -= 1;
+        }
+    }
+}
+
+/// The latest evaluations of shapes that draw objects from their outline.
+/// Shared by all threads: the rasteriser works on its own.
+static EVALUATED: std::sync::LazyLock<std::sync::Mutex<Evaluations>> =
+    std::sync::LazyLock::new(Default::default);
 
 /// Evaluate every effect of `shape` in order. Geometry effects replace the
 /// main shape's kind with a path; object effects add shapes.
@@ -1701,29 +1947,15 @@ static EVALUATED: std::sync::Mutex<Vec<(Shape, Evaluated)>> = std::sync::Mutex::
 /// it to draw, to measure and to pick: the evaluations of the latest
 /// shapes are kept, so the same shape is worked out once (#897).
 pub fn evaluate(shape: &Shape) -> Evaluated {
-    if !shape.effects.iter().any(Effect::draws_from_outline) {
+    if !shape.effects.iter().any(|e| e.draws_from_outline() || e.costly_warp()) {
         return evaluate_now(shape);
     }
-    if let Ok(mut kept) = EVALUATED.lock() {
-        // The id first: a shape of another id never pays the comparison of
-        // whole paths and children. The full comparison still guards the
-        // hit, so a changed shape of the same id is worked out again (#3765).
-        if let Some(i) = kept
-            .iter()
-            .position(|(from, _)| from.id == shape.id && from == shape)
-        {
-            let hit = kept.remove(i);
-            let ev = hit.1.clone();
-            kept.push(hit);
-            return ev;
-        }
+    if let Some(ev) = EVALUATED.lock().ok().and_then(|mut k| k.get(shape)) {
+        return ev;
     }
     let ev = evaluate_now(shape);
     if let Ok(mut kept) = EVALUATED.lock() {
-        if kept.len() >= EVALUATION_MEMORY {
-            kept.remove(0);
-        }
-        kept.push((shape.clone(), ev.clone()));
+        kept.put(shape, &ev);
     }
     ev
 }
@@ -1891,6 +2123,16 @@ fn warp_shape(main: &mut Shape, effect: &Effect) {
             }
             reshape(main, &|p, b| crate::envelope::apply_mesh(p, b, cols, rows, points));
         }
+        Effect::RoundCorners { .. } | Effect::Slice { .. } => {
+            // Letters overlap and fill with the nonzero rule, as the
+            // text does.
+            let fill = if matches!(main.kind, ShapeKind::Text { .. }) {
+                crate::shaping::FillRule::NonZero
+            } else {
+                main.fill_rule
+            };
+            reshape(main, &|p, b| rebuild_outline(effect, p, b, fill));
+        }
         _ => {}
     }
 }
@@ -1970,7 +2212,9 @@ fn evaluate_now(shape: &Shape) -> Evaluated {
             | Effect::Combine { .. }
             | Effect::Roughen { .. }
             | Effect::JitterNodes { .. }
-            | Effect::ShapeFrame { .. } => {
+            | Effect::ShapeFrame { .. }
+            | Effect::RoundCorners { .. }
+            | Effect::Slice { .. } => {
                 // An extrusion before it already took it into its outline.
                 if !warped_ahead {
                     warp_shape(&mut main, effect);
@@ -2149,11 +2393,16 @@ fn evaluate_now(shape: &Shape) -> Evaluated {
             e @ Effect::Bevel { .. } => {
                 above.extend(bevel(&main, e));
             }
-            Effect::BlockShadow { offset, color, gap } => {
+            Effect::BlockShadow {
+                offset,
+                color,
+                gap,
+                expand,
+            } => {
                 // Cast by all the object draws, and beneath all of it
                 // (#2218).
                 let cast = cast_area(&main, area_rule(shape), below.iter().chain(&above));
-                let shadow = block_shadow(&main, cast, *offset, *color, *gap);
+                let shadow = block_shadow(&main, cast, *offset, *color, *gap, *expand);
                 below.splice(0..0, shadow);
             }
             // Mirrored last, whatever its place in the list: the copies
@@ -2248,7 +2497,8 @@ fn evaluate_now(shape: &Shape) -> Evaluated {
             | Effect::OuterShadow { .. }
             | Effect::Glow { .. }
             | Effect::GaussianBlur { .. }
-            | Effect::Halftone { .. } => {}
+            | Effect::Halftone { .. }
+            | Effect::Grain { .. } => {}
         }
     }
     // Fill opacity: the object alone, after the overlays and the other
@@ -2454,6 +2704,9 @@ fn combine_group(main: &mut Shape, mode: crate::shaping::CombineMode) {
     let filled = |s: &&(BezPath, Shape)| !matches!(s.1.fill, crate::style::Fill::None);
     let paint = if mode == crate::shaping::CombineMode::BackMinusFront {
         areas.first()
+    } else if mode == crate::shaping::CombineMode::FrontMinusBack {
+        // The object cut is the top one.
+        areas.last()
     } else {
         areas.iter().rev().find(filled).or(areas.last())
     };
@@ -3134,7 +3387,7 @@ fn group_area(shape: &Shape) -> BezPath {
     let mut acc = BezPath::new();
     for c in children {
         let part = crate::shaping::overlay_with(
-            &c.page_path(),
+            &opaque_or_page_path(c),
             &BezPath::new(),
             crate::shaping::Op::Weld,
             area_rule(c),
@@ -3142,6 +3395,25 @@ fn group_area(shape: &Shape) -> BezPath {
         acc = crate::shaping::overlay(&acc, &part, crate::shaping::Op::Weld);
     }
     acc
+}
+
+/// The outline of a picture with transparency: round its opaque pixels
+/// (#3245), in its own space; `None` for other objects and for pictures
+/// that show everywhere.
+fn opaque_area(shape: &Shape) -> Option<BezPath> {
+    match &shape.kind {
+        ShapeKind::Bitmap { rect, png, .. } => crate::alpha_outline::opaque_outline(png, *rect),
+        _ => None,
+    }
+}
+
+/// An object's outline on the page: a picture with transparency goes by
+/// its opaque pixels (#3245).
+fn opaque_or_page_path(shape: &Shape) -> BezPath {
+    match opaque_area(shape) {
+        Some(a) => shape.transform * a,
+        None => shape.page_path(),
+    }
 }
 
 fn contour(shape: &Shape, rule: crate::shaping::FillRule, p: &ContourParams) -> Vec<Shape> {
@@ -3154,8 +3426,12 @@ fn contour(shape: &Shape, rule: crate::shaping::FillRule, p: &ContourParams) -> 
     // A group: its objects' area as one, read even-odd as the union is,
     // and the look of the first object in it (#3245).
     let group = matches!(shape.kind, ShapeKind::Group { .. });
+    let picture = matches!(shape.kind, ShapeKind::Bitmap { .. });
+    let alpha = opaque_area(shape);
     let (base, rule) = if group {
         (to_page * group_area(shape), crate::shaping::FillRule::EvenOdd)
+    } else if let Some(a) = alpha {
+        (to_page * a, crate::shaping::FillRule::EvenOdd)
     } else {
         (to_page * shape.local_path(), rule)
     };
@@ -3227,7 +3503,9 @@ fn contour(shape: &Shape, rule: crate::shaping::FillRule, p: &ContourParams) -> 
                 s.stroke = style.stroke.clone();
             }
             match &style.fill {
-                Fill::None => {}
+                // A picture's steps are filled from white toward the
+                // last step's colour, round what shows of it (#3245).
+                Fill::None if !picture => {}
                 // A fountain stays a fountain (#1265): each stop goes
                 // toward the last step's colour at its place between the
                 // first (fill) and the last (last fill) colours.
@@ -4103,7 +4381,7 @@ pub fn symmetry_back_to_turned(
     origin: Point,
     p: Point,
 ) -> Affine {
-    let n = lines.clamp(1, 12) as usize;
+    let n = lines.clamp(1, SYMMETRY_MAX_LINES) as usize;
     let slice = std::f64::consts::PI / n as f64 * if rotate { 2.0 } else { 1.0 };
     let wedges = if rotate { n } else { 2 * n } as i64;
     let a0 = angle.to_radians();
@@ -4125,8 +4403,11 @@ pub fn symmetry_back_to_turned(
         .unwrap_or(Affine::IDENTITY)
 }
 
+/// The most mirror lines a symmetry takes (#4272).
+pub const SYMMETRY_MAX_LINES: u8 = 32;
+
 fn symmetry_mirrors(center: Point, angle: f64, lines: u8, rotate: bool) -> Vec<Affine> {
-    let n = lines.clamp(1, 12) as usize;
+    let n = lines.clamp(1, SYMMETRY_MAX_LINES) as usize;
     let mut out = Vec::with_capacity(2 * n);
     let to_center = Affine::translate(center.to_vec2());
     let from_center = Affine::translate(-center.to_vec2());
@@ -4256,10 +4537,23 @@ fn block_shadow(
     offset: Vec2,
     color: Color,
     gap: f64,
+    expand: f64,
 ) -> Vec<Shape> {
     let mut solid = crate::shaping::sweep(&front, offset, rule);
     if solid.elements().is_empty() {
         return Vec::new();
+    }
+    // Expanded: the whole block grown round, rounded at its corners.
+    if expand.is_finite() && expand > 1e-6 {
+        let grown = crate::shaping::offset_filled(
+            &solid,
+            expand.min(500.0),
+            crate::shaping::Join::Round,
+            crate::shaping::FillRule::NonZero,
+        );
+        if !grown.elements().is_empty() {
+            solid = grown;
+        }
     }
     if gap > 0.0 {
         let grown = crate::shaping::offset_filled(&front, gap, crate::shaping::Join::Round, rule);
@@ -5012,7 +5306,10 @@ mod tests {
                 blur: 2.0,
                 merge: MergeMode::Screen,
             },
-            Effect::GaussianBlur { radius: 1.0 },
+            Effect::GaussianBlur {
+                radius: 1.0,
+                pins: Vec::new(),
+            },
         ];
         let ev = evaluate(&s);
         assert!(ev.below.is_empty());
@@ -5390,6 +5687,77 @@ mod tests {
         assert!(matches!(min, Effect::OffsetPath { smooth, merge: false, .. } if smooth == 0.0));
         let baked = bake_outline_warps(&g).expect("bake");
         assert!(baked.effects.is_empty());
+        // The curves keep the merge's paint (#4349): the bottom object's
+        // fill, not the group's empty one.
+        assert!(matches!(baked.kind, ShapeKind::Path { .. }));
+        assert_eq!(baked.fill, Fill::Solid(Color::rgb8(0, 160, 0)));
+        let mut next = 100u64;
+        let curves = g
+            .converted_to_curves(&[], &mut || {
+                next += 1;
+                crate::ShapeId(next)
+            })
+            .expect("converted");
+        assert_eq!(curves.fill, Fill::Solid(Color::rgb8(0, 160, 0)));
+        assert_eq!(curves.fill_rule, baked.fill_rule);
+    }
+
+    /// Round Corners and Slice rebuild the outline live: the object keeps
+    /// its own kind, the drawn outline is rounded or cut into strips, the
+    /// effects survive a save, and Convert to Curves takes them in.
+    #[test]
+    fn round_corners_and_slice_are_live_outline_effects() {
+        let mut s = rect_shape();
+        s.effects.push(Effect::RoundCorners {
+            radius: 2.0,
+            max_angle: 180.0,
+            side: crate::outline_fx::CornerSide::Both,
+        });
+        let main = evaluate(&s).main;
+        let lost = 400.0 - main.local_path().area().abs();
+        assert!(
+            (lost - 4.0 * (4.0 - std::f64::consts::PI)).abs() < 0.05,
+            "{lost}"
+        );
+        assert!(matches!(s.kind, ShapeKind::Rect { .. }));
+        s.effects.push(Effect::Slice {
+            count: 4,
+            angle: 0.0,
+            gap: 1.0,
+            shift: 1.0,
+            alternate: true,
+            turn: 0.0,
+            seed: 0,
+            radius: 0.0,
+        });
+        let main = evaluate(&s).main;
+        let parts = main
+            .local_path()
+            .elements()
+            .iter()
+            .filter(|e| matches!(e, PathEl::MoveTo(_)))
+            .count();
+        assert_eq!(parts, 4);
+        let json = serde_json::to_string(&s.effects).expect("json");
+        assert!(
+            json.contains("\"roundcorners\"") && json.contains("\"slice\""),
+            "{json}"
+        );
+        let back: Vec<Effect> = serde_json::from_str(&json).expect("read");
+        assert_eq!(back, s.effects);
+        // Older-style minimal entries read with their defaults.
+        let min: Effect =
+            serde_json::from_str(r#"{"effect":"slice","count":3,"angle":0,"gap":0.5}"#)
+                .expect("min");
+        assert!(
+            matches!(min, Effect::Slice { shift, radius, .. } if shift == 0.0 && radius == 0.0)
+        );
+        let min: Effect =
+            serde_json::from_str(r#"{"effect":"roundcorners","radius":1}"#).expect("min");
+        assert!(matches!(min, Effect::RoundCorners { max_angle, .. } if max_angle == 180.0));
+        let baked = bake_outline_warps(&s).expect("bake");
+        assert!(baked.effects.is_empty());
+        assert!(matches!(baked.kind, ShapeKind::Path { .. }));
     }
 
     fn rect_shape() -> Shape {
@@ -5633,6 +6001,7 @@ mod tests {
             offset: Vec2::new(4.0, -4.0),
             color: Color::BLACK,
             gap: 0.0,
+            expand: 0.0,
         };
         let square = |id: u64, x: f64| {
             let mut s = Shape::new(
@@ -5699,6 +6068,41 @@ mod tests {
         assert!((cast.area().abs() - 1040.0).abs() < 1e-3, "{}", cast.area());
     }
 
+    /// #4378: Expand grows the block shadow all round, so it shows round
+    /// the object too; old files without it read as 0.
+    #[test]
+    fn block_shadow_expands_all_round() {
+        let mut s = rect_shape();
+        s.effects.push(Effect::BlockShadow {
+            offset: Vec2::new(5.0, -5.0),
+            color: Color::BLACK,
+            gap: 0.0,
+            expand: 2.0,
+        });
+        let ev = evaluate(&s);
+        assert_eq!(ev.below.len(), 1);
+        let b = ev.below[0].bounds();
+        assert!(
+            (b.x0 + 2.0).abs() < 0.05 && (b.x1 - 27.0).abs() < 0.05,
+            "{b:?}"
+        );
+        assert!(
+            (b.y0 + 7.0).abs() < 0.05 && (b.y1 - 22.0).abs() < 0.05,
+            "{b:?}"
+        );
+        // Written without it when 0, and read back as 0 when missing.
+        let plain = Effect::BlockShadow {
+            offset: Vec2::new(1.0, 1.0),
+            color: Color::BLACK,
+            gap: 0.0,
+            expand: 0.0,
+        };
+        let json = serde_json::to_string(&plain).unwrap();
+        assert!(!json.contains("expand"), "{json}");
+        let old: Effect = serde_json::from_str(&json).unwrap();
+        assert!(matches!(old, Effect::BlockShadow { expand, .. } if expand == 0.0));
+    }
+
     #[test]
     fn block_shadow_keeps_corners_sharp() {
         let mut s = rect_shape();
@@ -5706,6 +6110,7 @@ mod tests {
             offset: Vec2::new(5.0, -5.0),
             color: Color::BLACK,
             gap: 0.0,
+            expand: 0.0,
         });
         let ev = evaluate(&s);
         assert_eq!(ev.below.len(), 1);
@@ -5751,6 +6156,7 @@ mod tests {
             offset,
             color: Color::BLACK,
             gap: 0.0,
+            expand: 0.0,
         });
         let ev = evaluate(&s);
         assert_eq!(ev.below.len(), 1);
@@ -5878,6 +6284,7 @@ mod tests {
             offset: Vec2::new(1.0, 0.0),
             color: Color::BLACK,
             gap: 0.0,
+            expand: 0.0,
         }];
         let shadow = evaluate(&s).below[0].page_path();
         assert_eq!(parts(&shadow), 1);
@@ -6044,6 +6451,46 @@ mod tests {
         assert_eq!(evaluate(&first).below[0].bounds(), made.below[0].bounds());
     }
 
+    /// #4193: hundreds of objects keep their evaluations; past the limit
+    /// the one asked for longest ago goes, and one object keeps only its
+    /// latest few versions.
+    #[test]
+    fn the_evaluation_cache_holds_hundreds_and_drops_the_oldest() {
+        let ev = |s: &Shape| Evaluated {
+            below: Vec::new(),
+            main: s.clone(),
+            above: Vec::new(),
+        };
+        let mut kept = Evaluations::default();
+        let base = rect_shape();
+        let shape = |k: u64| {
+            let mut s = base.clone();
+            s.id = crate::ShapeId(base.id.0 + 10_000 + k);
+            s
+        };
+        for k in 0..400 {
+            kept.put(&shape(k), &ev(&shape(k)));
+        }
+        assert!((0..400).all(|k| kept.get(&shape(k)).is_some()));
+        // Asked for again, the first is newer than the second.
+        kept.get(&shape(0));
+        for k in 400..(EVALUATION_MEMORY as u64 + 1) {
+            kept.put(&shape(k), &ev(&shape(k)));
+        }
+        assert_eq!(kept.len, EVALUATION_MEMORY);
+        assert!(kept.get(&shape(0)).is_some());
+        assert!(kept.get(&shape(1)).is_none());
+        // Versions of one object.
+        let mut v = shape(0);
+        for x in 0..10 {
+            v.transform = Affine::translate((x as f64, 0.0));
+            kept.put(&v, &ev(&v));
+        }
+        assert_eq!(kept.by_id[&v.id].len(), VERSIONS_PER_OBJECT);
+        assert!(kept.get(&v).is_some());
+        assert_eq!(kept.len, kept.by_id.values().map(Vec::len).sum::<usize>());
+    }
+
     /// #2577: the contour of an open curve is a closed band round both
     /// sides of it, joined across its ends, not the outline of the area
     /// between the curve and the straight line from end to end.
@@ -6200,6 +6647,55 @@ mod tests {
             }
             f => panic!("{f:?}"),
         }
+    }
+
+    #[test]
+    fn a_picture_takes_its_contour_round_what_shows() {
+        // #3245: a picture of a disc on see-through pixels is contoured
+        // round the disc, not round the picture's square box.
+        let png = crate::alpha_outline::tests::png_with(100, 100, |x, y| {
+            let (dx, dy) = (x as f64 - 49.5, y as f64 - 49.5);
+            if dx * dx + dy * dy <= 30.0 * 30.0 {
+                255
+            } else {
+                0
+            }
+        });
+        let mut pic = Shape::new(
+            crate::ShapeId(5),
+            ShapeKind::Bitmap {
+                rect: Rect::new(0.0, 0.0, 100.0, 100.0),
+                width_px: 100,
+                height_px: 100,
+                png,
+                fx: None,
+            },
+        );
+        pic.effects.push(Effect::Contour {
+            steps: 1,
+            offset: 5.0,
+            outside: true,
+            to_center: false,
+            both: false,
+            fill_to: Color::rgb8(255, 0, 0),
+            outline_to: None,
+            fill_end_to: None,
+            color_blend: 0,
+            corners: Some(crate::shaping::Join::Round),
+            accel_objects: 0.0,
+            accel_colors: 0.0,
+        });
+        let ev = evaluate(&pic);
+        assert_eq!(ev.below.len(), 1);
+        let ring = ev.below[0].page_path();
+        let b = ring.bounding_box();
+        // The disc spans 20 to 80; 5 mm out it spans 15 to 85.
+        assert!((b.x0 - 15.0).abs() < 1.5 && (b.x1 - 85.0).abs() < 1.5, "{b:?}");
+        // The box's corner is left out: the ring is round.
+        assert!(!ring.contains(Point::new(4.0, 4.0)));
+        assert!(ring.contains(Point::new(50.0, 50.0)));
+        // Filled, so it shows behind the picture.
+        assert!(matches!(ev.below[0].fill, Fill::Solid(_)));
     }
 
     #[test]
@@ -6758,6 +7254,7 @@ mod tests {
             offset: Vec2::new(2.0, -2.0),
             color: Color::BLACK,
             gap: 0.0,
+            expand: 0.0,
         }
     }
 
@@ -7606,6 +8103,18 @@ mod tests {
             assert_eq!(slice(q), slice(origin), "{p:?} -> {q:?}");
             assert!(((q - c).hypot() - 15.0).abs() < 1e-9);
         }
+    }
+
+    /// A symmetry takes up to 32 mirror lines (#4272): 24 lines make 48
+    /// copies (24 mirrors and 23 turns besides the object), more than 32
+    /// stop at 32.
+    #[test]
+    fn a_symmetry_takes_up_to_thirty_two_lines() {
+        let c = Point::new(0.0, 0.0);
+        assert_eq!(symmetry_mirrors(c, 0.0, 24, false).len(), 47);
+        assert_eq!(symmetry_mirrors(c, 0.0, 32, false).len(), 63);
+        assert_eq!(symmetry_mirrors(c, 0.0, 40, false).len(), 63);
+        assert_eq!(symmetry_mirrors(c, 0.0, 24, true).len(), 23);
     }
 
     /// Two open curves with a yellow outline, the end one faded, blended
@@ -8536,5 +9045,51 @@ mod symmetry_tests {
             (c.x0 + 22.0).abs() < 0.1 && (c.x1 + 8.0).abs() < 0.1,
             "{c:?}"
         );
+    }
+
+    /// A Gaussian blur from older files (no pins) reads as before and
+    /// writes as before; pins and grain go through a file.
+    #[test]
+    fn blur_pins_and_grain_round_trip() {
+        let old: Effect = serde_json::from_str(r#"{"effect":"gaussianblur","radius":2.0}"#)
+            .expect("old blur");
+        assert_eq!(
+            old,
+            Effect::GaussianBlur {
+                radius: 2.0,
+                pins: Vec::new()
+            }
+        );
+        assert!(!serde_json::to_string(&old).expect("json").contains("pins"));
+        for e in [
+            Effect::GaussianBlur {
+                radius: 1.0,
+                pins: vec![BlurPin {
+                    at: Point::new(1.0, 2.0),
+                    radius: 3.0,
+                }],
+            },
+            Effect::Grain {
+                amount: 0.3,
+                size: 0.2,
+                mono: true,
+                seed: 4,
+            },
+        ] {
+            let json = serde_json::to_string(&e).expect("json");
+            assert_eq!(serde_json::from_str::<Effect>(&json).expect("back"), e);
+        }
+        assert_eq!(blur_reach(2.0, &[]), 2.0);
+        assert_eq!(
+            blur_reach(
+                9.0,
+                &[BlurPin {
+                    at: Point::ZERO,
+                    radius: 5.0
+                }]
+            ),
+            5.0
+        );
+        assert_eq!(pinned_blur_radius(&[], Point::ZERO), None);
     }
 }

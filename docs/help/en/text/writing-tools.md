@@ -129,6 +129,27 @@ one step to undo.
 
 ![The Change Case dialog box](../../img/text-writing-tools-change-case.png)
 
+## Sort lines {#sort-lines}
+
+[[menu.text > menu.text.sort_lines]] puts the lines of the selected texts
+(or of the text being edited) in order: [[menu.text.sort_a_z]] or
+[[menu.text.sort_z_a]], with capitals and small letters alike and the
+numbers inside a line by their value (Item 2 before Item 10), or by the
+first number in each line with [[menu.text.sort_numbers_up]] or
+[[menu.text.sort_numbers_down]] (lines without a number go after the
+others). Each line keeps its formatting, blank lines go to the end, and
+all the texts change in one step to undo. Each order is a command that
+can take a shortcut of its own.
+
+## Text height {#text-height}
+
+[[menu.text > menu.text.text_height]] sizes the selected texts by the
+height their capital letters stand (an H, which has no descender), or by
+their small letters (an x) when a text has no capitals. Type the height
+in the drawing's units and click [[dialog.ok]]: every character's point
+size changes by the same factor, so different sizes inside a text keep
+their proportions. One step to undo.
+
 ## Word count {#statistics}
 
 [[menu.text > menu.text.text_statistics]] counts the text objects, lines,

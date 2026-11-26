@@ -48,7 +48,7 @@ impl App {
                 Effect::Symmetry { rotate, .. } => Effect::Symmetry {
                     center,
                     angle: angle.rem_euclid(360.0),
-                    lines: lines.clamp(1, 12),
+                    lines: lines.clamp(1, tracedraw_core::live::SYMMETRY_MAX_LINES),
                     rotate: *rotate,
                 },
                 other => other.clone(),

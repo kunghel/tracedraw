@@ -847,6 +847,64 @@ mod tests {
         (app, id)
     }
 
+    /// A rectangle given round corners and turned into curves: every
+    /// node moves with all of them chosen, the first one too (#4160).
+    #[test]
+    fn a_rounded_rectangles_nodes_all_move_together() {
+        let mut app = App::headless();
+        let square = Rect::new(0.0, 0.0, 40.0, 20.0).to_path(0.01);
+        let (path, _) = tracedraw_core::corner_cut::cut_corners(
+            &square,
+            tracedraw_core::corner_cut::CornerCut::Fillet(5.0),
+            None,
+        );
+        let id = app
+            .new_shape(ShapeKind::Path { path, closed: true })
+            .expect("a rectangle");
+        app.select(vec![id]);
+        app.tool = crate::tools::Tool::Shape;
+        app.select_all_nodes();
+        let before = app.doc().find_shape(id).expect("curve").page_path();
+        app.nudge_nodes(Vec2::new(3.0, 0.0));
+        let after = app.doc().find_shape(id).expect("curve").page_path();
+        let b0 = before.bounding_box();
+        let b1 = after.bounding_box();
+        assert!(
+            (b1.x0 - b0.x0 - 3.0).abs() < 1e-6 && (b1.x1 - b0.x1 - 3.0).abs() < 1e-6,
+            "{b0:?} -> {b1:?}"
+        );
+        assert!((b1.width() - b0.width()).abs() < 1e-6, "{b0:?} -> {b1:?}");
+    }
+
+    /// Moving the start node of a rounded closed SVG path also moves its
+    /// incoming endpoint, which is represented by the closing segment.
+    #[test]
+    fn moving_closed_path_start_keeps_its_closing_fillet_attached() {
+        let mut app = App::headless();
+        let path = BezPath::from_svg(
+            "M0.1 6.1L0.1 43.1L21.7612 43.1L21.7612 46.1L41.7612 46.1L41.7612 43.1L74.4388 43.1L74.4388 46.1L94.4388 46.1L94.4388 43.1L116.1 43.1L116.1 6.1C116.1 4.4431 114.7569 3.1 113.1 3.1L94.4388 3.1L94.4388 0.1L74.4388 0.1L74.4388 3.1L41.7612 3.1L41.7612 0.1L21.7612 0.1L21.7612 3.1L3.1 3.1C1.4431 3.1 0.1 4.4431 0.1 6.1Z",
+        )
+        .expect("the reported SVG path");
+        let id = app
+            .new_shape(ShapeKind::Path { path, closed: true })
+            .expect("a closed path");
+        app.select(vec![id]);
+        app.tool = crate::tools::Tool::Shape;
+        app.node_selection = vec![(id, 0), (id, 1)];
+        let start = app.start_curves();
+        let before = app.doc().find_shape(id).expect("path").page_path();
+
+        app.move_start_nodes(&start, Vec2::new(2.0, 0.0), Point::new(0.1, 6.1), false);
+
+        let after = app.doc().find_shape(id).expect("path").page_path();
+        let before_nodes = nodes::nodes(&before);
+        let after_nodes = nodes::nodes(&after);
+        for index in [0, 1] {
+            assert!((after_nodes[index].pos.x - before_nodes[index].pos.x - 2.0).abs() < 1e-6);
+            assert!((after_nodes[index].pos.y - before_nodes[index].pos.y).abs() < 1e-6);
+        }
+    }
+
     #[test]
     fn ctrl_toggles_and_shift_selects_a_run() {
         let (mut app, id) = app_with_square();

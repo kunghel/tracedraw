@@ -3,6 +3,7 @@
 //! and the print options at hand beside them (see
 //! `docs/behavior/printing.md`, Print Preview).
 
+use crate::ui::btn_icons::IconUi;
 use crate::app::App;
 use crate::export::{plate_page, plates, print_sheets};
 use crate::i18n::{tr, trf};
@@ -16,6 +17,9 @@ use tracedraw_core::Document;
 /// and what was last built from them.
 pub struct PrintPreview {
     pub st: PrintState,
+    /// How far the drawing runs past its pages (#4071), worked out for
+    /// the drawing's revision it holds.
+    pub overhang: Option<(u64, f64)>,
     /// Index of the sheet shown.
     pub sheet: usize,
     /// With Print separations on, the plate of the sheet shown: 0 the
@@ -115,6 +119,7 @@ impl PrintPreview {
     pub fn new(st: PrintState) -> Self {
         PrintPreview {
             st,
+            overhang: None,
             sheet: 0,
             plate: 0,
             inks: Vec::new(),
@@ -512,6 +517,7 @@ pub fn show(app: &mut App, ui: &mut Ui) {
     let mut close = false;
     let mut print = false;
     let mut print_one = false;
+    let mut print_close = false;
     let ctx = ui.ctx().clone();
 
     egui::Panel::top("print_preview_bar")
@@ -541,11 +547,25 @@ pub fn show(app: &mut App, ui: &mut Ui) {
                 ui.allocate_ui_with_layout(row, wrapped, |ui| {
                     // Whole labels go to the next row, never half of one.
                     ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
-                    if ui.button(tr("dialog.print")).clicked() {
+                    // Print leaves the preview open, so pages can go out
+                    // one at a time; Print and Close closes it (#4072).
+                    if ui
+                        .ibutton("dialog.print")
+                        .rich_tip(tr("print.print_keep_tip"))
+                        .clicked()
+                    {
                         print = true;
                     }
                     if ui
-                        .button(tr("print.print_sheet"))
+                        .ibutton("print.print_and_close")
+                        .rich_tip(tr("print.print_and_close_tip"))
+                        .clicked()
+                    {
+                        print = true;
+                        print_close = true;
+                    }
+                    if ui
+                        .ibutton("print.print_sheet")
                         .rich_tip(tr("print.print_sheet_tip"))
                         .clicked()
                     {
@@ -640,7 +660,7 @@ pub fn show(app: &mut App, ui: &mut Ui) {
                             zoom_at(&mut pv, center, center, ZOOM_STEP);
                         }
                         if ui
-                            .button(tr("print.fit"))
+                            .ibutton("print.fit")
                             .rich_tip(tr("print.fit_tip"))
                             .clicked()
                         {
@@ -648,7 +668,7 @@ pub fn show(app: &mut App, ui: &mut Ui) {
                             pv.pan = egui::Vec2::ZERO;
                         }
                         if ui
-                            .button(tr("print.fit_width"))
+                            .ibutton("print.fit_width")
                             .rich_tip(tr("print.fit_width_tip"))
                             .clicked()
                         {
@@ -663,7 +683,7 @@ pub fn show(app: &mut App, ui: &mut Ui) {
                     ui.separator();
                     // What the view shows: the rulers, the strip of
                     // sheets and the options panel.
-                    ui.menu_button(tr("print.view"), |ui| {
+                    ui.imenu_button("print.view", |ui| {
                         ui.checkbox(&mut pv.rulers, tr("menu.view.rulers"));
                         ui.checkbox(&mut pv.strip, tr("print.show_strip"))
                             .rich_tip(tr("print.show_strip_tip"));
@@ -827,6 +847,15 @@ pub fn show(app: &mut App, ui: &mut Ui) {
                             .rich_tip(crate::ui::tips::keyed("print.skip_empty_plates"));
                     });
                 }
+                let rev = app.engine.revision();
+                let overhang = match pv.overhang {
+                    Some((r, v)) if r == rev => v,
+                    _ => {
+                        let v = crate::export::page_overhang(app.doc());
+                        pv.overhang = Some((rev, v));
+                        v
+                    }
+                };
                 let st = &mut pv.st;
                 egui::Grid::new("print_preview_marks")
                     .num_columns(2)
@@ -847,6 +876,25 @@ pub fn show(app: &mut App, ui: &mut Ui) {
                         });
                         ui.checkbox(&mut st.crop_marks, tr("dialog.crop_marks"));
                         ui.end_row();
+                        // Objects run past the pages but Bleed is off: the
+                        // print cuts them at the page edge, where the crop
+                        // marks are, so the marks seem to sit on their
+                        // edge (#4071). One click prints the bleed.
+                        if !st.bleed && overhang > 0.05 {
+                            let label = trf(
+                                "print.use_bleed",
+                                &[("n", &format!("{overhang:.1}"))],
+                            );
+                            if ui
+                                .add(crate::ui::btn_icons::Ib::with_text("print.use_bleed_title", label))
+                                .rich_tip(crate::ui::tips::pair("print.use_bleed_title", "print.use_bleed_desc"))
+                                .clicked()
+                            {
+                                st.bleed = true;
+                                st.bleed_limit = overhang;
+                            }
+                            ui.end_row();
+                        }
                         ui.checkbox(&mut st.registration_marks, tr("dialog.registration_marks"));
                         ui.checkbox(&mut st.color_bars, tr("print.color_bars"));
                         ui.end_row();
@@ -938,7 +986,7 @@ pub fn show(app: &mut App, ui: &mut Ui) {
                     if ui
                         .add_enabled(
                             st.art_stretch != (1.0, 1.0),
-                            egui::Button::new(tr("print.art_reset")).small(),
+                            crate::ui::btn_icons::Ib::new("print.art_reset").small(),
                         )
                         .clicked()
                     {
@@ -967,7 +1015,7 @@ pub fn show(app: &mut App, ui: &mut Ui) {
                     }
                     let turned = *rotation_of(st, chosen) != 0.0;
                     if ui
-                        .add_enabled(turned, egui::Button::new(tr("print.art_reset")).small())
+                        .add_enabled(turned, crate::ui::btn_icons::Ib::new("print.art_reset").small())
                         .clicked()
                     {
                         *rotation_of(st, chosen) = 0.0;
@@ -1042,7 +1090,7 @@ pub fn show(app: &mut App, ui: &mut Ui) {
                     if ui
                         .add_enabled(
                             st.art_offset != (0.0, 0.0),
-                            egui::Button::new(tr("print.art_reset")).small(),
+                            crate::ui::btn_icons::Ib::new("print.art_reset").small(),
                         )
                         .clicked()
                     {
@@ -1762,7 +1810,7 @@ pub fn show(app: &mut App, ui: &mut Ui) {
             app.settings.printing.remember(&pv.st);
             app.settings.save();
         }
-        close = true;
+        close |= print_close;
     }
     if !close {
         app.print_preview = Some(pv);
@@ -2626,12 +2674,14 @@ mod tests {
             shapes.iter().for_each(|c| walk(&c.shape, &mut out));
             out
         };
+        // A window wide enough for the whole bar, with the pictures of
+        // its buttons, on one row.
         for _ in 0..200 {
             let mut out = ctx.run_ui(
                 egui::RawInput {
                     screen_rect: Some(egui::Rect::from_min_size(
                         egui::Pos2::ZERO,
-                        egui::vec2(1400.0, 900.0),
+                        egui::vec2(1600.0, 900.0),
                     )),
                     ..Default::default()
                 },
@@ -2655,7 +2705,7 @@ mod tests {
             egui::RawInput {
                 screen_rect: Some(egui::Rect::from_min_size(
                     egui::Pos2::ZERO,
-                    egui::vec2(1400.0, 900.0),
+                    egui::vec2(1600.0, 900.0),
                 )),
                 ..Default::default()
             },
@@ -2668,6 +2718,9 @@ mod tests {
         let copies = at(&tr("print.number_of_copies")).expect("the copies");
         let all_pages = at(&tr("dialog.all_pages")).expect("the other options");
         let print = at(&tr("dialog.print")).expect("the Print button");
+        // Print keeps the preview open; Print and Close beside it (#4072).
+        let and_close = at(&tr("print.print_and_close")).expect("Print and Close");
+        assert!((and_close.y - print.y).abs() < 8.0 && and_close.x > print.x);
         // In the top bar, after Print, the left panel starting with the
         // pages to print (#953).
         assert!((printer.y - print.y).abs() < 8.0, "{printer:?} {print:?}");
@@ -3078,7 +3131,7 @@ mod tests {
         let size = crate::splash::DEFAULT_SIZE;
         for code in [
             "en", "es", "pt-BR", "fr", "de", "it", "nl", "pl", "cs", "ru", "tr", "id", "ar", "hi",
-            "bn", "ja", "zh-CN", "zh-TW", "lo", "vi",
+            "bn", "ja", "zh-CN", "zh-TW", "lo", "vi", "eo",
         ] {
             crate::i18n::with_thread_language(code, || {
                 let ctx = crate::theme::ui_context();

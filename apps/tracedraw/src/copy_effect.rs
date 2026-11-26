@@ -29,11 +29,13 @@ pub enum CopyKind {
     Lens,
     Bevel,
     BlockShadow,
+    /// Every effect of the Layer Effects list, switched on or off (#4243).
+    LayerEffects,
 }
 
 impl CopyKind {
     /// The menu's entries after Drop Shadow, Transparency and Envelope.
-    pub const LIVE: [CopyKind; 8] = [
+    pub const LIVE: [CopyKind; 9] = [
         CopyKind::Perspective,
         CopyKind::Distortion,
         CopyKind::Extrude,
@@ -42,6 +44,7 @@ impl CopyKind {
         CopyKind::Lens,
         CopyKind::Bevel,
         CopyKind::BlockShadow,
+        CopyKind::LayerEffects,
     ];
 
     pub fn key(self) -> &'static str {
@@ -56,6 +59,7 @@ impl CopyKind {
             CopyKind::Lens => "menu.object.copy_lens_from",
             CopyKind::Bevel => "menu.object.copy_bevel_from",
             CopyKind::BlockShadow => "menu.object.copy_block_shadow_from",
+            CopyKind::LayerEffects => "menu.object.copy_layer_effects_from",
         }
     }
 
@@ -71,6 +75,9 @@ impl CopyKind {
             CopyKind::Bevel => matches!(e, Effect::Bevel { .. }),
             CopyKind::BlockShadow => matches!(e, Effect::BlockShadow { .. }),
             CopyKind::Transparency => matches!(e, Effect::Transparency { .. }),
+            CopyKind::LayerEffects => crate::ui::layer_effects::Kind::ALL
+                .into_iter()
+                .any(|k| k.matches(e)),
             CopyKind::Shadow => false,
         }
     }
@@ -151,6 +158,51 @@ fn with_effect(effects: &[Effect], kind: CopyKind, e: Effect) -> Vec<Effect> {
     out
 }
 
+/// The commands giving each of `targets` the Layer Effects of `src`
+/// (#4243): the targets' own layer effects go, the source's take their
+/// place (at the first one's place in the stack, else after the others),
+/// switched on or off as on the source and carried to each target's box;
+/// the targets' other effects stay. `None` when the source has none.
+pub fn layer_effects_commands(src: &Shape, targets: &[Shape]) -> Option<Vec<Command>> {
+    let kind = CopyKind::LayerEffects;
+    let from: Vec<(Effect, bool)> = src
+        .effect_stack()
+        .into_iter()
+        .filter(|(e, _)| kind.matches(e))
+        .collect();
+    if from.is_empty() {
+        return None;
+    }
+    let mut cmds = Vec::new();
+    for t in targets.iter().filter(|t| t.id != src.id) {
+        let own = t.effect_stack();
+        let at = own.iter().position(|(e, _)| kind.matches(e));
+        let mut stack: Vec<(Effect, bool)> = own
+            .iter()
+            .filter(|(e, _)| !kind.matches(e))
+            .cloned()
+            .collect();
+        let carried_in: Vec<(Effect, bool)> = from
+            .iter()
+            .map(|(e, on)| (carried(e, src, t), *on))
+            .collect();
+        let place = at
+            .map(|i| own[..i].iter().filter(|(e, _)| !kind.matches(e)).count())
+            .unwrap_or(stack.len());
+        stack.splice(place..place, carried_in);
+        if stack == own {
+            continue;
+        }
+        let (effects, parked) = Shape::split_stack(stack);
+        cmds.push(Command::SetEffectStack {
+            shape: t.id,
+            effects,
+            parked,
+        });
+    }
+    Some(cmds)
+}
+
 impl App {
     /// Copy the effect `kind` of `source` to the other selected objects.
     pub fn copy_effect_from(&mut self, source: ShapeId, kind: CopyKind) {
@@ -222,6 +274,13 @@ impl App {
                     Some(e)
                 });
                 return;
+            }
+            CopyKind::LayerEffects => {
+                let Some(c) = layer_effects_commands(&src, &targets) else {
+                    self.status = crate::i18n::tr("status.no_effect_to_copy");
+                    return;
+                };
+                cmds = c;
             }
             _ => {
                 let Some(e) = src.effects.iter().find(|e| kind.matches(e)).cloned() else {

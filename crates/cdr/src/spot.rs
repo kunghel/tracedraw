@@ -247,6 +247,14 @@ pub fn colours_from_preview(doc: &mut Document, preview: &Preview) -> usize {
     let fill_open = doc.metadata.fill_open_curves;
     let shapes = shapes_bottom_up(doc);
     let paths: Vec<_> = shapes.iter().map(|s| s.page_path()).collect();
+    // The objects that hide what lies under them, with their extents
+    // worked out once (#4229: drawings with hundreds of objects opened
+    // slowly while every sample measured every object above it again).
+    let covers: Vec<_> = shapes
+        .iter()
+        .zip(&paths)
+        .map(|(o, op)| paints_inside(o, fill_open).then(|| op.bounding_box()))
+        .collect();
     let frame = if preview.covers_drawing {
         match paths
             .iter()
@@ -302,8 +310,8 @@ pub fn colours_from_preview(doc: &mut Document, preview: &Preview) -> usize {
                     continue;
                 }
                 // Covered by an object above it: that one shows there.
-                let covered = shapes.iter().zip(&paths).skip(i + 1).any(|(o, op)| {
-                    paints_inside(o, fill_open) && op.bounding_box().contains(p) && op.contains(p)
+                let covered = covers.iter().zip(&paths).skip(i + 1).any(|(ob, op)| {
+                    ob.is_some_and(|ob| ob.contains(p)) && op.contains(p)
                 });
                 if covered {
                     continue;

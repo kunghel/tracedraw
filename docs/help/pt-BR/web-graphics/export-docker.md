@@ -13,6 +13,12 @@ redes sociais. Abra-o em [[menu.window > menu.window.dockers]].
   página.
 - **Adicionar seleção** acrescenta os objetos selecionados como um recurso,
   recortado neles, com o nome do objeto.
+- **Adicionar fatias** acrescenta a área de cada objeto selecionado como um
+  recurso que exporta tudo o que aparece nessa área, não só o objeto,
+  recortado nela. Defina linhas e colunas ao lado do botão para cortar cada
+  área numa grade de pedaços iguais, um recurso cada, com o nome da linha e
+  da coluna. Desenhe um retângulo sem preenchimento e sem contorno sobre a
+  parte da página que quiser e acrescente-o como fatia.
 - Os recursos novos recebem o formato e a resolução definidos em **Novos
   recursos** (PNG a 150 dpi de início).
 

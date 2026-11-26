@@ -8,6 +8,7 @@
 //! buttons, and Clear Transparency. The Transparency tool's bar keeps its
 //! one-row form (`toolbar::transparency_part`).
 
+use crate::ui::btn_icons::IconUi;
 use crate::app::App;
 use crate::effects_ui::TransparencySettings;
 use crate::i18n::{tr, trf};
@@ -529,29 +530,44 @@ pub fn section(app: &mut App, ui: &mut Ui) {
     let ty = current.map(|k| TransparencyType::of(k, &set.mask));
     let mut field = None;
 
-    // Merge mode, full width at the top.
-    dim(ui, tr("transparency.merge_mode"));
+    // Merge mode, full width at the top; in the classic Properties
+    // layout on one row after its label.
+    let classic = crate::ui::dockers::classic_active(ui.ctx());
     let merge_shown = !mixed.contains(&F::Merge);
-    crate::ui::keynav::ComboBox::from_id_salt("transparency_docker_merge")
-        .selected_text(if merge_shown {
-            set.merge.name().to_string()
-        } else {
-            String::new()
-        })
-        .width(ui.available_width() - 4.0)
-        .show_ui(ui, |ui| {
-            for m in tracedraw_core::live::MergeMode::ALL {
-                if ui
-                    .selectable_label(merge_shown && set.merge == m, m.name())
-                    .clicked()
-                {
-                    set.merge = m;
-                    field = Some(F::Merge);
+    let mut merge_list = |ui: &mut Ui, field: &mut Option<F>| {
+        crate::ui::keynav::ComboBox::from_id_salt("transparency_docker_merge")
+            .selected_text(if merge_shown {
+                set.merge.name().to_string()
+            } else {
+                String::new()
+            })
+            .width(ui.available_width() - 4.0)
+            .show_ui(ui, |ui| {
+                for m in tracedraw_core::live::MergeMode::ALL {
+                    if ui
+                        .selectable_label(merge_shown && set.merge == m, m.name())
+                        .clicked()
+                    {
+                        set.merge = m;
+                        *field = Some(F::Merge);
+                    }
                 }
-            }
-        })
-        .response
-        .rich_tip(crate::ui::tips::keyed("transparency.merge_mode"));
+            })
+            .response
+            .rich_tip(crate::ui::tips::keyed("transparency.merge_mode"));
+    };
+    if classic {
+        ui.horizontal(|ui| {
+            ui.label(format!(
+                "{}:",
+                tr("transparency.merge_mode").trim_end_matches(':')
+            ));
+            merge_list(ui, &mut field);
+        });
+    } else {
+        dim(ui, tr("transparency.merge_mode"));
+        merge_list(ui, &mut field);
+    }
 
     // The type buttons.
     ui.horizontal_wrapped(|ui| {
@@ -663,7 +679,7 @@ pub fn section(app: &mut App, ui: &mut Ui) {
     if ui
         .add_enabled(
             app.can_clear_transparency(),
-            egui::Button::new(tr("toolbar.clear_transparency")),
+            crate::ui::btn_icons::Ib::new("toolbar.clear_transparency"),
         )
         .rich_tip(crate::ui::tips::keyed("toolbar.clear_transparency"))
         .clicked()
@@ -816,7 +832,7 @@ fn picker(
             save_transparency(app, &set.mask);
         }
         if ui
-            .button(tr("transparency.edit"))
+            .ibutton("transparency.edit")
             .rich_tip(crate::ui::tips::keyed("transparency.edit"))
             .clicked()
         {
@@ -874,7 +890,7 @@ fn fountain(ui: &mut Ui, set: &mut TransparencySettings, mixed: &[F], field: &mu
     let n = f.stops.len();
     let mut sel: usize = ui.data(|d| d.get_temp(stop_id())).unwrap_or(0);
     sel = sel.min(n.saturating_sub(1));
-    let width = ui.available_width().min(260.0);
+    let width = crate::ui::docker_form::fit_w(ui, 260.0);
     let (r, resp) = ui.allocate_exact_size(Vec2::new(width, 26.0), Sense::click_and_drag());
     let bar = Rect::from_min_size(r.min, Vec2::new(r.width(), 14.0));
     crate::ui::dockers::gradient_swatch(ui.painter(), bar, &f.sorted_stops());
@@ -1060,7 +1076,7 @@ fn two_greys(ui: &mut Ui, set: &mut TransparencySettings, field: &mut Option<F>)
         new.1 = transparency_gray(bg_t);
     }
     if ui
-        .button(tr("transparency.swap"))
+        .ibutton("transparency.swap")
         .rich_tip(crate::ui::tips::keyed("transparency.swap"))
         .clicked()
     {

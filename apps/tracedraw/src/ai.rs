@@ -82,7 +82,7 @@ impl Provider {
 
 /// Ready-made connections: the i18n key of the name, the kind of service
 /// and its address. The address stays editable after one is picked.
-pub const PRESETS: [(&str, Provider, &str); 8] = [
+pub const PRESETS: [(&str, Provider, &str); 9] = [
     ("aipreset.anthropic", Provider::Anthropic, ""),
     ("aipreset.openai", Provider::OpenAiCompatible, ""),
     (
@@ -114,6 +114,13 @@ pub const PRESETS: [(&str, Provider, &str); 8] = [
         "aipreset.opencode",
         Provider::OpenAiCompatible,
         "https://opencode.ai/inference/openai/v1/chat/completions",
+    ),
+    // One key for the models of many makers, through their
+    // OpenAI-compatible chat address (#4296).
+    (
+        "aipreset.openrouter",
+        Provider::OpenAiCompatible,
+        "https://openrouter.ai/api/v1/chat/completions",
     ),
 ];
 
@@ -154,13 +161,15 @@ pub fn preset_of(prefs: &AiPrefs) -> Option<usize> {
 }
 
 /// The presets that only write text (no pictures): the model servers on
-/// this computer (Ollama, LM Studio, llama.cpp and vLLM) and OpenCode.
-const CHAT_ONLY_PRESETS: [&str; 5] = [
+/// this computer (Ollama, LM Studio, llama.cpp and vLLM), OpenCode and
+/// OpenRouter, which has no picture address of the OpenAI kind (#4296).
+const CHAT_ONLY_PRESETS: [&str; 6] = [
     "aipreset.ollama",
     "aipreset.lm_studio",
     "aipreset.llama_cpp",
     "aipreset.vllm",
     "aipreset.opencode",
+    "aipreset.openrouter",
 ];
 
 /// Google's API host: chat at its OpenAI-compatible address, pictures
@@ -1347,6 +1356,24 @@ mod tests {
             &messages,
         );
         assert_eq!(header(&again, "x-opencode-session"), ids.first().cloned());
+    }
+
+    /// #4296: an OpenRouter preset, its chat address with the key as a
+    /// bearer token; it writes text only.
+    #[test]
+    fn the_openrouter_preset_talks_to_its_chat_address() {
+        let prefs = AiPrefs {
+            provider: Provider::OpenAiCompatible,
+            endpoint: "https://openrouter.ai/api/v1/chat/completions/".into(),
+            ..AiPrefs::default()
+        };
+        assert_eq!(
+            preset_of(&prefs).map(|i| PRESETS[i].0),
+            Some("aipreset.openrouter")
+        );
+        let r = build_request(&prefs, "k", &[(Role::User, "hi".to_string())]);
+        assert!(r.url.starts_with("https://openrouter.ai/api/v1/chat/completions"));
+        assert_eq!(prefs.image_support(), ImageSupport::None);
     }
 
     #[test]

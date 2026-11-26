@@ -262,16 +262,18 @@ pub fn takes_how(
         return None;
     }
     if !touching {
+        // A group lies inside when each of its shown objects does, by
+        // either marquee: the rectangle tested the group's whole box,
+        // hidden objects and all (#4136).
+        if matches!(s.kind, ShapeKind::Group { .. }) {
+            let kids = children_on_page(s);
+            return whole(
+                !kids.is_empty() && kids.iter().all(|c| takes(region, c, false, fill_counts)),
+            );
+        }
         return whole(match region {
             Region::Rect(r) => r.contains_rect(b),
             Region::Polygon(_) => {
-                if matches!(s.kind, ShapeKind::Group { .. }) {
-                    let kids = children_on_page(s);
-                    return whole(
-                        !kids.is_empty()
-                            && kids.iter().all(|c| takes(region, c, false, fill_counts)),
-                    );
-                }
                 let outline = if boxed(s) {
                     rect_path(b, 0.0)
                 } else {
@@ -490,6 +492,43 @@ mod tests {
         let over_b = Region::Rect(Rect::new(35.0, -5.0, 50.0, 5.0));
         assert!(takes(over_b, &g, true, &filled));
         assert!(!takes(over_b, &g, false, &filled));
+    }
+
+    /// A group of open lines is wholly inside a rectangle marquee when
+    /// each of its shown lines is, as with the lasso; a hidden member
+    /// far away no longer keeps it out (#4136).
+    #[test]
+    fn a_marquee_takes_a_group_of_lines_by_its_shown_lines() {
+        let line = |id: u64, a: (f64, f64), b: (f64, f64)| {
+            let mut path = tracedraw_core::geometry::BezPath::new();
+            path.move_to(a);
+            path.line_to(b);
+            Shape::new(ShapeId(id), ShapeKind::Path { path, closed: false })
+        };
+        let mut hidden = line(3, (200.0, 200.0), (250.0, 260.0));
+        hidden.visible = false;
+        let g = Shape::new(
+            ShapeId(4),
+            ShapeKind::Group {
+                children: vec![
+                    line(1, (0.0, 0.0), (10.0, 20.0)),
+                    line(2, (90.0, 80.0), (100.0, 100.0)),
+                    hidden,
+                ],
+            },
+        );
+        let around = Rect::new(-5.0, -5.0, 105.0, 105.0);
+        assert!(takes(Region::Rect(around), &g, false, &filled));
+        let poly = [
+            Point::new(around.x0, around.y0),
+            Point::new(around.x1, around.y0),
+            Point::new(around.x1, around.y1),
+            Point::new(around.x0, around.y1),
+        ];
+        assert!(takes(Region::Polygon(&poly), &g, false, &filled));
+        // Round one line only: the group is not wholly inside.
+        let one = Region::Rect(Rect::new(-5.0, -5.0, 20.0, 25.0));
+        assert!(!takes(one, &g, false, &filled));
     }
 
     #[test]

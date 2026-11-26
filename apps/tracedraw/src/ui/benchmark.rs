@@ -641,7 +641,7 @@ fn card(app: &mut App, ui: &mut Ui, close: &mut bool) {
         };
         let running = app.benchmark.running();
         if ui
-            .add_enabled(!running, egui::Button::new(trf(key, &[("name", name)])))
+            .add_enabled(!running, crate::ui::btn_icons::Ib::with_text(key, trf(key, &[("name", name)])))
             .rich_tip_always(crate::ui::tips::pair(key, "benchmark.restart_tip"))
             .clicked()
         {
@@ -675,7 +675,7 @@ pub fn dialog(app: &mut App, ctx: &Context, close: &mut bool) {
         let running = app.benchmark.running();
         ui.horizontal(|ui| {
             if ui
-                .add_enabled(!running, egui::Button::new(tr("benchmark.quick")))
+                .add_enabled(!running, crate::ui::btn_icons::Ib::new("benchmark.quick"))
                 .rich_tip_always(crate::ui::tips::pair(
                     "benchmark.quick",
                     "benchmark.quick_tip",
@@ -688,7 +688,7 @@ pub fn dialog(app: &mut App, ctx: &Context, close: &mut bool) {
             // would hold the page for a minute.
             if cfg!(not(target_arch = "wasm32"))
                 && ui
-                    .add_enabled(!running, egui::Button::new(tr("benchmark.advanced")))
+                    .add_enabled(!running, crate::ui::btn_icons::Ib::new("benchmark.advanced"))
                     .rich_tip_always(crate::ui::tips::pair(
                         "benchmark.advanced",
                         "benchmark.advanced_tip",
@@ -727,7 +727,7 @@ pub fn dialog(app: &mut App, ctx: &Context, close: &mut bool) {
                 .as_ref()
                 .map(|m| bench::report(m, env!("CARGO_PKG_VERSION")));
             if ui
-                .add_enabled(report.is_some(), egui::Button::new(tr("benchmark.copy")))
+                .add_enabled(report.is_some(), crate::ui::btn_icons::Ib::new("benchmark.copy"))
                 .rich_tip_always(crate::ui::tips::pair(
                     "benchmark.copy",
                     "benchmark.copy_tip",
@@ -743,7 +743,7 @@ pub fn dialog(app: &mut App, ctx: &Context, close: &mut bool) {
             // one at a time, and a window left open would put itself back
             // over the one it opened (#3351).
             if ui
-                .add_enabled(!running, egui::Button::new(tr("menu.tools.options")))
+                .add_enabled(!running, crate::ui::btn_icons::Ib::new("menu.tools.options"))
                 .rich_tip(crate::ui::tips::pair(
                     "menu.tools.options",
                     "benchmark.options_tip",

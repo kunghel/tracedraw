@@ -236,7 +236,7 @@ pub fn painterly_bar(app: &mut App, ui: &mut egui::Ui) {
     crate::ui::propbar::sep(ui);
     let has = app.selection_has_brushstroke();
     if ui
-        .add_enabled(has, egui::Button::new(tr("painterly.clear")))
+        .add_enabled(has, crate::ui::btn_icons::Ib::new("painterly.clear"))
         .clicked()
     {
         app.clear_brushstroke();

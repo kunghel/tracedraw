@@ -29,7 +29,7 @@ These are parser fixtures, not files saved or validated by another editor.
 | `short-flags.cdr` | Truncated flags ignored safely |
 | `wrong-record-type.cdr` | Non-layer record type ignored |
 | `unrelated-bit.cdr` | Byte-1 bit 1 does not hide a layer |
-| `guides.cdr` | Guide layer remains hidden and unprintable |
+| `guides.cdr` | Guide layer holding a rectangle shows it (#4331) and stays unprintable |
 | `locked.cdr` | Layer locked, visible and printable; child remains independently unlocked |
 | `excluded.cdr` | Layer visible, unlocked and excluded from output |
 | `locked-excluded-hidden.cdr` | Independent state bits combine |

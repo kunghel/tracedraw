@@ -31,6 +31,10 @@ página como um caderno pautado, para alinhar texto; a **grade de pixels**
 ([[menu.view.pixel_grid]]) mostra os pixels do desenho na vista
 [[menu.view.pixels]] a partir de 800% de zoom.
 
+## O painel Grade {#grid-panel}
+
+Janela > Painéis > [[docker.grid]] (ou o botão nas Opções do documento) ajusta a grade num só lugar. [[grid.mode_automatic]] adapta o espaçamento ao zoom em unidades redondas; [[grid.mode_basic]] mantém o espaçamento digitado, com subdivisões em cada célula; [[grid.mode_advanced]] dá a cada eixo seu espaçamento, subdivisões, medianiz e ângulo, para grades isométricas, dimétricas, trimétricas, oblíquas ou personalizadas, com linhas do terceiro eixo opcionais. Uma [[grid.preset]] aplica uma grade pronta, e a grade atual pode ser salva com um nome para qualquer documento. A origem da grade e a cor e opacidade das linhas e das subdivisões também ficam ali. Com [[grid.axis_controls]] ligado, a ferramenta Seleção arrasta a origem e as pontas dos dois eixos no canvas; Shift mantém a direção do eixo. O encaixe segue as subdivisões, medianizes e, numa grade inclinada, os cruzamentos.
+
 ## Linhas-guia {#guidelines}
 
 As linhas-guia são linhas que atravessam a janela de desenho e às quais os

@@ -39,6 +39,54 @@ pub fn spiral_path(rect: Rect, revolutions: u32, logarithmic: bool, expansion: u
     tracedraw_core::geometry::smooth_path(&pts, false)
 }
 
+/// The drawn points of a stroke evened out (#4068): each moved to the
+/// Gaussian-weighted mean of its neighbours along the stroke, `sigma` the
+/// spread in the stroke's length units; the first and last points stay
+/// where they were drawn. The hand's tremor goes, the shape stays.
+pub fn smooth_stroke(points: &[Point], sigma: f64) -> Vec<Point> {
+    let n = points.len();
+    if n < 3 || !(sigma.is_finite() && sigma > 1e-9) {
+        return points.to_vec();
+    }
+    let mut at = Vec::with_capacity(n);
+    let mut s = 0.0;
+    for (i, p) in points.iter().enumerate() {
+        if i > 0 {
+            s += (*p - points[i - 1]).hypot();
+        }
+        at.push(s);
+    }
+    let reach = 3.0 * sigma;
+    let mut out = Vec::with_capacity(n);
+    out.push(points[0]);
+    let mut lo = 0;
+    for i in 1..n - 1 {
+        while at[i] - at[lo] > reach {
+            lo += 1;
+        }
+        // The window narrows near the ends, so they are not pulled in.
+        let room = (at[i] - at[0]).min(at[n - 1] - at[i]);
+        let sig = sigma.min(room / 3.0).max(1e-9);
+        let (mut wx, mut wy, mut wsum) = (0.0, 0.0, 0.0);
+        let mut j = lo;
+        while j < n && at[j] - at[i] <= reach {
+            let d = (at[j] - at[i]) / sig;
+            let w = (-0.5 * d * d).exp();
+            wx += w * points[j].x;
+            wy += w * points[j].y;
+            wsum += w;
+            j += 1;
+        }
+        out.push(if wsum > 0.0 {
+            Point::new(wx / wsum, wy / wsum)
+        } else {
+            points[i]
+        });
+    }
+    out.push(points[n - 1]);
+    out
+}
+
 /// A freehand stroke drawn through `raw` as few nodes as stay within
 /// `tol` (mm, from the Smoothing setting): the points are thinned to
 /// within `tol`, drawn as a curve through them by [`fit_freehand`] (with
@@ -2083,6 +2131,59 @@ mod tests {
         let g = grid_path(r, 4, 3);
         // Frame (5 elements) plus 2 vertical and 3 horizontal lines.
         assert_eq!(g.elements().len(), 5 + 2 * 2 + 3 * 2);
+    }
+
+    /// #4068: at the top of the smoothing scale a shaky stroke (two
+    /// pixels of tremor) comes out as a few long smooth curves close to
+    /// the line the hand meant, with fewer nodes than at the default 50,
+    /// its ends where it was drawn; up to 50 nothing changes.
+    #[test]
+    fn full_smoothing_evens_out_a_shaky_stroke() {
+        use tracedraw_core::geometry::{ParamCurve, ParamCurveNearest};
+        let zoom = 4.0;
+        let meant = |x: f64| 15.0 * (x / 120.0 * std::f64::consts::TAU).sin();
+        let mut raw = Vec::new();
+        let mut seed = 11u32;
+        for i in 0..=320 {
+            seed = seed.wrapping_mul(1_103_515_245).wrapping_add(12_345);
+            let j = (f64::from(seed >> 16 & 0xff) / 255.0 - 0.5) * 4.0 / zoom;
+            let x = f64::from(i) * 0.375;
+            raw.push(Point::new(x, meant(x) + j));
+        }
+        let prefs = |s: u32| crate::prefs::CurvePrefs {
+            smoothing: s,
+            ..Default::default()
+        };
+        assert!(prefs(50).freehand_presmooth_px().is_none());
+        assert!((prefs(50).freehand_tolerance_px() - 1.3).abs() < 1e-9);
+        assert!((prefs(20).freehand_tolerance_px() - (0.2 + 0.2 * 2.2)).abs() < 1e-9);
+        let draw = |s: u32| {
+            let c = prefs(s);
+            let pts = c
+                .freehand_presmooth_px()
+                .map_or(raw.clone(), |sig| smooth_stroke(&raw, sig / zoom));
+            freehand_path(&pts, c.freehand_tolerance_px() / zoom, None, None).unwrap()
+        };
+        let (mid, top) = (draw(50), draw(100));
+        assert!(
+            top.elements().len() < mid.elements().len(),
+            "{} vs {}",
+            top.elements().len(),
+            mid.elements().len()
+        );
+        // Close to the line meant: within the fit tolerance (1 mm at
+        // this zoom), most of it much closer.
+        let segs: Vec<_> = top.segments().collect();
+        for k in 1..60 {
+            let x = f64::from(k) * 2.0;
+            let d = segs
+                .iter()
+                .map(|s| s.nearest(Point::new(x, meant(x)), 1e-6).distance_sq.sqrt())
+                .fold(f64::MAX, f64::min);
+            assert!(d < 1.0, "{x}: {d} mm off");
+        }
+        assert_eq!(top.elements()[0], tracedraw_core::geometry::PathEl::MoveTo(raw[0]));
+        assert!((segs.last().unwrap().end() - raw[raw.len() - 1]).hypot() < 1e-9);
     }
 
     /// A wavy stroke drawn by hand (jittered mouse points every few

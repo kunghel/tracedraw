@@ -101,7 +101,12 @@ impl ttf_parser::OutlineBuilder for Pen {
         );
     }
     fn close(&mut self) {
-        self.0.close_path();
+        // Only an outline begun is closed: a font that closes a contour it
+        // never began (or closes one twice) left a path starting with a
+        // close, and measuring it stopped TraceDraw while tracing (#4119).
+        if self.0.elements().last().is_some_and(|e| !matches!(e, PathEl::ClosePath)) {
+            self.0.close_path();
+        }
     }
 }
 
@@ -1260,6 +1265,24 @@ pub(crate) fn redraw_text(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A font that closes a contour it never began draws no close at the
+    /// start of the letter's path, which could not be measured (#4119).
+    #[test]
+    fn a_close_without_a_contour_is_left_out() {
+        use ttf_parser::OutlineBuilder;
+        let mut pen = Pen(BezPath::new());
+        pen.close();
+        pen.move_to(0.0, 0.0);
+        pen.line_to(2.0, 0.0);
+        pen.line_to(2.0, 2.0);
+        pen.close();
+        pen.close();
+        assert_eq!(pen.0.elements().len(), 4);
+        assert!(matches!(pen.0.elements()[0], PathEl::MoveTo(_)));
+        let b = pen.0.bounding_box();
+        assert!((b.width() - 2.0).abs() < 1e-9);
+    }
 
     /// `text` in the bundled face `face`, capitals `cap` pixels tall, in
     /// `color` on white, blurred as a small picture saved from a larger

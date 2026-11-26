@@ -3786,6 +3786,7 @@ pub fn page_to_wmf_with(
     };
     let (w, h) = (page.size.width.max(0.01), page.size.height.max(0.01));
     let mut wr = WmfWriter {
+        upi: wmf_units_per_inch(w, h),
         recs: Vec::new(),
         slots: Vec::new(),
         objects: 0,
@@ -3818,7 +3819,7 @@ pub fn page_to_wmf_with(
     for v in [0, 0, wr.tw(w), wr.tw(h)] {
         out.extend_from_slice(&v.to_le_bytes());
     }
-    out.extend_from_slice(&1440u16.to_le_bytes());
+    out.extend_from_slice(&wr.upi.to_le_bytes());
     out.extend_from_slice(&0u32.to_le_bytes());
     let mut checksum: u16 = 0;
     for i in (0..20).step_by(2) {
@@ -3875,7 +3876,19 @@ fn wmf_dashes(path: &BezPath, s: &Stroke, scale: f64) -> Option<BezPath> {
     Some(kurbo::dash(path.iter(), 0.0, &dashes).collect())
 }
 
+/// The units a WMF of a `w` by `h` mm page counts per inch: twips (1440)
+/// while the page fits in the format's 16-bit numbers, fewer for a larger
+/// page, whose right or top part was cut at 32767 twips (577 mm, #4410).
+/// Room is left for objects reaching a little past the page.
+fn wmf_units_per_inch(w: f64, h: f64) -> u16 {
+    const ROOM: f64 = 26000.0;
+    let long = w.max(h).max(0.01) / 25.4;
+    (ROOM / long).floor().clamp(1.0, 1440.0) as u16
+}
+
 struct WmfWriter<'a> {
+    /// The units per inch of the file (see [`wmf_units_per_inch`]).
+    upi: u16,
     recs: Vec<Vec<u8>>,
     /// Object slots in use; GDI gives a new object the lowest free slot.
     slots: Vec<bool>,
@@ -3897,7 +3910,9 @@ pub struct WmfOptions {
 impl WmfWriter<'_> {
     /// Millimetres to twips, clamped to the 16-bit range.
     fn tw(&self, mm: f64) -> i16 {
-        (mm / 25.4 * 1440.0).round().clamp(-32768.0, 32767.0) as i16
+        (mm / 25.4 * f64::from(self.upi))
+            .round()
+            .clamp(-32768.0, 32767.0) as i16
     }
 
     fn pt(&self, p: Point) -> (i16, i16) {
@@ -4684,6 +4699,41 @@ mod wmf_export_tests {
             }
             k => panic!("{k:?}"),
         }
+    }
+
+    #[test]
+    fn a_wide_page_keeps_its_right_side_in_wmf() {
+        // A 610 mm banner used to be cut at 32767 twips (578 mm).
+        let mut doc = Document::new("t", Size::new(610.0, 142.0));
+        let mut ids = doc.ids().clone();
+        let mut r = Shape::new(
+            ids.shape(),
+            ShapeKind::Rect {
+                rect: Rect::new(580.0, 100.0, 600.0, 130.0),
+                radius: 0.0,
+                corners: None,
+            },
+        );
+        r.fill = Fill::Solid(Color::rgb8(0, 0, 255));
+        r.stroke = None;
+        doc.pages[0].layers[0].shapes.push(r);
+        doc.set_ids(ids);
+        let bytes = page_to_wmf(&doc, 0);
+        let mut ids2 = IdSource::default();
+        let imp = parse(&bytes, &mut ids2).expect("re-read");
+        assert!(
+            (imp.size.width - 610.0).abs() < 0.5 && (imp.size.height - 142.0).abs() < 0.5,
+            "{:?}",
+            imp.size
+        );
+        assert_eq!(imp.shapes.len(), 1);
+        let b = imp.shapes[0].bounds();
+        assert!(
+            (b.x0 - 580.0).abs() < 0.5 && (b.x1 - 600.0).abs() < 0.5 && (b.y1 - 130.0).abs() < 0.5,
+            "{b:?}"
+        );
+        // A small page keeps the usual 1440 units per inch.
+        assert_eq!(wmf_units_per_inch(100.0, 50.0), 1440);
     }
 
     #[test]

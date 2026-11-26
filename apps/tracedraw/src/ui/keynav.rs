@@ -50,6 +50,10 @@ fn combos_id() -> Id {
     Id::new("keynav_combos")
 }
 
+fn illustrated_rows_id() -> Id {
+    Id::new("keynav_illustrated_rows")
+}
+
 /// What the navigation keeps between frames.
 #[derive(Clone, Default, Debug)]
 struct State {
@@ -157,6 +161,23 @@ pub fn note_menu_row(ctx: &Context, id: Id, submenu: bool) {
     ctx.data_mut(|d| {
         d.get_temp_mut_or_default::<Noted<(Id, bool)>>(rows_id())
             .add(pass, (id, submenu))
+    });
+}
+
+/// Name an illustrated list row for both accessibility and typing ahead.
+pub fn name_illustrated_row(response: &egui::Response, label: String, selected: bool) {
+    response.widget_info(|| {
+        egui::WidgetInfo::selected(
+            egui::WidgetType::SelectableLabel,
+            response.enabled(),
+            selected,
+            &label,
+        )
+    });
+    let pass = response.ctx.cumulative_pass_nr();
+    response.ctx.data_mut(|d| {
+        d.get_temp_mut_or_default::<Noted<(Id, String)>>(illustrated_rows_id())
+            .add(pass, (response.id, label))
     });
 }
 
@@ -1008,7 +1029,7 @@ pub fn highlighted(ctx: &Context) -> Option<String> {
         .map(|(_, name, _)| name)
 }
 
-/// The text drawn in each row of the pop-up `popup` this frame, and
+/// The name of each row of the pop-up `popup` this frame, and
 /// which row shows as chosen: the one named like the combo box's
 /// `shown` value, else the one filled with the selection colour.
 fn row_labels(
@@ -1047,9 +1068,19 @@ fn row_labels(
             }
         }
     });
+    let pass = ctx.cumulative_pass_nr();
+    let illustrated = ctx.data_mut(|d| {
+        d.get_temp_mut_or_default::<Noted<(Id, String)>>(illustrated_rows_id())
+            .seen(pass)
+            .cloned()
+            .collect::<Vec<_>>()
+    });
     let mut out: Vec<(Id, String, bool)> = rows
         .iter()
         .map(|(id, r)| {
+            if let Some((_, label)) = illustrated.iter().rfind(|(row, _)| row == id) {
+                return (*id, label.clone(), false);
+            }
             let mut parts: Vec<&(egui::Pos2, String)> =
                 texts.iter().filter(|(p, _)| r.contains(*p)).collect();
             parts.sort_by(|a, b| a.0.x.total_cmp(&b.0.x));
@@ -1129,6 +1160,97 @@ impl ComboBox {
         self.shown = text.text().to_string();
         self.inner = self.inner.selected_text(text);
         self
+    }
+
+    /// Display a drawing in place of the selected text, while keeping the
+    /// selected name for accessibility and the list's keyboard highlight.
+    pub fn show_preview<R>(
+        mut self,
+        ui: &mut egui::Ui,
+        label: &str,
+        paint: impl FnOnce(&egui::Painter, egui::Rect, egui::Color32),
+        add: impl FnOnce(&mut egui::Ui) -> R,
+    ) -> egui::InnerResponse<Option<R>> {
+        // Reserve the height of an illustrated toolbar control. The arrow
+        // and the sample share the combo box's single click and focus target.
+        self.inner = self
+            .inner
+            .selected_text(egui::RichText::new(" ").size(17.0))
+            .icon(|_, _, _, _| {});
+        let shown = self.shown.clone();
+        let ir = self.show_ui(ui, add);
+        let response = &ir.response;
+        response.widget_info(|| {
+            let mut info =
+                egui::WidgetInfo::labeled(egui::WidgetType::ComboBox, response.enabled(), label);
+            info.current_text_value = Some(shown.clone());
+            info
+        });
+        if ui.is_rect_visible(response.rect) {
+            use crate::theme::{theme, Theme, Tokens};
+
+            let group = &ui.visuals().widgets;
+            let open = egui::Popup::is_id_open(ui.ctx(), response.id.with("popup"));
+            let state = if open {
+                &group.open
+            } else {
+                ui.style().interact(response)
+            };
+            // Cover the standard combo frame, including its hover expansion.
+            let frame = response.rect.expand(state.expansion);
+            let sample = egui::Rect::from_min_max(
+                frame.min + egui::vec2(2.0, 2.0),
+                frame.max - egui::vec2(20.0, 2.0),
+            );
+            let arrow =
+                egui::Rect::from_min_max(egui::pos2(sample.right(), frame.top()), frame.max);
+            let ink = Tokens::icon();
+            let high_contrast = theme() == Theme::HighContrast;
+            let active = open || response.is_pointer_button_down_on();
+            let outer_fill = if high_contrast {
+                state.weak_bg_fill
+            } else if active {
+                Tokens::button().lerp_to_gamma(ink, 0.18)
+            } else if response.hovered() {
+                Tokens::button().lerp_to_gamma(ink, 0.10)
+            } else {
+                Tokens::button()
+            };
+            let preview_fill = if high_contrast {
+                outer_fill
+            } else {
+                Tokens::control_fill()
+            };
+            let ink = if high_contrast {
+                state.text_color()
+            } else {
+                ink
+            };
+            let painter = ui.painter();
+            painter.rect_filled(frame, state.corner_radius, outer_fill);
+            painter.rect_filled(sample, 2, preview_fill);
+            if high_contrast || response.has_focus() && !response.hovered() && !open {
+                let stroke = if high_contrast {
+                    state.bg_stroke
+                } else {
+                    egui::Stroke::new(1.0, Tokens::text_dim())
+                };
+                painter.rect_stroke(frame, state.corner_radius, stroke, egui::StrokeKind::Inside);
+            }
+
+            let center = arrow.center();
+            let chevron = [
+                egui::vec2(-2.75, -1.25),
+                egui::vec2(0.0, 1.25),
+                egui::vec2(2.75, -1.25),
+            ];
+            painter.add(egui::Shape::line(
+                chevron.into_iter().map(|p| center + p).collect(),
+                egui::Stroke::new(1.0, ink),
+            ));
+            paint(painter, sample.shrink2(egui::vec2(2.0, 0.0)), ink);
+        }
+        ir
     }
 
     pub fn show_ui<R>(

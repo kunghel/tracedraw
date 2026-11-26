@@ -140,12 +140,60 @@ impl ParagraphFormat {
             bullets,
             bullet_char,
             bullet_indent,
-            bullet,
             drop_cap_lines,
             tabs,
             hyphenate,
             direction,
             kashida
+        );
+        // The bullet's settings one by one: ticking Restart on one
+        // paragraph of a list gave every paragraph edited that
+        // paragraph's whole bullet, its list level and numbering too, so
+        // the sub-levels became the main level and all restarted together
+        // (#4179).
+        // Every field is named here, so one added later is taken too.
+        let crate::document::BulletStyle {
+            numbering: _,
+            prefix: _,
+            suffix: _,
+            start: _,
+            font: _,
+            size_pct: _,
+            baseline_shift: _,
+            offset: _,
+            no_hanging: _,
+            color: _,
+            bold: _,
+            italic: _,
+            level: _,
+            level_indent: _,
+            restart: _,
+            continue_list: _,
+        } = &new.bullet;
+        macro_rules! take_bullet {
+            ($($f:ident),*) => {
+                $(if old.bullet.$f != new.bullet.$f {
+                    self.bullet.$f = new.bullet.$f.clone();
+                })*
+            };
+        }
+        take_bullet!(
+            numbering,
+            prefix,
+            suffix,
+            start,
+            font,
+            size_pct,
+            baseline_shift,
+            offset,
+            no_hanging,
+            color,
+            bold,
+            italic,
+            level,
+            level_indent,
+            restart,
+            continue_list
         );
     }
 }
@@ -537,5 +585,31 @@ mod tests {
         assert_eq!(default_tab_step(), 100.0);
         set_default_tab_step(f64::NAN);
         assert_eq!(default_tab_step(), DEFAULT_TAB_STEP);
+    }
+
+    /// Restart ticked on one paragraph of a two-level list reaches the
+    /// other paragraphs edited without their own list level and
+    /// numbering (#4179).
+    #[test]
+    fn a_bullet_change_takes_only_the_changed_setting() {
+        use crate::document::{BulletStyle, Numbering};
+        let top = ParagraphFormat {
+            bullets: true,
+            bullet: BulletStyle {
+                numbering: Numbering::Arabic,
+                ..BulletStyle::default()
+            },
+            ..ParagraphFormat::default()
+        };
+        let mut sub = top.clone();
+        sub.bullet.level = 1;
+        sub.bullet.numbering = Numbering::LowerAlpha;
+        let mut restarted = top.clone();
+        restarted.bullet.restart = true;
+        let mut other = sub.clone();
+        other.take_changes(&top, &restarted);
+        assert!(other.bullet.restart);
+        assert_eq!(other.bullet.level, 1);
+        assert_eq!(other.bullet.numbering, Numbering::LowerAlpha);
     }
 }

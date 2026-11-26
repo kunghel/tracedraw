@@ -3,6 +3,7 @@
 //! spin arrows, icon buttons that stay pressed, the object origin selector,
 //! and the page, object, outline and zoom bars built from them.
 
+use crate::ui::btn_icons::IconUi;
 use crate::app::{App, Units};
 use crate::i18n::tr;
 use crate::theme::Tokens;
@@ -1593,7 +1594,7 @@ fn page_size_list(app: &mut App, ui: &mut Ui, current: &str, size: Size) {
     ui.separator();
     let custom = crate::ui::dialogs::paper_name(size, &saved).is_none();
     if ui
-        .selectable_label(custom, tr("toolbar.custom_page"))
+        .iselectable(custom, "toolbar.custom_page")
         .clicked()
     {
         app.dialog = crate::ui::dialogs::Dialog::PageSize {
@@ -1602,7 +1603,7 @@ fn page_size_list(app: &mut App, ui: &mut Ui, current: &str, size: Size) {
             all_pages: app.settings.page_size_all,
         };
     }
-    if ui.button(tr("toolbar.edit_page_sizes")).clicked() {
+    if ui.ibutton("toolbar.edit_page_sizes").clicked() {
         app.dialog = crate::ui::dialogs::Dialog::Options;
         app.options_page = crate::ui::dialogs::OptionsPage::PageSize;
         ui.close();
@@ -1667,8 +1668,12 @@ pub fn page_bar(app: &mut App, ui: &mut Ui) {
         false,
     );
     let popup_id = autofit_popup_id();
+    // Just opened: the margin field takes the keys, its value selected,
+    // so a number typed replaces it and Enter fits the page (#4407).
+    let mut focus_margin = false;
     if fit.clicked() {
         egui::Popup::toggle_id(ui.ctx(), popup_id);
+        focus_margin = egui::Popup::is_id_open(ui.ctx(), popup_id);
     }
     let ctx = ui.ctx().clone();
     let mut fitted = false;
@@ -1683,9 +1688,23 @@ pub fn page_bar(app: &mut App, ui: &mut Ui) {
             ui.horizontal(|ui| {
                 ui.label(tr("toolbar.fit_margin"));
                 ui.add_space(8.0);
-                let margin = app.settings.fit_page_margin.max(0.0);
-                if let Some(m) = paper_distance(ui, app, margin, 88.0, Some(1.0)) {
-                    app.settings.fit_page_margin = m.max(0.0);
+                let unit = app.units.mm();
+                let mut v = app.settings.fit_page_margin.max(0.0) / unit;
+                let r = ui.add_sized(
+                    [88.0, ROW],
+                    crate::ui::field::NumField::new(&mut v)
+                        .length_decimals(app.settings.precision.min(6) as usize)
+                        .suffix(format!(" {}", app.units.short()))
+                        .unit_mm(unit)
+                        .step(1.0)
+                        .focus(focus_margin),
+                );
+                if r.changed() {
+                    app.settings.fit_page_margin = (v * unit).max(0.0);
+                }
+                // Enter in the field applies the margin and fits the page.
+                if r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                    fitted = true;
                 }
                 ui.add_space(6.0);
                 ui.checkbox(
@@ -1693,11 +1712,17 @@ pub fn page_bar(app: &mut App, ui: &mut Ui) {
                     tr("toolbar.autofit_live_preview"),
                 );
             });
+            // Enter with nothing in the popup holding the keys fits too.
+            if ui.memory(|m| m.focused().is_none())
+                && ui.input(|i| i.key_pressed(egui::Key::Enter))
+            {
+                fitted = true;
+            }
             ui.add_space(4.0);
             if ui
                 .add_sized(
                     Vec2::new(ui.available_width(), 24.0),
-                    egui::Button::new(tr("toolbar.autofit_page")),
+                    crate::ui::btn_icons::Ib::new("toolbar.autofit_page"),
                 )
                 .clicked()
             {
@@ -2327,12 +2352,12 @@ fn outline_width_rows(
     ui.style_mut().wrap_mode = Some(egui::TextWrapMode::Extend);
     let mut picked = None;
     if ui
-        .selectable_label(!mixed && width.is_none(), tr("toolbar.none"))
+        .iselectable(!mixed && width.is_none(), "toolbar.none")
         .clicked()
     {
         picked = Some(None);
     }
-    if ui.selectable_label(false, tr("toolbar.hairline")).clicked() {
+    if ui.iselectable(false, "toolbar.hairline").clicked() {
         picked = Some(Some(tracedraw_core::Stroke::HAIRLINE));
     }
     for w in outline_width_presets(app.outline_units()) {
@@ -2588,7 +2613,7 @@ pub fn outline_part(app: &mut App, ui: &mut Ui) {
                 }
             }
             ui.separator();
-            if ui.button(tr("docker.edit_line_style")).clicked() {
+            if ui.ibutton("docker.edit_line_style").clicked() {
                 crate::ui::line_style::request(ui);
             }
         })
@@ -2832,6 +2857,36 @@ pub fn ellipse_part(app: &mut App, ui: &mut Ui) {
         arc.inner = (inner / 100.0).clamp(0.0, 0.99);
         new = Some(arc);
     }
+    // Divide into Slices (#4209): the selected ellipses or pies into
+    // that many equal wedges.
+    if !selected.is_empty() {
+        let id = egui::Id::new("divide_slices_count");
+        let mut n: u32 = ui.data_mut(|d| d.get_temp(id)).unwrap_or(4);
+        let r = ui
+            .add(
+                crate::ui::field::NumField::new(&mut n)
+                    .range(2..=crate::slices::MAX_PARTS)
+                    .width(44.0),
+            )
+            .rich_tip(crate::ui::tips::pair(
+                "toolbar.slices",
+                "toolbar.slices_desc",
+            ));
+        if r.changed() {
+            ui.data_mut(|d| d.insert_temp(id, n));
+        }
+        if ui
+            .add_enabled(app.can_divide_slices(), crate::ui::btn_icons::Ib::new("toolbar.slices"))
+            .rich_tip(crate::ui::tips::pair(
+                "toolbar.slices",
+                "toolbar.slices_desc",
+            ))
+            .clicked()
+        {
+            app.divide_into_slices(n.clamp(2, crate::slices::MAX_PARTS));
+            return;
+        }
+    }
     if new != current {
         app.ellipse_arc = new;
         let cmds: Vec<Command> = selected
@@ -3029,6 +3084,22 @@ pub fn polygon_part(app: &mut App, ui: &mut Ui, star: bool) {
                 app.status = e.to_string();
             }
         }
+    }
+    // Divide into Triangles (#4210): the selected polygons or stars into
+    // one triangle per side, to the centre.
+    if !selected.is_empty()
+        && ui
+            .add_enabled(
+                app.can_divide_triangles(),
+                crate::ui::btn_icons::Ib::new("toolbar.triangles"),
+            )
+            .rich_tip(crate::ui::tips::pair(
+                "toolbar.triangles",
+                "toolbar.triangles_desc",
+            ))
+            .clicked()
+    {
+        app.divide_into_triangles();
     }
 }
 
@@ -3649,7 +3720,7 @@ fn wrap_style_list(app: &mut App, ui: &mut Ui) {
             // the offset, greyed out while nothing wraps (typing one
             // would turn wrapping back on).
             ui.label(egui::RichText::new(tr("context.wrap_style")).strong());
-            if ui.selectable_label(!on, tr("context.wrap_none")).clicked() && on {
+            if ui.iselectable(!on, "context.wrap_none").clicked() && on {
                 let shapes = app.selection.clone();
                 app.run(tracedraw_core::Command::SetWrapText {
                     shapes,

@@ -83,3 +83,15 @@ Powiększenie: przeciągnij stamtąd z powrotem na pasek usunięty przycisk.
   (domyślnie) lub otwarcie menu [[options.palette_context_menu]].
 
 Zobacz [Palety kolorów](../color/palettes.md).
+
+## Menu kontekstowe {#context-menus}
+
+W obszarze Dostosowywanie wybierz [[options.context_menus]], aby niezależnie zarządzać 32 miejscami menu kontekstowych. Wybierz miejsce za pomocą [[options.context_menu_scene]], następnie użyj [[options.context_menu_search]], aby znaleźć operację, i usuń zaznaczenie jej pola, aby ukryć ją w tym miejscu. Operacje pozostają na tej liście, nawet gdy bieżące zaznaczenie nie może ich użyć.
+
+Domyślnie wszystkie operacje są widoczne. Każde miejsce ma własne ustawienia: ukrycie operacji obiektu na obszarze rysunku nie ukrywa jej w panelu Obiekty. Listy dynamiczne, takie jak warstwy docelowe i kolekcje czcionek, są zarządzane jako jedna operacja, więc zmiana ich nazw nie resetuje wyboru.
+
+[[options.context_menu_reset]] przywraca wybrane menu, a [[options.context_menu_reset_all]] przywraca wszystkie menu. [[dialog.ok]] zapisuje wybór w ustawieniach aplikacji; [[dialog.cancel]], Escape lub przycisk zamknięcia przywraca wybór z chwili otwarcia Opcji. Menu główne, skróty klawiaturowe i wyszukiwanie poleceń nadal udostępniają oryginalne polecenia.
+
+Rozwiń podmenu, aby zobaczyć jego elementy z wcięciem. Przeciągnij uchwyt wiersza lub użyj [[options.context_menu_move_up]] i [[options.context_menu_move_down]], aby zmienić kolejność elementów na tym samym poziomie. Menu nadrzędne przenosi się wraz ze swoimi elementami; elementów nie można przenieść do innego menu nadrzędnego. Wyszukiwanie zachowuje widoczną ścieżkę do pasujących elementów. Przywrócenie menu resetuje widoczność i kolejność, a anulowanie Opcji przywraca oba ustawienia do stanu z chwili otwarcia okna.
+
+Menu próbek palety dokumentu i jej pozycja w Menedżerze palet mają osobne ustawienia. Dynamiczne cele zachowują własną kolejność; lista stylów dokumentu pozostaje między stałymi operacjami w Stylach obiektów. Nowe operacje dodane w późniejszej wersji pozostają widoczne i pojawiają się po zapisanych elementach tego samego poziomu.

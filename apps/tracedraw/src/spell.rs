@@ -528,9 +528,24 @@ fn system_knows(word: &str) -> bool {
 /// Words in a text that the dictionary does not know.
 pub fn unknown_words(text: &str) -> Vec<String> {
     let mut out = Vec::new();
-    for raw in text.split(|c: char| !(c.is_alphabetic() || c == '\'' || c == '-')) {
+    // Digits stay inside a word ("zq2w" is one word, which Options >
+    // Text > Spelling > Ignore words with numbers can leave out, #4281);
+    // a plain number is never a spelling mistake.
+    for raw in text.split(|c: char| !(c.is_alphanumeric() || c == '\'' || c == '-')) {
         let w = raw.trim_matches(|c: char| c == '\'' || c == '-');
-        if w.is_empty() || is_known(w) {
+        if w.is_empty() || !w.chars().any(char::is_alphabetic) {
+            continue;
+        }
+        // A word with digits is checked on its letters, as before, and
+        // named whole, so the option can find its digits.
+        let known = if w.chars().any(|c| c.is_numeric()) {
+            w.split(|c: char| c.is_numeric())
+                .map(|p| p.trim_matches(|c: char| c == '\'' || c == '-'))
+                .all(|p| p.chars().count() < 2 || is_known(p))
+        } else {
+            is_known(w)
+        };
+        if known {
             continue;
         }
         if !out.iter().any(|x: &String| x == w) {
@@ -682,6 +697,8 @@ mod tests {
         assert!(is_known("casa"));
         assert!(!is_known("qzxvbnm"));
         assert_eq!(unknown_words("the qzxvbnm casa 42"), vec!["qzxvbnm"]);
+        // A word with digits is one word, named whole (#4281).
+        assert_eq!(unknown_words("zq2w a4 casa"), vec!["zq2w"]);
     }
 
     /// Dictionaries in a folder of the user's: found with the folders

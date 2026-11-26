@@ -5,6 +5,9 @@
 
 use crate::app::App;
 
+/// A step a script took, with the objects selected when it took it.
+pub type Taken = (ViewStep, Vec<tracedraw_core::ShapeId>);
+
 /// A step of the view a script or a recorded macro takes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ViewStep {
@@ -66,6 +69,24 @@ impl App {
             let at = rec.len();
             self.recorded_lines.push((at, line.to_string()));
         }
+    }
+
+    /// Take a step a script asked for with `selection` the objects
+    /// selected when it asked: Zoom To Selection fits those, even when the
+    /// script cleared or changed the selection afterwards (#4269).
+    pub fn run_view_step_with(&mut self, step: ViewStep, selection: &[tracedraw_core::ShapeId]) {
+        if step != ViewStep::FitSelection {
+            self.run_view_step(step);
+            return;
+        }
+        let kept: Vec<_> = selection
+            .iter()
+            .copied()
+            .filter(|id| self.doc().find_shape(*id).is_some())
+            .collect();
+        let now = std::mem::replace(&mut self.selection, kept);
+        self.run_view_step(step);
+        self.selection = now;
     }
 
     /// Take a step a script asked for, once its objects are in the
@@ -192,5 +213,22 @@ mod tests {
         crate::scripting::run_vgcore(&mut app, "ActiveWindow.ActiveView.ToFitPage();", "Macro")
             .unwrap();
         assert!((app.view.zoom - page).abs() < 1e-3);
+    }
+
+    /// #4269: a macro that zooms to the selection and then clears it
+    /// still zooms to what was selected, and leaves nothing selected.
+    #[test]
+    fn zoom_to_selection_then_clear_selection_still_zooms() {
+        let mut app = app_with_square();
+        crate::scripting::run(&mut app, "Application.ZoomToPage();").unwrap();
+        let page = app.view.zoom;
+        crate::scripting::run_vgcore(
+            &mut app,
+            "ActiveDocument.ActiveLayer.Shapes.Item(1).CreateSelection(); ActiveWindow.ActiveView.ToFitSelection(); ActiveDocument.ClearSelection();",
+            "Macro",
+        )
+        .unwrap();
+        assert!(app.view.zoom > page * 4.0, "{page} {}", app.view.zoom);
+        assert!(app.selection.is_empty());
     }
 }

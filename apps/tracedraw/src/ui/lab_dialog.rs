@@ -6,6 +6,7 @@
 //! compare versions. OK adds (or changes) one Image Adjustments effect
 //! with the chosen settings.
 
+use crate::ui::btn_icons::IconUi;
 use crate::app::App;
 use crate::i18n::{tr, trf};
 use crate::theme::Tokens;
@@ -425,7 +426,7 @@ pub fn lab_dialog(app: &mut App, ctx: &Context, st: &mut EffectState, close: &mu
                     }
                 }
                 if ui
-                    .button(tr("dialog.lab_reset"))
+                    .ibutton("dialog.lab_reset")
                     .rich_tip(crate::ui::tips::keyed("dialog.lab_reset"))
                     .clicked()
                 {
@@ -433,7 +434,7 @@ pub fn lab_dialog(app: &mut App, ctx: &Context, st: &mut EffectState, close: &mu
                 }
                 ui.add_space(12.0);
                 if ui
-                    .add(egui::Button::new(tr("dialog.lab_snapshot")))
+                    .add(crate::ui::btn_icons::Ib::new("dialog.lab_snapshot"))
                     .rich_tip(crate::ui::tips::pair(
                         "dialog.lab_snapshot",
                         "dialog.lab_snapshot_tip",
@@ -446,7 +447,7 @@ pub fn lab_dialog(app: &mut App, ctx: &Context, st: &mut EffectState, close: &mu
             snapshots(left, app, ctx, st, &src);
             right.horizontal(|ui| {
                 if ui
-                    .button(tr("dialog.lab_auto_adjust"))
+                    .ibutton("dialog.lab_auto_adjust")
                     .rich_tip(crate::ui::tips::keyed("dialog.lab_auto_adjust"))
                     .clicked()
                 {

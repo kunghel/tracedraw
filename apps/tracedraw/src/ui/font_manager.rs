@@ -7,6 +7,7 @@
 //! uninstalled; folders, installed files, Favorites and collections are
 //! kept in the settings. See docs/behavior/font-manager.md.
 
+use crate::ui::btn_icons::IconUi;
 use crate::app::App;
 use crate::i18n::{tr, trf};
 use crate::theme::Tokens;
@@ -805,7 +806,14 @@ pub fn dialog(app: &mut App, ctx: &Context, st: &mut FontManagerState, close: &m
                     egui::Layout::top_down(egui::Align::Min),
                     |ui| {
                         ui.set_width(LEFT_W);
-                        left_panes(ui, st, &mut prefs, &app.font_catalog, &mut actions);
+                        left_panes(
+                            ui,
+                            st,
+                            &mut prefs,
+                            &app.font_catalog,
+                            &app.settings.context_menus,
+                            &mut actions,
+                        );
                     },
                 );
                 ui.separator();
@@ -1095,11 +1103,11 @@ fn menu_row(
     let keys: Vec<String> = selected.iter().map(|r| r.key()).collect();
     let any = !selected.is_empty();
     egui::MenuBar::new().ui(ui, |ui| {
-        ui.menu_button(tr("font_manager.menu_file"), |ui| {
+        ui.imenu_button("font_manager.menu_file", |ui| {
             let folder = crate::files::FolderUse::FontFolder;
             let mut add = ui.add_enabled(
                 folder_enabled(folder),
-                egui::Button::new(tr("font_manager.add_folder")),
+                crate::ui::btn_icons::Ib::new("font_manager.add_folder"),
             );
             if let Some(tip) = folder.tip() {
                 add = add.rich_tip_always(tr(tip));
@@ -1108,17 +1116,17 @@ fn menu_row(
                 actions.push(Action::AddFolder);
                 ui.close();
             }
-            if ui.button(tr("font_manager.add_font")).clicked() {
+            if ui.ibutton("font_manager.add_font").clicked() {
                 actions.push(Action::AddFont);
                 ui.close();
             }
         })
         .response
         .rich_tip(crate::ui::tips::keyed("font_manager.menu_file"));
-        ui.menu_button(tr("font_manager.menu_edit"), |ui| {
+        ui.imenu_button("font_manager.menu_edit", |ui| {
             ui.add_enabled_ui(any, |ui| {
-                ui.menu_button(tr("font_manager.add_to_collection"), |ui| {
-                    if ui.button(tr("font_manager.favorites")).clicked() {
+                ui.imenu_button("font_manager.add_to_collection", |ui| {
+                    if ui.ibutton("font_manager.favorites").clicked() {
                         actions.push(Action::ToFavorites(keys.clone()));
                         ui.close();
                     }
@@ -1138,24 +1146,24 @@ fn menu_row(
             if ui
                 .add_enabled(
                     any && from.is_some(),
-                    egui::Button::new(tr("font_manager.remove_from_collection")),
+                    crate::ui::btn_icons::Ib::new("font_manager.remove_from_collection"),
                 )
                 .clicked()
             {
                 actions.extend(from);
                 ui.close();
             }
-            if ui.button(tr("font_manager.select_none")).clicked() {
+            if ui.ibutton("font_manager.select_none").clicked() {
                 st.selected.clear();
                 ui.close();
             }
         })
         .response
         .rich_tip(crate::ui::tips::keyed("font_manager.menu_edit"));
-        ui.menu_button(tr("font_manager.menu_font"), |ui| {
+        ui.imenu_button("font_manager.menu_font", |ui| {
             let can_install = selected.iter().any(|r| !r.installed && r.path.is_some());
             if ui
-                .add_enabled(can_install, egui::Button::new(tr("font_manager.install")))
+                .add_enabled(can_install, crate::ui::btn_icons::Ib::new("font_manager.install"))
                 .clicked()
             {
                 actions.push(Action::Install(selected.to_vec()));
@@ -1165,7 +1173,7 @@ fn menu_row(
             if ui
                 .add_enabled(
                     can_uninstall,
-                    egui::Button::new(tr("font_manager.uninstall")),
+                    crate::ui::btn_icons::Ib::new("font_manager.uninstall"),
                 )
                 .clicked()
             {
@@ -1176,7 +1184,7 @@ fn menu_row(
             if ui
                 .add_enabled(
                     one.is_some(),
-                    egui::Button::new(tr("font_manager.use_in_drawing")),
+                    crate::ui::btn_icons::Ib::new("font_manager.use_in_drawing"),
                 )
                 .clicked()
             {
@@ -1188,7 +1196,7 @@ fn menu_row(
         })
         .response
         .rich_tip(crate::ui::tips::keyed("font_manager.menu_font"));
-        ui.menu_button(tr("font_manager.menu_view"), |ui| {
+        ui.imenu_button("font_manager.menu_view", |ui| {
             let mut details = prefs.details;
             if ui
                 .checkbox(&mut details, tr("font_manager.show_details"))
@@ -1201,8 +1209,8 @@ fn menu_row(
         })
         .response
         .rich_tip(crate::ui::tips::keyed("font_manager.menu_view"));
-        ui.menu_button(tr("font_manager.menu_help"), |ui| {
-            if ui.button(tr("font_manager.help")).clicked() {
+        ui.imenu_button("font_manager.menu_help", |ui| {
+            if ui.ibutton("font_manager.help").clicked() {
                 actions.push(Action::Help);
                 ui.close();
             }
@@ -1483,7 +1491,7 @@ fn toolbar(
         egui::Popup::menu(&add_to)
             .id(egui::Id::new("font_manager_add_to"))
             .show(|ui| {
-                if ui.button(tr("font_manager.favorites")).clicked() {
+                if ui.ibutton("font_manager.favorites").clicked() {
                     actions.push(Action::ToFavorites(keys.clone()));
                     ui.close();
                 }
@@ -1493,7 +1501,7 @@ fn toolbar(
                         ui.close();
                     }
                 }
-                if ui.button(tr("font_manager.new_collection")).clicked() {
+                if ui.ibutton("font_manager.new_collection").clicked() {
                     actions.push(Action::NewCollection);
                     ui.close();
                 }
@@ -1548,7 +1556,7 @@ fn toolbar(
         egui::Popup::menu(&opts)
             .id(egui::Id::new("font_manager_sample_opts"))
             .show(|ui| {
-                if ui.button(tr("font_manager.sample_family")).clicked() {
+                if ui.ibutton("font_manager.sample_family").clicked() {
                     prefs.sample.clear();
                     ui.close();
                 }
@@ -1652,6 +1660,7 @@ fn left_panes(
     st: &mut FontManagerState,
     prefs: &mut FontManagerPrefs,
     cat: &Catalog,
+    context_menu_prefs: &crate::ui::context_menus::Preferences,
     actions: &mut Vec<Action>,
 ) {
     let h = ui.available_height();
@@ -1695,8 +1704,21 @@ fn left_panes(
                             if r.clicked() {
                                 st.library = lib;
                             }
-                            r.context_menu(|ui| {
-                                if ui.button(tr("font_manager.remove_folder")).clicked() {
+                            crate::ui::context_menus::filter_popup(
+                                egui::Popup::context_menu(&r),
+                                context_menu_prefs,
+                                "font_folder",
+                            )
+                            .show(|ui| {
+                                let _menu = crate::ui::context_menus::Scope::new(
+                                    context_menu_prefs,
+                                    "font_folder",
+                                );
+                                if crate::ui::context_menus::show_item(
+                                    ui,
+                                    "font_manager.remove_folder",
+                                ) && ui.ibutton("font_manager.remove_folder").clicked()
+                                {
                                     actions.push(Action::RemoveFolder(dir.clone()));
                                     ui.close();
                                 }
@@ -1754,14 +1776,39 @@ fn left_panes(
                                 {
                                     actions.push(Action::ToCollection(i, keys));
                                 }
-                                r.context_menu(|ui| {
-                                    if ui.button(tr("font_manager.rename")).clicked() {
-                                        st.renaming = Some((i, prefs.collections[i].name.clone()));
-                                        ui.close();
-                                    }
-                                    if ui.button(tr("font_manager.delete_collection")).clicked() {
-                                        actions.push(Action::DeleteCollection(i));
-                                        ui.close();
+                                crate::ui::context_menus::filter_popup(
+                                    egui::Popup::context_menu(&r),
+                                    context_menu_prefs,
+                                    "font_collection",
+                                )
+                                .show(|ui| {
+                                    let _menu = crate::ui::context_menus::Scope::new(
+                                        context_menu_prefs,
+                                        "font_collection",
+                                    );
+                                    crate::ui::context_menu_filter::ordered_menu! { ui;
+                                        "font_manager.rename" => {
+                                            if crate::ui::context_menus::show_item(
+                                                ui,
+                                                "font_manager.rename",
+                                            ) && ui.ibutton("font_manager.rename").clicked()
+                                            {
+                                                st.renaming = Some((i, prefs.collections[i].name.clone()));
+                                                ui.close();
+                                            }
+                                        },
+                                        "font_manager.delete_collection" => {
+                                            if crate::ui::context_menus::show_item(
+                                                ui,
+                                                "font_manager.delete_collection",
+                                            ) && ui
+                                                .ibutton("font_manager.delete_collection")
+                                                .clicked()
+                                            {
+                                                actions.push(Action::DeleteCollection(i));
+                                                ui.close();
+                                            }
+                                        }
                                     }
                                 });
                             }
@@ -1792,7 +1839,7 @@ fn left_panes(
                     if ui
                         .add_enabled(
                             !st.filters.is_empty(),
-                            egui::Button::new(tr("font_manager.clear_filters")).small(),
+                            crate::ui::btn_icons::Ib::new("font_manager.clear_filters").small(),
                         )
                         .rich_tip(crate::ui::tips::keyed("font_manager.clear_filters"))
                         .rich_disabled_tip(crate::ui::tips::keyed("font_manager.clear_filters"))
@@ -2313,51 +2360,98 @@ fn card(
         vec![key.clone()]
     };
     let one = vec![r.clone()];
-    resp.context_menu(|ui| {
-        if !r.installed && r.path.is_some() && ui.button(tr("font_manager.install")).clicked() {
-            actions.push(Action::Install(one.clone()));
-            ui.close();
-        }
-        if uninstallable(r, prefs) && ui.button(tr("font_manager.uninstall")).clicked() {
-            actions.push(Action::Uninstall(one.clone()));
-            ui.close();
-        }
-        if r.installed && ui.button(tr("font_manager.use_in_drawing")).clicked() {
-            actions.push(Action::UseInDrawing(r.family.clone()));
-            ui.close();
-        }
-        if prefs.favorites.contains(&key) {
-            if ui.button(tr("font_manager.remove_favorite")).clicked() {
-                actions.push(Action::FromFavorites(keys.clone()));
-                ui.close();
-            }
-        } else if ui.button(tr("font_manager.add_favorite")).clicked() {
-            actions.push(Action::ToFavorites(keys.clone()));
-            ui.close();
-        }
-        if !prefs.collections.is_empty() {
-            ui.menu_button(tr("font_manager.add_to_collection"), |ui| {
-                for (i, c) in prefs.collections.iter().enumerate() {
-                    if ui.button(&c.name).clicked() {
-                        actions.push(Action::ToCollection(i, keys.clone()));
+    crate::ui::context_menus::filter_popup(
+        egui::Popup::context_menu(&resp),
+        &app.settings.context_menus,
+        "font",
+    )
+    .show(|ui| {
+        let _menu = crate::ui::context_menus::Scope::new(&app.settings.context_menus, "font");
+        crate::ui::context_menu_filter::ordered_menu! { ui;
+            "font_manager.install" => {
+                if !r.installed
+                    && r.path.is_some()
+                    && crate::ui::context_menus::show_item(ui, "font_manager.install")
+                    && ui.ibutton("font_manager.install").clicked()
+                {
+                    actions.push(Action::Install(one.clone()));
+                    ui.close();
+                }
+            },
+            "font_manager.uninstall" => {
+                if uninstallable(r, prefs)
+                    && crate::ui::context_menus::show_item(ui, "font_manager.uninstall")
+                    && ui.ibutton("font_manager.uninstall").clicked()
+                {
+                    actions.push(Action::Uninstall(one.clone()));
+                    ui.close();
+                }
+            },
+            "font_manager.use_in_drawing" => {
+                if r.installed
+                    && crate::ui::context_menus::show_item(ui, "font_manager.use_in_drawing")
+                    && ui.ibutton("font_manager.use_in_drawing").clicked()
+                {
+                    actions.push(Action::UseInDrawing(r.family.clone()));
+                    ui.close();
+                }
+            },
+            "font_manager.remove_favorite" => {
+                if prefs.favorites.contains(&key)
+                    && crate::ui::context_menus::show_item(ui, "font_manager.remove_favorite")
+                    && ui.ibutton("font_manager.remove_favorite").clicked()
+                {
+                    actions.push(Action::FromFavorites(keys.clone()));
+                    ui.close();
+                }
+            },
+            "font_manager.add_favorite" => {
+                if !prefs.favorites.contains(&key)
+                    && crate::ui::context_menus::show_item(ui, "font_manager.add_favorite")
+                    && ui.ibutton("font_manager.add_favorite").clicked()
+                {
+                    actions.push(Action::ToFavorites(keys.clone()));
+                    ui.close();
+                }
+            },
+            "font_manager.add_to_collection" => {
+                if !prefs.collections.is_empty()
+                    && crate::ui::context_menus::show_item(ui, "font_manager.add_to_collection")
+                {
+                    ui.imenu_button("font_manager.add_to_collection", |ui| {
+                        let _branch = crate::ui::context_menu_filter::Branch::new("font_manager.add_to_collection");
+                        for (i, c) in prefs.collections.iter().enumerate() {
+                            ui.push_id(i, |ui| {
+                                if ui.button(&c.name).clicked() {
+                                    actions.push(Action::ToCollection(i, keys.clone()));
+                                    ui.close();
+                                }
+                            });
+                        }
+                    });
+                }
+            },
+            "font_manager.remove_from_collection" => {
+                if let Library::Collection(i) = st.library {
+                    if crate::ui::context_menus::show_item(ui, "font_manager.remove_from_collection")
+                        && ui
+                            .ibutton("font_manager.remove_from_collection")
+                            .clicked()
+                    {
+                        actions.push(Action::FromCollection(i, keys.clone()));
                         ui.close();
                     }
                 }
-            });
-        }
-        if let Library::Collection(i) = st.library {
-            if ui
-                .button(tr("font_manager.remove_from_collection"))
-                .clicked()
-            {
-                actions.push(Action::FromCollection(i, keys.clone()));
-                ui.close();
+            },
+            "font_manager.show_details" => {
+                if crate::ui::context_menus::show_item(ui, "font_manager.show_details")
+                    && ui.ibutton("font_manager.show_details").clicked()
+                {
+                    st.focus = Some(key.clone());
+                    st.collapsed.insert("__toggle_details");
+                    ui.close();
+                }
             }
-        }
-        if ui.button(tr("font_manager.show_details")).clicked() {
-            st.focus = Some(key.clone());
-            st.collapsed.insert("__toggle_details");
-            ui.close();
         }
     });
 }

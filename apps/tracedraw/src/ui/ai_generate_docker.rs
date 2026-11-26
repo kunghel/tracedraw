@@ -3,6 +3,7 @@
 //! an information page. The work is in `ai_image.rs`; see
 //! docs/behavior/ai-generate.md.
 
+use crate::ui::btn_icons::IconUi;
 use crate::ai_image::{
     Aspect, ImageStatus, Mode, VectorEngine, IDEAS, MAX_COUNT, PALETTES, REMIX_IDEAS, STYLES,
     VECTOR_STYLES,
@@ -671,7 +672,7 @@ fn info_page(app: &mut App, ui: &mut Ui) {
     ui.label(RichText::new(tr("aiui.privacy")).color(Tokens::text_dim()));
     ui.add_space(6.0);
     if ui
-        .button(tr("aiui.set_up"))
+        .ibutton("aiui.set_up")
         .rich_tip(crate::ui::tips::keyed("aiui.set_up"))
         .clicked()
     {

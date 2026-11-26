@@ -65,6 +65,22 @@ choose [[menu.object > menu.object.order > menu.object.to_front_of_page]]
 (<kbd>Ctrl</kbd>+<kbd>Home</kbd>); [[menu.object.to_back_of_page]]
 (<kbd>Ctrl</kbd>+<kbd>End</kbd>) puts the layer behind the page's objects again.
 
+### Page ranges {#range-pages}
+
+The [[docker.range_pages]] group holds layers shared by selected page
+ranges. Use [[docker.new_range_layer]] in its menu, or the creation button
+in the empty group, to create one. Enter a name and ranges such as
+`1-8, 12, 15-20`, then confirm. **Properties** edits the range later.
+
+The numbers are document page positions, starting at 1. Editing a header
+or logo in a range layer updates each page covered by that layer. The
+dialog shows how many current pages match. Future page positions can be
+included, and the range numbers stay fixed as pages are inserted,
+deleted or reordered.
+
+Save as `.tdraw` to keep editable shared ranges. Other output formats
+place the appropriate shared content on each selected page.
+
 ## Renaming objects and layers {#rename}
 
 Double-click a layer or an object in the panel, or choose [[docker.rename]]

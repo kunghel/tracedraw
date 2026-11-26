@@ -6,6 +6,7 @@
 //! An item's menu (right click) places, renames and removes it.
 
 use crate::app::App;
+use crate::ui::btn_icons::IconUi;
 use crate::i18n::{tr, trf};
 use crate::theme::Tokens;
 use crate::ui::tips::RichTip;
@@ -28,14 +29,14 @@ pub fn shelf(app: &mut App, ui: &mut Ui) {
         .filter(|uid| app.shelf.item(*uid).is_some());
     ui.horizontal_wrapped(|ui| {
         if ui
-            .add_enabled(has_selection, egui::Button::new(tr("shelf.add_selection")))
+            .add_enabled(has_selection, crate::ui::btn_icons::Ib::new("shelf.add_selection"))
             .rich_tip(tr("shelf.add_selection_tip"))
             .clicked()
         {
             app.shelf_add_selection();
         }
         if ui
-            .add_enabled(drawing, egui::Button::new(tr("shelf.add_colors")))
+            .add_enabled(drawing, crate::ui::btn_icons::Ib::new("shelf.add_colors"))
             .rich_tip(tr("shelf.add_colors_tip"))
             .clicked()
         {
@@ -44,7 +45,7 @@ pub fn shelf(app: &mut App, ui: &mut Ui) {
         if ui
             .add_enabled(
                 chosen.is_some() && drawing,
-                egui::Button::new(tr("shelf.place")),
+                crate::ui::btn_icons::Ib::new("shelf.place"),
             )
             .clicked()
         {
@@ -53,7 +54,7 @@ pub fn shelf(app: &mut App, ui: &mut Ui) {
             }
         }
         if ui
-            .add_enabled(chosen.is_some(), egui::Button::new(tr("shelf.remove")))
+            .add_enabled(chosen.is_some(), crate::ui::btn_icons::Ib::new("shelf.remove"))
             .clicked()
         {
             if let Some(uid) = chosen {
@@ -62,16 +63,20 @@ pub fn shelf(app: &mut App, ui: &mut Ui) {
         }
     });
     ui.add_space(4.0);
+    folder_row(app, ui);
     if app.shelf.items.is_empty() {
         ui.label(egui::RichText::new(tr("shelf.empty_hint")).color(Tokens::text_dim()));
         return;
     }
     let items: Vec<(u64, String)> = app
         .shelf
-        .items
-        .iter()
+        .shown()
+        .into_iter()
         .map(|i| (i.uid, i.name.clone()))
         .collect();
+    if items.is_empty() {
+        ui.label(egui::RichText::new(tr("shelf.folder_empty")).color(Tokens::text_dim()));
+    }
     let mut tiles: Vec<(u64, Rect)> = Vec::with_capacity(items.len());
     let mut budget = THUMBS_PER_FRAME;
     let mut released: Option<u64> = None;
@@ -96,6 +101,98 @@ pub fn shelf(app: &mut App, ui: &mut Ui) {
     if budget == 0 {
         ui.ctx().request_repaint();
     }
+}
+
+/// The folders (#4218): the folder shown (or every item), New Folder,
+/// and renaming or deleting the folder shown; while a folder is named,
+/// its name field.
+fn folder_row(app: &mut App, ui: &mut Ui) {
+    if let Some((renamed, mut text)) = app.shelf.folder_edit.take() {
+        let mut done = None;
+        ui.horizontal(|ui| {
+            let resp = ui.add(
+                egui::TextEdit::singleline(&mut text)
+                    .id(egui::Id::new("shelf_folder_name"))
+                    .desired_width(140.0)
+                    .hint_text(tr("shelf.folder_name")),
+            );
+            if !resp.has_focus() && !resp.lost_focus() {
+                resp.request_focus();
+            }
+            let (enter, esc) = ui.input(|i| {
+                (
+                    i.key_pressed(egui::Key::Enter),
+                    i.key_pressed(egui::Key::Escape),
+                )
+            });
+            if ui.button(tr("dialog.ok")).clicked() || enter {
+                done = Some(true);
+            } else if ui.button(tr("dialog.cancel")).clicked() || esc {
+                done = Some(false);
+            }
+        });
+        match done {
+            Some(true) => {
+                let changed = match &renamed {
+                    Some(old) => app.shelf.rename_folder(old, &text),
+                    None => app.shelf.add_folder(&text).is_some(),
+                };
+                if changed {
+                    app.shelf.save();
+                }
+            }
+            Some(false) => {}
+            None => app.shelf.folder_edit = Some((renamed, text)),
+        }
+        ui.add_space(4.0);
+        return;
+    }
+    let folders = app.shelf.folder_names();
+    ui.horizontal_wrapped(|ui| {
+        ui.label(tr("shelf.folder"));
+        let all = tr("shelf.all_items");
+        let shown = app.shelf.folder.clone();
+        egui::ComboBox::from_id_salt("shelf_folder")
+            .selected_text(shown.clone().unwrap_or_else(|| all.clone()))
+            .width(130.0)
+            .show_ui(ui, |ui| {
+                if ui.selectable_label(shown.is_none(), &all).clicked() {
+                    app.shelf.folder = None;
+                }
+                for f in &folders {
+                    let n = app.shelf.items.iter().filter(|i| &i.folder == f).count();
+                    if ui
+                        .selectable_label(shown.as_ref() == Some(f), format!("{f} ({n})"))
+                        .clicked()
+                    {
+                        app.shelf.folder = Some(f.clone());
+                    }
+                }
+            })
+            .response
+            .rich_tip(tr("shelf.folder_tip"));
+        if ui
+            .ibutton("shelf.new_folder")
+            .rich_tip(tr("shelf.new_folder_tip"))
+            .clicked()
+        {
+            app.shelf.folder_edit = Some((None, tr("shelf.new_folder_name")));
+        }
+        if let Some(f) = shown {
+            if ui.ibutton("shelf.rename_folder").clicked() {
+                app.shelf.folder_edit = Some((Some(f.clone()), f.clone()));
+            }
+            if ui
+                .ibutton("shelf.delete_folder")
+                .rich_tip(tr("shelf.delete_folder_tip"))
+                .clicked()
+                && app.shelf.delete_folder(&f)
+            {
+                app.shelf.save();
+            }
+        }
+    });
+    ui.add_space(4.0);
 }
 
 /// Remove (button or menu): asks first unless Options > Global >
@@ -213,24 +310,62 @@ fn tile(app: &mut App, ui: &mut Ui, uid: u64, name: &str, budget: &mut usize) ->
         ghost(app, ui, texture.as_ref(), frame.size());
     }
     let released = resp.drag_stopped() && app.shelf.dragging == Some(uid);
-    egui::Popup::context_menu(&resp)
-        .id(egui::Id::new(("shelf_item_menu", uid)))
-        .style(crate::ui::menus::menu_popup_style)
-        .show(|ui| {
-            crate::ui::menus::body(ui, |ui| {
-                if crate::ui::menus::item(ui, "shelf.place", "", true) {
-                    app.shelf_place(uid, None);
+    crate::ui::context_menus::filter_popup(
+        egui::Popup::context_menu(&resp)
+            .id(egui::Id::new(("shelf_item_menu", uid)))
+            .style(crate::ui::menus::menu_popup_style),
+        &app.settings.context_menus,
+        "shelf",
+    )
+    .show(|ui| {
+        let _menu = crate::ui::context_menus::Scope::new(&app.settings.context_menus, "shelf");
+        crate::ui::menus::body(ui, |ui| {
+            crate::ui::context_menu_filter::ordered_menu! { ui;
+                "shelf.place" => {
+                    if crate::ui::menus::item(ui, "shelf.place", "", true) {
+                        app.shelf_place(uid, None);
+                    }
+                },
+                "shelf.rename" => {
+                    if crate::ui::menus::item(ui, "shelf.rename", "", true) {
+                        app.shelf.selected = Some(uid);
+                        app.shelf.renaming = Some((uid, name.to_string()));
+                    }
+                },
+                "shelf.move_to_folder" => {
+                    // Into another folder, or none (#4218).
+                    let folders = app.shelf.folder_names();
+                    let current = app.shelf.item(uid).map(|i| i.folder.clone()).unwrap_or_default();
+                    crate::ui::menus::sub(ui, "shelf.move_to_folder", |ui| {
+                        let mut to = None;
+                        if crate::ui::menus::item(ui, "shelf.no_folder", "", !current.is_empty()) {
+                            to = Some(String::new());
+                        }
+                        for f in &folders {
+                            if ui
+                                .add_enabled(*f != current, egui::Button::new(f.as_str()).frame(false))
+                                .clicked()
+                            {
+                                to = Some(f.clone());
+                                ui.close();
+                            }
+                        }
+                        if let Some(f) = to {
+                            if app.shelf.set_folder(uid, &f) {
+                                app.shelf.save();
+                            }
+                        }
+                    });
+                },
+                "shelf.remove" => {
+                    crate::ui::menus::sep(ui);
+                    if crate::ui::menus::item(ui, "shelf.remove", "", true) {
+                        ask_to_remove(app, uid);
+                    }
                 }
-                if crate::ui::menus::item(ui, "shelf.rename", "", true) {
-                    app.shelf.selected = Some(uid);
-                    app.shelf.renaming = Some((uid, name.to_string()));
-                }
-                crate::ui::menus::sep(ui);
-                if crate::ui::menus::item(ui, "shelf.remove", "", true) {
-                    ask_to_remove(app, uid);
-                }
-            })
-        });
+            }
+        })
+    });
     (rect, released)
 }
 

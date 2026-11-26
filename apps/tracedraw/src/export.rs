@@ -46,6 +46,42 @@ pub(crate) fn selection_document(app: &App) -> (Document, Rect) {
     (tmp, bounds)
 }
 
+/// A slice: the area `area` of the current page as a page of its own,
+/// with every shown object of the page's shown layers in
+/// their order, moved so the area's corner is the page's; what reaches
+/// past the area is cut off by the page's edge.
+pub(crate) fn area_document(app: &App, area: Rect) -> (Document, Rect) {
+    let doc = app.engine.document();
+    let mut tmp = Document::new(
+        doc.title.clone(),
+        Size::new(area.width().max(0.1), area.height().max(0.1)),
+    );
+    tmp.symbols = doc.symbols.clone();
+    tmp.inks = doc.inks.clone();
+    tmp.cmyk_profile = doc.cmyk_profile.clone();
+    tmp.color_styles = doc.color_styles.clone();
+    let l = tmp.pages[0].layers[0].id;
+    let shift = Affine::translate((-area.x0, -area.y0));
+    let shapes: Vec<tracedraw_core::Shape> = doc
+        .page(app.page)
+        .map(|p| {
+            p.layers
+                .iter()
+                .filter(|l| l.visible)
+                .flat_map(|l| l.shapes.iter().filter(|s| s.visible).cloned())
+                .collect()
+        })
+        .unwrap_or_default();
+    for mut c in shapes {
+        c.transform_by(shift);
+        carry_blend_ends(&mut c, shift);
+        if let Ok(layer) = tmp.layer_mut(l) {
+            layer.shapes.push(c);
+        }
+    }
+    (tmp, area)
+}
+
 /// The box a selection exported alone is sized to: what each selected
 /// object draws, its outline included. The selection's own box leaves the
 /// outline out (an outline straddles the path), so a selected rectangle
@@ -77,7 +113,9 @@ fn outline_reach_within(s: &tracedraw_core::Shape, to_page: Affine) -> f64 {
 /// Document limited to the selection or the current page, for exports.
 pub(crate) fn export_document(app: &App, st: &ExportState) -> (Document, Rect) {
     let doc = app.engine.document();
-    if st.selection_only {
+    if let Some(area) = st.area {
+        area_document(app, area)
+    } else if st.selection_only {
         selection_document(app)
     } else {
         // Facing pages (#1972): each spread as one page, or each page
@@ -91,11 +129,15 @@ pub(crate) fn export_document(app: &App, st: &ExportState) -> (Document, Rect) {
         }
         // The pages chosen, in the order chosen (#1382).
         let mut tmp = doc.with_spread_overhangs(st.bleed_mm.max(doc.metadata.bleed));
+        let indexes = export_page_indexes(app, st);
+        if tmp.master.iter().any(|l| l.page_range.is_some()) {
+            return (tmp.with_master_layers_on_pages(&indexes), app.page_rect());
+        }
         let mut all: Vec<_> = std::mem::take(&mut tmp.pages)
             .into_iter()
             .map(Some)
             .collect();
-        tmp.pages = export_page_indexes(app, st)
+        tmp.pages = indexes
             .into_iter()
             .filter_map(|i| all.get_mut(i).and_then(Option::take))
             .collect();
@@ -278,6 +320,27 @@ fn document_file(
     )
 }
 
+/// The Export dialog's PDF picture compression (#4265): JPEG at the
+/// chosen quality when Compress is ticked.
+fn pdf_images(ext: &str, st: &ExportState) -> tracedraw_io::pdf::PdfImages {
+    let mut images = tracedraw_io::pdf::PdfImages::default();
+    if ext == "pdf" && st.pdf_compress {
+        images.jpeg = true;
+        images.jpeg_quality = st.pdf_quality.clamp(1, 100);
+    }
+    images
+}
+
+/// The Export dialog's PDF target file size in bytes (#4265).
+fn pdf_target(ext: &str, st: &ExportState) -> Option<usize> {
+    let b = crate::ui::publish_pdf::BitmapPrefs {
+        target_size: ext == "pdf" && st.pdf_target,
+        target_mb: st.pdf_target_mb,
+        ..Default::default()
+    };
+    b.target_bytes()
+}
+
 /// [`document_file`] with what it takes from the program given: the
 /// title, and the output profile and condition of a PDF/X file.
 fn document_file_with(
@@ -305,9 +368,13 @@ fn document_file_with(
                     as_curves: ext == "pdf" && st.text_as_curves,
                     ..Default::default()
                 },
+                images: pdf_images(ext, st),
                 ..Default::default()
             };
-            tracedraw_io::pdf::document_to_pdf_with(doc, &opts)
+            match pdf_target(ext, st) {
+                Some(target) => crate::ui::publish_pdf::pdf_within(doc, &opts, target).0,
+                None => tracedraw_io::pdf::document_to_pdf_with(doc, &opts),
+            }
         }
         // Every exported page; a print file is the same PostScript.
         "ps" | "prn" => tracedraw_io::eps::document_to_ps(doc).into_bytes(),
@@ -352,7 +419,7 @@ fn page_file(
                     };
                     return bytes.ok_or_else(|| "CMYK encoding failed".to_string());
                 }
-                ExportColorMode::Gray => {
+                ExportColorMode::Gray if ext != "png" => {
                     let pm = tracedraw_render::render_page_export_image_aa(
                         doc,
                         pid,
@@ -364,7 +431,9 @@ fn page_file(
                         encode_gray(&on_white(&pm).ok_or("render failed")?, ext, st.quality)?;
                     return Ok(record_dpi(bytes, ext, st.dpi));
                 }
-                ExportColorMode::Rgb => {}
+                // A PNG in grey, indexed or black and white is drawn as in
+                // RGB and written in its mode below (#4314).
+                _ => {}
             }
             let p = doc.page(pid).map_err(|e| e.to_string())?;
             let fit = tracedraw_render::ViewTransform::whole_page(
@@ -424,12 +493,38 @@ fn page_file(
                 )
                 .ok_or("render failed")?;
             }
-            let bytes = encode_raster_with(&pm, ext, st.quality, st.webp_lossless)?;
+            let bytes = match st.color_mode_for(ext) {
+                mode @ (ExportColorMode::Gray
+                | ExportColorMode::Paletted
+                | ExportColorMode::BlackWhite)
+                    if ext == "png" =>
+                {
+                    encode_png_in_mode(&pm, mode).ok_or("PNG encoding failed")?
+                }
+                _ => encode_raster_with(&pm, ext, st.quality, st.webp_lossless)?,
+            };
             // The file says its resolution, so it opens at the size
             // chosen in the dialog (#617).
             record_dpi(bytes, ext, st.dpi)
         }
     })
+}
+
+/// A PNG of `pm` in a colour mode of its own (#4314): one channel of
+/// grey, a palette of at most 256 colours, or 1-bit black and white. A
+/// see-through background stays see-through.
+fn encode_png_in_mode(pm: &tiny_skia::Pixmap, mode: ExportColorMode) -> Option<Vec<u8>> {
+    let mut img = image::RgbaImage::new(pm.width(), pm.height());
+    for (out, p) in img.pixels_mut().zip(pm.pixels()) {
+        let c = p.demultiply();
+        *out = image::Rgba([c.red(), c.green(), c.blue(), c.alpha()]);
+    }
+    match mode {
+        ExportColorMode::Gray => crate::bitmap_fx::encode_gray(&img),
+        ExportColorMode::Paletted => crate::bitmap_fx::encode_indexed_fitted(&img),
+        ExportColorMode::BlackWhite => crate::bitmap_fx::encode_bw(&img),
+        _ => None,
+    }
 }
 
 /// Pages of more pixels than this are exported as PNG or TIFF a strip at
@@ -675,14 +770,21 @@ pub(crate) fn cmyk_pixels(
     dpi: f64,
     anti_alias: bool,
 ) -> Option<(u32, u32, Vec<u8>)> {
-    let mut page = doc.page(pid).ok()?.clone();
+    let mut one = if doc.master.iter().any(|l| l.page_range.is_some()) {
+        let index = doc.pages.iter().position(|p| p.id == pid)?;
+        doc.with_master_layers_on_pages(&[index])
+    } else {
+        let mut one = doc.clone();
+        one.pages.retain(|p| p.id == pid);
+        one
+    };
+    let mut page = one.page(pid).ok()?.clone();
     for layer in page.layers.iter_mut() {
         for s in layer.shapes.iter_mut() {
             map_colors(s, &spot_as_cmyk);
+            crate::picture_plates::fit_pictures_to(s, dpi);
         }
     }
-    let mut one = doc.clone();
-    one.pages.retain(|p| p.id == pid);
     let mut out: Option<(u32, u32, Vec<u8>)> = None;
     for ink in 0..4 {
         *one.pages.first_mut()? = plate_page(&page, Plate::Process(ink));
@@ -895,6 +997,15 @@ pub fn preview(app: &App, st: &ExportState, max_px: u32) -> Option<tiny_skia::Pi
                 *p = tiny_skia::PremultipliedColorU8::from_rgba(v, v, v, 255)?;
             }
         }
+        // Black and white shows each pixel black or white (#4314).
+        ExportColorMode::BlackWhite => {
+            let grey = gray_pixels(&pm);
+            for (p, v) in pm.pixels_mut().iter_mut().zip(grey) {
+                let v = if v >= 128 { 255 } else { 0 };
+                *p = tiny_skia::PremultipliedColorU8::from_rgba(v, v, v, 255)?;
+            }
+        }
+        ExportColorMode::Paletted => {}
     }
     Some(pm)
 }
@@ -921,7 +1032,17 @@ pub fn estimated_size(app: &App, st: &ExportState, preview: &tiny_skia::Pixmap) 
                 ExportColorMode::Rgb => {
                     encode_raster_with(preview, enc, st.quality, st.webp_lossless).ok()?
                 }
+                mode @ (ExportColorMode::Gray
+                | ExportColorMode::Paletted
+                | ExportColorMode::BlackWhite)
+                    if ext == "png" =>
+                {
+                    encode_png_in_mode(preview, mode)?
+                }
                 ExportColorMode::Gray => encode_gray(preview, ext, st.quality).ok()?,
+                ExportColorMode::Paletted | ExportColorMode::BlackWhite => {
+                    encode_raster_with(preview, enc, st.quality, st.webp_lossless).ok()?
+                }
                 ExportColorMode::Cmyk if ext == "jpg" => tracedraw_io::cmyk_bitmap::cmyk_jpeg(
                     w,
                     h,
@@ -2055,11 +2176,16 @@ pub fn print_sheets(app: &App, st: &PrintState) -> Document {
         src.with_spread_overhangs(src.metadata.bleed)
     };
     let keep = printed_pages(app, st);
-    let mut i = 0;
-    doc.pages.retain(|_| {
-        i += 1;
-        keep.contains(&(i - 1))
-    });
+    if doc.master.iter().any(|l| l.page_range.is_some()) {
+        let indexes: Vec<_> = (0..doc.pages.len()).filter(|i| keep.contains(i)).collect();
+        doc = doc.with_master_layers_on_pages(&indexes);
+    } else {
+        let mut i = 0;
+        doc.pages.retain(|_| {
+            i += 1;
+            keep.contains(&(i - 1))
+        });
+    }
     // Selection: only the selected objects of the current page (none of
     // the master layers' others, no page background), and the area they
     // cover is the page printed: the layout, the sheet the size of the
@@ -2650,6 +2776,31 @@ pub fn inks_page(
         }
     }
     p
+}
+
+/// How far the printable objects on the pages run past their page's
+/// edges (#4071), in mm, up to the 50 mm a bleed can take: a background
+/// made larger than its page to bleed. Objects that don't touch their
+/// page (beside it on the desktop) don't count.
+pub fn page_overhang(doc: &Document) -> f64 {
+    let mut most: f64 = 0.0;
+    for page in &doc.pages {
+        let r = Rect::from_origin_size((0.0, 0.0), page.size);
+        for layer in page.layers.iter().filter(|l| l.visible && l.printable) {
+            for sh in &layer.shapes {
+                let b = sh.bounds();
+                if !b.is_finite() || b.intersect(r).area() <= 0.0 {
+                    continue;
+                }
+                let past = (r.x0 - b.x0)
+                    .max(r.y0 - b.y0)
+                    .max(b.x1 - r.x1)
+                    .max(b.y1 - r.y1);
+                most = most.max(past);
+            }
+        }
+    }
+    (most.clamp(0.0, 50.0) * 10.0).round() / 10.0
 }
 
 /// The print layout for the Print dialog's settings: the imposition, the
@@ -3838,6 +3989,38 @@ pub fn replace_properties(app: &mut App, st: &mut FindReplaceState) -> usize {
 mod tests {
     use super::{is_address, shared_file_name, why_not_send_to, SendTarget};
 
+    /// A card's background made 2.5 mm larger than its page all round
+    /// runs past the page by 2.5 mm, what Print Preview offers to print
+    /// as the bleed (#4071); objects beside the page don't count.
+    #[test]
+    fn the_overhang_is_how_far_objects_run_past_their_page() {
+        use crate::app::App;
+        use tracedraw_core::geometry::Rect;
+        use tracedraw_core::ShapeKind;
+        let mut app = App::headless();
+        app.engine
+            .run(&tracedraw_core::Command::ResizePage {
+                page: app.doc().pages[0].id,
+                size: tracedraw_core::geometry::Size::new(90.0, 50.0),
+            })
+            .expect("card");
+        assert_eq!(super::page_overhang(app.doc()), 0.0);
+        let rect = |r: Rect| ShapeKind::Rect {
+            rect: r,
+            radius: 0.0,
+            corners: None,
+        };
+        app.new_shape(rect(Rect::new(10.0, 10.0, 20.0, 20.0)))
+            .expect("inside");
+        assert_eq!(super::page_overhang(app.doc()), 0.0);
+        app.new_shape(rect(Rect::new(300.0, 0.0, 400.0, 100.0)))
+            .expect("beside");
+        assert_eq!(super::page_overhang(app.doc()), 0.0);
+        app.new_shape(rect(Rect::new(-2.5, -2.5, 92.5, 52.5)))
+            .expect("background");
+        assert_eq!(super::page_overhang(app.doc()), 2.5);
+    }
+
     /// A 180 ft x 10 ft banner at 50 dpi as JPEG: wider than a JPEG can
     /// be, so it is turned down at once with a word on what to use,
     /// before gigabytes go into drawing it whole (#3803).
@@ -4083,6 +4266,116 @@ mod tests {
         assert!(crate::ui::publish_pdf::PublishPrefs::default()
             .output_condition
             .is_empty());
+    }
+
+    fn range_export_drawing() -> (App, ShapeId) {
+        use tracedraw_core::{Color, Fill, Layer, MasterScope, Page, PageRanges, Shape};
+        let mut doc = Document::new("range book", Size::new(100.0, 200.0));
+        doc.pages[0].name = "1".into();
+        for number in 2..=3 {
+            let page = Page {
+                id: doc.ids_mut().page(),
+                name: number.to_string(),
+                size: Size::new(100.0, 200.0),
+                layers: vec![Layer::new(doc.ids_mut().layer(), "Page")],
+                guides: Vec::new(),
+                background: None,
+            };
+            doc.pages.push(page);
+        }
+        let mut layer = Layer::master(doc.ids_mut().layer(), "Range", MasterScope::All);
+        layer.page_range = Some(PageRanges::parse("2-3").expect("range"));
+        let mut shape = Shape::new(
+            doc.ids_mut().shape(),
+            ShapeKind::Rect {
+                rect: Rect::new(50.0, 1.0, 60.0, 10.0),
+                radius: 0.0,
+                corners: None,
+            },
+        );
+        shape.name = Some("range-marker".into());
+        shape.stroke = None;
+        shape.fill = Fill::Solid(Color::rgb8(255, 0, 0));
+        let marker = shape.id;
+        layer.shapes.push(shape);
+        doc.master.push(layer);
+        let mut app = App::headless();
+        app.page = doc.pages[2].id;
+        app.engine = tracedraw_core::Engine::new(doc);
+        (app, marker)
+    }
+
+    fn range_markers(page: &tracedraw_core::Page) -> usize {
+        fn count(shape: &tracedraw_core::Shape) -> usize {
+            usize::from(shape.name.as_deref() == Some("range-marker"))
+                + match &shape.kind {
+                    ShapeKind::Group { children } => children.iter().map(count).sum(),
+                    ShapeKind::ClipFrame { contents, .. } => contents.iter().map(count).sum(),
+                    _ => 0,
+                }
+        }
+        page.layers.iter().flat_map(|l| &l.shapes).map(count).sum()
+    }
+
+    #[test]
+    fn range_layers_keep_their_source_pages_in_reordered_exports() {
+        let (app, _) = range_export_drawing();
+        let state = ExportState {
+            all_pages: true,
+            page_list: true,
+            pages: "3, 1, 2".into(),
+            ..Default::default()
+        };
+        let (out, _) = export_document(&app, &state);
+        assert_eq!(
+            out.pages
+                .iter()
+                .map(|p| p.name.as_str())
+                .collect::<Vec<_>>(),
+            ["3", "1", "2"]
+        );
+        assert_eq!(
+            out.pages.iter().map(range_markers).collect::<Vec<_>>(),
+            [1, 0, 1]
+        );
+        assert!(out.master.is_empty());
+        assert!(app.doc().master[0].page_range.is_some());
+    }
+
+    #[test]
+    fn range_layers_keep_their_source_pages_in_subset_prints() {
+        let (app, marker) = range_export_drawing();
+        let state = PrintState {
+            range: 2,
+            pages: "3, 1".into(),
+            ..Default::default()
+        };
+        let out = print_sheets(&app, &state);
+        assert_eq!(out.pages.len(), 2);
+        assert_eq!(
+            out.pages.iter().map(range_markers).collect::<Vec<_>>(),
+            [0, 1]
+        );
+        let mut app = app;
+        app.selection = vec![marker];
+        let selection = print_sheets(
+            &app,
+            &PrintState {
+                range: 3,
+                ..Default::default()
+            },
+        );
+        assert_eq!(selection.pages.len(), 1);
+        assert_eq!(range_markers(&selection.pages[0]), 1);
+    }
+
+    #[test]
+    fn range_layers_reach_cmyk_subpage_renders() {
+        let (app, _) = range_export_drawing();
+        let (w, h, pixels) =
+            cmyk_pixels(app.doc(), app.doc().pages[1].id, 25.4, true).expect("CMYK page");
+        let pixel = ((h - 5) * w + 55) as usize * 4;
+        assert!(pixels[pixel..pixel + 4].iter().any(|ink| *ink > 0));
     }
 
     /// Separations to files: each plate in a document of its own named
@@ -5413,6 +5706,24 @@ mod tests {
             image::open(&png).unwrap().color(),
             image::ColorType::Rgb8 | image::ColorType::Rgba8
         ));
+        // PNG in grey, indexed or black and white (#4314).
+        let gray = dir.join("g.png");
+        export(&mut app, &gray, &st(2, 2)).expect("grey png");
+        assert!(matches!(
+            image::open(&gray).unwrap().color(),
+            image::ColorType::L8 | image::ColorType::La8
+        ));
+        let indexed = dir.join("i.png");
+        export(&mut app, &indexed, &st(2, 3)).expect("indexed png");
+        let bytes = std::fs::read(&indexed).unwrap();
+        assert!(bytes.windows(4).any(|w| w == b"PLTE"), "a palette");
+        let red = image::open(&indexed).unwrap().to_rgba8();
+        let p = red.get_pixel(red_at.0, red_at.1).0;
+        assert!(p[0] > 200 && p[1] < 60, "{p:?}");
+        let bw = dir.join("b.png");
+        export(&mut app, &bw, &st(2, 4)).expect("black and white png");
+        let img = image::open(&bw).unwrap().to_luma8();
+        assert!(img.pixels().all(|p| p.0[0] == 0 || p.0[0] == 255));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -5882,6 +6193,7 @@ mod tests {
                     offset: tracedraw_core::geometry::Vec2::new(2.0, -2.0),
                     color: Color::cmyk_pct(100.0, 0.0, 0.0, 0.0),
                     gap: 0.0,
+                    expand: 0.0,
                 });
             },
         )
@@ -6983,6 +7295,44 @@ mod tests {
         // from the start's centre (30, 110) to the end's (220, 140).
         let want = tracedraw_core::geometry::Point::new(172.5 - bounds.x0, 132.5 - bounds.y0);
         assert!((last - want).hypot() < 1e-6, "{last:?}, not {want:?}");
+    }
+
+    /// #4256: an EPS exported with Selected only holds the selected
+    /// object alone, sized to it.
+    #[test]
+    fn an_eps_of_the_selection_holds_only_the_selection() {
+        let mut app = App::headless();
+        let a = app
+            .new_shape(ShapeKind::Rect {
+                rect: Rect::new(10.0, 10.0, 40.0, 30.0),
+                radius: 0.0,
+                corners: None,
+            })
+            .expect("a");
+        app.new_shape(ShapeKind::Ellipse {
+            rect: Rect::new(100.0, 100.0, 160.0, 150.0),
+            arc: None,
+        })
+        .expect("b");
+        let dir = std::env::temp_dir().join(format!("tracedraw-4256-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let eps = EXPORT_FORMATS.iter().position(|f| f.1 == "eps").unwrap();
+        app.selection = vec![a];
+        let st = |sel: bool| ExportState {
+            format: eps,
+            selection_only: sel,
+            ..ExportState::default()
+        };
+        export(&mut app, &dir.join("sel.eps"), &st(true)).expect("selection");
+        export(&mut app, &dir.join("all.eps"), &st(false)).expect("page");
+        let sel = std::fs::read_to_string(dir.join("sel.eps")).unwrap();
+        let all = std::fs::read_to_string(dir.join("all.eps")).unwrap();
+        let curves = |t: &str| t.split_whitespace().filter(|w| *w == "c").count();
+        assert!(curves(&sel) < curves(&all), "{sel}");
+        let bbox = |t: &str| t.lines().find(|l| l.starts_with("%%BoundingBox:")).map(str::to_string);
+        assert_ne!(bbox(&sel), bbox(&all));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// A rectangle with a 2 mm outline exported alone: the export takes

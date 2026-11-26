@@ -93,3 +93,15 @@ ferramentas, e um clique dá aquela ao comando, nos menus e nas barras;
   início) ou abrir o [[options.palette_context_menu]].
 
 Veja [Paletas de cores](../color/palettes.md).
+
+## Menus de contexto {#context-menus}
+
+Em Personalização, escolha [[options.context_menus]] para gerenciar separadamente os 32 locais de menus de contexto. Selecione um local com [[options.context_menu_scene]], use [[options.context_menu_search]] para procurar uma operação e desmarque sua caixa para ocultá-la nesse local. As operações continuam nesta lista mesmo quando a seleção atual não pode usá-las.
+
+Todas as operações ficam visíveis por padrão. Cada local tem suas próprias escolhas: ocultar uma operação de objeto na tela de desenho não a oculta no painel Objetos. Listas dinâmicas, como camadas de destino e coleções de fontes, são gerenciadas como uma única operação, de modo que alterar seus nomes não redefine suas escolhas.
+
+[[options.context_menu_reset]] restaura o menu selecionado e [[options.context_menu_reset_all]] restaura todos os menus. [[dialog.ok]] salva as escolhas nas configurações do aplicativo; [[dialog.cancel]], Escape ou o botão de fechar restaura as escolhas existentes quando as Opções foram abertas. Os menus principais, os atalhos e a pesquisa de comandos continuam oferecendo os comandos originais.
+
+Expanda um submenu para ver seus itens recuados. Arraste a alça de uma linha ou use [[options.context_menu_move_up]] e [[options.context_menu_move_down]] para reordenar itens do mesmo nível. Mover um menu pai leva seus itens junto; não é possível mover um item para outro menu pai. A pesquisa mantém visíveis os menus pais dos resultados. Restaurar um menu redefine a visibilidade e a ordem; cancelar as Opções retorna ambas ao estado em que estavam ao abrir a caixa de diálogo.
+
+O menu das amostras da paleta do documento e sua entrada no Gerenciador de paletas têm configurações separadas. Os destinos dinâmicos mantêm sua própria ordem; a lista de estilos do documento conserva sua posição entre as ações estáticas de Estilos de objeto. Novas operações adicionadas em versões posteriores permanecem visíveis, após os itens salvos do mesmo nível.

@@ -4,6 +4,7 @@
 //! Below, the folder the files go to and Export, which writes every
 //! ticked asset at once.
 
+use crate::ui::btn_icons::IconUi;
 use crate::app::App;
 use crate::export_assets::AssetSource;
 use crate::i18n::{tr, trf};
@@ -37,13 +38,16 @@ fn color_mode_combo(
     let shown = EXPORT_COLOR_MODES
         .get(*mode)
         .copied()
+        .filter(|m| m.offered_for(ext))
         .unwrap_or(ExportColorMode::Rgb);
     crate::ui::keynav::ComboBox::from_id_salt(salt)
         .selected_text(shown.label())
         .width(64.0)
         .show_ui(ui, |ui| {
             for (i, m) in EXPORT_COLOR_MODES.iter().enumerate() {
-                ui.selectable_value(mode, i, m.label());
+                if m.offered_for(ext) {
+                    ui.selectable_value(mode, i, m.label());
+                }
             }
         })
         .response
@@ -74,7 +78,7 @@ pub fn export_docker(app: &mut App, ui: &mut Ui) {
     let drawing = app.has_document() && !app.show_welcome;
     ui.horizontal_wrapped(|ui| {
         if ui
-            .add_enabled(drawing, egui::Button::new(tr("export_docker.add_pages")))
+            .add_enabled(drawing, crate::ui::btn_icons::Ib::new("export_docker.add_pages"))
             .rich_tip(tr("export_docker.add_pages_tip"))
             .clicked()
         {
@@ -83,13 +87,33 @@ pub fn export_docker(app: &mut App, ui: &mut Ui) {
         if ui
             .add_enabled(
                 drawing && !app.selection.is_empty(),
-                egui::Button::new(tr("export_docker.add_selection")),
+                crate::ui::btn_icons::Ib::new("export_docker.add_selection"),
             )
             .rich_tip(tr("export_docker.add_selection_tip"))
             .clicked()
         {
             app.add_selection_asset();
         }
+    });
+    // Slices: the area of each selected object, whole or cut into a grid,
+    // with everything that shows in it.
+    ui.horizontal(|ui| {
+        if ui
+            .add_enabled(
+                drawing && !app.selection.is_empty(),
+                crate::ui::btn_icons::Ib::new("export_docker.add_slices"),
+            )
+            .rich_tip(tr("export_docker.add_slices_tip"))
+            .clicked()
+        {
+            let (r, c) = app.slice_grid;
+            app.add_slice_assets(r, c);
+        }
+        ui.add(NumField::new(&mut app.slice_grid.0).range(1..=50))
+            .rich_tip(crate::ui::tips::keyed("export_docker.slice_rows"));
+        ui.label("x");
+        ui.add(NumField::new(&mut app.slice_grid.1).range(1..=50))
+            .rich_tip(crate::ui::tips::keyed("export_docker.slice_cols"));
     });
     ui.horizontal(|ui| {
         ui.label(
@@ -186,6 +210,13 @@ pub fn export_docker(app: &mut App, ui: &mut Ui) {
                                 "export_docker.objects_n",
                                 &[("n", &shapes.len().to_string())],
                             ),
+                            AssetSource::Area { rect, .. } => trf(
+                                "export_docker.area_n",
+                                &[(
+                                    "n",
+                                    &format!("{:.1} x {:.1} mm", rect.width(), rect.height()),
+                                )],
+                            ),
                         };
                         if ui
                             .link(egui::RichText::new(what).size(11.0))
@@ -216,6 +247,11 @@ pub fn export_docker(app: &mut App, ui: &mut Ui) {
             }
             app.select(shapes);
         }
+        Some(AssetSource::Area { page, .. }) => {
+            if let Some(idx) = app.doc().pages.iter().position(|pg| pg.id == page) {
+                app.goto_page(idx);
+            }
+        }
         None => {}
     }
 
@@ -232,7 +268,7 @@ pub fn export_docker(app: &mut App, ui: &mut Ui) {
                 ui.label(egui::RichText::new(folder).size(11.0))
                     .rich_tip(tr("export_docker.folder"));
                 if ui
-                    .button(tr("export_docker.browse"))
+                    .ibutton("export_docker.browse")
                     .rich_tip(crate::ui::tips::keyed("export_docker.browse"))
                     .clicked()
                 {
@@ -256,7 +292,7 @@ pub fn export_docker(app: &mut App, ui: &mut Ui) {
     if ui
         .add_enabled(
             count > 0,
-            egui::Button::new(trf("export_docker.export", &[("n", &count.to_string())])),
+            crate::ui::btn_icons::Ib::with_text("export_docker.export", trf("export_docker.export", &[("n", &count.to_string())])),
         )
         .rich_tip(crate::ui::tips::pair(
             "export_docker.export_tip",

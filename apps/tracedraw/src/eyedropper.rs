@@ -62,6 +62,17 @@ fn shows_other_than_its_fill(s: &tracedraw_core::Shape) -> bool {
     (several && !matches!(s.kind, ShapeKind::Bitmap { .. })) || s.opacity < 1.0 || effects
 }
 
+/// Whether every colour of a gradient fill is a CMYK one: what it shows
+/// is read back in CMYK (#4403).
+fn fill_is_cmyk(f: &Fill) -> bool {
+    match f {
+        Fill::Fountain(g) => {
+            !g.stops.is_empty() && g.stops.iter().all(|s| matches!(s.color, Color::Cmyk { .. }))
+        }
+        _ => false,
+    }
+}
+
 /// The CMYK inks of the pixels around (`fx`, `fy`) of a `w` x `h` picture
 /// in `planes` (its cyan, magenta, yellow and black channels one under
 /// the other, 255 full ink), averaged over a box of `n` x `n` pixels.
@@ -409,7 +420,61 @@ impl App {
         outline: bool,
         decode: &mut dyn FnMut(&tracedraw_core::SharedBytes) -> Option<Picture>,
     ) -> Option<Color> {
-        let s = if outline {
+        self.sample_color_from(None, p, outline, decode)
+    }
+
+    /// The colour at `p` of the topmost picture there, whatever objects
+    /// lie over it (#4083: Alt+click with the Colour Eyedropper, to read
+    /// the photo being traced from under the shapes drawn on it). `None`
+    /// with no picture at `p`.
+    pub fn sample_picture_beneath(&self, p: Point) -> Option<Color> {
+        fn walk(s: &tracedraw_core::Shape, parent: Affine, p: Point) -> Option<tracedraw_core::Shape> {
+            if !s.visible {
+                return None;
+            }
+            let t = parent * s.transform;
+            match &s.kind {
+                ShapeKind::Bitmap { rect, .. } => {
+                    rect.contains(t.inverse() * p).then(|| {
+                        let mut c = s.clone();
+                        c.transform = t;
+                        c
+                    })
+                }
+                ShapeKind::Group { children } => children.iter().rev().find_map(|c| walk(c, t, p)),
+                ShapeKind::ClipFrame { contents, .. } => {
+                    contents.iter().rev().find_map(|c| walk(c, t, p))
+                }
+                _ => None,
+            }
+        }
+        let leaf = self
+            .page_layers()
+            .into_iter()
+            .rev()
+            .filter(|l| l.visible)
+            .flat_map(|l| l.shapes.iter().rev())
+            .find_map(|s| walk(s, Affine::IDENTITY, p))?;
+        self.sample_color_from(Some(leaf), p, false, &mut |png| {
+            image::load_from_memory(png)
+                .ok()
+                .map(|i| std::sync::Arc::new(i.to_rgba8()))
+        })
+    }
+
+    /// [`App::sample_color_with`] reading `leaf` (page space) when given,
+    /// its own pixels, not what is drawn over it.
+    fn sample_color_from(
+        &self,
+        leaf: Option<tracedraw_core::Shape>,
+        p: Point,
+        outline: bool,
+        decode: &mut dyn FnMut(&tracedraw_core::SharedBytes) -> Option<Picture>,
+    ) -> Option<Color> {
+        let beneath = leaf.is_some();
+        let s = if let Some(s) = leaf {
+            s
+        } else if outline {
             self.leaf_to_read(p)?
         } else {
             match self.leaf_to_read_color(p) {
@@ -425,12 +490,19 @@ impl App {
             if let Some(st) = &s.stroke {
                 return Some(st.color);
             }
-        } else if shows_other_than_its_fill(s) {
+        } else if !beneath && shows_other_than_its_fill(s) {
             // A gradient, a transparency, a merge mode or an effect: the
             // colour is read as the drawing shows it there, with what
             // shows through, not as the object's first colour (#4051).
             if let Some(c) = self.shown_color_at(p) {
-                return Some(c);
+                return Some(if fill_is_cmyk(&s.fill) {
+                    // A gradient of CMYK colours reads in CMYK, the
+                    // model it was made in, not as the screen's RGB
+                    // (#4403).
+                    c.convert_to("CMYK")
+                } else {
+                    c
+                });
             }
         }
         if let ShapeKind::Bitmap {
@@ -778,15 +850,26 @@ impl App {
                     self.eyedropper_apply = false;
                 }
             } else if let Some(c) = self.sample_color_at(p, shift) {
-                self.took_sampled_color(c, shift);
+                // Read from an object of the selection (the picture just
+                // placed, still selected): the colour is kept for Apply,
+                // not put back onto that selection. On a picture it went
+                // in as the picture's fill, the picture itself changed
+                // and nothing was left to apply elsewhere (#4166).
+                let from_selection = self
+                    .hit_test_to_read(p)
+                    .is_some_and(|id| self.selection.contains(&id));
+                if from_selection {
+                    self.keep_sampled_color(c);
+                } else {
+                    self.took_sampled_color(c, shift);
+                }
             }
         }
     }
 
-    /// A colour the Color Eyedropper sampled, from an object or from the
-    /// window's pixels (#3040): it is kept, the tool goes on to Apply, and
-    /// with objects selected it goes straight onto them.
-    pub fn took_sampled_color(&mut self, c: Color, shift: bool) {
+    /// The Color Eyedropper's sampled colour kept for Apply and shown in
+    /// the Color docker, without going onto the selection.
+    fn keep_sampled_color(&mut self, c: Color) {
         self.eyedropper_color = Some(c);
         self.eyedropper_apply = true;
         crate::ui::color_docker::take_sampled_color(self, c);
@@ -794,6 +877,13 @@ impl App {
             "status.sampled_color",
             &[("c", &crate::app::color_description(c))],
         );
+    }
+
+    /// A colour the Color Eyedropper sampled, from an object or from the
+    /// window's pixels (#3040): it is kept, the tool goes on to Apply, and
+    /// with objects selected it goes straight onto them.
+    pub fn took_sampled_color(&mut self, c: Color, shift: bool) {
+        self.keep_sampled_color(c);
         // With objects selected the colour goes straight onto them, as a
         // palette swatch would: the fill, or the outline with Shift, in
         // one undo step (#2551).
@@ -943,6 +1033,28 @@ mod tests {
         });
         app.select(Vec::new());
         assert_eq!(app.sample_color_at(Point::new(80.0, 45.0), false), Some(c));
+        // #4403: a gradient of CMYK colours reads in CMYK, its cyan end
+        // mostly cyan ink.
+        let ramp = rect(&mut app, Rect::new(0.0, 70.0, 100.0, 90.0));
+        app.run(Command::SetFill {
+            shapes: vec![ramp],
+            fill: Fill::Fountain(Fountain::two(
+                FountainKind::Linear,
+                c,
+                Color::Cmyk {
+                    c: 0.0,
+                    m: 0.0,
+                    y: 1.0,
+                    k: 0.0,
+                },
+                0.0,
+            )),
+        });
+        app.select(Vec::new());
+        match app.sample_color_at(Point::new(5.0, 80.0), false) {
+            Some(Color::Cmyk { c, y, .. }) => assert!(c > 0.6 && y < 0.4, "{c} {y}"),
+            other => panic!("not CMYK: {other:?}"),
+        }
     }
 
     /// An object with a Hue/Saturation/Lightness effect gives the colour
@@ -1491,6 +1603,73 @@ mod tests {
         assert!(!app.can_clear_transparency());
     }
 
+    /// A picture covered by a filled shape gives its pixels to the Alt
+    /// reading, the shape's own colour to the usual one (#4083: tracing a
+    /// photo by hand, the photo's colour could not be read from under the
+    /// shapes drawn over it). With no picture there, nothing.
+    #[test]
+    fn a_picture_under_a_shape_gives_its_colour_to_the_alt_reading() {
+        let mut app = App::headless();
+        let img = image::RgbaImage::from_pixel(20, 20, image::Rgba([0, 160, 0, 255]));
+        let id = app.place_image_at(img, None, None).expect("picture");
+        let b = app.doc().find_shape(id).unwrap().bounds();
+        let over = rect(&mut app, b.inflate(1.0, 1.0));
+        app.run(Command::SetFill {
+            shapes: vec![over],
+            fill: Fill::Solid(Color::rgb8(250, 0, 0)),
+        });
+        app.select(Vec::new());
+        let p = b.center();
+        assert_eq!(app.sample_color_at(p, false), Some(Color::rgb8(250, 0, 0)));
+        assert_eq!(app.sample_picture_beneath(p), Some(Color::rgb8(0, 160, 0)));
+        let off = Point::new(b.x1 + 50.0, b.y1 + 50.0);
+        assert_eq!(app.sample_picture_beneath(off), None);
+    }
+
+    /// Tracing a photo: a plain click reads what the drawing shows there.
+    /// Inside an outline drawn over the photo (no fill) it is the photo's
+    /// colour; through a half transparent shape, the mix seen; on an
+    /// opaque shape, the shape's own colour, and Alt reads the photo
+    /// under it (#4083).
+    #[test]
+    fn a_plain_click_reads_what_shows_over_a_traced_photo() {
+        let mut app = App::headless();
+        let green = Color::rgb8(0, 160, 0);
+        let img = image::RgbaImage::from_pixel(40, 40, image::Rgba([0, 160, 0, 255]));
+        let id = app.place_image_at(img, None, None).expect("picture");
+        let b = app.doc().find_shape(id).unwrap().bounds();
+        let p = b.center();
+        // An outline only, over the photo.
+        let outline = rect(&mut app, b.inflate(-b.width() / 4.0, -b.height() / 4.0));
+        app.run(Command::SetFill {
+            shapes: vec![outline],
+            fill: Fill::None,
+        });
+        app.select(Vec::new());
+        assert_eq!(app.sample_color_at(p, false), Some(green));
+        // Filled red, half transparent: the mix shows.
+        app.run(Command::SetFill {
+            shapes: vec![outline],
+            fill: Fill::Solid(Color::rgb8(255, 0, 0)),
+        });
+        app.run(Command::SetOpacity {
+            shapes: vec![outline],
+            opacity: 0.5,
+        });
+        app.select(Vec::new());
+        let mixed = app.sample_color_at(p, false).expect("a colour");
+        assert_ne!(mixed, green);
+        assert_ne!(mixed, Color::rgb8(255, 0, 0));
+        // Opaque: the shape's colour; Alt reads the photo.
+        app.run(Command::SetOpacity {
+            shapes: vec![outline],
+            opacity: 1.0,
+        });
+        app.select(Vec::new());
+        assert_eq!(app.sample_color_at(p, false), Some(Color::rgb8(255, 0, 0)));
+        assert_eq!(app.sample_picture_beneath(p), Some(green));
+    }
+
     /// Pictures give their pixels: placed alone, in a group, inside a clip
     /// frame, and kept as JPEG bytes (#403: pictures gave no colour).
     #[test]
@@ -1773,6 +1952,33 @@ mod tests {
         assert_eq!(
             app.sample_color_at(Point::new(50.0, 70.0), false),
             Some(Color::rgb8(200, 0, 0))
+        );
+    }
+
+    /// #4166: a colour read from the picture that is selected (just
+    /// placed) is kept for Apply; the picture is left as it is.
+    #[test]
+    fn a_colour_read_from_the_selected_picture_is_kept_for_apply() {
+        let mut app = App::headless();
+        app.settings.autocorrect.enabled = false;
+        let img = image::RgbaImage::from_pixel(20, 20, image::Rgba([255, 0, 0, 255]));
+        let pic = app.place_image_at(img, None, None).expect("picture");
+        let b = app.doc().find_shape(pic).unwrap().bounds();
+        let target = rect(&mut app, Rect::new(b.x1 + 10.0, b.y0, b.x1 + 20.0, b.y1));
+        app.select(vec![pic]);
+        let before = app.doc().find_shape(pic).unwrap().clone();
+        app.eyedropper_click(b.center(), false, false, false);
+        let red = Color::rgb8(255, 0, 0);
+        assert_eq!(app.eyedropper_color, Some(red));
+        assert!(app.eyedropper_apply);
+        let after = app.doc().find_shape(pic).unwrap();
+        assert_eq!(after.fill, before.fill, "the picture keeps its fill");
+        // Applied to the other object.
+        let c = app.doc().find_shape(target).unwrap().bounds().center();
+        app.eyedropper_click(c, false, false, false);
+        assert_eq!(
+            app.doc().find_shape(target).unwrap().fill,
+            Fill::Solid(red)
         );
     }
 

@@ -245,6 +245,11 @@ pub struct FormatPrefs {
     pub output_condition: String,
     /// PDF bleed, mm.
     pub pdf_bleed_mm: f64,
+    /// PDF picture compression and target size (#4265).
+    pub pdf_compress: bool,
+    pub pdf_quality: u8,
+    pub pdf_target: bool,
+    pub pdf_target_mb: f64,
     /// The unit of the bitmap size fields (#617).
     pub export_size_unit: usize,
     /// Bitmaps: the scale of the artwork (1 = as drawn, #617).
@@ -308,6 +313,10 @@ impl Default for FormatPrefs {
             pdf_standard: st.pdf_standard,
             output_condition: st.output_condition,
             pdf_bleed_mm: st.bleed_mm,
+            pdf_compress: st.pdf_compress,
+            pdf_quality: st.pdf_quality,
+            pdf_target: st.pdf_target,
+            pdf_target_mb: st.pdf_target_mb,
             export_size_unit: st.size_unit,
             export_scale: st.scale,
             export_color_mode: st.color_mode,
@@ -672,7 +681,7 @@ impl LayoutPreset {
         }
         st.booklet_binding = self.booklet_binding.min(1);
         st.signature_sheets = self.signature_sheets.clamp(1, 32);
-        st.booklet_up = self.booklet_up.min(2);
+        st.booklet_up = self.booklet_up.min(3);
         st.creep = num(self.creep, 0.0, 20.0, 0.0);
         st.booklet_gap = num(self.booklet_gap, 0.0, 100.0, 0.0);
         st.bleed = self.bleed;
@@ -1033,6 +1042,14 @@ impl FormatPrefs {
             } else {
                 d.bleed_mm
             },
+            pdf_compress: self.pdf_compress,
+            pdf_quality: self.pdf_quality.clamp(1, 100),
+            pdf_target: self.pdf_target,
+            pdf_target_mb: if self.pdf_target_mb.is_finite() && self.pdf_target_mb > 0.0 {
+                self.pdf_target_mb.min(10_000.0)
+            } else {
+                d.pdf_target_mb
+            },
             remember: self.remember_last,
             size_unit: if self.export_size_unit < EXPORT_SIZE_UNITS.len() {
                 self.export_size_unit
@@ -1066,6 +1083,10 @@ impl FormatPrefs {
         self.pdf_standard = st.pdf_standard;
         self.output_condition = st.output_condition.clone();
         self.pdf_bleed_mm = st.bleed_mm;
+        self.pdf_compress = st.pdf_compress;
+        self.pdf_quality = st.pdf_quality;
+        self.pdf_target = st.pdf_target;
+        self.pdf_target_mb = st.pdf_target_mb;
         self.export_size_unit = st.size_unit;
         self.export_scale = st.scale;
         self.export_color_mode = st.color_mode;
@@ -1144,6 +1165,10 @@ pub struct WarningPrefs {
     /// drawn on the CPU and slow while a graphics card is idle
     /// (`ui::gpu_hint`); desktop only.
     pub hardware_acceleration: bool,
+    /// Before the image editing mode's Finish puts a picture's layers
+    /// together for good (they are kept neither in memory nor in the
+    /// file, #4112).
+    pub pixel_flatten: bool,
 }
 
 impl Default for WarningPrefs {
@@ -1156,6 +1181,7 @@ impl Default for WarningPrefs {
             accept_missing_fonts_keep: true,
             shelf_remove: true,
             hardware_acceleration: true,
+            pixel_flatten: true,
         }
     }
 }
@@ -1316,9 +1342,25 @@ impl CurvePrefs {
     }
 
     /// The simplification tolerance of a freehand stroke in screen
-    /// pixels: 0.2 at no smoothing, 1.3 at the default 50, 2.4 at 100.
+    /// pixels: 0.2 at no smoothing, 1.3 at the default 50, then faster
+    /// up to 4 at 100, where the stroke is fitted with long smooth
+    /// curves (#4068; it stopped at 2.4, still showing the hand's
+    /// wobbles at the top of the scale).
     pub fn freehand_tolerance_px(&self) -> f64 {
-        0.2 + f64::from(self.smoothing.min(100)) / 100.0 * 2.2
+        let s = f64::from(self.smoothing.min(100));
+        if s <= 50.0 {
+            0.2 + s / 100.0 * 2.2
+        } else {
+            1.3 + (s - 50.0) / 50.0 * 2.7
+        }
+    }
+
+    /// Above 50, how far (screen pixels, the spread of a Gaussian along
+    /// the stroke) the drawn points are evened out before the stroke is
+    /// fitted: 0 up to 50, 6 at 100 (#4068). `None` when they are not.
+    pub fn freehand_presmooth_px(&self) -> Option<f64> {
+        let s = f64::from(self.smoothing.min(100));
+        (s > 50.0).then(|| (s - 50.0) / 50.0 * 6.0)
     }
 
     /// The turn, degrees, past which a freehand node is a cusp; `None`

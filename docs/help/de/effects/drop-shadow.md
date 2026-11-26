@@ -40,3 +40,8 @@ In der Eigenschaftsleiste:
 [[menu.object > menu.object.clear_effect]] entfernt den Schatten. Um den
 Schatten eines anderen Objekts zu kopieren, verwenden Sie
 [[menu.object > menu.object.copy_effect > menu.object.copy_shadow_from]].
+
+Wählen Sie einen abgetrennten Schatten aus. Ziehen Sie mit
+[[tool.interactive_fill]], um einen Farbverlauf anzuwenden, oder mit
+[[tool.transparency]], um die Deckkraft entlang der Ziehrichtung zu ändern.
+Die weichen Schattenkanten bleiben erhalten.

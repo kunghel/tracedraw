@@ -7,6 +7,7 @@
 //! letting go of the selection goes back to the tool's page; a bar at the
 //! bottom goes home, back and forward.
 
+use crate::ui::btn_icons::IconUi;
 use crate::app::App;
 use crate::i18n::tr;
 use crate::theme::{self, Tokens};
@@ -683,7 +684,7 @@ fn ai_topic(app: &mut App, ui: &mut Ui) {
     }
     ui.add_space(4.0);
     if ui
-        .button(tr("aiui.set_up"))
+        .ibutton("aiui.set_up")
         .rich_tip(crate::ui::tips::keyed("aiui.set_up"))
         .clicked()
     {

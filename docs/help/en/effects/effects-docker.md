@@ -1,5 +1,26 @@
 # The Effects panel
 
+## Round corners and Slice {#outline-effects}
+
+Two entries of the layer effects at the top of the panel rebuild the
+outline as it is drawn while the object itself stays as it was, so a text
+can still be edited:
+
+- **[[effect.round_corners]]** rounds every corner of a curve, of the curves
+  in a group or of the letters of a text with one radius. **Up to** limits
+  it to corners sharper than an angle (180° takes every corner), and the
+  **Corners** buttons take all of them, only the outer ones or only the
+  inner ones.
+- **[[effect.slice]]** cuts the object into parallel strips. Set how many
+  strips, the angle of the cuts and the gap between them; **Shift** slides
+  each strip along its cut, one way and the other with **Alternate** or by a
+  random amount otherwise; **Turn** turns each strip a little, at random;
+  **Seed** picks another random variation; **Round** rounds the corners of
+  every strip.
+
+[[menu.object.convert_to_curves]] (or Break Apart) makes the result plain
+curves.
+
 An object can carry several live effects at once, applied one after the
 other. The [[docker.effects]] panel lists the effects of the selected object in
 the order they apply, from the top down. Open it with
@@ -11,15 +32,18 @@ the order they apply, from the top down. Open it with
 
 Each row of the list has:
 
-- a check box that turns the effect on or off. An effect turned off keeps its
+- an eye that turns the effect on or off. An effect turned off keeps its
   place and settings, but is not drawn, exported or printed;
 - the effect's name, dimmed while it is off;
 - up and down arrows that move the effect earlier or later, which changes the
   result (for example a contour of an envelope, or an envelope of a contour);
+- a pencil that opens the panel that sets the effect (its own panel, such as
+  Contour or Envelope, else this one);
 - a cross that removes the effect.
 
 Every change is one undo step. Each effect is still edited with its own tool
-or panel.
+or panel. The **FX** section of the Properties panel shows the same
+rows, above the object's bitmap effects.
 
 Above the list, the layer effects are switched on with their boxes and set on
 the right, live on the page. **Transform** draws copies of the object,
@@ -86,6 +110,14 @@ deeper, rounder edge.
   an object of the group and the shapes flow together or apart. Set
   **Smooth** in the layer effects at the top of the panel; on any object,
   **Offset** grows the outline (or shrinks it, below zero) live.
+  To add objects to a merge, select the merged group and the objects and
+  choose Merge Shapes again: they join the same merge. A copy of an object
+  of the merge, made with **Duplicate** (Ctrl+D) or copied and pasted
+  while that object is selected, stays in the merge too. To take an
+  object out of the merge, drag its row in the **Objects** panel out of
+  the group; to remove it, Ctrl+click it and press Delete.
+  **Convert to Curves** (Ctrl+Q) bakes the merge into one curve in the
+  same paint.
 - [[menu.effects.picker]] shows a list of effects to apply to the selection.
 - [[menu.object > menu.object.clear_effect]] removes the effect of the
   selection.

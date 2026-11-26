@@ -25,9 +25,14 @@
   the arrow, dragging, or pressing and holding the button for 0.4 s
   opens the flyout; a click on the button's main area picks the tool it
   shows and closes the open flyout, including after hovering from another
-  group. While a flyout is open, hovering another flyout button opens that
-  one instead; moving away from the toolbox or clicking elsewhere closes
-  it.
+  group. While a flyout is open, resting the pointer on another flyout
+  button for a moment (0.35 s) opens that one instead; only passing over
+  it keeps the open list. On its way from the button to the open list
+  (inside the wedge from where it left the button to the list) the
+  pointer may cross other buttons as slowly as it likes: the rest only
+  counts once it stops (#4081,
+  `ui::toolbox::tests::heading_for_the_open_list_never_swaps_it`).
+  Moving away from the toolbox or clicking elsewhere closes it.
 - A flyout lists its tools vertically: a check mark beside the tool the
   button shows, the icon, the name and the shortcut at the right.
   Separators split Pick and Freehand Pick from Free Transform; Crop, Knife

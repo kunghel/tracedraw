@@ -151,7 +151,7 @@ fn iso_faces(app: &mut App, ui: &mut Ui) {
             .show(ui, |ui| {
                 for (i, face) in IsoFace::ALL.into_iter().enumerate() {
                     if ui
-                        .add_sized([70.0, 22.0], egui::Button::new(tr(face.key())))
+                        .add_sized([70.0, 22.0], crate::ui::btn_icons::Ib::new(face.key()))
                         .rich_tip(tr("docker.iso_faces_tip"))
                         .clicked()
                     {
@@ -162,9 +162,9 @@ fn iso_faces(app: &mut App, ui: &mut Ui) {
                     }
                 }
             });
-        let width = ui.available_width().min(218.0);
+        let width = crate::ui::docker_form::fit_w(ui, 218.0);
         if ui
-            .add_sized([width, 22.0], egui::Button::new(tr("docker.iso_reset")))
+            .add_sized([width, 22.0], crate::ui::btn_icons::Ib::new("docker.iso_reset"))
             .rich_tip(tr("docker.iso_reset_tip"))
             .clicked()
         {
@@ -936,7 +936,7 @@ pub fn transformations(app: &mut App, ui: &mut Ui) {
     let width = ui.available_width();
     let clicked = ui
         .add_enabled_ui(has, |ui| {
-            ui.add_sized([width, 26.0], egui::Button::new(tr("docker.apply")))
+            ui.add_sized([width, 26.0], crate::ui::btn_icons::Ib::new("docker.apply"))
                 .rich_tip(crate::ui::tips::pair(
                     "docker.apply",
                     "docker.tf_apply_desc",

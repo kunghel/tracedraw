@@ -146,7 +146,7 @@ pub fn draw_inside_toggle(app: &mut App, ui: &mut Ui) {
     let r = ui
         .add_enabled(
             usable,
-            egui::Button::selectable(on, tr("toolbar.draw_inside")),
+            crate::ui::btn_icons::Ib::selectable(on, "toolbar.draw_inside"),
         )
         .on_hover_text(tip.clone())
         .on_disabled_hover_text(tip);
@@ -155,10 +155,7 @@ pub fn draw_inside_toggle(app: &mut App, ui: &mut Ui) {
     }
     let tip = crate::ui::tips::keyed("toolbar.draw_behind");
     if ui
-        .add(egui::Button::selectable(
-            app.draw_behind,
-            tr("toolbar.draw_behind"),
-        ))
+        .add(crate::ui::btn_icons::Ib::selectable(app.draw_behind, "toolbar.draw_behind"))
         .on_hover_text(tip)
         .clicked()
     {

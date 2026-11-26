@@ -9,6 +9,7 @@
 //! the picture. The picture shows alone, upright, at a zoom of its own.
 //! See docs/behavior/edit-inside-picture.md.
 
+use crate::ui::btn_icons::IconUi;
 use crate::app::{App, DockerTab};
 use crate::i18n::tr;
 use crate::pixel_edit::PixelTool;
@@ -23,12 +24,13 @@ use egui::{Color32, Rect, Sense, Stroke, Ui, Vec2};
 /// another is picked from its flyout. Pick first, then the selections,
 /// the view, the retouching, the distortions, the paint, the
 /// transparency and the colours.
-pub const GROUPS: [&[PixelTool]; 13] = [
+pub const GROUPS: [&[PixelTool]; 14] = [
     &[PixelTool::Move],
     &[
         PixelTool::RectSelect,
         PixelTool::EllipseSelect,
         PixelTool::FreehandMask,
+        PixelTool::PenMask,
         PixelTool::Lasso,
         PixelTool::EdgeMask,
         PixelTool::MagicWand,
@@ -67,6 +69,7 @@ pub const GROUPS: [&[PixelTool]; 13] = [
     ],
     &[PixelTool::Eraser],
     &[PixelTool::Shape],
+    &[PixelTool::Text],
     &[
         PixelTool::LayerFade,
         PixelTool::ColorToClear,
@@ -78,11 +81,11 @@ pub const GROUPS: [&[PixelTool]; 13] = [
 ];
 
 /// A line after these groups.
-const BREAKS: [usize; 4] = [1, 2, 5, 8];
+const BREAKS: [usize; 4] = [1, 2, 5, 9];
 
 /// Each tool's key (with Shift when the flag is on), shown in its
 /// flyout and its tip.
-pub const SHORTCUTS: [(PixelTool, egui::Key, bool); 41] = {
+pub const SHORTCUTS: [(PixelTool, egui::Key, bool); 43] = {
     use egui::Key as K;
     use PixelTool as T;
     [
@@ -90,6 +93,7 @@ pub const SHORTCUTS: [(PixelTool, egui::Key, bool); 41] = {
         (T::RectSelect, K::R, false),
         (T::EllipseSelect, K::J, false),
         (T::FreehandMask, K::K, false),
+        (T::PenMask, K::N, false),
         (T::Lasso, K::A, false),
         (T::EdgeMask, K::Num4, false),
         (T::MagicWand, K::W, false),
@@ -127,6 +131,7 @@ pub const SHORTCUTS: [(PixelTool, egui::Key, bool); 41] = {
         (T::Eyedropper, K::E, false),
         (T::Fill, K::F, false),
         (T::Gradient, K::G, false),
+        (T::Text, K::T, false),
     ]
 };
 
@@ -217,9 +222,13 @@ pub fn choose_tool(pe: &mut crate::pixel_edit_app::PixelEdit, t: PixelTool) {
         pe.apply_warp();
     }
     pe.tool = t;
+    pe.move_drag = None;
+    pe.sync_place_preview();
     pe.drag_from = None;
     pe.drag_to = None;
     pe.lasso.clear();
+    pe.pen.clear();
+    pe.pen_drag = false;
     if let Some(g) = GROUPS.iter().position(|g| g.contains(&t)) {
         if pe.group_pick.len() < GROUPS.len() {
             pe.group_pick = GROUPS.iter().map(|g| g[0]).collect();
@@ -268,6 +277,10 @@ pub fn menu_bar(app: &mut App, ui: &mut Ui) {
             menu(ui, "menu.edit", &mut |ui| {
                 cmd(app, ui, PixelCmd::Undo);
                 cmd(app, ui, PixelCmd::Redo);
+                sep(ui);
+                cmd(app, ui, PixelCmd::Cut);
+                cmd(app, ui, PixelCmd::Copy);
+                cmd(app, ui, PixelCmd::Paste);
                 sep(ui);
                 cmd(app, ui, PixelCmd::CopyToLayer);
                 cmd(app, ui, PixelCmd::CutToLayer);
@@ -321,6 +334,21 @@ pub fn menu_bar(app: &mut App, ui: &mut Ui) {
                 sep(ui);
                 cmd(app, ui, PixelCmd::MergeDown);
                 cmd(app, ui, PixelCmd::Flatten);
+                sep(ui);
+                // What becomes of the layers at Finish (#4112).
+                let keep = app.settings.pixel_keep_layers;
+                if check(ui, "pixel.layers.keep", "", keep) {
+                    app.settings.pixel_keep_layers = !keep;
+                    if keep {
+                        app.pixel_kept.clear();
+                    }
+                    app.settings.save();
+                }
+                let save = app.settings.pixel_save_layers;
+                if check(ui, "pixel.layers.save", "", save) {
+                    app.settings.pixel_save_layers = !save;
+                    app.settings.save();
+                }
             });
             menu(ui, "menu.window", &mut |ui| window_menu(app, ui));
             menu(ui, "menu.help", &mut |ui| {
@@ -361,7 +389,7 @@ fn cmd(app: &mut App, ui: &mut Ui, c: PixelCmd) {
         (None, None, None) => item(ui, c.key(), c.shortcut(), c.enabled(app)),
     };
     if hit {
-        c.run(app);
+        c.ask_or_run(app, None);
     }
 }
 
@@ -758,17 +786,17 @@ fn bar_item(app: &mut App, ui: &mut Ui, _bar: &str, id: &str) {
                     .rich_tip(tr("pixel.finish_tip"))
                     .clicked(),
                 (PixelCmd::Cancel, _) => ui
-                    .button(tr("pixel.cancel"))
+                    .ibutton("pixel.cancel")
                     .rich_tip(tr("pixel.cancel_tip"))
                     .clicked(),
                 (_, Some(a)) => std_button(ui, a, &tip_of(c), enabled, false).clicked(),
                 (_, None) => match c.checked(app) {
                     Some(on) => ui
-                        .selectable_label(on, tr(c.key()))
+                        .iselectable(on, c.key())
                         .rich_tip(tip_of(c))
                         .clicked(),
                     None => ui
-                        .add_enabled(enabled, egui::Button::new(tr(c.key())))
+                        .add_enabled(enabled, crate::ui::btn_icons::Ib::new(c.key()))
                         .rich_tip(tip_of(c))
                         .clicked(),
                 },
@@ -856,7 +884,7 @@ fn zoom_controls(app: &mut App, ui: &mut Ui) {
         PixelCmd::ZoomIn.run(app);
     }
     if ui
-        .button(tr("pixel.zoom_fit"))
+        .ibutton("pixel.zoom_fit")
         .rich_tip(tip_of(PixelCmd::ZoomFit))
         .clicked()
     {
@@ -983,6 +1011,9 @@ pub fn canvas(app: &mut App, ui: &mut Ui, full: Rect) {
         };
         app.pixel_px_input(&resp, px, mods, ws.zoom);
     }
+    // The right-click menu, the Text tool's typing box and the box a
+    // selection command asks its pixels in.
+    crate::ui::pixel_canvas::extras(app, ui, &resp, area);
     let Some(pe) = app.pixel_edit.as_ref() else {
         return;
     };
@@ -1228,6 +1259,7 @@ fn hints(ui: &mut Ui, pe: &mut crate::pixel_edit_app::PixelEdit) {
     if matches!(t, PixelTool::Clone | PixelTool::Heal) {
         bullet(ui, tr("pixel.status.need_source"));
     }
+    bullet(ui, tr("pixel.hints.right_click"));
     ui.add_space(8.0);
     ui.separator();
     ui.label(egui::RichText::new(tr("pixel.hints.window")).strong());

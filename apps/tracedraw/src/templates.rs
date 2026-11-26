@@ -251,6 +251,7 @@ pub fn document(t: &Template, title: &str) -> Option<Document> {
             let (_, _, size, build) = tbl.get(*i)?;
             let mut d = Doc::new(crate::app::App::localized_document(title, *size));
             build(&mut d);
+            colours_in_document_model(&mut d.doc);
             Some(d.doc)
         }
         Source::File(p) => {
@@ -259,6 +260,18 @@ pub fn document(t: &Template, title: &str) -> Option<Document> {
             doc.title = title.to_string();
             Some(doc)
         }
+    }
+}
+
+/// The template's colours in the drawing's own colour model (#4329): the
+/// templates are drawn in RGB, and a CMYK drawing made from one (the print
+/// templates in a drawing set to CMYK) got RGB colours, which the PDF
+/// checks listed as warnings before anything was changed.
+fn colours_in_document_model(doc: &mut Document) {
+    use tracedraw_core::color_convert::{convert_document, ColorTarget};
+    use tracedraw_core::document::PrimaryColorMode;
+    if doc.metadata.primary_color_mode == PrimaryColorMode::Cmyk {
+        convert_document(doc, &[], ColorTarget::Cmyk, false);
     }
 }
 
@@ -1111,6 +1124,26 @@ mod tests {
             }
             let (thumb_w, thumb_h, rgba) = thumbnail(&doc, 64).expect("thumbnail");
             assert!(thumb_w.max(thumb_h) <= 66 && rgba.len() == (thumb_w * thumb_h * 4) as usize);
+        }
+    }
+
+    #[test]
+    fn the_print_templates_have_no_rgb_colours_in_a_cmyk_drawing() {
+        use tracedraw_core::document::PrimaryColorMode;
+        let tbl = table();
+        for (i, (key, _, size, build)) in tbl.iter().enumerate() {
+            let mut doc = crate::app::App::localized_document("t", *size);
+            doc.metadata.primary_color_mode = PrimaryColorMode::Cmyk;
+            let mut d = Doc::new(doc);
+            build(&mut d);
+            colours_in_document_model(&mut d.doc);
+            let issues = crate::preflight::run(&d.doc, &[], &Default::default());
+            assert!(
+                !issues
+                    .iter()
+                    .any(|is| is.check == crate::preflight::Check::RgbColor),
+                "{key} ({i}) keeps RGB colours"
+            );
         }
     }
 

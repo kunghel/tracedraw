@@ -14,7 +14,9 @@ ungrouping it, with the rest of the drawing faded behind it.
   selected.
 - Focus can go deeper: double-click a group inside the focused group.
 - Esc with nothing selected goes up one step; once at the top it leaves
-  focus mode. The ✕ on the breadcrumb leaves at once.
+  focus mode. The ✕ on the breadcrumb leaves at once, and so does a
+  double click on an empty place outside the focused object (#4322,
+  `pick_drag_tests::combine_live_inside_a_group_leaves_picking_working`).
 
 ## Breadcrumb
 

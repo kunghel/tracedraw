@@ -5,6 +5,7 @@
 //! opened that way, the pages can be chosen and set to a page size
 //! (#2570).
 
+use crate::ui::btn_icons::IconUi;
 use crate::app::App;
 use crate::i18n::{tr, trf};
 use crate::ui::dialogs::{ok_cancel, window};
@@ -391,13 +392,13 @@ fn open_picture_choices(app: &App, ui: &mut egui::Ui, st: &mut PdfTextState) {
             .height(320.0)
             .show_ui(ui, |ui| {
                 if ui
-                    .selectable_label(st.page_size.is_none(), tr("pdf_import.size_as_file"))
+                    .iselectable(st.page_size.is_none(), "pdf_import.size_as_file")
                     .clicked()
                 {
                     st.page_size = None;
                 }
                 if ui
-                    .selectable_label(ticked.as_deref() == Some(""), tr("newdoc.preset_custom"))
+                    .iselectable(ticked.as_deref() == Some(""), "newdoc.preset_custom")
                     .clicked()
                 {
                     let s = st

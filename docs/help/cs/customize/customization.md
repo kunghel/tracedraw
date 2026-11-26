@@ -83,3 +83,15 @@ a Lupa: tlačítko odebrané z panelu odtud přetáhněte zpět.
   (výchozí) nebo otevře [[options.palette_context_menu]].
 
 Viz [Barevné palety](../color/palettes.md).
+
+## Kontextové nabídky {#context-menus}
+
+V části Přizpůsobení vyberte [[options.context_menus]] a spravujte 32 umístění kontextových nabídek samostatně. Vyberte umístění pomocí [[options.context_menu_scene]], potom pomocí [[options.context_menu_search]] vyhledejte operaci a zrušením jejího zaškrtnutí ji na tomto místě skryjte. Operace zůstávají v seznamu, i když je aktuální výběr nemůže použít.
+
+Ve výchozím nastavení jsou zobrazeny všechny operace. Každé umístění má vlastní volby: skrytí operace objektu na plátně neovlivní panel Objekty. Dynamické seznamy, například cílové vrstvy a kolekce písem, se spravují jako jedna operace, takže změna názvů volby neobnoví.
+
+[[options.context_menu_reset]] obnoví vybranou nabídku a [[options.context_menu_reset_all]] obnoví všechny nabídky. [[dialog.ok]] uloží volby do nastavení aplikace; [[dialog.cancel]], Escape nebo tlačítko pro zavření obnoví volby z doby otevření Nastavení. Hlavní nabídky, klávesové zkratky a hledání příkazů nadále nabízejí původní příkazy.
+
+Rozbalením podnabídky zobrazíte její odsazené položky. Přetažením úchytu řádku nebo pomocí [[options.context_menu_move_up]] a [[options.context_menu_move_down]] změníte pořadí položek na stejné úrovni. Nadřazená nabídka se přesune i se svými položkami; položky nelze přesouvat pod jiného rodiče. Hledání ponechá viditelnou cestu k odpovídajícím položkám. Obnovení nabídky resetuje viditelnost i pořadí a zrušení Možností vrátí obě nastavení do stavu při otevření dialogu.
+
+Nabídka vzorku palety dokumentu a její položka ve Správci palet mají samostatná nastavení. Dynamické cíle si zachovávají vlastní pořadí; seznam stylů dokumentu ve Stylech objektů zůstává mezi statickými operacemi. Nové operace přidané v pozdější verzi jsou viditelné a následují za uloženými položkami přizpůsobené úrovně.

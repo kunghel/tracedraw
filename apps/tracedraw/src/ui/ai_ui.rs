@@ -3,6 +3,7 @@
 //! pages of the AI options (General and Service: the one AI service).
 //! See docs/behavior/ai-options.md.
 
+use crate::ui::btn_icons::IconUi;
 use crate::app::App;
 use crate::i18n::tr;
 use crate::theme::Tokens;
@@ -73,7 +74,7 @@ pub fn banner(app: &mut App, ui: &mut Ui, need: Need) -> bool {
                     ui.label(text);
                     ui.add_space(4.0);
                     if ui
-                        .button(tr("aiui.set_up"))
+                        .ibutton("aiui.set_up")
                         .rich_tip(crate::ui::tips::keyed("aiui.set_up"))
                         .clicked()
                     {
@@ -166,7 +167,7 @@ pub fn service_page(app: &mut App, ui: &mut Ui) {
     ui.horizontal(|ui| {
         let busy = app.ai.busy() || app.ai_image.busy();
         if ui
-            .add_enabled(!busy, egui::Button::new(tr("aiui.test")))
+            .add_enabled(!busy, crate::ui::btn_icons::Ib::new("aiui.test"))
             .rich_tip(tr("aiui.test_hint"))
             .clicked()
         {

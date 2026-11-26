@@ -16,6 +16,12 @@ pub enum AssetSource {
         page: PageId,
         shapes: Vec<ShapeId>,
     },
+    /// A slice: an area of a page (page millimetres) with everything
+    /// that shows in it.
+    Area {
+        page: PageId,
+        rect: tracedraw_core::geometry::Rect,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -175,6 +181,56 @@ impl App {
         });
     }
 
+    /// Slices from the selection: the box of each selected object, cut
+    /// into `rows` x `cols` equal areas, each an asset of its own that
+    /// exports everything showing in it (not only the object), named
+    /// after the object (or "Slice") with its row and column when cut.
+    pub fn add_slice_assets(&mut self, rows: u32, cols: u32) {
+        let (rows, cols) = (rows.clamp(1, 50), cols.clamp(1, 50));
+        let boxes: Vec<(String, tracedraw_core::geometry::Rect)> = self
+            .selected_shapes()
+            .iter()
+            .map(|s| {
+                let name = s
+                    .name
+                    .clone()
+                    .unwrap_or_else(|| crate::i18n::tr("export_docker.slice"));
+                (name, self.own_visual_bounds(s))
+            })
+            .filter(|(_, r)| r.width() > 1e-6 && r.height() > 1e-6)
+            .collect();
+        for (name, b) in boxes {
+            let (w, h) = (b.width() / cols as f64, b.height() / rows as f64);
+            for r in 0..rows {
+                for c in 0..cols {
+                    let rect = tracedraw_core::geometry::Rect::new(
+                        b.x0 + c as f64 * w,
+                        b.y0 + r as f64 * h,
+                        b.x0 + (c + 1) as f64 * w,
+                        b.y0 + (r + 1) as f64 * h,
+                    );
+                    let n = self.export_assets.assets.len() + 1;
+                    let label = if rows * cols > 1 {
+                        format!("{name} {}-{}", r + 1, c + 1)
+                    } else {
+                        format!("{name} {n}")
+                    };
+                    self.export_assets.assets.push(ExportAsset {
+                        name: label,
+                        source: AssetSource::Area {
+                            page: self.page,
+                            rect,
+                        },
+                        format: self.export_assets.format,
+                        dpi: self.export_assets.dpi,
+                        color_mode: self.export_assets.color_mode,
+                        checked: true,
+                    });
+                }
+            }
+        }
+    }
+
     /// Assets whose page or objects are gone are dropped; objects that
     /// went are left out of their asset.
     pub fn prune_export_assets(&mut self) {
@@ -187,6 +243,7 @@ impl App {
                 shapes.retain(|id| doc.find_shape(*id).is_some());
                 pages.contains(page) && !shapes.is_empty()
             }
+            AssetSource::Area { page, .. } => pages.contains(page),
         });
         self.export_assets.assets = assets;
     }
@@ -218,6 +275,11 @@ impl App {
                     self.page = *page;
                     self.selection = shapes.clone();
                     st.selection_only = true;
+                }
+                AssetSource::Area { page, rect } => {
+                    self.page = *page;
+                    self.selection.clear();
+                    st.area = Some(*rect);
                 }
             }
             match crate::export::export(self, &path, &st) {
@@ -459,6 +521,73 @@ mod tests {
         // A deleted object drops its asset.
         app.run(tracedraw_core::Command::DeleteShapes { shapes: vec![id] });
         app.prune_export_assets();
+        assert_eq!(app.export_assets.assets.len(), 2);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Add Slices: each selected object's area cut into the grid, each
+    /// piece an asset exporting everything that shows in it (here a red
+    /// square under the frame), at the piece's size.
+    #[test]
+    fn slices_export_the_areas_with_what_shows_in_them() {
+        let mut app = App::headless();
+        let layer = app.active_layer().expect("a layer");
+        let rect = |app: &mut App, r: tracedraw_core::Rect, fill: tracedraw_core::Fill| {
+            let id = app.engine.new_shape_id();
+            let mut s = tracedraw_core::Shape::new(
+                id,
+                tracedraw_core::ShapeKind::Rect {
+                    rect: r,
+                    radius: 0.0,
+                    corners: None,
+                },
+            );
+            s.fill = fill;
+            s.stroke = None;
+            app.run(tracedraw_core::Command::AddShape { layer, shape: s });
+            id
+        };
+        let red = tracedraw_core::Fill::Solid(tracedraw_core::Color::rgb8(255, 0, 0));
+        rect(
+            &mut app,
+            tracedraw_core::Rect::new(20.0, 20.0, 60.0, 40.0),
+            red,
+        );
+        let frame = rect(
+            &mut app,
+            tracedraw_core::Rect::new(20.0, 20.0, 60.0, 40.0),
+            tracedraw_core::Fill::None,
+        );
+        app.select(vec![frame]);
+        app.export_assets = ExportAssets::new();
+        app.add_slice_assets(1, 2);
+        let names: Vec<_> = app
+            .export_assets
+            .assets
+            .iter()
+            .map(|a| a.name.clone())
+            .collect();
+        assert_eq!(names, ["Slice 1-1", "Slice 1-2"]);
+        let AssetSource::Area { rect: r, .. } = app.export_assets.assets[1].source else {
+            panic!("an area");
+        };
+        assert!(
+            (r.x0 - 40.0).abs() < 1e-6 && (r.x1 - 60.0).abs() < 1e-6,
+            "{r:?}"
+        );
+        let dir = std::env::temp_dir().join(format!("td-slices-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let (written, errors) = app.export_assets_to(&dir);
+        assert!(errors.is_empty() && written == 2, "{errors:?}");
+        let png = image::open(dir.join("Slice 1-2.png")).unwrap().to_rgba8();
+        // 20 x 20 mm, and red: the square under the frame shows in it.
+        let ratio = png.width() as f64 / png.height() as f64;
+        assert!((ratio - 1.0).abs() < 0.05, "{ratio}");
+        let mid = png.get_pixel(png.width() / 2, png.height() / 2);
+        assert!(mid[0] > 200 && mid[1] < 60 && mid[3] > 200, "{mid:?}");
+        // Nothing selected, nothing is added.
+        app.select(Vec::new());
+        app.add_slice_assets(2, 2);
         assert_eq!(app.export_assets.assets.len(), 2);
         let _ = std::fs::remove_dir_all(&dir);
     }

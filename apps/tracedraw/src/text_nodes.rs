@@ -678,6 +678,42 @@ impl App {
         true
     }
 
+    /// The characters chosen with the Shape tool get their outline's
+    /// width in mm, keeping its colour (the text's outline supplies one
+    /// when the span has none). Width 0 takes the outline off them.
+    pub fn chosen_chars_apply_outline_width(&mut self, width: f64) -> bool {
+        if !self.chosen_chars_active() {
+            return false;
+        }
+        let mut cmds = Vec::new();
+        for (s, chars) in self.char_targets() {
+            let ShapeKind::Text { spans, .. } = &s.kind else {
+                continue;
+            };
+            let base = s.stroke.clone();
+            let spans = apply_to_chars(spans, &chars, |sp| {
+                let mut st = sp
+                    .outline
+                    .clone()
+                    .filter(|o| o.width > 0.0)
+                    .or_else(|| base.clone())
+                    .unwrap_or_default();
+                st.width = width.max(0.0);
+                sp.outline = Some(st);
+            });
+            if let Some(kind) = with_spans(&s, spans) {
+                cmds.push(Command::SetShapeKind { shape: s.id, kind });
+            }
+        }
+        if cmds.is_empty() {
+            return false;
+        }
+        if let Err(e) = self.engine.run_batch("Character Outline", &cmds) {
+            self.status = e.to_string();
+        }
+        true
+    }
+
     /// Text > Straighten Text: the target characters lose their offsets
     /// and angle; text fitted to a path is taken off it.
     pub fn straighten_chars(&mut self) {
@@ -957,6 +993,14 @@ mod tests {
         assert_eq!(s.fill, object_fill);
         assert!(s.stroke.is_none());
         assert_eq!(app.engine.undo_label(), Some("Character Outline"));
+        // Outline width routing through apply_outline_width.
+        app.apply_outline_width(0.8);
+        let spans = spans_of(&app);
+        assert!((spans[1].outline.as_ref().map(|o| o.width).unwrap_or(0.0) - 0.8).abs() < 1e-6);
+        assert_eq!(spans[1].outline.as_ref().map(|o| o.color), Some(blue));
+        app.apply_outline_width(0.0);
+        let spans = spans_of(&app);
+        assert_eq!(spans[1].outline.as_ref().map(|o| o.width), Some(0.0));
         // With nothing chosen, the whole text, as before: the fields read
         // the first character again, and bold turned on there goes to all.
         app.node_selection.clear();

@@ -24,6 +24,11 @@ bottom edges. Under them, what they align to:
   group counts its bounds only.
 - The menu and the keys always align to the active object; P (Center to
   Page) always takes the page's centre.
+- Center to Page Horizontally and Center to Page Vertically (Object >
+  Align and Distribute, #3752): each selected object moves only across,
+  or only down, until its centre is on the page's centre line. They
+  have no key of their own (H and V choose tools); Options >
+  Customization > Commands can give them one.
 - Each Align is one undo step ("Align"); objects already in place are
   left out of it.
 

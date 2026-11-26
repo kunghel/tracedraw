@@ -89,6 +89,9 @@ pub struct Splash {
     frames: u32,
     first_time: Option<f64>,
     icon: Option<TextureHandle>,
+    /// The least time the splash stays up, in seconds (Options > General,
+    /// #4340): 0 lets it go as soon as the editor can be built.
+    least_seconds: f64,
     /// F8 was held while the splash showed: the editor asks whether to
     /// reset every preference.
     pub reset_requested: bool,
@@ -121,8 +124,16 @@ impl Splash {
             frames: 0,
             first_time: None,
             icon: brand::icon(ctx),
+            least_seconds: 0.0,
             reset_requested: false,
         }
+    }
+
+    /// Keep the splash up for at least `seconds` (#4340), read from the
+    /// first frame shown; past [`MAX_LEAST_SECONDS`] it is held to that.
+    pub fn at_least(mut self, seconds: f64) -> Self {
+        self.least_seconds = least_seconds(seconds);
+        self
     }
 
     /// Draw one splash frame in `ui` (the whole window); returns
@@ -160,7 +171,10 @@ impl Splash {
             // The editor is built in the next frame, with this one on the
             // screen meanwhile; it is a splash frame only once the window
             // has been shown for a few (#1911).
-            if self.last_frame_drawn && splash_seen(self.frames, shown_for) {
+            if self.last_frame_drawn
+                && splash_seen(self.frames, shown_for)
+                && shown_for >= self.least_seconds
+            {
                 return Step::Start;
             }
             self.last_frame_drawn = true;
@@ -173,6 +187,19 @@ impl Splash {
     /// installs them when they are in.
     pub fn take_fonts(&mut self) -> FontLoad {
         std::mem::take(&mut self.fonts)
+    }
+}
+
+/// The most seconds Options > General can keep the splash up (#4340).
+pub const MAX_LEAST_SECONDS: f64 = crate::settings::SPLASH_MAX_SECONDS as f64;
+
+/// `seconds` asked for the splash, as it is kept: 0 to
+/// [`MAX_LEAST_SECONDS`], 0 for a value that is not a number.
+pub fn least_seconds(seconds: f64) -> f64 {
+    if seconds.is_finite() {
+        seconds.clamp(0.0, MAX_LEAST_SECONDS)
+    } else {
+        0.0
     }
 }
 
@@ -1546,6 +1573,41 @@ mod tests {
         // The first frame at least SHOWN_SECONDS after the first one.
         let expected = (SHOWN_SECONDS / dt).ceil() as usize + 1;
         assert_eq!(steps.len(), expected);
+    }
+
+    /// #4340: Options > General can keep the splash up for a few
+    /// seconds so its name and version can be read; 0, the default,
+    /// lets it go as soon as the editor can be built, as before.
+    #[test]
+    fn the_splash_stays_up_for_the_time_asked() {
+        assert_eq!(least_seconds(3.0), 3.0);
+        assert_eq!(least_seconds(-1.0), 0.0);
+        assert_eq!(least_seconds(f64::NAN), 0.0);
+        assert_eq!(least_seconds(99.0), MAX_LEAST_SECONDS);
+        assert_eq!(crate::settings::Settings::default().splash_seconds, 0.0);
+        crate::i18n::set_language("en");
+        let started_at = |least: f64| {
+            let ctx = egui::Context::default();
+            let mut splash = Splash::start(&ctx, None).at_least(least);
+            splash.font_list_ready = || true;
+            let dt = 1.0 / 16.0;
+            for n in 0..200u32 {
+                let frame = egui::RawInput {
+                    time: Some(f64::from(n) * dt),
+                    ..input()
+                };
+                let mut step = Step::Wait;
+                let mut out = ctx.run_ui(frame, |ui| step = splash.update(ui));
+                out.textures_delta.clear();
+                if step == Step::Start {
+                    return f64::from(n) * dt;
+                }
+            }
+            f64::INFINITY
+        };
+        assert!(started_at(0.0) < 0.5);
+        let t = started_at(3.0);
+        assert!((3.0..3.2).contains(&t), "{t}");
     }
 
     #[test]

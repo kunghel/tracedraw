@@ -4,6 +4,7 @@
 //! Knife (a straight or freehand cut, a gap along it, the pieces kept as
 //! one object).
 
+use crate::ui::btn_icons::IconUi;
 use crate::app::App;
 use crate::i18n::tr;
 use crate::recognize::LEVEL_KEYS;
@@ -102,7 +103,7 @@ pub fn knife_bar(app: &mut App, ui: &mut Ui) {
         (KnifeMode::Freehand, "knife.freehand"),
     ] {
         if ui
-            .selectable_label(app.knife.mode == mode, tr(key))
+            .iselectable(app.knife.mode == mode, key)
             .rich_tip(crate::ui::tips::keyed(key))
             .clicked()
         {
@@ -112,14 +113,14 @@ pub fn knife_bar(app: &mut App, ui: &mut Ui) {
     crate::ui::propbar::sep(ui);
     let split = app.knife.gap <= 0.0;
     if ui
-        .selectable_label(split, tr("knife.split"))
+        .iselectable(split, "knife.split")
         .rich_tip(tr("knife.split_tip"))
         .clicked()
     {
         app.knife.gap = 0.0;
     }
     if ui
-        .selectable_label(!split, tr("knife.gap"))
+        .iselectable(!split, "knife.gap")
         .rich_tip(tr("knife.gap_tip"))
         .clicked()
         && split

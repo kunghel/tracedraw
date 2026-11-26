@@ -24,6 +24,25 @@ Jede Zeile der Liste hat:
 Jede Änderung ist ein Rückgängig-Schritt. Jeder Effekt wird weiterhin mit
 seinem eigenen Werkzeug oder Andockfenster bearbeitet.
 
+## Ecken abrunden und In Streifen schneiden {#outline-effects}
+
+Zwei Einträge der Ebeneneffekte oben im Bedienfeld bauen den Umriss so
+neu, wie er gezeichnet wird; das Objekt selbst bleibt, wie es war (ein Text
+bleibt bearbeitbar):
+
+- **[[effect.round_corners]]** rundet alle Ecken einer Kurve, der Kurven
+  einer Gruppe oder der Buchstaben eines Textes mit einem Radius ab. **Bis**
+  beschränkt es auf Ecken, die spitzer als ein Winkel sind (180°: alle), und
+  die Schaltflächen **Ecken** wählen alle, nur äußere oder nur innere.
+- **[[effect.slice]]** schneidet das Objekt in parallele Streifen: Anzahl,
+  Winkel der Schnitte und Abstand; **Versatz** schiebt jeden Streifen entlang
+  seines Schnitts, abwechselnd oder zufällig; **Drehung** dreht jeden
+  Streifen zufällig ein wenig; **Startwert** wählt eine andere Variante;
+  **Rundung** rundet die Ecken der Streifen ab.
+
+[[menu.object.convert_to_curves]] (oder Auseinanderbrechen) macht daraus
+gewöhnliche Kurven.
+
 ## Weitere Effektbefehle {#commands}
 
 - [[menu.effects > menu.effects.flatten]] wandelt die Effekte der ausgewählten

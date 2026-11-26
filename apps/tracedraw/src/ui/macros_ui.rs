@@ -3,6 +3,7 @@
 //! run, the "still running" notice with Stop, the Macro Manager docker and
 //! the Macro Editor (Alt+F11). See docs/behavior/vba.md.
 
+use crate::ui::btn_icons::IconUi;
 use crate::app::App;
 use crate::i18n::{tr, trf};
 use crate::macro_forms::{LiveControl, LiveForm};
@@ -78,6 +79,7 @@ pub fn frame(app: &mut App, ctx: &Context) {
     confirm(app, ctx);
     run_dialog(app, ctx);
     error_dialog(app, ctx);
+    skipped_dialog(app, ctx);
     running_notice(app, ctx);
     editor(app, ctx);
 }
@@ -328,6 +330,86 @@ fn error_dialog(app: &mut App, ctx: &Context) {
     }
 }
 
+/// The most steps the skipped list shows.
+const SKIPPED_SHOWN: usize = 12;
+
+/// After a run that kept going: what was skipped, each step opening the
+/// Macro Editor at its line (#4315).
+fn skipped_dialog(app: &mut App, ctx: &Context) {
+    if app.macros.error.is_some() || app.macros.run.is_some() {
+        return;
+    }
+    let Some((name, steps, project)) = app.macros.skipped.clone() else {
+        return;
+    };
+    let mut close = false;
+    let mut open: Option<(String, u32)> = None;
+    crate::ui::chrome::window(tr("macros.skipped_title")).show(ctx, |ui| {
+        ui.set_max_width(520.0);
+        ui.horizontal_top(|ui| {
+            let (r, _) = ui.allocate_exact_size(Vec2::splat(32.0), Sense::hover());
+            paint_icon(ui, r, 48);
+            ui.add_space(8.0);
+            ui.vertical(|ui| {
+                ui.add(egui::Label::new(trf("macros.skipped_heading", &[("name", &name)])).wrap());
+                ui.add_space(4.0);
+                let can_open = project < app.macros.projects.len();
+                for (e, times) in steps.iter().take(SKIPPED_SHOWN) {
+                    let mut text = e.description.clone();
+                    if *times > 1 {
+                        text.push_str(&format!(
+                            " ({})",
+                            trf("macros.skipped_times", &[("n", &times.to_string())])
+                        ));
+                    }
+                    let place = trf(
+                        "macros.error_where",
+                        &[
+                            ("m", &e.module),
+                            ("p", if e.procedure.is_empty() { "-" } else { &e.procedure }),
+                            ("l", &e.line.to_string()),
+                        ],
+                    );
+                    let r = ui.add(
+                        egui::Label::new(format!("• {text}\n   {place}"))
+                            .wrap()
+                            .sense(if can_open && !e.module.is_empty() {
+                                Sense::click()
+                            } else {
+                                Sense::hover()
+                            }),
+                    );
+                    if r.clicked() {
+                        open = Some((e.module.clone(), e.line));
+                    }
+                }
+                if steps.len() > SKIPPED_SHOWN {
+                    ui.label(
+                        RichText::new(trf(
+                            "macros.skipped_more",
+                            &[("n", &(steps.len() - SKIPPED_SHOWN).to_string())],
+                        ))
+                        .color(Tokens::text_dim()),
+                    );
+                }
+            });
+        });
+        if buttons(ui, &[tr("dialog.close")], 0).is_some() {
+            close = true;
+        }
+    });
+    let esc = ctx.input(|i| i.key_pressed(egui::Key::Escape));
+    if esc || crate::ui::chrome::take_close_request(ctx) {
+        close = true;
+    }
+    if let Some((module, line)) = open {
+        app.macros.skipped = None;
+        app.edit_macro(project, &module, Some(line));
+    } else if close {
+        app.macros.skipped = None;
+    }
+}
+
 // ---------------------------------------------- warnings before a run
 
 fn confirm(app: &mut App, ctx: &Context) {
@@ -498,7 +580,7 @@ fn running_notice(app: &mut App, ctx: &Context) {
                         ui.spinner();
                     }
                     ui.label(trf("macros.still_running", &[("name", &name)]));
-                    if ui.button(tr("macros.stop")).clicked() {
+                    if ui.ibutton("macros.stop").clicked() {
                         stop = true;
                     }
                 });
@@ -1398,7 +1480,7 @@ pub fn manager(app: &mut App, ui: &mut Ui) {
     let mut act: Option<&str> = None;
     ui.horizontal_wrapped(|ui| {
         if ui
-            .button(tr("macros.load"))
+            .ibutton("macros.load")
             .rich_tip(tr("macros.load_hint"))
             .clicked()
         {
@@ -1407,7 +1489,7 @@ pub fn manager(app: &mut App, ui: &mut Ui) {
         if ui
             .add_enabled(
                 chosen_macro.is_some() && !running,
-                egui::Button::new(tr("macros.run")),
+                crate::ui::btn_icons::Ib::new("macros.run"),
             )
             .rich_tip(crate::ui::tips::keyed("macros.run"))
             .rich_disabled_tip(crate::ui::tips::keyed("macros.run"))
@@ -1417,14 +1499,14 @@ pub fn manager(app: &mut App, ui: &mut Ui) {
         }
         if running
             && ui
-                .button(tr("macros.stop"))
+                .ibutton("macros.stop")
                 .rich_tip(crate::ui::tips::keyed("macros.stop"))
                 .clicked()
         {
             act = Some("stop");
         }
         if ui
-            .add_enabled(chosen.is_some(), egui::Button::new(tr("macros.edit")))
+            .add_enabled(chosen.is_some(), crate::ui::btn_icons::Ib::new("macros.edit"))
             .rich_tip(crate::ui::tips::keyed("macros.edit"))
             .rich_disabled_tip(crate::ui::tips::keyed("macros.edit"))
             .clicked()
@@ -1432,7 +1514,7 @@ pub fn manager(app: &mut App, ui: &mut Ui) {
             act = Some("edit");
         }
         if ui
-            .add_enabled(chosen.is_some(), egui::Button::new(tr("macros.rename")))
+            .add_enabled(chosen.is_some(), crate::ui::btn_icons::Ib::new("macros.rename"))
             .rich_tip(crate::ui::tips::keyed("macros.rename"))
             .rich_disabled_tip(crate::ui::tips::keyed("macros.rename"))
             .clicked()
@@ -1442,7 +1524,7 @@ pub fn manager(app: &mut App, ui: &mut Ui) {
         if ui
             .add_enabled(
                 chosen.is_some() && !running,
-                egui::Button::new(tr("macros.unload")),
+                crate::ui::btn_icons::Ib::new("macros.unload"),
             )
             .rich_tip(crate::ui::tips::keyed("macros.unload"))
             .rich_disabled_tip(crate::ui::tips::keyed("macros.unload"))
@@ -1451,7 +1533,18 @@ pub fn manager(app: &mut App, ui: &mut Ui) {
             act = Some("unload");
         }
         if ui
-            .add_enabled(chosen.is_some(), egui::Button::new(tr("macros.export")))
+            .add_enabled(
+                chosen.is_some() && !running,
+                crate::ui::btn_icons::Ib::new("macros.delete"),
+            )
+            .rich_tip(crate::ui::tips::keyed("macros.delete"))
+            .rich_disabled_tip(crate::ui::tips::keyed("macros.delete"))
+            .clicked()
+        {
+            act = Some("delete");
+        }
+        if ui
+            .add_enabled(chosen.is_some(), crate::ui::btn_icons::Ib::new("macros.export"))
             .rich_tip(crate::ui::tips::keyed("macros.export"))
             .rich_disabled_tip(crate::ui::tips::keyed("macros.export"))
             .clicked()
@@ -1494,6 +1587,53 @@ pub fn manager(app: &mut App, ui: &mut Ui) {
             Some(false) => app.macros.renaming = None,
             None => {}
         }
+    }
+    // Delete the chosen project, module or macro, once confirmed (#4409).
+    if let Some((p, m, n)) = app.macros.deleting.clone() {
+        let what = match (&m, &n) {
+            (_, Some(n)) => n.clone(),
+            (Some(m), None) => m.clone(),
+            _ => app
+                .macros
+                .projects
+                .get(p)
+                .map(|x| x.name().to_string())
+                .unwrap_or_default(),
+        };
+        let mut done = None;
+        ui.horizontal_wrapped(|ui| {
+            ui.label(trf("macros.delete_confirm", &[("n", &what)]));
+            if ui
+                .add(crate::ui::btn_icons::Ib::new("macros.delete"))
+                .rich_tip(crate::ui::tips::keyed("macros.delete"))
+                .clicked()
+            {
+                done = Some(true);
+            }
+            if ui
+                .button(tr("dialog.cancel"))
+                .rich_tip(crate::ui::tips::keyed("macros.rename_cancel"))
+                .clicked()
+            {
+                done = Some(false);
+            }
+        });
+        match done {
+            Some(true) => {
+                app.macros.deleting = None;
+                delete_chosen(app, p, m, n);
+            }
+            Some(false) => app.macros.deleting = None,
+            None => {}
+        }
+    }
+    // Keep going past what TraceDraw cannot do (#4315).
+    if ui
+        .checkbox(&mut app.settings.macros_keep_going, tr("macros.keep_going"))
+        .rich_tip(tr("macros.keep_going_hint"))
+        .changed()
+    {
+        app.save_settings();
     }
     ui.separator();
     if app.macros.projects.is_empty() {
@@ -1663,12 +1803,43 @@ pub fn manager(app: &mut App, ui: &mut Ui) {
                 app.shortcut_editor.entries.clear();
             }
         }
+        "delete" => app.macros.deleting = chosen,
         "export" => {
             if let Some((p, m, _)) = chosen {
                 app.export_macros(p, m.as_deref());
             }
         }
         _ => {}
+    }
+}
+
+/// Delete what the manager has chosen: a whole project (as Unload does),
+/// a module, or one macro (#4409).
+pub(crate) fn delete_chosen(app: &mut App, p: usize, m: Option<String>, n: Option<String>) {
+    let Some(m) = m else {
+        app.macros.remove(p);
+        app.macros.chosen = None;
+        if app.macros.editor.as_ref().is_some_and(|e| e.project == p) {
+            app.macros.editor = None;
+        }
+        app.shortcut_editor.entries.clear();
+        return;
+    };
+    match app.macros.delete_part(p, &m, n.as_deref()) {
+        Ok(()) => {
+            app.macros.chosen = Some((p, Some(m.clone()), None)).filter(|_| n.is_some());
+            if app
+                .macros
+                .editor
+                .as_ref()
+                .is_some_and(|e| e.project == p && e.module.eq_ignore_ascii_case(&m))
+            {
+                app.macros.editor = None;
+            }
+            app.shortcut_editor.entries.clear();
+            app.status = trf("macros.deleted", &[("n", n.as_deref().unwrap_or(&m))]);
+        }
+        Err(e) => app.status = e,
     }
 }
 
@@ -1886,26 +2057,26 @@ fn editor(app: &mut App, ctx: &Context) {
         .show(ctx, |ui| {
             ui.horizontal(|ui| {
                 if ui
-                    .add_enabled(ed.dirty, egui::Button::new(tr("macros.save")))
+                    .add_enabled(ed.dirty, crate::ui::btn_icons::Ib::new("macros.save"))
                     .rich_tip("Ctrl+S")
                     .clicked()
                 {
                     act = Some("save");
                 }
                 if ui
-                    .add_enabled(!running, egui::Button::new(tr("macros.run_sub")))
+                    .add_enabled(!running, crate::ui::btn_icons::Ib::new("macros.run_sub"))
                     .rich_tip(tr("macros.run_sub_hint"))
                     .clicked()
                 {
                     act = Some("run");
                 }
-                if running && ui.button(tr("macros.stop")).clicked() {
+                if running && ui.ibutton("macros.stop").clicked() {
                     act = Some("stop");
                 }
                 ui.separator();
                 ui.label(tr("macros.find"));
                 let r = ui.add(egui::TextEdit::singleline(&mut ed.find).desired_width(160.0));
-                if ui.button(tr("macros.find_next")).clicked()
+                if ui.ibutton("macros.find_next").clicked()
                     || (r.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)))
                 {
                     act = Some("find");
@@ -1935,14 +2106,14 @@ fn editor(app: &mut App, ctx: &Context) {
                 }
                 ui.separator();
                 if ui
-                    .selectable_label(ed.show_report, tr("convert.check"))
+                    .iselectable(ed.show_report, "convert.check")
                     .rich_tip(tr("convert.check_hint"))
                     .clicked()
                 {
                     act = Some(if ed.show_report { "hide_report" } else { "check" });
                 }
                 if ui
-                    .button(tr("convert.fix"))
+                    .ibutton("convert.fix")
                     .rich_tip(tr("convert.fix_hint"))
                     .clicked()
                 {
@@ -1951,7 +2122,7 @@ fn editor(app: &mut App, ctx: &Context) {
                 if ed.js_tab {
                     ui.separator();
                     if ui
-                        .button(tr("convert.convert_again"))
+                        .ibutton("convert.convert_again")
                         .rich_tip(tr("convert.convert_again_hint"))
                         .clicked()
                     {
@@ -1973,7 +2144,7 @@ fn editor(app: &mut App, ctx: &Context) {
                     if ui
                         .add_enabled(
                             !running && !ed.js_run.is_empty(),
-                            egui::Button::new(tr("convert.run_js")),
+                            crate::ui::btn_icons::Ib::new("convert.run_js"),
                         )
                         .rich_tip(tr("convert.run_js_hint"))
                         .clicked()
@@ -1981,14 +2152,14 @@ fn editor(app: &mut App, ctx: &Context) {
                         act = Some("run_js");
                     }
                     if ui
-                        .add_enabled(!ed.js.is_empty(), egui::Button::new(tr("convert.save_js")))
+                        .add_enabled(!ed.js.is_empty(), crate::ui::btn_icons::Ib::new("convert.save_js"))
                         .rich_tip(tr("convert.save_js_hint"))
                         .clicked()
                     {
                         act = Some("save_js");
                     }
                     if ui
-                        .add_enabled(!ed.js.is_empty(), egui::Button::new(tr("convert.to_scripts")))
+                        .add_enabled(!ed.js.is_empty(), crate::ui::btn_icons::Ib::new("convert.to_scripts"))
                         .rich_tip(tr("convert.to_scripts_hint"))
                         .clicked()
                     {

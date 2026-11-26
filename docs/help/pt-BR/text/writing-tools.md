@@ -134,6 +134,27 @@ selecionado para
 
 ![A caixa de diálogo Mudar maiúsculas e minúsculas](../../img/text-writing-tools-change-case.png)
 
+## Ordenar linhas {#sort-lines}
+
+[[menu.text > menu.text.sort_lines]] põe em ordem as linhas dos textos
+selecionados (ou do texto em edição): [[menu.text.sort_a_z]] ou
+[[menu.text.sort_z_a]], com maiúsculas e minúsculas por igual e os números
+dentro de uma linha pelo seu valor (Item 2 antes de Item 10), ou pelo
+primeiro número de cada linha com [[menu.text.sort_numbers_up]] ou
+[[menu.text.sort_numbers_down]] (as linhas sem número ficam depois das
+outras). Cada linha mantém a sua formatação, as linhas em branco vão para
+o fim e todos os textos mudam num só passo de desfazer. Cada ordem é um
+comando que pode ter um atalho próprio.
+
+## Altura do texto {#text-height}
+
+[[menu.text > menu.text.text_height]] dimensiona os textos selecionados
+pela altura das suas letras maiúsculas (um H, que não tem descendente), ou
+pelas minúsculas (um x) quando o texto não tem maiúsculas. Escreva a
+altura nas unidades do desenho e clique em [[dialog.ok]]: o tamanho em
+pontos de cada carácter muda pelo mesmo fator, por isso tamanhos
+diferentes dentro de um texto mantêm as proporções. Um passo de desfazer.
+
 ## Estatísticas do texto {#statistics}
 
 [[menu.text > menu.text.text_statistics]] conta os objetos de texto, as linhas,

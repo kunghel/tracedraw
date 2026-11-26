@@ -285,7 +285,9 @@ impl App {
     /// `reach` of it, where a click closes the curve.
     pub(crate) fn continuation_close_at(&self, p: Point, reach: f64) -> Option<Point> {
         let c = self.curve.as_ref()?;
-        if !c.smooth || c.bspline {
+        // The Pen and Bezier tools' lines, and the Curvature Pen's
+        // (#4245); not a B-spline's, whose points are not on its curve.
+        if !(c.curvature || (c.smooth && !c.bspline)) {
             return None;
         }
         let from = c.nodes.first()?.0;
@@ -529,5 +531,24 @@ mod tests {
             .expect("rect");
         app.select(vec![r]);
         assert!(!app.on_join_end(Point::new(0.0, 100.0)));
+    }
+
+    #[test]
+    fn pen_tap_near_open_end_continues_instead_of_deleting_anchor() {
+        let mut app = App::headless();
+        app.view.zoom = 1.0;
+        app.tool = crate::tools::Tool::Pen;
+        app.settings.curves.pen_auto_add_delete = true;
+        app.settings.curves.join_px = 5.0;
+        let mut p = BezPath::new();
+        p.move_to((0.0, 0.0));
+        p.line_to((20.0, 0.0));
+        p.line_to((40.0, 0.0));
+        app.add_drawn_line(p).expect("line");
+        // 5.5 px from the last anchor (40, 0): beyond join_px (5.0)
+        // yet inside node pick_px (>= 6.0) (#2988).
+        let tap = Point::new(45.5, 0.0);
+        assert!(app.on_join_end(tap));
+        assert!(app.pen_edit_at(tap).is_none());
     }
 }

@@ -13,6 +13,7 @@ pub mod html;
 pub mod pdf;
 pub mod pdf_crypt;
 pub(crate) mod pdf_glyphs;
+mod pdf_calc;
 pub mod pdf_import;
 mod pdf_indic;
 mod pdf_indic_shapes;
@@ -376,6 +377,50 @@ pub fn whole_page_picture(doc: &Document, max_side: u32) -> Option<(Vec<u8>, u32
 /// The resolution of the drop shadow pictures [`shadow_pictures`] makes
 /// for files: enough for a printed page, small enough for a file.
 pub const SHADOW_PICTURE_DPI: f64 = 150.0;
+
+pub(crate) fn bitmap_fill_png(
+    shape: &tracedraw_core::Shape,
+    parent: tracedraw_core::Affine,
+) -> Option<Vec<u8>> {
+    tracedraw_render::render_bitmap_alpha_fill(shape, parent)?
+        .encode_png()
+        .ok()
+}
+
+/// Painted bitmap fills for file formats that only store the bitmap's
+/// pixels. The drawing still holds the original, editable fill.
+pub fn bitmap_fill_pictures(
+    doc: &Document,
+) -> std::collections::HashMap<tracedraw_core::ShapeId, tracedraw_core::SharedBytes> {
+    use tracedraw_core::{Affine, ShapeKind};
+    fn collect(
+        shapes: &[tracedraw_core::Shape],
+        parent: Affine,
+        out: &mut std::collections::HashMap<tracedraw_core::ShapeId, tracedraw_core::SharedBytes>,
+    ) {
+        for shape in shapes {
+            if let Some(png) = bitmap_fill_png(shape, parent) {
+                out.insert(shape.id, png.into());
+            }
+            let transform = parent * shape.transform;
+            match &shape.kind {
+                ShapeKind::Group { children } => collect(children, transform, out),
+                ShapeKind::ClipFrame { frame, contents } => {
+                    collect(std::slice::from_ref(frame), transform, out);
+                    collect(contents, transform, out);
+                }
+                _ => {}
+            }
+        }
+    }
+    let mut out = std::collections::HashMap::new();
+    for page in &doc.pages {
+        for layer in &page.layers {
+            collect(&layer.shapes, Affine::IDENTITY, &mut out);
+        }
+    }
+    out
+}
 
 /// The drop shadows of the drawing's visible objects as pictures at
 /// `dpi`, for file formats that keep no shadows (`.cdr` writes each as a

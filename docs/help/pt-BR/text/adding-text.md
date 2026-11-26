@@ -163,6 +163,13 @@ verticais.
 1. Selecione um texto e uma curva ou forma.
 2. Escolha [[menu.text > menu.text.fit_text_to_path]].
 
+Com a ferramenta [[tool.pick]], você também pode arrastar um único texto
+sobre um caminho com o botão direito do mouse. Quando o contorno for
+destacado, solte e escolha [[menu.text.fit_text_to_path]]. Em um caminho
+fechado, o ponto onde você solta define o centro do texto sobre o caminho.
+O texto acompanha as edições no contorno, inclusive depois de reabrir um
+desenho no formato nativo.
+
 Para curvar um texto sem desenhar caminho, selecione-o e clique no botão
 **Curvar texto** da barra de propriedades do texto (ao lado do alinhamento):
 escolha círculo, arco para cima, arco para baixo ou onda, ou Reto para desfazer.

@@ -617,9 +617,19 @@ pub fn write_creating(path: impl AsRef<Path>, bytes: impl AsRef<[u8]>) -> std::i
 #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
 pub fn write_device(path: &str, bytes: &[u8]) -> std::io::Result<()> {
     use std::io::Write as _;
+    let device = device_path(path);
+    let mut f = std::fs::OpenOptions::new().write(true).open(device)?;
+    f.write_all(bytes)?;
+    f.flush()
+}
+
+/// The path a port name opens: a bare Windows port name (`COM10`)
+/// through the device namespace (`\\.\COM10`).
+#[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+fn device_path(path: &str) -> String {
     let path = path.trim();
     let upper = path.to_ascii_uppercase();
-    let device = if cfg!(windows)
+    if cfg!(windows)
         && upper.starts_with("COM")
         && upper.len() > 3
         && upper[3..].bytes().all(|b| b.is_ascii_digit())
@@ -627,10 +637,17 @@ pub fn write_device(path: &str, bytes: &[u8]) -> std::io::Result<()> {
         format!("\\\\.\\{path}")
     } else {
         path.to_string()
-    };
-    let mut f = std::fs::OpenOptions::new().write(true).open(device)?;
-    f.write_all(bytes)?;
-    f.flush()
+    }
+}
+
+/// Open a device (a serial or USB-serial port) to write and read, the
+/// way [`write_device`] finds it; nothing is created.
+#[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+pub fn open_device(path: &str) -> std::io::Result<std::fs::File> {
+    std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(device_path(path))
 }
 
 /// Delete a file (in a browser, only in the auto-backup folder and the
@@ -1939,6 +1956,36 @@ impl Dialog {
         }
     }
 
+    /// A file to open (`mode` 0), where to save (1) or a folder (2), and
+    /// `then` with it, or with `None` when the user cancels: on a later
+    /// frame on the desktop; elsewhere at once with `None` (a macro's file
+    /// box, #4315; macros run on the desktop only).
+    pub fn choose(
+        self,
+        app: &mut App,
+        mode: u8,
+        then: impl FnOnce(&mut App, Option<PathBuf>) + 'static,
+    ) {
+        #[cfg(not(any(target_arch = "wasm32", target_os = "android")))]
+        {
+            let _ = app;
+            let job = move |app: &mut App, paths: Vec<PathBuf>| then(app, paths.into_iter().next());
+            match mode {
+                1 => schedule_native_dialog(self.native_save(), job),
+                2 => {
+                    let start = self.directory.clone();
+                    schedule_native_dialog(native_folder_pick(FolderToken(()), start.as_deref()), job)
+                }
+                _ => schedule_native_dialog(self.native_pick(false), job),
+            }
+        }
+        #[cfg(any(target_arch = "wasm32", target_os = "android"))]
+        {
+            let _ = mode;
+            then(app, None);
+        }
+    }
+
     /// Pick one or more files and run `then` with their paths: at once
     /// natively, on a later frame in a browser and on Android.
     /// Choose a folder where only files can be picked otherwise, and run
@@ -2276,7 +2323,7 @@ fn download(_name: &str, _bytes: &[u8]) -> std::io::Result<()> {
 }
 
 #[cfg(all(test, not(any(target_arch = "wasm32", target_os = "android"))))]
-mod test_pick {
+pub(crate) mod test_pick {
     use super::*;
     thread_local! {
         static ANSWERS: RefCell<std::collections::VecDeque<Vec<PathBuf>>> = const { RefCell::new(std::collections::VecDeque::new()) };

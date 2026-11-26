@@ -23,7 +23,7 @@ Pages: `ai-drawing.md`, `align-distribute.md`, `brush-strokes.md`, `before-after
 `outline-pen.md`, `package.md`, `pdf-import.md`, `pen-pressure.md`, `picture-mosaic.md`, `pick-tool.md`,
 `procedural-fill.md`,
 `eyedroppers.md`, `files.md`, `font-manager.md`, `gradient-fill.md`, `free-transform.md`, `hints.md`,
-`lens.md`, `live-guides.md`, `mcp.md`, `missing-fonts.md`, `mesh-fill.md`, `new-document.md`, `options.md`,
+`lens.md`, `live-guides.md`, `math-shapes.md`, `mcp.md`, `missing-fonts.md`, `mesh-fill.md`, `new-document.md`, `options.md`,
 `outline-pen.md`, `pdf-import.md`, `picture-mosaic.md`, `pick-tool.md`, `properties-docker.md`,
 `plt.md`, `vba.md`, `vector-mosaic.md`,
 `clip-frame.md`, `clipboard.md`, `bitmap-tracing.md`, `psd-import.md`, `pmd-import.md`,

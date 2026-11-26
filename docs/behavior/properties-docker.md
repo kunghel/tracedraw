@@ -54,6 +54,16 @@ all, none or mixed over the painted objects of the selection and set them
 all (`overprint_state`, `App::set_overprint`, test
 `overprint_is_set_from_the_docker`).
 
+## Text in the Properties docker (#4097)
+
+When a text object is selected or edited, the Character section hosts the
+live character controls (font family, style, size, kerning, underline,
+strikethrough, character width, fill, background, outline, character
+offsets, OpenType features and variable font axes), a case conversion menu,
+Edit Text... and Edit with Text Tool buttons, plus collapsible Paragraph
+and Frame sections. Editing a text object opens the Properties docker on
+the Character section.
+
 ## Summary (#1202)
 
 Figures about the selection, read-only, in the drawing's units and ruler

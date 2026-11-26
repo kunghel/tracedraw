@@ -195,7 +195,9 @@ in place and lock work as for any clip frame. One undo step each.
   Inside Frame with no contents does; one undo step. Pale when nothing
   selected can become one.
 - No Frame: each selected empty clip frame becomes the object it was
-  made from, with its id; one undo step. Pale without one.
+  made from, with its id; one undo step. Pale without one. Also on
+  Object > Clip to Frame, so it can take a shortcut in Options >
+  Customization > Commands (#4132).
 - Create Empty Text Frame (one object selected): the object gives way to
   an empty paragraph text frame of its size (its bounds) in its place,
   in the font, size, style, alignment and hyphenation new text takes;

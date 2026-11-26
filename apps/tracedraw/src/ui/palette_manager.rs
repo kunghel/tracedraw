@@ -11,6 +11,7 @@
 //! Delete, Move Up, Move Down); a row dragged onto another of its
 //! section moves there.
 
+use crate::ui::btn_icons::IconUi;
 use crate::app::App;
 use crate::i18n::{tr, trf};
 use crate::settings::{SWATCH_MAX, SWATCH_MIN, SWATCH_STEPS};
@@ -183,7 +184,7 @@ pub fn show(app: &mut App, ui: &mut Ui) {
     // New Palette: an empty palette of one's own, shown in a bar of its
     // own at once, so several palettes stand in bars side by side.
     if ui
-        .button(tr("palette.new"))
+        .ibutton("palette.new")
         .rich_tip(tr("palette.new_tip"))
         .clicked()
     {
@@ -655,14 +656,30 @@ fn palette_row(app: &mut App, ui: &mut Ui, i: usize) {
     }
     paint_pic(ui.painter(), more.shrink(5.0), Pic::More, Tokens::icon());
     let more_resp = more_resp.rich_tip(tr("palette.actions_tip"));
-    egui::Popup::menu(&more_resp)
-        .id(id.with("more_menu"))
-        .style(crate::ui::menus::menu_popup_style)
-        .show(|ui| crate::ui::menus::body(ui, |ui| row_menu(app, ui, i)));
-    egui::Popup::context_menu(&resp)
-        .id(id.with("context_menu"))
-        .style(crate::ui::menus::menu_popup_style)
-        .show(|ui| crate::ui::menus::body(ui, |ui| row_menu(app, ui, i)));
+    crate::ui::context_menus::filter_popup(
+        egui::Popup::menu(&more_resp)
+            .id(id.with("more_menu"))
+            .style(crate::ui::menus::menu_popup_style),
+        &app.settings.context_menus,
+        "palette_manager",
+    )
+    .show(|ui| {
+        let _scope =
+            crate::ui::context_menus::Scope::new(&app.settings.context_menus, "palette_manager");
+        crate::ui::menus::body(ui, |ui| row_menu(app, ui, i));
+    });
+    crate::ui::context_menus::filter_popup(
+        egui::Popup::context_menu(&resp)
+            .id(id.with("context_menu"))
+            .style(crate::ui::menus::menu_popup_style),
+        &app.settings.context_menus,
+        "palette_manager",
+    )
+    .show(|ui| {
+        let _scope =
+            crate::ui::context_menus::Scope::new(&app.settings.context_menus, "palette_manager");
+        crate::ui::menus::body(ui, |ui| row_menu(app, ui, i));
+    });
     if resp.clicked() || resp.secondary_clicked() {
         app.palette_manager.selected = Selected::Palette(i);
     }
@@ -792,63 +809,77 @@ fn row_menu(app: &mut App, ui: &mut Ui, i: usize) {
     let builtin = p.builtin;
     let shown = app.visible_palettes.contains(&i);
     let renamed = app.settings.palette_names.contains_key(&id);
-    if !shown {
-        if item(ui, "palette.open_as_bar", "", true) {
-            app.open_palette_bar(&id);
-        }
-    } else if item(ui, "palette.close_bar", "", app.visible_palettes.len() > 1) {
-        app.toggle_palette(i);
-    }
-    sep(ui);
-    if item(ui, "docker.edit", "", true) {
-        app.dialog = crate::ui::dialogs::Dialog::PaletteEditor(
-            crate::ui::dialogs::PaletteEditorState::on(i),
-        );
-    }
-    if item(ui, "palette.rename", "", true) {
-        start_rename_index(app, i);
-    }
-    if item(ui, "palette.reset_name", "", renamed) {
-        app.rename_palette(&id, "");
-    }
-    if item(ui, "palette.duplicate", "", true) {
-        if let Some(k) = app.duplicate_palette(i) {
-            app.palette_manager.selected = Selected::Palette(k);
-        }
-    }
-    if !builtin {
-        let locked = app.palette_locked(i);
-        if item(
-            ui,
-            if locked {
-                "docker.palette_unlock"
-            } else {
-                "docker.palette_lock"
-            },
-            "",
-            true,
-        ) {
-            app.toggle_palette_lock(i);
-        }
-        if item(ui, "palette.delete", "", true) {
-            app.delete_palette(i);
-            app.palette_manager.selected = Selected::Main;
-        }
-    }
-    sep(ui);
-    let same = |k: usize| app.palettes.get(k).is_some_and(|q| q.builtin == builtin);
-    let up = i.checked_sub(1).filter(|k| same(*k));
-    let down = Some(i + 1).filter(|k| same(*k));
-    if item(ui, "palette.move_up", "", up.is_some()) {
-        if let Some(k) = up {
-            app.move_palette_in_list(i, k);
-            app.palette_manager.selected = Selected::Palette(k);
-        }
-    }
-    if item(ui, "palette.move_down", "", down.is_some()) {
-        if let Some(k) = down {
-            app.move_palette_in_list(i, k);
-            app.palette_manager.selected = Selected::Palette(k);
+    let locked = app.palette_locked(i);
+    let lock_key = if locked {
+        "docker.palette_unlock"
+    } else {
+        "docker.palette_lock"
+    };
+    crate::ui::context_menu_filter::ordered_menu! { ui;
+        "palette.open_as_bar" => {
+            if !shown && item(ui, "palette.open_as_bar", "", true) {
+                app.open_palette_bar(&id);
+            }
+        },
+        "palette.close_bar" => {
+            if shown && item(ui, "palette.close_bar", "", app.visible_palettes.len() > 1) {
+                app.toggle_palette(i);
+            }
+        },
+        "docker.edit" => {
+            sep(ui);
+            if item(ui, "docker.edit", "", true) {
+                app.dialog = crate::ui::dialogs::Dialog::PaletteEditor(
+                    crate::ui::dialogs::PaletteEditorState::on(i),
+                );
+            }
+        },
+        "palette.rename" => {
+            if item(ui, "palette.rename", "", true) {
+                start_rename_index(app, i);
+            }
+        },
+        "palette.reset_name" => {
+            if item(ui, "palette.reset_name", "", renamed) {
+                app.rename_palette(&id, "");
+            }
+        },
+        "palette.duplicate" => {
+            if item(ui, "palette.duplicate", "", true) {
+                if let Some(k) = app.duplicate_palette(i) {
+                    app.palette_manager.selected = Selected::Palette(k);
+                }
+            }
+        },
+        lock_key => {
+            if !builtin && item(ui, lock_key, "", true) {
+                app.toggle_palette_lock(i);
+            }
+        },
+        "palette.delete" => {
+            if !builtin && item(ui, "palette.delete", "", true) {
+                app.delete_palette(i);
+                app.palette_manager.selected = Selected::Main;
+            }
+        },
+        "palette.move_up" => {
+            sep(ui);
+            let up = i.checked_sub(1).filter(|k| app.palettes.get(*k).is_some_and(|q| q.builtin == builtin));
+            if item(ui, "palette.move_up", "", up.is_some()) {
+                if let Some(k) = up {
+                    app.move_palette_in_list(i, k);
+                    app.palette_manager.selected = Selected::Palette(k);
+                }
+            }
+        },
+        "palette.move_down" => {
+            let down = Some(i + 1).filter(|k| app.palettes.get(*k).is_some_and(|q| q.builtin == builtin));
+            if item(ui, "palette.move_down", "", down.is_some()) {
+                if let Some(k) = down {
+                    app.move_palette_in_list(i, k);
+                    app.palette_manager.selected = Selected::Palette(k);
+                }
+            }
         }
     }
 }
@@ -908,14 +939,34 @@ fn document_section(app: &mut App, ui: &mut Ui) {
     }
     paint_pic(ui.painter(), more.shrink(5.0), Pic::More, Tokens::icon());
     let more_resp = more_resp.rich_tip(tr("palette.actions_tip"));
-    egui::Popup::menu(&more_resp)
-        .id(id.with("more_menu"))
-        .style(crate::ui::menus::menu_popup_style)
-        .show(|ui| crate::ui::menus::body(ui, |ui| document_menu(app, ui)));
-    egui::Popup::context_menu(&resp)
-        .id(id.with("context_menu"))
-        .style(crate::ui::menus::menu_popup_style)
-        .show(|ui| crate::ui::menus::body(ui, |ui| document_menu(app, ui)));
+    crate::ui::context_menus::filter_popup(
+        egui::Popup::menu(&more_resp)
+            .id(id.with("more_menu"))
+            .style(crate::ui::menus::menu_popup_style),
+        &app.settings.context_menus,
+        "palette_document_manager",
+    )
+    .show(|ui| {
+        let _scope = crate::ui::context_menus::Scope::new(
+            &app.settings.context_menus,
+            "palette_document_manager",
+        );
+        crate::ui::menus::body(ui, |ui| document_menu(app, ui));
+    });
+    crate::ui::context_menus::filter_popup(
+        egui::Popup::context_menu(&resp)
+            .id(id.with("context_menu"))
+            .style(crate::ui::menus::menu_popup_style),
+        &app.settings.context_menus,
+        "palette_document_manager",
+    )
+    .show(|ui| {
+        let _scope = crate::ui::context_menus::Scope::new(
+            &app.settings.context_menus,
+            "palette_document_manager",
+        );
+        crate::ui::menus::body(ui, |ui| document_menu(app, ui));
+    });
     if resp.clicked() || resp.secondary_clicked() {
         app.palette_manager.selected = Selected::Document;
     }
@@ -960,7 +1011,7 @@ fn document_section(app: &mut App, ui: &mut Ui) {
         if ui
             .add_enabled(
                 doc && !app.selection.is_empty(),
-                egui::Button::new(tr("palette.add_selection_colors")),
+                crate::ui::btn_icons::Ib::new("palette.add_selection_colors"),
             )
             .rich_tip(tr("palette.add_selection_colors_tip"))
             .clicked()
@@ -968,7 +1019,7 @@ fn document_section(app: &mut App, ui: &mut Ui) {
             app.palette_from_selection();
         }
         if ui
-            .add_enabled(doc, egui::Button::new(tr("palette.add_from_document")))
+            .add_enabled(doc, crate::ui::btn_icons::Ib::new("palette.add_from_document"))
             .rich_tip(tr("palette.add_from_document_tip"))
             .clicked()
         {
@@ -976,7 +1027,7 @@ fn document_section(app: &mut App, ui: &mut Ui) {
         }
         let any = doc && !app.doc().palette.is_empty();
         if ui
-            .add_enabled(any, egui::Button::new(tr("palette.clear")))
+            .add_enabled(any, crate::ui::btn_icons::Ib::new("palette.clear"))
             .rich_tip(tr("palette.clear_tip"))
             .clicked()
         {
@@ -990,34 +1041,75 @@ fn document_menu(app: &mut App, ui: &mut Ui) {
     use crate::ui::menus::{item, sep};
     ui.set_min_width(200.0);
     let bar = app.extra_palettes.iter().position(|r| r.document);
-    match bar {
-        None => {
-            if item(ui, "palette.open_as_bar", "", true) {
+    crate::ui::context_menu_filter::ordered_menu! { ui;
+        "palette.open_as_bar" => {
+            if bar.is_none() && item(ui, "palette.open_as_bar", "", true) {
                 app.open_palette_bar(crate::settings::DOCUMENT_PALETTE);
             }
-        }
-        Some(k) => {
-            if item(ui, "palette.close_bar", "", true) {
-                crate::ui::palette_bars::close_bar(app, k);
+        },
+        "palette.close_bar" => {
+            if let Some(k) = bar {
+                if item(ui, "palette.close_bar", "", true) {
+                    crate::ui::palette_bars::close_bar(app, k);
+                }
+            }
+        },
+        "palette.rename" => {
+            sep(ui);
+            if item(ui, "palette.rename", "", true) {
+                crate::ui::palette_bars::start_rename(app, Row::Document);
+            }
+        },
+        "palette.reset_name" => {
+            let renamed = app.settings.palette_names.contains_key(crate::settings::DOCUMENT_PALETTE);
+            if item(ui, "palette.reset_name", "", renamed) {
+                app.rename_palette(crate::settings::DOCUMENT_PALETTE, "");
             }
         }
-    }
-    sep(ui);
-    if item(ui, "palette.rename", "", true) {
-        crate::ui::palette_bars::start_rename(app, Row::Document);
-    }
-    let renamed = app
-        .settings
-        .palette_names
-        .contains_key(crate::settings::DOCUMENT_PALETTE);
-    if item(ui, "palette.reset_name", "", renamed) {
-        app.rename_palette(crate::settings::DOCUMENT_PALETTE, "");
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn context_menu_document_manager_root_matches_editor_and_can_move_open() {
+        let mut app = App::headless();
+        let ctx = crate::theme::ui_context();
+        let scene = "palette_document_manager";
+        let defaults = crate::ui::context_menu_branches::siblings(scene, &[]);
+        assert!(defaults.contains(&"palette.open_as_bar"));
+        app.settings.context_menus.set_order(
+            scene,
+            "",
+            &[
+                "palette.reset_name",
+                "palette.rename",
+                "palette.open_as_bar",
+            ],
+        );
+        crate::ui::menus::ROWS.with(|rows| rows.borrow_mut().clear());
+        let mut output = ctx.run_ui(Default::default(), |ui| {
+            let _scope = crate::ui::context_menus::Scope::new(&app.settings.context_menus, scene);
+            document_menu(&mut app, ui);
+        });
+        output.textures_delta.clear();
+        let rows = crate::ui::menus::ROWS.with(|rows| {
+            rows.borrow()
+                .iter()
+                .map(|(key, _)| key.clone())
+                .collect::<Vec<_>>()
+        });
+        assert_eq!(
+            rows,
+            [
+                "palette.reset_name",
+                "palette.rename",
+                "palette.open_as_bar"
+            ]
+        );
+    }
 
     #[test]
     fn the_slider_steps_as_ctrl_wheel_and_takes_the_named_sizes() {

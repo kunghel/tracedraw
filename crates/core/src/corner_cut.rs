@@ -1706,6 +1706,24 @@ pub fn edit_keeping_fillets(
     nodes: &[usize],
     edit: impl Fn(&BezPath, &[usize]) -> BezPath,
 ) -> BezPath {
+    // The end of a closed subpath's last segment lies on its start and is
+    // chosen with it: the node lists show the two as one node, the
+    // start's. A rounded corner whose arc ends on the start had that end
+    // counted as not chosen, so with every node chosen the corner was let
+    // go and the start node stayed behind while the others moved (#4160).
+    let mut chosen_nodes = nodes.to_vec();
+    for sub in subpaths(&crate::nodes::normalize(path)) {
+        if !sub.closed || !nodes.contains(&sub.start_index) {
+            continue;
+        }
+        if let Some((seg, i)) = sub.segs.last() {
+            let start = sub.segs.first().map(|(s, _)| s.eval(0.0));
+            if start.is_some_and(|p| (seg.eval(1.0) - p).hypot() < 1e-9) && !chosen_nodes.contains(i) {
+                chosen_nodes.push(*i);
+            }
+        }
+    }
+    let nodes = &chosen_nodes[..];
     let keep = |f: &Fillet| {
         let chosen = f.nodes.iter().filter(|n| nodes.contains(n)).count();
         chosen == 0 || chosen == f.nodes.len()
@@ -1870,7 +1888,14 @@ pub fn unround(path: &BezPath, which: Option<&[usize]>) -> (BezPath, Vec<Option<
                     }
                 }
                 PathSeg::Quad(q) => {
-                    map[*index] = Some(out.elements().len());
+                    let end = q.p2;
+                    map[*index] = Some(
+                        if sub.closed && last && (end - seg_start(first)).hypot() < 1e-9 {
+                            move_index
+                        } else {
+                            out.elements().len()
+                        },
+                    );
                     out.quad_to(q.p1, q.p2);
                 }
                 PathSeg::Cubic(c) => {
@@ -1892,7 +1917,6 @@ pub fn unround(path: &BezPath, which: Option<&[usize]>) -> (BezPath, Vec<Option<
                             out.push(el);
                         }
                     }
-                    map[*index] = Some(out.elements().len());
                     if t0.is_some() || t1.is_some() {
                         let e = c.subsegment(t0.unwrap_or(0.0)..t1.unwrap_or(1.0));
                         let end = if t1.is_some() {
@@ -1900,8 +1924,22 @@ pub fn unround(path: &BezPath, which: Option<&[usize]>) -> (BezPath, Vec<Option<
                         } else {
                             c.p3
                         };
+                        map[*index] = Some(
+                            if sub.closed && last && (end - seg_start(first)).hypot() < 1e-9 {
+                                move_index
+                            } else {
+                                out.elements().len()
+                            },
+                        );
                         out.curve_to(e.p1, e.p2, end);
                     } else {
+                        map[*index] = Some(
+                            if sub.closed && last && (c.p3 - seg_start(first)).hypot() < 1e-9 {
+                                move_index
+                            } else {
+                                out.elements().len()
+                            },
+                        );
                         out.curve_to(c.p1, c.p2, c.p3);
                     }
                     if let Some((center, corner)) = arc_to_corner {

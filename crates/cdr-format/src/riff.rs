@@ -18,6 +18,7 @@
 //!   Kaitai Struct description of the format.
 
 use crate::{Error, Result};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
 /// A buffer a tree reads from, shared with whoever keeps records of it
@@ -90,13 +91,22 @@ struct Ctx {
     /// Major format version; 0 when unknown (treated as recent).
     version: u16,
     /// Bytes inflated from compressed blocks so far, against
-    /// [`MAX_INFLATED_TOTAL`].
+    /// [`inflate_total_cap`].
     inflated: std::cell::Cell<u64>,
 }
 
 /// The most all the compressed blocks of one file may inflate to
-/// together; blocks past it are skipped with a warning.
-const MAX_INFLATED_TOTAL: u64 = 1 << 30;
+/// together; blocks past it are skipped with a warning. The app raises
+/// this from the free RAM it sees before opening a large drawing.
+pub static INFLATE_TOTAL_CAP: AtomicU64 = AtomicU64::new(1 << 30);
+
+pub fn set_inflate_total_cap(bytes: u64) {
+    INFLATE_TOTAL_CAP.store(bytes.clamp(1 << 30, 8 << 30), Ordering::Relaxed);
+}
+
+fn inflate_total_cap() -> u64 {
+    INFLATE_TOTAL_CAP.load(Ordering::Relaxed)
+}
 
 /// Size of a redirect record (version 16+).
 const REDIRECT_LEN: usize = 16;
@@ -335,10 +345,9 @@ fn inflate_cmpr(
     };
     let first = pos + 16;
     let second = first.saturating_add(c0 as usize);
-    if ctx.inflated.get() >= MAX_INFLATED_TOTAL {
-        log::warn!(
-            "cmpr block at {first} skipped: the file has inflated past {MAX_INFLATED_TOTAL} bytes"
-        );
+    let cap = inflate_total_cap();
+    if ctx.inflated.get() >= cap {
+        log::warn!("cmpr block at {first} skipped: the file has inflated past {cap} bytes");
         return Vec::new();
     }
     let Some(chunks) = inflate_cpng(buf, first, second.min(end)) else {

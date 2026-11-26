@@ -254,7 +254,14 @@ pub fn read_vector() -> Option<Vec<u8>> {
 /// The picture on the clipboard as a picture file's bytes (PNG or BMP),
 /// the best offered first (#2349); `None` when it offers none.
 pub fn read_picture() -> Option<Vec<u8>> {
-    let open = Open::new()?;
+    read_picture_result().ok().flatten()
+}
+
+/// Unlike the best-effort reader, distinguish contention and unreadable data
+/// from a clipboard that offers no picture, so background paste can retry.
+pub fn read_picture_result() -> Result<Option<Vec<u8>>, String> {
+    let open = Open::new().ok_or_else(|| "the system clipboard is busy".to_string())?;
+    let mut offered = false;
     for name in ["PNG", "image/png"] {
         let w = wide(name);
         // SAFETY: a NUL-terminated name; registering an existing name
@@ -263,16 +270,29 @@ pub fn read_picture() -> Option<Vec<u8>> {
         if format == 0 {
             continue;
         }
+        // SAFETY: the clipboard is open and this only inspects its formats.
+        offered |= unsafe { IsClipboardFormatAvailable(format) != 0 };
         if let Some(bytes) = open.global_bytes(format) {
             if bytes.starts_with(b"\x89PNG") {
-                return Some(bytes);
+                return Ok(Some(bytes));
             }
         }
     }
-    [CF_DIBV5, CF_DIB].into_iter().find_map(|format| {
-        open.global_bytes(format)
+    for format in [CF_DIBV5, CF_DIB] {
+        // SAFETY: the clipboard is open and this only inspects its formats.
+        offered |= unsafe { IsClipboardFormatAvailable(format) != 0 };
+        if let Some(bytes) = open
+            .global_bytes(format)
             .and_then(|dib| crate::winit_picture_drop::bmp_from_dib(&dib))
-    })
+        {
+            return Ok(Some(bytes));
+        }
+    }
+    if offered {
+        Err("the clipboard picture is unreadable or exceeds the supported size".into())
+    } else {
+        Ok(None)
+    }
 }
 
 /// What a copy puts on the clipboard (#1539).

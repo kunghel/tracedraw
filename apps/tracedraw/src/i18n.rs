@@ -11,7 +11,7 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{OnceLock, RwLock};
 
 /// Languages shipped with the app, in display order.
-pub const LANGUAGES: [(&str, &str); 20] = [
+pub const LANGUAGES: [(&str, &str); 22] = [
     ("en", "English"),
     ("zh-CN", "中文（简体）"),
     ("hi", "हिन्दी"),
@@ -32,12 +32,14 @@ pub const LANGUAGES: [(&str, &str); 20] = [
     ("cs", "Čeština"),
     ("lo", "ພາສາລາວ"),
     ("vi", "Tiếng Việt"),
+    ("eo", "Esperanto"),
+    ("uk", "Українська"),
 ];
 
 /// The language files built into the program: all of them on the
 /// desktop.
 #[cfg(not(target_arch = "wasm32"))]
-const FILES: [(&str, &str); 20] = [
+const FILES: [(&str, &str); 22] = [
     ("en", include_str!("../lang/en.toml")),
     ("zh-CN", include_str!("../lang/zh-CN.toml")),
     ("hi", include_str!("../lang/hi.toml")),
@@ -58,6 +60,8 @@ const FILES: [(&str, &str); 20] = [
     ("cs", include_str!("../lang/cs.toml")),
     ("lo", include_str!("../lang/lo.toml")),
     ("vi", include_str!("../lang/vi.toml")),
+    ("eo", include_str!("../lang/eo.toml")),
+    ("uk", include_str!("../lang/uk.toml")),
 ];
 
 /// The browser build embeds English only; the other languages are
@@ -412,6 +416,7 @@ pub fn language_for_langid(id: u16) -> Option<&'static str> {
         0x05 => "cs",
         0x54 => "lo",
         0x2a => "vi",
+        0x22 => "uk",
         _ => return None,
     })
 }
@@ -474,6 +479,64 @@ pub fn system_language() -> &'static str {
 mod tests {
     use super::*;
 
+    #[test]
+    fn ukrainian_is_selected_by_locale_installer_and_saved_choice() {
+        for locale in ["uk", "uk-UA", "uk_UA.UTF-8", "UK-ua", "uk-UA@euro"] {
+            assert_eq!(match_locale(locale), Some("uk"), "{locale}");
+        }
+        assert_eq!(match_locale("ukr"), None);
+        assert_eq!(language_for_langid(0x0422), Some("uk"));
+        assert_eq!(installer_choice(" UK "), Some("uk"));
+        assert_eq!(startup_language("uk", Some("en"), &["en-US"]), "uk");
+        assert_eq!(startup_language("", Some("uk"), &["en-US"]), "uk");
+        assert_eq!(startup_language("system", Some("en"), &["uk-UA"]), "uk");
+        assert_eq!(startup_language("", None, &["uk_UA.UTF-8"]), "uk");
+    }
+
+    #[test]
+    fn ukrainian_desktop_and_browser_use_the_same_strings() {
+        let uk = builtin("uk").expect("Ukrainian is embedded on desktop");
+        let mut st = State::new(parse(FILES[0].1));
+        assert_eq!(st.choose("uk", Some(uk)), None);
+        assert_eq!(st.shown, "uk");
+        assert_eq!(st.table.get("menu.file").map(String::as_str), Some("Файл"));
+
+        // Exercise the browser's fetch path without changing global state.
+        let mut browser = State::new(parse(FILES[0].1));
+        assert_eq!(browser.choose("uk", None).as_deref(), Some("lang/uk.toml"));
+        assert_eq!(browser.shown, "en");
+        assert_eq!(browser.arrived("uk", Some(uk)), Ok(true));
+        assert_eq!(browser.table, st.table);
+        with_thread_language("uk", || {
+            assert_eq!(trf("doc.page_n", &[("n", "2")]), "Сторінка 2");
+            assert_eq!(trf("doc.untitled_n", &[("n", "3")]), "Без назви-3");
+            assert_eq!(
+                trf("status.n_objects_selected", &[("n", "5")]),
+                "Вибрано об'єктів: 5"
+            );
+        });
+    }
+
+    #[test]
+    fn ukrainian_keeps_every_format_placeholder() {
+        fn placeholders(text: &str) -> Vec<&str> {
+            let mut names: Vec<_> = text
+                .split('{')
+                .skip(1)
+                .filter_map(|part| part.split_once('}').map(|(name, _)| name))
+                .collect();
+            names.sort_unstable();
+            names
+        }
+        let en = parse(FILES[0].1);
+        let uk = parse(builtin("uk").expect("Ukrainian"));
+        for (key, english) in &en {
+            let translated = uk.get(key).unwrap_or_else(|| panic!("missing {key}"));
+            assert!(!translated.trim().is_empty(), "empty {key}");
+            assert_eq!(placeholders(english), placeholders(translated), "{key}");
+        }
+    }
+
     fn language_for_locale(locale: &str) -> &'static str {
         match_locale(locale).unwrap_or("en")
     }
@@ -494,6 +557,7 @@ mod tests {
         assert_eq!(language_for_locale(""), "en");
         assert_eq!(language_for_locale("lo_LA.UTF-8"), "lo");
         assert_eq!(language_for_locale("vi_VN.UTF-8"), "vi");
+        assert_eq!(language_for_locale("eo.UTF-8"), "eo");
     }
 
     #[test]
@@ -516,6 +580,8 @@ mod tests {
         assert_eq!(match_locale("lo-LA"), Some("lo"));
         assert_eq!(match_locale("vi"), Some("vi"));
         assert_eq!(match_locale("vi-VN"), Some("vi"));
+        assert_eq!(match_locale("eo"), Some("eo"));
+        assert_eq!(match_locale("eo-001"), Some("eo"));
         // Codes compared whole, not by their first letters.
         assert_eq!(match_locale("arn-CL"), None);
         assert_eq!(match_locale("ido"), None);
@@ -548,10 +614,11 @@ mod tests {
         assert_eq!(language_for_langid(0x041d), None); // Swedish
         assert_eq!(language_for_langid(0x0454), Some("lo"));
         assert_eq!(language_for_langid(0x042a), Some("vi"));
-        // Every shipped language has an id.
-        for (code, _) in LANGUAGES {
+        // Every shipped language has an id, but Esperanto, which Windows
+        // has none for (it is picked in Options instead).
+        for (code, _) in LANGUAGES.iter().filter(|(c, _)| *c != "eo") {
             assert!(
-                (0..0x8000u16).any(|id| language_for_langid(id) == Some(code)),
+                (0..0x8000u16).any(|id| language_for_langid(id) == Some(*code)),
                 "{code}"
             );
         }
@@ -585,8 +652,8 @@ mod tests {
         }
         assert_eq!(
             primaries.len(),
-            LANGUAGES.len() - 1,
-            "one per language, Chinese apart"
+            LANGUAGES.len() - 2,
+            "one per language, Chinese and Esperanto (no Windows id) apart"
         );
         // The choices of the installer's page: every code, in our order.
         let codes: Vec<&str> = iss

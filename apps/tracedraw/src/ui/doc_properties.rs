@@ -13,7 +13,7 @@ use egui::{Context, RichText, Ui};
 use tracedraw_core::Command;
 
 /// Languages offered, as their tag and their own name.
-pub const LANGUAGES: [(&str, &str); 32] = [
+pub const LANGUAGES: [(&str, &str); 33] = [
     ("ar", "العربية"),
     ("bn", "বাংলা"),
     ("cs-CZ", "Čeština"),
@@ -22,6 +22,7 @@ pub const LANGUAGES: [(&str, &str); 32] = [
     ("el-GR", "Ελληνικά"),
     ("en-GB", "English (United Kingdom)"),
     ("en-US", "English (United States)"),
+    ("eo", "Esperanto"),
     ("es-ES", "Español (España)"),
     ("es-MX", "Español (México)"),
     ("fi-FI", "Suomi"),

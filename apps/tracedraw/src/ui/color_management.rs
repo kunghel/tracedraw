@@ -5,6 +5,7 @@
 //! and import policies. Nothing changes until OK. See
 //! docs/behavior/colour-management.md.
 
+use crate::ui::btn_icons::IconUi;
 use crate::app::App;
 use crate::color_policy::{FoundOrName, FoundProfile, Space, PRESETS};
 use crate::i18n::{tr, trf};
@@ -199,7 +200,7 @@ fn profile_combo(
             }
             ui.label(RichText::new(tr("color_mgmt.other_profiles")).color(Tokens::ACCENT));
             if ui
-                .selectable_label(false, tr("color_mgmt.load_profiles"))
+                .iselectable(false, "color_mgmt.load_profiles")
                 .clicked()
             {
                 load = true;

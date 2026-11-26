@@ -15,6 +15,7 @@
 //! history: Cancel and the editor's Undo are what take a change back.
 //! See docs/behavior/color-palettes.md.
 
+use crate::ui::btn_icons::IconUi;
 use crate::app::App;
 use crate::i18n::{tr, trf};
 use crate::theme::Tokens;
@@ -647,7 +648,7 @@ pub fn dialog(app: &mut App, ctx: &Context, st: &mut PaletteEditorState, close: 
                         },
                     ));
                 if ui
-                    .button(tr("dialog.new_palette"))
+                    .ibutton("dialog.new_palette")
                     .rich_tip(crate::ui::tips::pair(
                         "dialog.new_palette_tip",
                         "dialog.new_palette_desc",
@@ -711,7 +712,7 @@ pub fn dialog(app: &mut App, ctx: &Context, st: &mut PaletteEditorState, close: 
         } else {
             ui.horizontal_wrapped(|ui| {
                 if ui
-                    .button(tr("dialog.add_color"))
+                    .ibutton("dialog.add_color")
                     .rich_tip(crate::ui::tips::keyed("dialog.add_color"))
                     .clicked()
                 {
@@ -719,7 +720,7 @@ pub fn dialog(app: &mut App, ctx: &Context, st: &mut PaletteEditorState, close: 
                 }
                 let any = !st.selected.is_empty();
                 if ui
-                    .add_enabled(any, egui::Button::new(tr("dialog.remove_color")))
+                    .add_enabled(any, crate::ui::btn_icons::Ib::new("dialog.remove_color"))
                     .rich_tip_always(crate::ui::tips::keyed("dialog.remove_color"))
                     .clicked()
                 {
@@ -729,7 +730,7 @@ pub fn dialog(app: &mut App, ctx: &Context, st: &mut PaletteEditorState, close: 
                 let up = st.selected.first().is_some_and(|i| *i > 0);
                 let down = st.selected.last().is_some_and(|i| i + 1 < n);
                 if ui
-                    .add_enabled(up, egui::Button::new(tr("docker.move_up")))
+                    .add_enabled(up, crate::ui::btn_icons::Ib::new("docker.move_up"))
                     .rich_tip_always(crate::ui::tips::pair(
                         "docker.move_up",
                         "dialog.palette_move_desc",
@@ -739,7 +740,7 @@ pub fn dialog(app: &mut App, ctx: &Context, st: &mut PaletteEditorState, close: 
                     st.move_selected(true);
                 }
                 if ui
-                    .add_enabled(down, egui::Button::new(tr("docker.move_down")))
+                    .add_enabled(down, crate::ui::btn_icons::Ib::new("docker.move_down"))
                     .rich_tip_always(crate::ui::tips::pair(
                         "docker.move_down",
                         "dialog.palette_move_desc",
@@ -749,7 +750,7 @@ pub fn dialog(app: &mut App, ctx: &Context, st: &mut PaletteEditorState, close: 
                     st.move_selected(false);
                 }
                 if ui
-                    .add_enabled(!st.undo.is_empty(), egui::Button::new(tr("docker.undo")))
+                    .add_enabled(!st.undo.is_empty(), crate::ui::btn_icons::Ib::new("docker.undo"))
                     .rich_tip_always(crate::ui::tips::pair(
                         "docker.undo",
                         "dialog.palette_undo_desc",
@@ -759,7 +760,7 @@ pub fn dialog(app: &mut App, ctx: &Context, st: &mut PaletteEditorState, close: 
                     st.undo();
                 }
                 if ui
-                    .button(tr("dialog.save_palette"))
+                    .ibutton("dialog.save_palette")
                     .rich_tip(crate::ui::tips::keyed("dialog.save_palette"))
                     .clicked()
                 {

@@ -98,6 +98,7 @@ const NOT_CARRIED: &[&str] = &[
     "folder_bookmarks",
     "thesaurus_file",
     "bitmap_editor",
+    "spreadsheet_editor",
     "window_maximized",
     "window_size",
     "hardware_acceleration",

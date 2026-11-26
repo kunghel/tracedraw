@@ -36,3 +36,21 @@ Open the [[docker.symbol_scatter]] panel with
 
 The copies come as one group on top, selected, and one undo removes them. One
 Apply makes at most 5000 copies; raise the spacing for large objects.
+
+Tick **Brush on the drawing** at the bottom of the panel to touch up a
+group of copies by hand. Select the group, choose a **Brush** and drag over
+the copies: the ones under the brush change, those nearest its center the
+most, and the whole drag is one undo step.
+
+- **Move** carries the copies with the pointer.
+- **Gather** pulls them in toward the brush; hold <kbd>Alt</kbd> to spread
+  them out.
+- **Grow** makes them larger; <kbd>Alt</kbd> makes them smaller.
+- **Turn** turns them; <kbd>Alt</kbd> turns them the other way.
+- **Tint** takes their colors toward the color under the list.
+- **Fade** makes them more transparent; <kbd>Alt</kbd> makes them more
+  opaque.
+
+**Radius** is how far the brush reaches and **Strength** how much each drag
+does. While the box is ticked and a group is selected, drags over the
+drawing go to the brush; a click still selects.

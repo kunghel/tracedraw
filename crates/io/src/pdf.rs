@@ -1300,7 +1300,9 @@ impl PageWriter<'_> {
             fx: _,
         } = &shape.kind
         {
-            if let Some((mut rgb, alpha)) = decode_png_rgb_alpha(png) {
+            let painted = crate::bitmap_fill_png(shape, parent);
+            let source = painted.as_deref().unwrap_or(png);
+            if let Some((mut rgb, alpha)) = decode_png_rgb_alpha(source) {
                 let name = format!("Im{}", self.images.len());
                 // Composited over white below when the file has no soft
                 // masks: the ink channels would keep the clear parts.
@@ -1324,7 +1326,7 @@ impl PageWriter<'_> {
                 // with (#1659): its screen pixels made it RGB, or in a
                 // CMYK file a new mix of inks, so black ink alone came
                 // out on four plates.
-                let inks = (!blended)
+                let inks = (!blended && painted.is_none())
                     .then(|| process_inks(shape, png, *width_px, *height_px))
                     .flatten();
                 let kind = if inks.is_some() {
@@ -1439,7 +1441,15 @@ impl PageWriter<'_> {
         // Text, and a curve whose fill rule says so (#1919), fill nonzero.
         let nonzero = matches!(shape.kind, ShapeKind::Text { .. })
             || shape.fill_rule == tracedraw_core::shaping::FillRule::NonZero;
-        self.paint_area(&shape.fill, &path, bounds, nonzero, transform);
+        // A mesh's nodes lie in the object's own space (#1238: the meshes
+        // of an object with a transform went out black, drawn off their
+        // picture).
+        let page_mesh = match &shape.fill {
+            Fill::Mesh(m) => Some(Fill::Mesh(m.transformed(transform))),
+            _ => None,
+        };
+        let fill = page_mesh.as_ref().unwrap_or(&shape.fill);
+        self.paint_area(fill, &path, bounds, nonzero, transform);
 
         // Outline.
         if let Some(s) = &shape.stroke {
@@ -2694,7 +2704,10 @@ fn pdf_blend_mode(merge: tracedraw_core::live::MergeMode) -> &'static str {
     match merge {
         M::Multiply | M::Texturize | M::Subtract => "Multiply",
         M::Difference => "Difference",
-        M::Divide | M::Screen => "Screen",
+        // Add has no PDF blend; Screen is the nearest: it lightens too
+        // and black leaves the backdrop as it is (#1238, lamps whose
+        // glints are added over them went out black).
+        M::Add | M::Divide | M::Screen => "Screen",
         M::IfLighter => "Lighten",
         M::IfDarker => "Darken",
         M::Hue => "Hue",
@@ -2707,9 +2720,7 @@ fn pdf_blend_mode(merge: tracedraw_core::live::MergeMode) -> &'static str {
         M::HardLight => "HardLight",
         M::ColorDodge => "ColorDodge",
         M::ColorBurn => "ColorBurn",
-        M::Normal | M::Add | M::And | M::Or | M::Xor | M::Red | M::Green | M::Blue | M::Behind => {
-            "Normal"
-        }
+        M::Normal | M::And | M::Or | M::Xor | M::Red | M::Green | M::Blue | M::Behind => "Normal",
     }
 }
 
@@ -3965,6 +3976,48 @@ mod tests {
         assert!(!pdf_of(1.0).contains("/SMask"));
     }
 
+    /// #1238: a mesh's nodes lie in its object's own space, so the mesh
+    /// of an object with a transform (every mesh read from a `.cdr`
+    /// file) went out as a black picture, drawn off its object.
+    #[test]
+    fn a_mesh_on_an_object_with_a_transform_exports_its_colours() {
+        // The picture of a red and blue mesh on a 20 mm square whose
+        // corner the object's transform or its own rectangle puts at
+        // (100, 100).
+        let picture = |at: f64, shift: f64| {
+            let mut doc = Document::default();
+            let layer = doc.pages[0].layers[0].id;
+            let id = doc.ids_mut().shape();
+            let r = Rect::new(at, at, at + 20.0, at + 20.0);
+            let mut s = Shape::new(
+                id,
+                ShapeKind::Rect {
+                    rect: r,
+                    radius: 0.0,
+                    corners: None,
+                },
+            );
+            s.transform = Affine::translate((shift, shift));
+            let mut m = tracedraw_core::Mesh::new(r, 1, 1, Color::rgb8(255, 0, 0));
+            m.nodes[0].color = Color::rgb8(0, 0, 255);
+            s.fill = Fill::Mesh(m);
+            s.stroke = None;
+            doc.layer_mut(layer).unwrap().shapes.push(s);
+            let bytes = document_to_pdf(&doc);
+            let find = |from: usize, what: &[u8]| {
+                bytes[from..]
+                    .windows(what.len())
+                    .position(|w| w == what)
+                    .map(|i| from + i)
+            };
+            let image = find(0, b"/Subtype /Image").expect("a picture");
+            let start = find(image, b"stream").expect("its data");
+            let end = find(start, b"endstream").expect("its end");
+            bytes[start..end].to_vec()
+        };
+        assert_eq!(picture(100.0, 0.0), picture(0.0, 100.0));
+    }
+
     #[test]
     fn custom_arrowhead_lands_at_the_line_end_in_the_content_stream() {
         let mut doc = Document::default();
@@ -4785,7 +4838,10 @@ mod pdfx_tests {
             let fill = content.find("0 0 1 rg").expect("the blue fill");
             assert!(gs < fill, "{merge:?}: the state before the object");
         }
-        for merge in [MergeMode::Normal, MergeMode::Behind, MergeMode::Add] {
+        // #1238: Add goes out as Screen, the nearest blend.
+        let bytes = document_to_pdf(&doc_with(MergeMode::Add));
+        assert!(String::from_utf8_lossy(&bytes).contains("/BM /Screen"));
+        for merge in [MergeMode::Normal, MergeMode::Behind] {
             let bytes = document_to_pdf(&doc_with(merge));
             assert!(
                 !String::from_utf8_lossy(&bytes).contains("/BM"),

@@ -12,6 +12,12 @@ from [[menu.window > menu.window.dockers]].
 - **Add pages** adds every page of the drawing, named after the page.
 - **Add selection** adds the selected objects as one asset, cropped to them,
   named after the object.
+- **Add slices** adds the area of each selected object as an asset that
+  exports everything showing in that area, not only the object, cut to it.
+  Set rows and columns beside the button to cut each area into a grid of
+  equal pieces, one asset each, named with their row and column. Draw a
+  rectangle with no fill and no outline over the part of the page you want
+  and add it as a slice.
 - New assets take the format and resolution set under **New assets** (PNG at
   150 dpi at first).
 

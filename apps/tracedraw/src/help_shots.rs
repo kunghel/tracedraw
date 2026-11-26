@@ -139,12 +139,21 @@ impl Shooter {
         }
     }
 
-    fn frame(&mut self, app: &mut App, mut body: impl FnMut(&mut App, &egui::Context)) -> Canvas {
+    fn frame(&mut self, app: &mut App, body: impl FnMut(&mut App, &egui::Context)) -> Canvas {
+        self.frame_sized(app, [W, H], body)
+    }
+
+    fn frame_sized(
+        &mut self,
+        app: &mut App,
+        [width, height]: [usize; 2],
+        mut body: impl FnMut(&mut App, &egui::Context),
+    ) -> Canvas {
         self.time += 0.5;
         let input = egui::RawInput {
             screen_rect: Some(egui::Rect::from_min_size(
                 egui::Pos2::ZERO,
-                egui::vec2(W as f32, H as f32),
+                egui::vec2(width as f32, height as f32),
             )),
             time: Some(self.time),
             ..Default::default()
@@ -158,7 +167,7 @@ impl Shooter {
         self.tex.apply(&out.textures_delta);
         let shapes = std::mem::take(&mut out.shapes);
         let prims = self.ctx.tessellate(shapes, out.pixels_per_point);
-        let mut c = Canvas::new(W, H);
+        let mut c = Canvas::new(width, height);
         c.paint(&self.tex, &prims);
         for id in &out.textures_delta.free {
             self.tex.0.remove(id);
@@ -704,4 +713,129 @@ fn scratch_196_window() {
         }
     }
     crate::i18n::set_language("en");
+}
+
+/// The real Context Menus settings and page menu, before and after a hidden row.
+#[test]
+#[ignore]
+fn context_menu_settings_visuals() {
+    let dir = std::path::PathBuf::from(
+        std::env::var("CONTEXT_MENU_SHOTS").expect("context menu screenshot folder"),
+    );
+    std::fs::create_dir_all(&dir).expect("screenshot folder");
+    for lang in ["en", "zh-CN"] {
+        for theme in [crate::theme::Theme::Light, crate::theme::Theme::Dark] {
+            for (tag, size) in [("wide", [1100, 800]), ("narrow", [780, 760])] {
+                let mut app = demo_app();
+                app.settings.theme = theme.id().to_string();
+                app.settings.follow_high_contrast = false;
+                app.settings.language = lang.to_string();
+                app.options_page = OptionsPage::ContextMenus;
+                app.settings.context_menus.reset_all();
+                crate::i18n::set_language(lang);
+                crate::theme::set_theme(theme);
+                let mut sh = Shooter::new();
+                if crate::theme::needs_system_font(lang) {
+                    crate::theme::install_fonts(&sh.ctx);
+                }
+                let mut canvas = None;
+                for _ in 0..5 {
+                    canvas = Some(sh.frame_sized(&mut app, size, |app, ctx| {
+                        let mut close = false;
+                        crate::ui::options::options_dialog(app, ctx, &mut close);
+                        assert!(!close, "settings remain open while photographed");
+                    }));
+                }
+                let [width, height] = size;
+                canvas.expect("rendered settings").save(
+                    &dir.join(format!(
+                        "context-menu-settings-{lang}-{}-{tag}.png",
+                        theme.id()
+                    )),
+                    (0, 0, width, height),
+                );
+                crate::ui::context_menu_editor::set_test_view(
+                    &sh.ctx,
+                    "canvas_object",
+                    "menu.bitmaps.trace",
+                );
+                canvas = None;
+                app.settings.context_menus.set_order(
+                    "canvas_object",
+                    "menu.bitmaps.trace",
+                    &[
+                        "menu.bitmaps.outline_trace",
+                        "menu.bitmaps.centerline_trace",
+                        "menu.bitmaps.quick_trace",
+                        "menu.bitmaps.repeat_last_trace",
+                        "menu.bitmaps.last_trace_settings",
+                    ],
+                );
+                for _ in 0..4 {
+                    canvas = Some(sh.frame_sized(&mut app, size, |app, ctx| {
+                        let mut close = false;
+                        crate::ui::options::options_dialog(app, ctx, &mut close);
+                    }));
+                }
+                canvas.expect("rendered menu tree").save(
+                    &dir.join(format!("context-menu-tree-{lang}-{}-{tag}.png", theme.id())),
+                    (0, 0, width, height),
+                );
+            }
+            for (tag, visible) in [("before", true), ("after", false)] {
+                let mut app = demo_app();
+                app.settings.theme = theme.id().to_string();
+                app.settings.follow_high_contrast = false;
+                app.settings.language = lang.to_string();
+                app.settings.context_menus.reset_all();
+                app.settings.context_menus.set_visible(
+                    "canvas_page",
+                    "menu.layout.rename_page",
+                    visible,
+                );
+                app.select(Vec::new());
+                app.tool = crate::tools::Tool::Pick;
+                app.context_menu = Some((
+                    egui::pos2(32.0, 32.0),
+                    tracedraw_core::Point::new(190.0, 200.0),
+                ));
+                crate::i18n::set_language(lang);
+                crate::theme::set_theme(theme);
+                let mut sh = Shooter::new();
+                if crate::theme::needs_system_font(lang) {
+                    crate::theme::install_fonts(&sh.ctx);
+                }
+                let mut canvas = None;
+                for _ in 0..5 {
+                    canvas = Some(sh.frame_sized(&mut app, [640, 620], |app, ctx| {
+                        let mut root = egui::Ui::new(
+                            ctx.clone(),
+                            egui::Id::new("context_menu_visuals_root"),
+                            egui::UiBuilder::new().max_rect(egui::Rect::from_min_size(
+                                egui::Pos2::ZERO,
+                                egui::vec2(640.0, 620.0),
+                            )),
+                        );
+                        egui::CentralPanel::default()
+                            .frame(egui::Frame::new().fill(crate::theme::Tokens::desktop()))
+                            .show(&mut root, |ui| {
+                                let response =
+                                    ui.allocate_rect(ui.max_rect(), egui::Sense::hover());
+                                crate::ui::context::context_menu(app, ui, &response);
+                            });
+                    }));
+                }
+                assert!(app.context_menu.is_some(), "real page menu remains open");
+                canvas.expect("rendered page menu").save(
+                    &dir.join(format!(
+                        "context-menu-canvas-page-{lang}-{}-{tag}.png",
+                        theme.id()
+                    )),
+                    (0, 0, 640, 620),
+                );
+            }
+        }
+    }
+    crate::i18n::set_language("en");
+    crate::theme::set_theme(crate::theme::Theme::Light);
 }

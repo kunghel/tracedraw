@@ -3,7 +3,8 @@
 //! put; on release a menu asks what to do there: Move Here, Copy Here,
 //! Copy Fill Here, Copy Outline Here, Copy All Properties (onto the object
 //! under the pointer), Place Inside (that object becomes the selection's
-//! clip frame), or Cancel. Ctrl keeps the drag horizontal or vertical;
+//! clip frame), Fit Text to Path, or Cancel. Ctrl keeps the drag
+//! horizontal or vertical;
 //! Esc cancels it. Let go over another object with Shift held, that
 //! object takes the outline of the selection without the menu, with Alt
 //! the fill and with Ctrl fill and outline. A move with
@@ -15,7 +16,7 @@ use crate::app::App;
 use egui::{Painter, Response, Ui};
 use tracedraw_core::{
     geometry::{Affine, Point, Vec2},
-    Command, ShapeId,
+    Command, ShapeId, ShapeKind,
 };
 
 /// A right-button drag in progress (page space).
@@ -40,6 +41,11 @@ impl RightDrag {
             d
         }
     }
+
+    fn menu_offset(&self, zoom: f32, constrain: bool) -> Option<Vec2> {
+        let offset = self.offset(constrain);
+        (offset.hypot() * f64::from(zoom) >= 2.0).then_some(offset)
+    }
 }
 
 /// The menu shown where a right-button drag ended.
@@ -50,6 +56,8 @@ pub struct DropMenu {
     pub offset: Vec2,
     /// The object under the pointer that is not being dragged.
     pub target: Option<ShapeId>,
+    /// The release point in page space when this drop can fit text to a path.
+    fit_text_at: Option<Point>,
 }
 
 /// What the drop menu does.
@@ -60,18 +68,24 @@ pub enum DropAction {
     CopyFill,
     CopyOutline,
     CopyProperties,
+    /// The first selected object's Layer Effects go onto the object
+    /// under the drop (#4243).
+    CopyEffects,
     PlaceInside,
+    FitTextToPath,
     Cancel,
 }
 
 impl DropAction {
-    pub const ALL: [DropAction; 7] = [
+    pub const ALL: [DropAction; 9] = [
         DropAction::Move,
         DropAction::Copy,
         DropAction::CopyFill,
         DropAction::CopyOutline,
         DropAction::CopyProperties,
+        DropAction::CopyEffects,
         DropAction::PlaceInside,
+        DropAction::FitTextToPath,
         DropAction::Cancel,
     ];
 
@@ -82,7 +96,9 @@ impl DropAction {
             DropAction::CopyFill => "drop.copy_fill_here",
             DropAction::CopyOutline => "drop.copy_outline_here",
             DropAction::CopyProperties => "drop.copy_all_properties",
+            DropAction::CopyEffects => "drop.copy_effects_here",
             DropAction::PlaceInside => "drop.place_inside",
+            DropAction::FitTextToPath => "menu.text.fit_text_to_path",
             DropAction::Cancel => "drop.cancel",
         }
     }
@@ -109,7 +125,9 @@ impl DropAction {
             DropAction::CopyFill
                 | DropAction::CopyOutline
                 | DropAction::CopyProperties
+                | DropAction::CopyEffects
                 | DropAction::PlaceInside
+                | DropAction::FitTextToPath
         )
     }
 }
@@ -165,6 +183,45 @@ impl App {
         self.hit_test_where(p, |id| selection.contains(&id))
     }
 
+    /// A single editable text dropped on a different vector outline.
+    fn text_drop_pair(
+        &self,
+        target: impl FnOnce() -> Option<ShapeId>,
+    ) -> Option<(ShapeId, ShapeId)> {
+        if self.selection.len() != 1 {
+            return None;
+        }
+        let selected = self.selected_rc();
+        let [text] = selected.as_slice() else {
+            return None;
+        };
+        if !matches!(text.kind, ShapeKind::Text { .. }) || text.locked {
+            return None;
+        }
+        let path = self.doc().find_shape(target()?)?;
+        matches!(
+            path.kind,
+            ShapeKind::Path { .. }
+                | ShapeKind::Ellipse { .. }
+                | ShapeKind::Rect { .. }
+                | ShapeKind::Polygon { .. }
+                | ShapeKind::ClipFrame { .. }
+        )
+        .then_some((text.id, path.id))
+    }
+
+    /// The path that would offer Fit Text to Path on release. Check the
+    /// source before picking a target so other right drags stay as cheap.
+    pub(crate) fn right_drag_text_target(&self, mods: egui::Modifiers) -> Option<ShapeId> {
+        if self.right_drag_style.is_some() || DropAction::for_right_drop(mods).is_some() {
+            return None;
+        }
+        let drag = self.right_drag?;
+        drag.menu_offset(self.view.zoom, mods.command)?;
+        self.text_drop_pair(|| self.right_drop_target(drag.current))
+            .map(|(_, path)| path)
+    }
+
     /// What a right-button drag that ended with the keys `mods` held does
     /// there, and the object it does it to (shown while dragging).
     pub fn right_drop_style(
@@ -197,33 +254,40 @@ impl App {
             self.copy_style_onto(target, action);
             return;
         }
-        let offset = drag.offset(mods.command);
-        if offset.hypot() * self.view.zoom as f64 >= 2.0 {
+        if let Some(offset) = drag.menu_offset(self.view.zoom, mods.command) {
+            let target = self.right_drop_target(p);
             self.drop_menu = Some(DropMenu {
                 screen: self.view.to_screen(p),
                 offset,
-                target: self.right_drop_target(p),
+                target,
+                fit_text_at: self.text_drop_pair(|| target).map(|_| p),
             });
         }
     }
 
-    /// The selection's outline where a right-button drag would put it;
-    /// with Shift, Alt or Ctrl held over another object, that object
-    /// marked and what the drop will copy onto it instead (#2066).
-    pub fn draw_right_drag(&self, painter: &Painter) {
+    /// The moved selection's outline, or the drop target with its action.
+    pub fn draw_right_drag(
+        &self,
+        painter: &Painter,
+        mods: egui::Modifiers,
+        text_target: Option<ShapeId>,
+    ) {
         let Some(drag) = self.right_drag else {
             return;
         };
-        let mods = painter.ctx().input(|i| i.modifiers);
+        if let Some(target) = text_target {
+            crate::canvas::draw_drop_target(self, painter, DropAction::FitTextToPath, target);
+            return;
+        }
         if self.right_drag_style.is_some() {
             let action = DropAction::for_right_drop(mods).unwrap_or(DropAction::CopyFill);
             if let Some(target) = self.hit_test(drag.current) {
-                crate::canvas::draw_drop_style(self, painter, action, target);
+                crate::canvas::draw_drop_target(self, painter, action, target);
             }
             return;
         }
         if let Some((action, target)) = self.right_drop_style(drag.current, mods) {
-            crate::canvas::draw_drop_style(self, painter, action, target);
+            crate::canvas::draw_drop_target(self, painter, action, target);
             return;
         }
         let t = Affine::translate(drag.offset(mods.command));
@@ -243,6 +307,11 @@ impl App {
                     self.copy_style_onto(target, action);
                 }
             }
+            DropAction::CopyEffects => {
+                if let Some(target) = menu.target {
+                    self.copy_layer_effects_onto(target);
+                }
+            }
             DropAction::PlaceInside => {
                 let Some(target) = menu.target else {
                     return;
@@ -256,6 +325,47 @@ impl App {
                 if !contents.is_empty() {
                     self.place_inside(contents, target);
                     self.select(vec![target]);
+                }
+            }
+            DropAction::FitTextToPath => {
+                let (Some(at), Some((source, target))) =
+                    (menu.fit_text_at, self.text_drop_pair(|| menu.target))
+                else {
+                    return;
+                };
+                let doc = self.doc();
+                let (Some(text), Some(path)) =
+                    (doc.shape_on_page(source), doc.shape_on_page(target))
+                else {
+                    return;
+                };
+                let Some((mut kind, transform)) = crate::text_path::fit(&text, &path, Some(at)) else {
+                    return;
+                };
+                // The drop locates the text along the path, not away from it.
+                if let ShapeKind::Text {
+                    on_path: Some(on_path),
+                    ..
+                } = &mut kind
+                {
+                    on_path.set_distance(0.0);
+                    on_path.source = path.uid.map(|uid| tracedraw_core::text_path::PathSource {
+                        shape: target,
+                        uid,
+                    });
+                }
+                let mut commands = vec![Command::SetShapeKind {
+                    shape: source,
+                    kind,
+                }];
+                if transform != text.transform {
+                    commands.push(Command::TransformShapes {
+                        shapes: vec![source],
+                        transform: transform * text.transform.inverse(),
+                    });
+                }
+                if let Err(error) = self.engine.run_batch("Fit Text to Path", &commands) {
+                    self.status = error.to_string();
                 }
             }
             DropAction::Cancel => {}
@@ -330,6 +440,26 @@ impl App {
         }
     }
 
+    /// Copy Effects Here (#4243): `target` takes the Layer Effects of the
+    /// first selected object, one undo step.
+    pub fn copy_layer_effects_onto(&mut self, target: ShapeId) {
+        let Some(first) = self.selected_shapes().first().cloned() else {
+            return;
+        };
+        let Some(t) = self.doc().find_shape(target).cloned() else {
+            return;
+        };
+        match crate::copy_effect::layer_effects_commands(&first, &[t]) {
+            None => self.status = crate::i18n::tr("status.no_effect_to_copy"),
+            Some(cmds) if !cmds.is_empty() => {
+                if let Err(e) = self.engine.run_batch("Copy Effect", &cmds) {
+                    self.status = e.to_string();
+                }
+            }
+            Some(_) => {}
+        }
+    }
+
     /// Copies of the selection moved by `offset`, selected.
     pub fn duplicate_by(&mut self, offset: Vec2) {
         // The copy goes where the drag ended, also when the dragged
@@ -351,6 +481,12 @@ pub fn drop_menu_ui(app: &mut App, ui: &mut Ui) {
     let id = egui::Id::new("canvas_drop_menu");
     let ctx = ui.ctx().clone();
     let pos_id = id.with("pos");
+    if !crate::ui::context_menus::has_visible_items(&app.settings.context_menus, "drop") {
+        egui::Popup::close_id(&ctx, id);
+        app.drop_menu = None;
+        ctx.data_mut(|data| data.remove::<egui::Pos2>(pos_id));
+        return;
+    }
     if ctx.data(|d| d.get_temp::<egui::Pos2>(pos_id)) != Some(menu.screen) {
         ctx.data_mut(|d| d.insert_temp(pos_id, menu.screen));
         egui::Popup::open_id(&ctx, id);
@@ -368,9 +504,23 @@ pub fn drop_menu_ui(app: &mut App, ui: &mut Ui) {
     .open_memory(None)
     .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
     .show(|ui| {
+        let _scope = crate::ui::context_menus::Scope::new(&app.settings.context_menus, "drop");
         ui.set_min_width(190.0);
         crate::ui::menus::body(ui, |ui| {
-            for action in DropAction::ALL {
+            let keys = DropAction::ALL.map(DropAction::key);
+            for key in crate::ui::context_menu_filter::ordered_keys(&keys)
+                .iter()
+                .copied()
+            {
+                let Some(action) = DropAction::ALL
+                    .into_iter()
+                    .find(|action| action.key() == key)
+                else {
+                    continue;
+                };
+                if action == DropAction::FitTextToPath && menu.fit_text_at.is_none() {
+                    continue;
+                }
                 if matches!(action, DropAction::CopyFill | DropAction::Cancel) {
                     crate::ui::menus::sep(ui);
                 }
@@ -448,6 +598,7 @@ mod tests {
             screen: egui::Pos2::ZERO,
             offset: Vec2::new(20.0, 5.0),
             target: None,
+            fit_text_at: None,
         };
         app.drop_action(menu, DropAction::Copy);
         // A copy, selected, where the drop was; the original stays.
@@ -477,6 +628,7 @@ mod tests {
             screen: egui::Pos2::ZERO,
             offset: Vec2::new(dx, dy),
             target: None,
+            fit_text_at: None,
         };
         app.drop_action(menu(80.0, 0.0), DropAction::Copy);
         let first = app.selection[0];
@@ -506,6 +658,7 @@ mod tests {
             screen: egui::Pos2::ZERO,
             offset: Vec2::new(55.0, 5.0),
             target: Some(b),
+            fit_text_at: None,
         };
         app.drop_action(menu, DropAction::CopyFill);
         let shape = |app: &App, id| app.doc().shape(id).map(|(_, s)| s.clone()).ok();
@@ -527,6 +680,54 @@ mod tests {
         assert_eq!(*app.doc(), before);
     }
 
+    /// Copy Effects Here gives the target the source's Layer Effects,
+    /// switched off ones too, in place of its own, and leaves its other
+    /// effects; Object > Copy Effect > Layer Effects From does the same
+    /// (#4243).
+    #[test]
+    fn copy_effects_here_gives_the_target_the_layer_effects() {
+        use crate::ui::layer_effects::Kind;
+        let mut app = App::headless();
+        let (a, b) = two_boxes(&mut app);
+        let c = app
+            .new_shape(ShapeKind::Rect {
+                rect: Rect::new(0.0, 80.0, 20.0, 100.0),
+                radius: 0.0,
+                corners: None,
+            })
+            .expect("c");
+        app.select(vec![a]);
+        let mut ht = Kind::Halftone.default_effect();
+        if let tracedraw_core::live::Effect::Halftone { size, .. } = &mut ht {
+            *size = 2.25;
+        }
+        let glow = Kind::OuterGlow.default_effect();
+        app.set_layer_effect_on(Kind::Halftone, true, &ht);
+        app.set_layer_effect_on(Kind::OuterGlow, true, &glow);
+        app.set_layer_effect_on(Kind::OuterGlow, false, &glow);
+        // The target has a blur of its own, which goes.
+        app.select(vec![b]);
+        app.set_layer_effect_on(Kind::GaussianBlur, true, &Kind::GaussianBlur.default_effect());
+        app.select(vec![a]);
+        let menu = DropMenu {
+            screen: egui::Pos2::ZERO,
+            offset: Vec2::new(55.0, 5.0),
+            target: Some(b),
+            fit_text_at: None,
+        };
+        app.drop_action(menu, DropAction::CopyEffects);
+        let stack = |app: &App, id| app.doc().find_shape(id).expect("shape").effect_stack();
+        assert_eq!(stack(&app, b), stack(&app, a));
+        assert_eq!(stack(&app, b), vec![(ht.clone(), true), (glow.clone(), false)]);
+        // One undo step.
+        app.undo();
+        assert!(stack(&app, b).iter().all(|(e, _)| Kind::GaussianBlur.matches(e)));
+        // The menu's Layer Effects From.
+        app.select(vec![c, a]);
+        app.copy_effect_from(a, crate::copy_effect::CopyKind::LayerEffects);
+        assert_eq!(stack(&app, c), stack(&app, a));
+    }
+
     #[test]
     fn place_inside_makes_the_target_a_clip_frame() {
         let mut app = App::headless();
@@ -536,6 +737,7 @@ mod tests {
             screen: egui::Pos2::ZERO,
             offset: Vec2::new(55.0, 5.0),
             target: Some(b),
+            fit_text_at: None,
         };
         app.drop_action(menu, DropAction::PlaceInside);
         let frame = app.doc().shape(b).map(|(_, s)| s.clone()).expect("frame");
@@ -660,6 +862,7 @@ mod tests {
                 screen: egui::Pos2::ZERO,
                 offset: Vec2::new(55.0, 5.0),
                 target: Some(b),
+                fit_text_at: None,
             };
             app.drop_action(menu, DropAction::CopyProperties);
             let s = app.doc().find_shape(b).expect("b").clone();
@@ -672,5 +875,127 @@ mod tests {
                 .iter()
                 .all(|n| bb.inflate(1e-6, 1e-6).contains(s.transform * n.pos)));
         }
+    }
+}
+
+#[cfg(test)]
+mod context_menu_settings_tests {
+    use super::*;
+    use tracedraw_core::{Color, Fill, ShapeKind};
+
+    #[test]
+    fn hiding_copy_here_does_not_disable_the_copy_action() {
+        let ctx = crate::theme::ui_context();
+        let mut app = App::headless();
+        let id = app
+            .new_shape(ShapeKind::Rect {
+                rect: tracedraw_core::Rect::new(0.0, 0.0, 10.0, 10.0),
+                radius: 0.0,
+                corners: None,
+            })
+            .expect("object");
+        app.select(vec![id]);
+        app.settings
+            .context_menus
+            .set_visible("drop", "drop.copy_here", false);
+        let menu = DropMenu {
+            screen: egui::pos2(32.0, 32.0),
+            offset: Vec2::new(20.0, 5.0),
+            target: None,
+            fit_text_at: None,
+        };
+        app.drop_menu = Some(menu);
+        crate::ui::menus::ROWS.with(|rows| rows.borrow_mut().clear());
+        for _ in 0..2 {
+            let mut out = ctx.run_ui(egui::RawInput::default(), |ui| drop_menu_ui(&mut app, ui));
+            out.textures_delta.clear();
+        }
+        let rows = crate::ui::menus::ROWS.with(|rows| rows.borrow().clone());
+        assert!(!rows.iter().any(|(key, _)| key == "drop.copy_here"));
+        assert!(rows.iter().any(|(key, _)| key == "drop.move_here"));
+        app.drop_action(menu, DropAction::Copy);
+        assert_eq!(app.selection.len(), 1);
+        assert_ne!(app.selection[0], id);
+        assert_eq!(app.doc().find_shape(id).expect("original").bounds().x0, 0.0);
+    }
+
+    #[test]
+    fn hidden_drop_rows_leave_modifier_drag_gestures_unchanged() {
+        let mut app = App::headless();
+        let source = app
+            .new_shape(ShapeKind::Rect {
+                rect: tracedraw_core::Rect::new(0.0, 0.0, 10.0, 10.0),
+                radius: 0.0,
+                corners: None,
+            })
+            .expect("source");
+        let target = app
+            .new_shape(ShapeKind::Rect {
+                rect: tracedraw_core::Rect::new(50.0, 0.0, 70.0, 20.0),
+                radius: 0.0,
+                corners: None,
+            })
+            .expect("target");
+        let color = Color::rgb8(180, 25, 40);
+        app.run(Command::SetFill {
+            shapes: vec![source],
+            fill: Fill::Solid(color),
+        });
+        app.select(vec![source]);
+        app.settings
+            .context_menus
+            .set_visible("drop", "drop.copy_fill_here", false);
+        app.right_drag_released(
+            RightDrag {
+                start: Point::new(5.0, 5.0),
+                current: Point::new(60.0, 10.0),
+            },
+            egui::Modifiers {
+                alt: true,
+                ..Default::default()
+            },
+        );
+        assert!(app.drop_menu.is_none());
+        assert_eq!(
+            app.doc().find_shape(target).expect("target").fill,
+            Fill::Solid(color)
+        );
+    }
+}
+
+#[cfg(test)]
+mod hidden_root_popup_tests {
+    use super::*;
+
+    #[test]
+    fn hiding_every_operation_clears_the_popup_and_pending_menu() {
+        let mut app = App::headless();
+        let position = egui::pos2(30.0, 30.0);
+        app.drop_menu = Some(DropMenu {
+            screen: position,
+            offset: Vec2::new(1.0, 2.0),
+            target: None,
+            fit_text_at: None,
+        });
+        let definition = crate::ui::context_menus::CATALOG
+            .iter()
+            .find(|menu| menu.id == "drop")
+            .expect("menu");
+        for key in definition.items {
+            app.settings
+                .context_menus
+                .set_visible(definition.id, key, false);
+        }
+        let context = crate::theme::ui_context();
+        let id = egui::Id::new("canvas_drop_menu");
+        egui::Popup::open_id(&context, id);
+        context.data_mut(|data| data.insert_temp(id.with("pos"), position));
+        let mut output = context.run_ui(Default::default(), |ui| drop_menu_ui(&mut app, ui));
+        output.textures_delta.clear();
+        assert!(app.drop_menu.is_none());
+        assert!(!egui::Popup::is_id_open(&context, id));
+        assert!(context
+            .data(|data| data.get_temp::<egui::Pos2>(id.with("pos")))
+            .is_none());
     }
 }

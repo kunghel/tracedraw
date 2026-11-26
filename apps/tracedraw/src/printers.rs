@@ -181,13 +181,15 @@ pub fn parse_windows_list(output: &str) -> Vec<Printer> {
 /// not answer): the Print dialog calls it off the interface's thread.
 #[cfg(not(any(target_arch = "wasm32", target_os = "windows", target_os = "android")))]
 pub fn system_printers() -> Vec<Printer> {
-    let out = std::process::Command::new("lpstat")
-        .args(["-l", "-p", "-d"])
-        .env("LC_ALL", "C")
-        .env("LANG", "C")
-        .output();
+    // The verbose query can repeat forever with some CUPS responses.
+    // Bound each attempt and fall back to names/state/default if needed.
+    let out = crate::printer_query::lpstat(
+        "lpstat",
+        1024 * 1024,
+        std::time::Duration::from_secs(5),
+    );
     match out {
-        Ok(o) => parse_lpstat(&String::from_utf8_lossy(&o.stdout)),
+        Ok(o) => parse_lpstat(&String::from_utf8_lossy(&o)),
         Err(e) => {
             log::info!("no printer list: lpstat: {e}");
             Vec::new()

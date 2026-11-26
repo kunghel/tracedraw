@@ -8,6 +8,7 @@
 //! The preset row and the preview are adapted from the Sign & Cut window
 //! kit of #170 by LaMka21.
 
+use crate::ui::btn_icons::IconUi;
 use crate::app::{App, Units};
 use crate::i18n::tr;
 use crate::theme::Tokens;
@@ -121,7 +122,7 @@ fn tool_list(app: &mut App, ui: &mut Ui, st: &mut TraceCutState) {
             if ui
                 .add_sized(
                     [LIST_W - 8.0, 24.0],
-                    egui::Button::selectable(on, tr(t.key())),
+                    crate::ui::btn_icons::Ib::selectable(on, t.key()),
                 )
                 .rich_tip(crate::ui::tips::keyed(t.key()))
                 .clicked()
@@ -145,6 +146,20 @@ fn tool_pane(app: &mut App, ui: &mut Ui, st: &mut TraceCutState, width: f32) -> 
     ui.add_space(4.0);
     preset_row(ui, st);
     ui.add_space(4.0);
+    if st.tool == ToolId::LaserOutput {
+        // The laser layers of the selection, found again only when the
+        // drawing, the selection or the grouping changes.
+        let of = (
+            app.engine.revision(),
+            st.settings.laser.spec.group_by,
+            app.tracecut_targets(),
+        );
+        if st.laser_keys_of.as_ref() != Some(&of) {
+            let items = app.tracecut_laser_items(of.1);
+            st.laser_keys = tracedraw_tracecut::laser::layer_keys(&items);
+            st.laser_keys_of = Some(of);
+        }
+    }
     let before = st.settings.clone();
     // A long list of settings scrolls; the preview keeps its room.
     let max_h = (ui.available_height() * 0.5).max(120.0);
@@ -169,10 +184,26 @@ fn tool_pane(app: &mut App, ui: &mut Ui, st: &mut TraceCutState, width: f32) -> 
             st.settings.tray.height = b.height();
         }
     }
-    if action == Some(crate::ui::tracecut_cut::Action::TestCut) {
-        let plot = app.tracecut_test_job(&st.settings.plotter);
-        let s = st.settings.plotter.clone();
-        app.tracecut_output(&s, &plot, Some(ui.ctx().clone()));
+    use crate::ui::tracecut_cut::Action;
+    match action {
+        Some(Action::TestCut) => {
+            let plot = app.tracecut_test_job(&st.settings.plotter);
+            let s = st.settings.plotter.clone();
+            app.tracecut_output(&s, &plot, Some(ui.ctx().clone()));
+        }
+        Some(Action::LaserFrame) => {
+            let s = st.settings.laser.clone();
+            app.tracecut_laser_frame(&s, Some(ui.ctx().clone()));
+        }
+        Some(Action::LaserTest) => {
+            let s = st.settings.laser.clone();
+            app.tracecut_laser_test(&s, Some(ui.ctx().clone()));
+        }
+        Some(Action::LaserDxf) => {
+            let s = st.settings.laser.clone();
+            app.tracecut_laser_dxf(&s);
+        }
+        None => {}
     }
     if st.settings != before {
         // A setting changed: the result shown is not this one's.
@@ -299,20 +330,20 @@ fn preset_row(ui: &mut Ui, st: &mut TraceCutState) {
         );
         let named = !st.preset_name.trim().is_empty();
         if ui
-            .add_enabled(named, egui::Button::new(tr("tracecut.preset_save")))
+            .add_enabled(named, crate::ui::btn_icons::Ib::new("tracecut.preset_save"))
             .clicked()
         {
             let name = st.preset_name.clone();
             st.presets.save_preset(tool, &name, &st.settings);
         }
         if ui
-            .add_enabled(named, egui::Button::new(tr("tracecut.preset_delete")))
+            .add_enabled(named, crate::ui::btn_icons::Ib::new("tracecut.preset_delete"))
             .clicked()
         {
             let name = st.preset_name.clone();
             st.presets.delete_preset(tool, &name);
         }
-        if ui.button(tr("tracecut.preset_reset")).clicked() {
+        if ui.ibutton("tracecut.preset_reset").clicked() {
             st.settings.reset(tool);
             st.worked = None;
         }

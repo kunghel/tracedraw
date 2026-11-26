@@ -108,6 +108,37 @@ pub fn open_bytes(bytes: &[u8], title: &str) -> Result<(tracedraw_core::Document
     open_bytes_keeping(bytes, title).map(|(doc, report, _)| (doc, report))
 }
 
+/// [`open_bytes`] for a file refused as damaged ([`Error::Damaged`]),
+/// opened anyway at the user's word (#4332): the damaged streams give
+/// what could be read, the report's warnings name them and the objects
+/// that could not be read from them are counted as skipped.
+pub fn open_bytes_damaged(
+    bytes: &[u8],
+    title: &str,
+) -> Result<(tracedraw_core::Document, ParseReport)> {
+    let (read, damaged) = container::accept_damaged(|| open_bytes(bytes, title));
+    let (doc, mut report) = read?;
+    for d in damaged {
+        report
+            .warnings
+            .push(format!("damaged stream read as far as it goes: {d}"));
+    }
+    Ok((doc, report))
+}
+
+/// Tell the reader how much RAM is free, so it can sample large pictures
+/// and raise the inflate ceiling before it starts. Call this before
+/// [`open_bytes`]. `free` of 0 means unknown (a 2 GiB desktop is assumed).
+pub fn set_open_ram(free: u64) {
+    parse::set_free_ram(free);
+    let cap = if free >= 1 << 30 {
+        (free / 4 * 3).clamp(1 << 30, 6 << 30)
+    } else {
+        1 << 30
+    };
+    riff::set_inflate_total_cap(cap);
+}
+
 /// [`open_bytes`] that also hands back the records the reader left
 /// uninterpreted (the chunks and `loda` arguments it does not read),
 /// keyed by object, as bytes shared with the file's streams. Empty for
@@ -148,14 +179,10 @@ pub fn open_bytes_keeping(
     .map(|b| kept_effects::decode(&b))
     .unwrap_or_default();
     // Object data, a clone's link to its master among it (#2879).
-    let kept_data = container::own_member(
-        bytes,
-        &container,
-        kept_data::MEMBER,
-        kept_data::MAX_MEMBER,
-    )
-    .map(|b| kept_data::decode(&b))
-    .unwrap_or_default();
+    let kept_data =
+        container::own_member(bytes, &container, kept_data::MEMBER, kept_data::MAX_MEMBER)
+            .map(|b| kept_data::decode(&b))
+            .unwrap_or_default();
     let mut doc_report = parse::parse_document_kept_data(
         &root,
         &riff,

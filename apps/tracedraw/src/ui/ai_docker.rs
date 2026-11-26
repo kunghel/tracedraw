@@ -2,6 +2,7 @@
 //! address, model, key), the request in words, Draw, and what came back.
 //! The work is in `ai.rs`; see docs/behavior/ai-drawing.md.
 
+use crate::ui::btn_icons::IconUi;
 use crate::ai::{AiStatus, Provider};
 use crate::app::{App, DockerTab};
 use crate::i18n::{tr, trf};
@@ -128,7 +129,7 @@ pub fn ai_drawing(app: &mut App, ui: &mut Ui) {
                 app.ai_cancel();
             }
         } else {
-            let draw = ui.add_enabled(app.ai_features_on(), egui::Button::new(tr("ai.draw")));
+            let draw = ui.add_enabled(app.ai_features_on(), crate::ui::btn_icons::Ib::new("ai.draw"));
             // Draw goes on the press, not only on a click (#2038): the
             // press takes the focus from the request box, and whatever
             // moves the panel's layout before the release (the box or the
@@ -148,7 +149,7 @@ pub fn ai_drawing(app: &mut App, ui: &mut Ui) {
         if ui
             .add_enabled(
                 !app.ai.history.is_empty(),
-                egui::Button::new(tr("ai.new_conversation")),
+                crate::ui::btn_icons::Ib::new("ai.new_conversation"),
             )
             .clicked()
         {
@@ -181,7 +182,7 @@ pub fn ai_drawing(app: &mut App, ui: &mut Ui) {
                         .desired_rows(6)
                         .desired_width(f32::INFINITY),
                 );
-                if ui.button(tr("ai.open_in_scripts")).clicked() {
+                if ui.ibutton("ai.open_in_scripts").clicked() {
                     app.script_source = app.ai.script.clone();
                     app.open_docker(DockerTab::Scripts);
                 }
@@ -306,7 +307,7 @@ pub fn connection(app: &mut App, ui: &mut Ui) {
                 if hidden {
                     ui.checkbox(&mut app.ai.show_all_models, tr("ai.show_all_models"));
                 }
-                if ui.button(tr("ai.refresh_models")).clicked() {
+                if ui.ibutton("ai.refresh_models").clicked() {
                     fetch = true;
                     ui.close();
                 }

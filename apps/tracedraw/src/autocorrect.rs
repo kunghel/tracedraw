@@ -328,8 +328,25 @@ pub fn capitalize_sentences(text: &str) -> String {
     let mut out = String::new();
     let mut at_start = true;
     let mut after_terminator = false;
-    for c in text.chars() {
+    let chars: Vec<char> = text.chars().collect();
+    for (i, &c) in chars.iter().enumerate() {
         if at_start && c.is_alphabetic() {
+            // An e-mail or web address keeps its letters (#4326).
+            let word_start = chars[..i]
+                .iter()
+                .rposition(|c| c.is_whitespace())
+                .map_or(0, |p| p + 1);
+            let word_end = chars[i..]
+                .iter()
+                .position(|c| c.is_whitespace())
+                .map_or(chars.len(), |p| p + i);
+            let word: String = chars[word_start..word_end].iter().collect();
+            if address_word(&word, ' ') {
+                out.push(c);
+                at_start = false;
+                after_terminator = false;
+                continue;
+            }
             out.extend(c.to_uppercase());
             at_start = false;
             after_terminator = false;
@@ -445,6 +462,16 @@ pub fn on_typed(text: &str, prefs: &AutocorrectPrefs, style: QuoteStyle) -> Opti
         return None;
     }
     let word: String = chars[start..end].iter().collect();
+    // An e-mail or web address, or the start of one ("www" before its
+    // dot, "http" before its colon), keeps its letters as typed: a
+    // capital at the start of a paragraph turned `hello@example.com`
+    // into `Hello@example.com` (#4326).
+    if address_word(&word, last) {
+        return prefs
+            .capitalize_sentences
+            .then(|| lowercase_address_start(&chars, start, end, &word))
+            .flatten();
+    }
     let mut fixed = word.clone();
     if prefs.replace_while_typing && !prefs.replacements.is_empty() {
         fixed = replace_word(&fixed, &prefs.replacements);
@@ -487,6 +514,53 @@ pub fn on_typed(text: &str, prefs: &AutocorrectPrefs, style: QuoteStyle) -> Opti
     out.push_str(&fixed);
     out.extend(chars[end..].iter());
     Some(out)
+}
+
+/// Whether `word`, finished by `trigger`, is an e-mail or web address or
+/// the beginning of one, which the capitals rules leave alone (#4326).
+fn address_word(word: &str, trigger: char) -> bool {
+    let lower = word.to_lowercase();
+    let w = lower.trim_start_matches(['(', '[', '<', '"', '\'', '“', '‘']);
+    w.contains('@')
+        || w.contains("://")
+        || web_address(w).is_some()
+        || (matches!(trigger, '.' | ':') && matches!(w, "www" | "http" | "https" | "ftp" | "mailto"))
+}
+
+/// An e-mail address recognised once its `@` is typed, whose first letter
+/// the sentence rule had capitalised while the part before a dot was
+/// typed (`john.smith@…` became `John.smith@…`): that capital undone, when
+/// the rest of the address is lowercase. Else nothing changes.
+fn lowercase_address_start(chars: &[char], start: usize, end: usize, word: &str) -> Option<String> {
+    if !word.contains('@') {
+        return None;
+    }
+    let mut letters = word.chars().filter(|c| c.is_alphabetic());
+    let first = letters.next()?;
+    if !first.is_uppercase() || !letters.all(|c| !c.is_uppercase()) {
+        return None;
+    }
+    let at = chars[start..end].iter().position(|c| c.is_alphabetic())? + start;
+    // Only the capital the sentence rule gives: at a sentence start.
+    let before: String = chars[..start].iter().collect();
+    let trimmed = before.trim_end();
+    let at_sentence_start = before.ends_with('\n')
+        || chars[..start]
+            .iter()
+            .rev()
+            .take_while(|c| c.is_whitespace())
+            .any(|c| *c == '\n')
+        || matches!(trimmed.chars().last(), None | Some('.' | '!' | '?'));
+    if !at_sentence_start {
+        return None;
+    }
+    let mut out: Vec<char> = chars.to_vec();
+    let lower: Vec<char> = out[at].to_lowercase().collect();
+    if lower.len() != 1 {
+        return None;
+    }
+    out[at] = lower[0];
+    Some(out.into_iter().collect())
 }
 
 /// Apply every enabled rule to the selected text objects (span by span,
@@ -565,6 +639,45 @@ mod tests {
             "He said. \"Yes.\""
         );
         assert_eq!(capitalize_sentences("3.14 is pi"), "3.14 is pi");
+    }
+
+    #[test]
+    fn addresses_keep_their_letters() {
+        let p = AutocorrectPrefs::default();
+        let style = QuoteStyle::Curly;
+        // Typed letter by letter at the start of a paragraph: no capital.
+        let mut text = String::new();
+        for c in "hello@example.com ".chars() {
+            text.push(c);
+            if let Some(t) = on_typed(&text, &p, style) {
+                text = t;
+            }
+        }
+        assert_eq!(text, "hello@example.com ");
+        let mut text = String::from("Call us.\n");
+        for c in "www.example.com and http://example.org ".chars() {
+            text.push(c);
+            if let Some(t) = on_typed(&text, &p, style) {
+                text = t;
+            }
+        }
+        assert_eq!(text, "Call us.\nwww.example.com and http://example.org ");
+        // A dot before the @: the capital given to "john" goes once the
+        // address is recognised.
+        let mut text = String::new();
+        for c in "john.smith@example.com ".chars() {
+            text.push(c);
+            if let Some(t) = on_typed(&text, &p, style) {
+                text = t;
+            }
+        }
+        assert_eq!(text, "john.smith@example.com ");
+        // An ordinary word still gets its capital.
+        assert_eq!(on_typed("hello ", &p, style).as_deref(), Some("Hello "));
+        assert_eq!(
+            capitalize_sentences("hello@example.com\nwww.site.com. done"),
+            "hello@example.com\nwww.site.com. Done"
+        );
     }
 
     #[test]

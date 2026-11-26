@@ -718,52 +718,10 @@ impl App {
         if kinds.len() != chain.len() {
             return Vec::new();
         }
-        let fonts = tracedraw_text::fonts();
-        let mut cmds = Vec::new();
-        let mut rest = all;
-        let n = chain.len();
-        for (i, (id, kind)) in chain.iter().zip(kinds).enumerate() {
-            let ShapeKind::Text {
-                origin,
-                frame,
-                align,
-                para,
-                on_path,
-                spans: old,
-            } = kind
-            else {
-                continue;
-            };
-            let mine = if i + 1 == n {
-                std::mem::take(&mut rest)
-            } else {
-                let layout = fonts.layout(&TextRequest {
-                    spans: &rest,
-                    frame,
-                    align,
-                    para: &para,
-                    on_path: on_path.as_ref(),
-                });
-                let (head, tail) = tracedraw_core::split_spans_at(&rest, layout.fitted_chars);
-                rest = tail;
-                head
-            };
-            if mine == old {
-                continue;
-            }
-            cmds.push(Command::SetShapeKind {
-                shape: *id,
-                kind: ShapeKind::Text {
-                    spans: mine,
-                    origin,
-                    frame,
-                    align,
-                    para,
-                    on_path,
-                },
-            });
-        }
-        cmds
+        flow_kinds(chain, kinds, all)
+            .into_iter()
+            .map(|(shape, kind)| Command::SetShapeKind { shape, kind })
+            .collect()
     }
 
     /// The commands that keep the text of a chain when the objects
@@ -857,6 +815,153 @@ impl App {
             }
             done.push(head);
             self.reflow_chain(head);
+        }
+    }
+}
+
+/// The text `all` laid over the frames `chain` (their kinds `kinds`) in
+/// order: each frame keeps what fits, the rest flows on and the last
+/// frame takes whatever is left. Only frames whose text changes are
+/// returned, with their new kinds.
+fn flow_kinds(
+    chain: &[ShapeId],
+    kinds: Vec<ShapeKind>,
+    all: Vec<TextSpan>,
+) -> Vec<(ShapeId, ShapeKind)> {
+    let fonts = tracedraw_text::fonts();
+    let mut out = Vec::new();
+    let mut rest = all;
+    let n = chain.len();
+    for (i, (id, kind)) in chain.iter().zip(kinds).enumerate() {
+        let ShapeKind::Text {
+            origin,
+            frame,
+            align,
+            para,
+            on_path,
+            spans: old,
+        } = kind
+        else {
+            continue;
+        };
+        let mine = if i + 1 == n {
+            std::mem::take(&mut rest)
+        } else {
+            let layout = fonts.layout(&TextRequest {
+                spans: &rest,
+                frame,
+                align,
+                para: &para,
+                on_path: on_path.as_ref(),
+            });
+            let (head, tail) = tracedraw_core::split_spans_at(&rest, layout.fitted_chars);
+            rest = tail;
+            head
+        };
+        if mine == old {
+            continue;
+        }
+        out.push((
+            *id,
+            ShapeKind::Text {
+                spans: mine,
+                origin,
+                frame,
+                align,
+                para,
+                on_path,
+            },
+        ));
+    }
+    out
+}
+
+/// Link the paragraph frames a file marked as runs of one text
+/// ([`tracedraw_io::pdf_paragraphs::FLOW_KEY`]; a `.cdr` whose text
+/// continues in other frames keeps it all in the first, #4104, #2018) and
+/// let each run's text flow from its first frame over the others, as it
+/// does once frames are linked by hand. A frame that opened empty takes
+/// the alignment and paragraph settings of the first frame, its own
+/// columns kept.
+pub fn link_and_flow_marked_frames(doc: &mut tracedraw_core::Document) {
+    let links = {
+        let shapes: Vec<&Shape> = doc
+            .pages
+            .iter()
+            .flat_map(|p| &p.layers)
+            .flat_map(|l| &l.shapes)
+            .collect();
+        imported_flow_links(&shapes)
+    };
+    if links.is_empty() {
+        return;
+    }
+    let mut heads = Vec::new();
+    for (id, data) in links {
+        if data_id(&data, PREV).is_none() && data_id(&data, NEXT).is_some() {
+            heads.push(id);
+        }
+        if let Some(s) = doc.find_shape_mut(id) {
+            s.data = data;
+        }
+    }
+    for head in heads {
+        let mut chain = vec![head];
+        while let Some(next) = chain
+            .last()
+            .and_then(|id| doc.find_shape(*id))
+            .and_then(|s| data_id(&s.data, NEXT))
+        {
+            if chain.contains(&next) || chain.len() > 1000 {
+                break;
+            }
+            chain.push(next);
+        }
+        let Some(mut kinds) = chain
+            .iter()
+            .map(|id| doc.find_shape(*id).map(|s| s.kind.clone()))
+            .collect::<Option<Vec<ShapeKind>>>()
+        else {
+            continue;
+        };
+        let first = match kinds.first() {
+            Some(ShapeKind::Text { align, para, .. }) => Some((*align, para.clone())),
+            _ => None,
+        };
+        let mut all: Vec<TextSpan> = Vec::new();
+        for (i, kind) in kinds.iter_mut().enumerate() {
+            let ShapeKind::Text {
+                spans, align, para, ..
+            } = kind
+            else {
+                continue;
+            };
+            if i > 0 && spans.iter().all(|s| s.text.is_empty()) {
+                if let Some((a, p)) = &first {
+                    let own = para.clone();
+                    *align = *a;
+                    *para = tracedraw_core::document::ParagraphStyle {
+                        columns: own.columns,
+                        gutter: own.gutter,
+                        column_widths: own.column_widths,
+                        column_gutters: own.column_gutters,
+                        drop_cap_lines: 0,
+                        ..p.clone()
+                    };
+                }
+            }
+            all.extend(spans.iter().cloned());
+        }
+        let laid = kinds.clone();
+        for (id, kind) in chain.iter().zip(laid) {
+            if let Some(s) = doc.find_shape_mut(*id) {
+                s.kind = kind;
+            }
+        }
+        for (id, kind) in flow_kinds(&chain, kinds, all) {
+            if let Some(s) = doc.find_shape_mut(id) {
+                s.kind = kind;
+            }
         }
     }
 }
@@ -1007,6 +1112,51 @@ mod tests {
     }
 
     const LONG: &str = "one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen seventeen eighteen nineteen twenty";
+
+    /// A `.cdr` text that continues in other frames keeps all of it in
+    /// its first frame, the others opening empty and marked as its run
+    /// (#4104, #2018): on opening they are linked in order and the text
+    /// flows over them, the empty ones taking the first frame's alignment.
+    #[test]
+    fn frames_marked_as_one_run_are_linked_and_the_text_flows_on() {
+        tracedraw_text::install();
+        let mut app = App::headless();
+        let a = frame(&mut app, LONG, 30.0, 8.0);
+        let c = frame(&mut app, "", 60.0, 60.0);
+        let b = frame(&mut app, "", 30.0, 8.0);
+        let mut doc = app.doc().clone();
+        for (id, place) in [(a, 0), (b, 1), (c, 2)] {
+            let s = doc.find_shape_mut(id).unwrap();
+            s.data.push((
+                tracedraw_io::pdf_paragraphs::FLOW_KEY.to_string(),
+                format!("7:{place}"),
+            ));
+            if place == 0 {
+                if let ShapeKind::Text { ref mut align, .. } = s.kind {
+                    *align = TextAlign::Center;
+                }
+            }
+        }
+        link_and_flow_marked_frames(&mut doc);
+        let text = |id: ShapeId| match doc.find_shape(id).map(|s| &s.kind) {
+            Some(ShapeKind::Text { spans, .. }) => spans.iter().map(|s| s.text.as_str()).collect(),
+            _ => String::new(),
+        };
+        let texts = [text(a), text(b), text(c)];
+        assert!(texts.iter().all(|t| !t.is_empty()), "{texts:?}");
+        assert_eq!(texts.concat(), LONG);
+        let shape = |id: ShapeId| doc.find_shape(id).unwrap();
+        assert_eq!(data_id(&shape(a).data, NEXT), Some(b));
+        assert_eq!(data_id(&shape(b).data, NEXT), Some(c));
+        assert_eq!(data_id(&shape(c).data, PREV), Some(b));
+        assert!(matches!(
+            shape(c).kind,
+            ShapeKind::Text {
+                align: TextAlign::Center,
+                ..
+            }
+        ));
+    }
 
     /// Linking two frames, editing the text of a linked frame and
     /// resizing one are one Undo each, the text flow with them: the flow

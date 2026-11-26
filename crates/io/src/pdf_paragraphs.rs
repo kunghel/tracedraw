@@ -377,11 +377,17 @@ fn underlines_into_text(
             let (p, q) = (inv * a, inv * b);
             let (x0, x1) = (p.x.min(q.x), p.x.max(q.x));
             let y = (p.y + q.y) / 2.0;
-            // Along the text, just below its baseline, under some of it.
+            // Along the text, just below its baseline, under some of it
+            // and not reaching far past it: a longer line is a line of
+            // the drawing that passes under the text (a wire leaving a
+            // label, the edge of a box under a name), not its underline,
+            // and taking it away left a gap in the drawing (#4100).
             if (p.y - q.y).abs() > 0.05 * em
                 || !(-0.4 * em..=-0.02 * em).contains(&y)
                 || x1 < 0.0
                 || x0 > width
+                || x0 < -UNDERLINE_REACH_EM * em
+                || x1 > width + UNDERLINE_REACH_EM * em
                 || thick > 0.2 * em
             {
                 continue;
@@ -437,6 +443,10 @@ fn underlines_into_text(
         !gone[i - 1]
     });
 }
+
+/// How far past either end of a text (in ems) a line under it may reach
+/// and still be its underline.
+const UNDERLINE_REACH_EM: f64 = 0.5;
 
 /// The two ends and the thickness of a straight horizontal-ish bar the
 /// file drew: a stroked line of two points with no fill, or a thin filled
@@ -1225,6 +1235,43 @@ mod tests {
             .map(|s| s.text.as_str())
             .collect();
         assert_eq!(under, "words underlined");
+    }
+
+    /// A line of the drawing that runs under a label and far past it (a
+    /// wire leaving a pin name in a circuit diagram) is not the label's
+    /// underline: it stays a line, and the label is not underlined
+    /// (#4100).
+    #[test]
+    fn a_long_line_passing_under_a_label_stays_a_line() {
+        let (mut p, mut widths) = page(&[("DOUT", 20.0, 250.0, 12.0)]);
+        let mut char_xs = HashMap::new();
+        char_xs.insert(ShapeId(1), vec![0.0, 3.0, 6.0, 9.0]);
+        let mut wire = Shape::new(
+            ShapeId(9),
+            ShapeKind::Path {
+                path: {
+                    let mut b = tracedraw_core::geometry::BezPath::new();
+                    b.move_to((18.0, 249.5));
+                    b.line_to((80.0, 249.5));
+                    b
+                },
+                closed: false,
+            },
+        );
+        wire.fill = Fill::None;
+        wire.stroke = Some(tracedraw_core::style::Stroke {
+            width: 0.2,
+            ..Default::default()
+        });
+        p.shapes.push(wire);
+        widths.insert(ShapeId(9), 0.0);
+        let mut pages = vec![p];
+        make_paragraphs(&mut pages, &widths, &char_xs);
+        assert_eq!(pages[0].shapes.len(), 2, "{:?}", texts(&pages[0]));
+        let ShapeKind::Text { spans, .. } = &pages[0].shapes[0].kind else {
+            panic!()
+        };
+        assert!(spans.iter().all(|s| s.underline == LineStyle::None));
     }
 
     /// A wide gap in a line is a tab, with a stop where the text after it

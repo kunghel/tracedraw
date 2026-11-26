@@ -511,6 +511,98 @@ impl App {
             self.clone_sync_revision = self.engine.revision();
         }
     }
+
+    /// Replace with Object / Replace with Clones (#4220): the next click
+    /// picks the object the selected ones are replaced by.
+    pub fn start_replace_objects(&mut self, clones: bool) {
+        if self.selection.is_empty() {
+            return;
+        }
+        self.pending_replace = Some(clones);
+        self.status = tr("status.click_replacement");
+    }
+
+    /// Replace every selected object by a copy of `source`, or a clone of
+    /// it, each centred where the object was and in its place in the
+    /// stacking order (#4220); `fit` scales each to fit the object's box,
+    /// keeping its proportions. The source itself, when selected, stays.
+    /// One undo step; the replacements are selected.
+    pub fn replace_selection_with(&mut self, source: ShapeId, clones: bool, fit: bool) {
+        let Some(src) = self.doc().find_shape(source).cloned() else {
+            return;
+        };
+        // A clone's own master: clones of clones are not made.
+        let (master, src) = match clone_link(&src.data) {
+            Some((m, _)) if clones => match self.doc().find_shape(m).cloned() {
+                Some(ms) => (m, ms),
+                None => (source, src),
+            },
+            _ => (source, src),
+        };
+        let sb = src.bounds();
+        if !(sb.width().is_finite() && sb.height().is_finite()) {
+            return;
+        }
+        let targets: Vec<Shape> = self
+            .selected_shapes()
+            .into_iter()
+            .filter(|s| s.id != source && s.id != master)
+            .collect();
+        let mut replacements = Vec::new();
+        let mut ids = Vec::new();
+        for t in &targets {
+            let tb = t.bounds();
+            if !(tb.width().is_finite() && tb.height().is_finite()) {
+                continue;
+            }
+            let scale = if fit && sb.width() > 1e-9 && sb.height() > 1e-9 {
+                (tb.width() / sb.width()).min(tb.height() / sb.height())
+            } else {
+                1.0
+            };
+            let scale = if scale.is_finite() && scale > 0.0 {
+                scale
+            } else {
+                1.0
+            };
+            let id = self.engine.new_shape_id();
+            let mut shape = crate::app::reid_pub(src.clone(), id, &mut self.engine);
+            shape.transform = tracedraw_core::Affine::translate(tb.center().to_vec2())
+                * tracedraw_core::Affine::scale(scale)
+                * tracedraw_core::Affine::translate(-sb.center().to_vec2())
+                * shape.transform;
+            shape.uid = None;
+            if clones {
+                let state: Vec<(Prop, Follow)> = props_of(&src)
+                    .iter()
+                    .map(|p| (*p, Follow::Linked(hash_prop(&src, *p), hash_prop(&shape, *p))))
+                    .collect();
+                shape.data = link_data(&shape.data, master, &state);
+            } else {
+                shape.data = unlinked_data(&shape.data);
+            }
+            ids.push(id);
+            replacements.push((t.id, shape));
+        }
+        if replacements.is_empty() {
+            self.status = tr("status.cancelled");
+            return;
+        }
+        let label = if clones {
+            "Replace with Clones"
+        } else {
+            "Replace with Object"
+        };
+        if let Err(e) = self
+            .engine
+            .run_batch(label, &[Command::ReplaceShapes { replacements }])
+        {
+            self.status = e.to_string();
+            return;
+        }
+        self.clone_sync_revision = self.engine.revision();
+        self.select(ids);
+    }
 }
 
 #[cfg(test)]
@@ -540,6 +632,67 @@ mod tests {
 
     fn blue() -> Fill {
         Fill::Solid(Color::rgb8(0, 0, 255))
+    }
+
+    /// Replace with Object and Replace with Clones (#4220): each selected
+    /// object gives way to the picked one, centred where it was and in
+    /// its place in the order; clones follow the source's fill; fitted,
+    /// they take the object's size.
+    #[test]
+    fn selected_objects_are_replaced_by_copies_or_clones() {
+        let mut app = App::headless();
+        let a = rect(&mut app, 0.0);
+        let b = rect(&mut app, 100.0);
+        let star = app
+            .new_shape(ShapeKind::Ellipse {
+                rect: Rect::new(200.0, 0.0, 210.0, 10.0),
+                arc: None,
+            })
+            .expect("ellipse");
+        let c = rect(&mut app, 300.0);
+        app.sync_object_clones();
+        app.select(vec![a, b, star]);
+        app.start_replace_objects(true);
+        assert_eq!(app.pending_replace, Some(true));
+        app.pending_replace = None;
+        app.replace_selection_with(star, true, false);
+        assert!(app.doc().find_shape(a).is_none());
+        assert!(app.doc().find_shape(b).is_none());
+        assert!(app.doc().find_shape(star).is_some(), "the source stays");
+        let new = app.selection.clone();
+        assert_eq!(new.len(), 2);
+        for (id, cx) in new.iter().zip([10.0, 110.0]) {
+            let s = app.doc().find_shape(*id).expect("replacement");
+            let bb = s.bounds();
+            assert!((bb.center().x - cx).abs() < 1e-6, "{bb:?}");
+            assert!((bb.center().y - 20.0).abs() < 1e-6, "{bb:?}");
+            assert!((bb.width() - 10.0).abs() < 1e-6, "kept its size");
+            assert_eq!(app.clone_master_of(*id), Some(star));
+        }
+        // In the order of the ones they replaced: below the source and c.
+        let order: Vec<ShapeId> = app.doc().pages[0]
+            .layers
+            .iter()
+            .flat_map(|l| l.shapes.iter().map(|s| s.id))
+            .collect();
+        let pos = |id: ShapeId| order.iter().position(|x| *x == id).unwrap_or(99);
+        assert!(pos(new[0]) < pos(star) && pos(new[1]) < pos(c));
+        // The clones follow the source.
+        app.select(vec![star]);
+        app.run(Command::SetFill {
+            shapes: vec![star],
+            fill: red(),
+        });
+        app.sync_object_clones();
+        assert_eq!(fill_of(&app, new[0]), red());
+        // Plain copies, fitted to the object (20 x 20 from 10 x 10).
+        app.select(vec![c]);
+        app.replace_selection_with(star, false, true);
+        let r = app.selection[0];
+        assert_eq!(app.clone_master_of(r), None);
+        let bb = app.doc().find_shape(r).expect("copy").bounds();
+        assert!((bb.width() - 20.0).abs() < 1e-6, "{bb:?}");
+        assert!((bb.center().x - 310.0).abs() < 1e-6);
     }
 
     fn cloned(app: &mut App, master: ShapeId) -> ShapeId {

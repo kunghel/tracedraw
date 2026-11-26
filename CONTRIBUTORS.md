@@ -19,7 +19,13 @@ contributor's own GitHub identity.
 | [@notmarinho](https://github.com/notmarinho) | `.cdr`: a group's vector pattern transparency is read as its mask (PR #2490) |
 | Bone NI | The interface in Lao (#2062) |
 | [@viethuongdesign-ship-it](https://github.com/viethuongdesign-ship-it) | The interface in Vietnamese (#3692) |
+| [@muchenkezhan](https://github.com/muchenkezhan) | F9 preview keeps the canvas scale in borderless full screen (PR #3197); smooth mesh fill guides at every zoom (PR #3201); layers shown on a range of pages (PR #2950); customizable context menus (PR #3170) |
 | [@LaMka21](https://github.com/LaMka21) | Moving goes on after a right click during a drag (#174); files dropped on the window are opened or imported (#177); Paste takes what was copied last, files and pictures included (#183) |
+| [@awd-studio](https://github.com/awd-studio) | The interface in Ukrainian (#3709) |
+| [@muchenkezhan](https://github.com/muchenkezhan) | Smooth Mesh Fill guides, the F9 preview at the canvas scale, node marks, palette colours on drop shadows and gradients on detached shadows, text dropped on outlines, the Select Same panel and pasting large pictures (#3201, #3197, #3267, #3669, #3681, #3274, #3226, #3193) |
+| [@fegrifo](https://github.com/fegrifo) | Perimeter and curve length in the Properties panel (#3034); the colour panel's hex field; bullets in text (#2987) |
+| [@LeoSantosRS](https://github.com/LeoSantosRS) | Vertical alignment after Convert to Paragraph (#2645) |
+| [@ratmanz0000](https://github.com/ratmanz0000) | Symbols (Find the same, Replace, instances with their own transparency and shadow), faster drawing, zoom and text editing (#3475, #3559, #3899-#3904) |
 
 ## Other pull requests
 

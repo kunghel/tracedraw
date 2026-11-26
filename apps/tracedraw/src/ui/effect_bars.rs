@@ -2,6 +2,7 @@
 //! Color acceleration, for the next blend and, live, for the selected one;
 //! Clear Blend and Break Apart for a selected blend.
 
+use crate::ui::btn_icons::IconUi;
 use crate::app::App;
 use crate::i18n::tr;
 use crate::theme::Tokens;
@@ -104,7 +105,7 @@ pub fn blend_bar(app: &mut App, ui: &mut Ui) {
             // Fit the blend to a path, then place its ends along it, or
             // take it off the path (#2946).
             if ui
-                .button(tr("docker.new_path"))
+                .ibutton("docker.new_path")
                 .rich_tip(crate::ui::tips::keyed("docker.new_path"))
                 .clicked()
             {
@@ -139,7 +140,7 @@ pub fn blend_bar(app: &mut App, ui: &mut Ui) {
                     app.set_blend_path_ends(from / 100.0, to / 100.0);
                 }
                 if ui
-                    .button(tr("docker.detach_path"))
+                    .ibutton("docker.detach_path")
                     .rich_tip(crate::ui::tips::keyed("docker.detach_path"))
                     .clicked()
                 {
@@ -148,14 +149,14 @@ pub fn blend_bar(app: &mut App, ui: &mut Ui) {
             }
             crate::ui::propbar::sep(ui);
             if ui
-                .button(tr("docker.clear_blend"))
+                .ibutton("docker.clear_blend")
                 .rich_tip(crate::ui::tips::keyed("docker.clear_blend"))
                 .clicked()
             {
                 app.clear_blend();
             }
             if ui
-                .button(tr("docker.break_apart"))
+                .ibutton("docker.break_apart")
                 .rich_tip(crate::ui::tips::pair(
                     "docker.break_apart",
                     "toolbar.effect_break_apart_desc",

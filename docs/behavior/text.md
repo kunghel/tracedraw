@@ -347,6 +347,7 @@ concatenated spans; the layout's line boxes give its place on the page.
 | Undo of typing | the typing of one editing session of one text is one step ("Edit Text"); a session folds keystrokes only into its own step, while it is the last one, so editing another text never touches it (#373, `text_editing::tests::editing_a_second_text_keeps_the_edit_of_the_first`) |
 | Undo of a new text | a text started with a click of the Text tool is made in one step with its first characters ("Create Object"): the font, size or colour picked for it before typing and the typing that follows while nothing else happens join that step, so one Undo takes the whole text back and never leaves an empty text object. An artistic text started and left with no characters leaves no object and no undo step (an empty paragraph text frame stays, #1822); a text emptied by deleting its characters goes in the step that emptied it, so Undo gives it back with its characters (#1481, `text_editing::tests::undoing_a_new_text_leaves_no_empty_text`, `text_editing::tests::a_style_given_before_typing_joins_the_new_text`, `text_editing::tests::a_new_text_left_empty_leaves_no_step`, `text_editing::tests::a_text_emptied_comes_back_with_its_characters`) |
 | Typing while a field has the keyboard (the font search field, a docker's box) | goes to the field only; the text waits until the field lets the keyboard go (#342, `pick_drag_tests::typing_in_a_focused_field_leaves_the_edited_text_alone`) |
+| Drawing while typing | the rest of the page stays as drawn; only the edited text is drawn anew, in a small picture over it (#3904). A text inside plain groups is drawn the same way, where its groups put it; inside a see-through group, or one with effects, a shadow or a mask, or inside a clip frame, the whole page is drawn (#4156, `text_editing::tests::grouped_text_is_typed_with_the_overlay`). Editing a text already on the page starts drawing the page without it; until that is done the text's box is drawn with all it holds over the paper, so each letter shows at once (#4156, `text_editing::tests::existing_text_shows_typing_before_the_page_without_it_is_drawn`). The caret, the marks of non-printing characters and the letters drawn share one layout of the text (#4172) |
 
 The caret is a black bar on a white edge, so it shows on the white page
 and on dark fills whatever the interface theme; selected characters are
@@ -1521,6 +1522,22 @@ stand-in next to each missing family: "Arial (Liberation Sans)".
   `0.35 size` above the baseline; the advance grows to at least
   `1.3 size`.
 
+## Text height and sorted lines
+
+- Text > Text Height... (#4094, `text_height.rs`): the size typed as
+  the height of the capitals on the page, mm in the model: the outline
+  of an H in the first character's font and size (an x when the text
+  has no capital letter), times the object's vertical scale. Every
+  span's `size_pt` and `baseline_shift_pt` are multiplied by
+  `wanted / measured`; one undo step for all the selected texts.
+- Text > Sort Lines (#4078, `quick_commands.rs`): A to Z, Z to A
+  (lower-cased, runs of digits compared by value), or by the first
+  number of each line (an optional minus sign before it, a decimal part
+  after a point or a comma), smallest or largest first; lines without
+  a number after the others, blank lines last, the sort stable. Lines
+  are split at `\n`; each keeps its spans, so its formatting and its
+  paragraph format go with it. No undo step when no line moves.
+
 ## Checks
 
 - Character styles (#1209):
@@ -1717,7 +1734,14 @@ stand-in next to each missing family: "Arial (Liberation Sans)".
   changed it: moved, resized or reshaped, the distance, offset and
   placement kept; on a closed path the start keeps its share of the
   outline's length. Undo takes both back; a deleted path leaves the text
-  as it is (#3571, `text_follow::tests`). Mirror horizontally flips the letters left to right
+  as it is (#3571, `text_follow::tests`).
+  The three lists show the current setting as a small
+  diagram next to a separate arrow area in the bar. Open a list to see
+  the diagrams and hover over a choice to read its name. The guide line
+  shows how the letters turn, which part of the
+  letters touches the guide, or where along the guide the text sits.
+  Use Up or Down to move between choices and Enter to apply one.
+  Mirror horizontally flips the letters left to right
   (the text reads the other way along the path), Mirror vertically
   turns them upside down onto the path's other side, and both together
   turn the text round by 180 degrees. The mirrors keep the letters where they are along

@@ -10,6 +10,7 @@
 //! The margins are egui's safe area insets, so every panel, docker, dialog
 //! and menu keeps to `Context::content_rect`. See docs/behavior/android.md.
 
+use crate::ui::btn_icons::IconUi;
 use std::cell::Cell;
 
 use crate::settings::Settings;
@@ -391,7 +392,7 @@ pub fn options_section(ui: &mut egui::Ui, m: &mut ScreenMargins) {
                 "options.screen_margins_link_tip",
             ));
         if ui
-            .button(tr("options.reset"))
+            .ibutton("options.reset")
             .rich_tip(crate::ui::tips::pair(
                 "options.reset",
                 "options.screen_margins_reset_tip",

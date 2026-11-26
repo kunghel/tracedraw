@@ -141,6 +141,11 @@ the lines of the group, the fills follow them. Click a painted area again to
 give it the bar's fill color, or with the Fill set to None to take the fill
 away. Each click is one undo step.
 
+**Fill All Areas** on the property bar fills every closed area at once: each
+area the outlines of the selected objects close off (of everything on the page
+when nothing is selected) becomes an object with the bar's fill and outline,
+all on a new layer over the others, in one undo step.
+
 ## Mesh fills {#mesh-fill}
 
 A mesh fill is a grid of nodes over an object, each node with its own color

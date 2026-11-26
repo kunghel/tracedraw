@@ -232,7 +232,7 @@ pub fn dialog(app: &mut App, ctx: &Context, st: &mut TemplateState, close: &mut 
                 if ui
                     .add_enabled(
                         can,
-                        egui::Button::new(tr("tpl.open")).min_size(Vec2::new(100.0, 27.0)),
+                        crate::ui::btn_icons::Ib::new("tpl.open").min_size(Vec2::new(100.0, 27.0)),
                     )
                     .clicked()
                 {

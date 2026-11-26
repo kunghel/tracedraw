@@ -61,6 +61,9 @@ pub struct ShelfItem {
     pub colors: Vec<tracedraw_core::Color>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub color_styles: Vec<tracedraw_core::document::ColorStyle>,
+    /// The folder the item is kept in (#4218); empty for none.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub folder: String,
     /// Tells items apart while TraceDraw runs (thumbnails, selection).
     #[serde(skip)]
     pub uid: u64,
@@ -102,6 +105,9 @@ struct ShelfFile {
     kind: String,
     version: u32,
     items: Vec<ShelfItem>,
+    /// Folders kept even while no item is in them (#4218).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    folders: Vec<String>,
 }
 
 impl Default for ShelfFile {
@@ -110,6 +116,7 @@ impl Default for ShelfFile {
             kind: KIND.to_string(),
             version: VERSION,
             items: Vec::new(),
+            folders: Vec::new(),
         }
     }
 }
@@ -129,6 +136,14 @@ pub struct Shelf {
     pub dragging: Option<u64>,
     /// Item thumbnails and the pixel size they were drawn at.
     pub thumbs: HashMap<u64, (u32, egui::TextureHandle)>,
+    /// Folders made in the docker, kept even while empty (#4218).
+    pub folders: Vec<String>,
+    /// The folder the docker shows; `None` shows every item. New items
+    /// go into it.
+    pub folder: Option<String>,
+    /// A folder being named in the docker: the folder renamed (`None`
+    /// for a new one) and the name typed so far.
+    pub folder_edit: Option<(Option<String>, String)>,
 }
 
 /// Where the shelf is kept (desktop).
@@ -149,7 +164,13 @@ fn clean_name(name: &str) -> String {
 /// Read a shelf file's bytes: its items, or nothing when the bytes are
 /// not a shelf. Items without objects are left out, names cleaned, and
 /// at most `MAX_ITEMS` kept.
+#[cfg_attr(not(target_arch = "wasm32"), allow(dead_code))]
 pub fn items_from_bytes(bytes: &[u8]) -> Option<Vec<ShelfItem>> {
+    shelf_from_bytes(bytes).map(|(items, _)| items)
+}
+
+/// [`items_from_bytes`] with the folders the file keeps (#4218).
+pub fn shelf_from_bytes(bytes: &[u8]) -> Option<(Vec<ShelfItem>, Vec<String>)> {
     let file: ShelfFile = serde_json::from_slice(bytes).ok()?;
     if file.kind != KIND {
         return None;
@@ -160,23 +181,38 @@ pub fn items_from_bytes(bytes: &[u8]) -> Option<Vec<ShelfItem>> {
             file.version
         );
     }
-    Some(
-        file.items
-            .into_iter()
-            .filter(|i| !i.shapes.is_empty() || i.is_colors())
-            .map(|mut i| {
-                i.name = clean_name(&i.name);
-                i
-            })
-            .take(MAX_ITEMS)
-            .collect(),
-    )
+    let items = file
+        .items
+        .into_iter()
+        .filter(|i| !i.shapes.is_empty() || i.is_colors())
+        .map(|mut i| {
+            i.name = clean_name(&i.name);
+            i.folder = clean_name(&i.folder);
+            i
+        })
+        .take(MAX_ITEMS)
+        .collect();
+    let mut folders: Vec<String> = file
+        .folders
+        .iter()
+        .map(|f| clean_name(f))
+        .filter(|f| !f.is_empty())
+        .collect();
+    folders.dedup();
+    Some((items, folders))
 }
 
 /// A shelf file holding `items`.
+#[cfg(test)]
 pub fn items_to_bytes(items: &[ShelfItem]) -> Option<Vec<u8>> {
+    shelf_to_bytes(items, &[])
+}
+
+/// A shelf file holding `items` and the `folders` (#4218).
+pub fn shelf_to_bytes(items: &[ShelfItem], folders: &[String]) -> Option<Vec<u8>> {
     let file = ShelfFile {
         items: items.to_vec(),
+        folders: folders.to_vec(),
         ..ShelfFile::default()
     };
     serde_json::to_vec(&file).ok()
@@ -230,20 +266,22 @@ impl Shelf {
         let too_big = std::fs::metadata(p).is_ok_and(|m| m.len() > MAX_FILE);
         let items = if too_big {
             log::warn!("the shelf file {} is too large to read", p.display());
-            Vec::new()
+            (Vec::new(), Vec::new())
         } else {
             match std::fs::read(p) {
-                Ok(bytes) => items_from_bytes(&bytes).unwrap_or_else(|| {
+                Ok(bytes) => shelf_from_bytes(&bytes).unwrap_or_else(|| {
                     log::warn!(
                         "{} is not a shelf file; the shelf starts empty",
                         p.display()
                     );
-                    Vec::new()
+                    (Vec::new(), Vec::new())
                 }),
-                Err(_) => Vec::new(),
+                Err(_) => (Vec::new(), Vec::new()),
             }
         };
+        let (items, folders) = items;
         self.set_items(items);
+        self.folders = folders;
     }
 
     fn set_items(&mut self, items: Vec<ShelfItem>) {
@@ -276,7 +314,7 @@ impl Shelf {
             if !self.loaded {
                 return;
             }
-            let Some(bytes) = items_to_bytes(&self.items) else {
+            let Some(bytes) = shelf_to_bytes(&self.items, &self.folders) else {
                 return;
             };
             // In the page's database (#1414); the copy an older version
@@ -304,7 +342,7 @@ impl Shelf {
     /// Write the shelf file to `p`, through a temporary file so that a
     /// failed write leaves the previous shelf as it was.
     pub fn save_to(&self, p: &Path) -> std::io::Result<()> {
-        let bytes = items_to_bytes(&self.items)
+        let bytes = shelf_to_bytes(&self.items, &self.folders)
             .ok_or_else(|| std::io::Error::other("the shelf could not be written"))?;
         let tmp = p.with_extension("json.tmp");
         crate::files::write_creating(&tmp, bytes)?;
@@ -327,9 +365,101 @@ impl Shelf {
         }
         item.uid = self.new_uid();
         item.name = clean_name(&item.name);
+        // Into the folder the docker shows (#4218).
+        if item.folder.is_empty() {
+            if let Some(f) = &self.folder {
+                item.folder = f.clone();
+            }
+        }
         let uid = item.uid;
         self.items.push(item);
         Some(uid)
+    }
+
+    /// Every folder (#4218): the ones made and the ones items are in,
+    /// sorted by name, each once.
+    pub fn folder_names(&self) -> Vec<String> {
+        let mut out: Vec<String> = self
+            .folders
+            .iter()
+            .cloned()
+            .chain(self.items.iter().map(|i| i.folder.clone()))
+            .filter(|f| !f.is_empty())
+            .collect();
+        out.sort_by_key(|f| f.to_lowercase());
+        out.dedup();
+        out
+    }
+
+    /// The items the docker shows: those of its folder, or all.
+    pub fn shown(&self) -> Vec<&ShelfItem> {
+        match &self.folder {
+            Some(f) => self.items.iter().filter(|i| &i.folder == f).collect(),
+            None => self.items.iter().collect(),
+        }
+    }
+
+    /// Make a folder named `name` (a number added when the name is
+    /// taken) and show it; its name, or `None` for an empty name.
+    pub fn add_folder(&mut self, name: &str) -> Option<String> {
+        let base = clean_name(name);
+        if base.is_empty() {
+            return None;
+        }
+        let taken = self.folder_names();
+        let mut name = base.clone();
+        let mut n = 2;
+        while taken.contains(&name) {
+            name = format!("{base} {n}");
+            n += 1;
+        }
+        self.folders.push(name.clone());
+        self.folder = Some(name.clone());
+        Some(name)
+    }
+
+    /// Rename a folder, its items going with it; refused for an empty
+    /// name or one another folder has.
+    pub fn rename_folder(&mut self, from: &str, to: &str) -> bool {
+        let to = clean_name(to);
+        if to.is_empty() || to == from || self.folder_names().contains(&to) {
+            return false;
+        }
+        for f in self.folders.iter_mut().filter(|f| f.as_str() == from) {
+            *f = to.clone();
+        }
+        for i in self.items.iter_mut().filter(|i| i.folder == from) {
+            i.folder = to.clone();
+        }
+        if self.folder.as_deref() == Some(from) {
+            self.folder = Some(to);
+        }
+        true
+    }
+
+    /// Delete a folder: its items stay on the shelf, in no folder.
+    pub fn delete_folder(&mut self, name: &str) -> bool {
+        let had = self.folder_names().iter().any(|f| f == name);
+        self.folders.retain(|f| f != name);
+        for i in self.items.iter_mut().filter(|i| i.folder == name) {
+            i.folder.clear();
+        }
+        if self.folder.as_deref() == Some(name) {
+            self.folder = None;
+        }
+        had
+    }
+
+    /// Put an item in a folder (`""` for none).
+    pub fn set_folder(&mut self, uid: u64, folder: &str) -> bool {
+        let folder = clean_name(folder);
+        match self.items.iter_mut().find(|i| i.uid == uid) {
+            Some(item) if item.folder != folder => {
+                item.folder = folder;
+                true
+            }
+            _ => false,
+        }
     }
 
     /// Take the item off the shelf.
@@ -454,6 +584,7 @@ pub fn make_item(
         styles,
         colors: Vec::new(),
         color_styles: Vec::new(),
+        folder: String::new(),
         uid: 0,
     }
 }
@@ -470,6 +601,7 @@ pub fn make_color_item(
         styles: Vec::new(),
         colors: colors.to_vec(),
         color_styles: styles.to_vec(),
+        folder: String::new(),
         uid: 0,
     }
 }
@@ -758,6 +890,46 @@ mod tests {
     use super::*;
     use tracedraw_core::{Color, Fill, ShapeId};
 
+    /// Folders (#4218): new items go into the folder shown, items move
+    /// between folders, a renamed folder takes its items, a deleted one
+    /// leaves them in none, and the file keeps folders and items' places.
+    #[test]
+    fn shelf_items_go_in_folders() {
+        let mut shelf = Shelf::default();
+        let colors = |name: &str| make_color_item(name, &[Color::rgb8(1, 2, 3)], &[]);
+        let loose = shelf.push(colors("Loose")).expect("item");
+        assert_eq!(shelf.add_folder("Logos").as_deref(), Some("Logos"));
+        assert_eq!(shelf.folder.as_deref(), Some("Logos"));
+        // A taken name gets a number.
+        assert_eq!(shelf.add_folder("Logos").as_deref(), Some("Logos 2"));
+        shelf.folder = Some("Logos".into());
+        let logo = shelf.push(colors("Logo")).expect("item");
+        assert_eq!(shelf.item(logo).map(|i| i.folder.as_str()), Some("Logos"));
+        assert_eq!(shelf.shown().len(), 1);
+        shelf.folder = None;
+        assert_eq!(shelf.shown().len(), 2);
+        assert!(shelf.set_folder(loose, "Logos 2"));
+        assert!(!shelf.set_folder(loose, "Logos 2"), "already there");
+        assert!(shelf.rename_folder("Logos", "Marks"));
+        assert!(!shelf.rename_folder("Marks", "Logos 2"), "name taken");
+        assert_eq!(shelf.item(logo).map(|i| i.folder.as_str()), Some("Marks"));
+        assert_eq!(shelf.folder_names(), vec!["Logos 2".to_string(), "Marks".into()]);
+        // Saved and read back.
+        let bytes = shelf_to_bytes(&shelf.items, &shelf.folders).expect("bytes");
+        let (items, folders) = shelf_from_bytes(&bytes).expect("shelf");
+        assert_eq!(items[1].folder, "Marks");
+        assert!(folders.contains(&"Logos 2".to_string()));
+        // An empty folder is kept; deleting one leaves its items loose.
+        shelf.add_folder("Empty");
+        assert!(shelf.folder_names().contains(&"Empty".to_string()));
+        assert!(shelf.delete_folder("Marks"));
+        assert_eq!(shelf.item(logo).map(|i| i.folder.as_str()), Some(""));
+        assert!(shelf.item(logo).is_some(), "the item stays");
+        // Files from before folders read as items in none.
+        let old = br#"{"kind":"tracedraw-shelf","version":1,"items":[]}"#;
+        assert_eq!(shelf_from_bytes(old), Some((Vec::new(), Vec::new())));
+    }
+
     fn rect(app: &mut App, x: f64, y: f64, w: f64, h: f64) -> ShapeId {
         let id = app
             .new_shape(ShapeKind::Rect {
@@ -1011,6 +1183,7 @@ mod tests {
             styles: vec![],
             colors: vec![],
             color_styles: vec![],
+            folder: String::new(),
             uid: 0,
         };
         for _ in 0..MAX_ITEMS {
@@ -1034,6 +1207,7 @@ mod tests {
             styles: vec![],
             colors: vec![tracedraw_core::Color::BLACK],
             color_styles: vec![],
+            folder: String::new(),
             uid: 0,
         };
         let items = merged(vec![named("a"), named("b")], vec![named("new")]);

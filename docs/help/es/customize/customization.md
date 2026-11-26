@@ -89,3 +89,15 @@ desde ahí de vuelta a la barra un botón que haya quitado.
   (opción predeterminada) o abrir el [[options.palette_context_menu]].
 
 Vea [Paletas de colores](../color/palettes.md).
+
+## Menús contextuales {#context-menus}
+
+En Personalización, elija [[options.context_menus]] para administrar por separado las 32 ubicaciones de los menús contextuales. Seleccione una ubicación con [[options.context_menu_scene]], use [[options.context_menu_search]] para buscar una operación y quite la marca de su casilla para ocultarla allí. Las operaciones siguen apareciendo en esta lista aunque la selección actual no pueda utilizarlas.
+
+Todas las operaciones están visibles de forma predeterminada. Cada ubicación tiene sus propias opciones: ocultar una operación de objetos en el lienzo no la oculta en el panel Objetos. Las listas dinámicas, como las capas de destino y las colecciones de fuentes, se administran como una sola operación, de modo que cambiar sus nombres no restablece las opciones.
+
+[[options.context_menu_reset]] restaura el menú seleccionado y [[options.context_menu_reset_all]] restaura todos los menús. [[dialog.ok]] guarda las opciones en la configuración de la aplicación; [[dialog.cancel]], Escape o el botón de cierre restaura las opciones que había al abrir Opciones. Los menús principales, los atajos y la búsqueda de comandos siguen ofreciendo los comandos originales.
+
+Expanda un submenú para ver sus elementos con sangría. Arrastre el asa de una fila, o use [[options.context_menu_move_up]] y [[options.context_menu_move_down]], para reordenar elementos del mismo nivel. Al mover un menú superior, sus elementos se mueven con él; no se pueden mover elementos a otro menú superior. La búsqueda conserva visibles los menús que contienen los resultados. Restaurar un menú restablece tanto la visibilidad como el orden; cancelar Opciones devuelve ambos al estado que tenían al abrir el diálogo.
+
+El menú de las muestras de la paleta del documento y su entrada en el Administrador de paletas tienen ajustes independientes. Los destinos dinámicos conservan su orden; la lista de estilos del documento mantiene su posición entre las acciones estáticas de Estilos de objeto. Las operaciones nuevas de versiones posteriores permanecen visibles y se colocan después de los elementos guardados del mismo nivel.

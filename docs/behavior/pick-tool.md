@@ -84,7 +84,24 @@ letter O, an ellipse's start, a rectangle's first corner; groups, texts
 and pictures show none, nor does a selection of more than 1000
 subpaths. So a selected object is told from the others at a glance and
 where its outline starts shows, as in the reference program (#1145,
-`canvas::tests::the_pick_tool_marks_where_the_selected_outlines_start`).
+`canvas::tests::by_default_the_pick_tool_marks_only_where_outlines_start`).
+With Options > Nodes and Handles > "Mark every node of one selected
+object" on (off by default), a single selection marks every node, including
+all four rectangle corners and each point of a polygon or curve. A
+bitmap marks its four transformed corners, and a clip frame marks the
+nodes of its own outline, whether empty or filled, without marking the
+clipped contents. An ellipse marks its start. With several objects
+selected, each object keeps exactly one mark at its first node, including
+pictures and clip frames. Compound paths also keep just one mark per
+object, regardless of their number of subpaths.
+Groups and texts show none, nor does a selection with more than 1000
+marks. This makes every point of one selected outline visible while
+keeping larger selections clear (#1145, #3258,
+`canvas::tests::the_pick_tool_marks_where_the_selected_outlines_start`,
+`canvas::tests::the_pick_tool_marks_a_transformed_bitmaps_four_corners`,
+`canvas::tests::the_pick_tool_marks_a_clip_frames_outline_without_its_contents`,
+`canvas::tests::the_pick_tool_marks_each_selected_bitmap_and_clip_frame_once`,
+`canvas::tests::the_pick_tool_limits_marks_for_single_and_multiple_selections`).
 
 In rotate mode the handles are black arrows 2 points thick with solid
 heads, their centres 9 points out from the box: a curved double arrow
@@ -273,7 +290,9 @@ white halo.
 Pressing the right button on an object (it is selected first if it was
 not) and dragging shows the selection's outline in blue where it would
 go, while the objects stay put; Ctrl keeps the drag horizontal or
-vertical, Esc cancels it. On release a menu opens there:
+vertical, Esc cancels it. When a single text reaches an eligible outline,
+that outline highlights and the pointer shows the Fit Text to Path hint.
+On release a menu opens there:
 
 | Item | Effect |
 |---|---|
@@ -283,6 +302,7 @@ vertical, Esc cancels it. On release a menu opens there:
 | Copy Outline Here | ... its outline |
 | Copy All Properties | ... its fill, outline and transparency |
 | Place Inside | the object under the pointer becomes the clip frame of the selection |
+| Fit Text to Path | a single text fits to the vector outline under the pointer. On a closed shape, the release point locates the centre of the text along the outline. The text sits on the outline with zero distance and follows later edits to it. The link is kept in native drawings. Deleting the outline leaves the text on its last guide. |
 | Cancel | nothing |
 
 The fill, outline and transparency are read from the object that shows

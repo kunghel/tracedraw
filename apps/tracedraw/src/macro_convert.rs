@@ -229,7 +229,15 @@ pub fn check(p: &vp::Project) -> Report {
             while let Some(at) = rest.find("createobject(\"") {
                 let after = &rest[at + 14..];
                 let name = after.split('"').next().unwrap_or("");
-                if name != "scripting.dictionary" && name != "vba.collection" {
+                // Objects the VBA runtime makes itself (#4315: files too).
+                let known = [
+                    "scripting.dictionary",
+                    "vba.collection",
+                    "scripting.filesystemobject",
+                    "wscript.shell",
+                    "wscript.network",
+                ];
+                if !known.contains(&name) {
                     push(
                         i as u32 + 1,
                         Level::Error,

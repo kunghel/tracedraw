@@ -28,7 +28,9 @@ impl App {
             || self.pending_blend_path
             || self.pending_text_path
             || self.pending_rotate_lines.is_some()
-            || self.pending_palette_sample;
+            || self.pending_palette_sample
+            || self.pending_replace.is_some()
+            || self.pending_copy_clip;
         if !waiting {
             return false;
         }
@@ -45,6 +47,8 @@ impl App {
             self.pending_text_path = false;
             self.pending_rotate_lines = None;
             self.pending_palette_sample = false;
+            self.pending_replace = None;
+            self.pending_copy_clip = false;
             self.status = tr("status.cancelled");
             return true;
         }
@@ -53,7 +57,8 @@ impl App {
         }
         if self.pending_rotate_lines.is_some() {
             // Rotate by Two Lines: each click snaps as a drawing click.
-            let q = self.snap_point(p);
+            let constrain = response.ctx.input(|i| self.constrain_held(&i.modifiers));
+            let q = self.rotate_lines_point(self.snap_point(p), constrain);
             self.rotate_lines_click(q);
             return true;
         }
@@ -84,6 +89,27 @@ impl App {
             // The target is found under the selected objects too.
             let target = self.hit_test_where(p, |id| self.selection.contains(&id));
             self.shaping_onto(target);
+            return true;
+        }
+        if let Some(clones) = self.pending_replace.take() {
+            // Replace with Object / Clones (#4220): Shift fits each
+            // replacement to the object's size.
+            let fit = response.ctx.input(|i| i.modifiers.shift);
+            match self.hit_test(p) {
+                Some(t) => self.replace_selection_with(t, clones, fit),
+                None => self.status = tr("status.cancelled"),
+            }
+            return true;
+        }
+        if self.pending_copy_clip {
+            // Copy Contents From (D#4221): the clip frame clicked.
+            self.pending_copy_clip = false;
+            match self.hit_test(p) {
+                Some(t) => {
+                    self.copy_clip_contents_from(t);
+                }
+                None => self.status = tr("status.cancelled"),
+            }
             return true;
         }
         let target = self.hit_test(p);
@@ -469,6 +495,111 @@ impl App {
         }
     }
 
+    /// The Area Fill bar's fill and outline on a new area: the default
+    /// fill (a colour when the default is none, so the area shows), its
+    /// own colour, or none; the default outline, its own, or none.
+    fn area_fill_style(&self, s: &mut Shape) {
+        s.fill = match self.area_fill_mode {
+            1 => Fill::Solid(self.area_fill_color),
+            2 => Fill::None,
+            _ => match self.default_fill() {
+                Fill::None => Fill::Solid(self.area_fill_color),
+                other => other,
+            },
+        };
+        s.stroke = match self.area_outline_mode {
+            1 => Some(Stroke::new(
+                self.area_outline_color,
+                self.area_outline_width.max(0.0),
+            )),
+            2 => None,
+            _ => self.default_stroke(),
+        };
+    }
+
+    /// Area Fill > Fill All Areas (#4200): every area the outlines of the
+    /// selected objects (all that show on the page when nothing is
+    /// selected) close off becomes a filled object, on a new layer of
+    /// their own over the others, in one undo step. The number made.
+    pub fn area_fill_all(&mut self) -> usize {
+        let shapes: Vec<Shape> = if self.selection.is_empty() {
+            self.doc()
+                .layers_for_page(self.page)
+                .unwrap_or_default()
+                .iter()
+                .filter(|l| l.visible)
+                .flat_map(|l| l.shapes.clone())
+                .collect()
+        } else {
+            self.selection
+                .iter()
+                .filter_map(|id| self.doc().shape_on_page(*id))
+                .collect()
+        };
+        let edges = self.area_fill_outline_edges;
+        let (mut parts, mut bands) = (Vec::new(), Vec::new());
+        for s in &shapes {
+            area_fill_collect(s, Affine::IDENTITY, edges, &mut parts, &mut bands);
+        }
+        use tracedraw_core::shaping::{self, FillRule, Op};
+        let mut areas = shaping::all_enclosed_visible_areas(&parts, 5000);
+        // With outline edges, the inside of an outline's band is no area.
+        if !bands.is_empty() {
+            areas.retain(|a| {
+                let whole = shaping::filled_area(a, FillRule::NonZero);
+                let covered: f64 = bands
+                    .iter()
+                    .map(|b| {
+                        shaping::filled_area(&shaping::overlay(a, b, Op::Intersect), FillRule::NonZero)
+                    })
+                    .sum();
+                covered < whole * 0.5
+            });
+        }
+        if areas.is_empty() {
+            self.status = tr("status.area_fill_none");
+            return 0;
+        }
+        let page = self.page;
+        let mark = self.engine.begin_group();
+        let made = (|| {
+            self.engine
+                .run(&Command::AddLayer {
+                    page,
+                    name: tr("area_fill.layer_name"),
+                })
+                .ok()?;
+            let layer = self.doc().page(page).ok()?.layers.last()?.id;
+            let mut cmds = Vec::with_capacity(areas.len());
+            let mut ids = Vec::with_capacity(areas.len());
+            for path in &areas {
+                let id = self.engine.new_shape_id();
+                let mut s = Shape::new(
+                    id,
+                    ShapeKind::Path {
+                        path: path.clone(),
+                        closed: true,
+                    },
+                );
+                self.area_fill_style(&mut s);
+                s.name = Some("Area Fill".into());
+                cmds.push(Command::AddShape { layer, shape: s });
+                ids.push(id);
+            }
+            self.engine.run_batch("Fill All Areas", &cmds).ok()?;
+            Some(ids)
+        })();
+        self.engine.end_group(mark, "Fill All Areas");
+        match made {
+            Some(ids) => {
+                let n = ids.len();
+                self.select(ids);
+                n
+            }
+            None => 0,
+        }
+    }
+
     /// Area Fill: find the enclosed area under the click (the outlines
     /// that show count as walls: a line hidden under an object's opaque
     /// fill does not cut the area, #1281) and create a filled object from
@@ -486,62 +617,10 @@ impl App {
             .filter(|l| l.visible)
             .flat_map(|l| l.shapes.clone())
             .collect();
-        // Bottom to top: each outline and whether its fill hides what
-        // lies beneath it.
-        fn collect(
-            s: &Shape,
-            parent: Affine,
-            edges: bool,
-            out: &mut Vec<(BezPath, bool)>,
-            bands: &mut Vec<BezPath>,
-        ) {
-            let t = parent * s.transform;
-            if !s.effects.is_empty() {
-                // What the object draws, in drawing order: the objects its
-                // effects add below it, its warped outline, those above.
-                let mut on_page = s.clone();
-                on_page.transform_by(parent);
-                let ev = tracedraw_core::live::evaluate(&on_page);
-                let see_through = s
-                    .effects
-                    .iter()
-                    .any(|e| matches!(e, Effect::Transparency { .. } | Effect::Lens(_)));
-                for part in ev.below {
-                    let covers = hides_below(&part);
-                    out.push((part.page_path(), covers));
-                }
-                let covers = !see_through && hides_below(&ev.main);
-                out.push((ev.main.page_path(), covers));
-                for part in ev.above {
-                    let covers = hides_below(&part);
-                    out.push((part.page_path(), covers));
-                }
-                return;
-            }
-            match &s.kind {
-                ShapeKind::Group { children } => children
-                    .iter()
-                    .for_each(|c| collect(c, t, edges, out, bands)),
-                _ => {
-                    out.push((t * s.local_path(), hides_below(s)));
-                    // The band the outline draws, as an opaque object: its
-                    // edges are the walls and the middle line under it is
-                    // cut away.
-                    if edges && s.stroke.as_ref().is_some_and(|st| st.width > 0.0) {
-                        let mut on_page = s.clone();
-                        on_page.transform_by(parent);
-                        if let Some(band) = crate::tools2::outline_object_path(&on_page) {
-                            bands.push(band.clone());
-                            out.push((band, true));
-                        }
-                    }
-                }
-            }
-        }
         let edges = self.area_fill_outline_edges;
         let (mut parts, mut bands) = (Vec::new(), Vec::new());
         for s in &shapes {
-            collect(s, Affine::IDENTITY, edges, &mut parts, &mut bands);
+            area_fill_collect(s, Affine::IDENTITY, edges, &mut parts, &mut bands);
         }
         // A click on a drawn outline fills nothing, as on a thin one.
         if edges && bands.iter().any(|b| kurbo::Shape::winding(b, p) != 0) {
@@ -593,25 +672,7 @@ impl App {
         };
         let id = self.engine.new_shape_id();
         let mut s = Shape::new(id, ShapeKind::Path { path, closed: true });
-        // The bar's choices: the default fill (a colour when the default
-        // is none, so the area shows), its own colour, or none; the
-        // default outline, its own, or none.
-        s.fill = match self.area_fill_mode {
-            1 => Fill::Solid(self.area_fill_color),
-            2 => Fill::None,
-            _ => match self.default_fill() {
-                Fill::None => Fill::Solid(self.area_fill_color),
-                other => other,
-            },
-        };
-        s.stroke = match self.area_outline_mode {
-            1 => Some(Stroke::new(
-                self.area_outline_color,
-                self.area_outline_width.max(0.0),
-            )),
-            2 => None,
-            _ => self.default_stroke(),
-        };
+        self.area_fill_style(&mut s);
         s.name = Some("Area Fill".into());
         self.run(Command::AddShape { layer, shape: s });
         self.select(vec![id]);
@@ -651,8 +712,12 @@ impl App {
                 .find(|s| is_group(s) && kurbo::Shape::bounding_box(&s.page_path()).contains(p))
                 .cloned()
         });
-        let Some(group) = group else {
-            return false;
+        let (group, grouped) = match group {
+            Some(g) => (g, None),
+            None => match self.live_group_around(p) {
+                Some((g, mark)) => (g, Some(mark)),
+                None => return false,
+            },
         };
         let color = match self.area_fill_mode {
             1 => Some(self.area_fill_color),
@@ -676,6 +741,11 @@ impl App {
             .unwrap_or(Affine::IDENTITY);
         let local = (parent * group.transform).inverse() * p;
         if !tracedraw_core::live_paint::paint_at(&group, &mut fills, local, color) {
+            if let Some(mark) = grouped {
+                // Nothing painted: the objects are not left grouped.
+                self.engine.end_group(mark, "Area Fill");
+                self.undo();
+            }
             return tracedraw_core::live_paint::region_at(&group, local).is_some();
         }
         match effects
@@ -690,8 +760,62 @@ impl App {
             shape: group.id,
             effects,
         });
+        if let Some(mark) = grouped {
+            self.engine.end_group(mark, "Area Fill");
+        }
         self.select(vec![group.id]);
         true
+    }
+
+    /// Live Area Fill on lines not grouped (#4199): the objects of the
+    /// active layer whose lines close round `p` are grouped, so the live
+    /// fill follows them as they are edited. One Undo takes back the
+    /// grouping with the fill. None when no area closes round `p`.
+    fn live_group_around(&mut self, p: Point) -> Option<(Shape, Option<u64>)> {
+        let layer = self.active_layer()?;
+        let shapes: Vec<Shape> = self
+            .doc()
+            .layers_for_page(self.page)
+            .unwrap_or_default()
+            .iter()
+            .filter(|l| l.id == layer && l.visible && !l.locked)
+            .flat_map(|l| l.shapes.iter())
+            .filter(|s| !matches!(s.kind, ShapeKind::Group { .. }) && s.effects.is_empty())
+            .cloned()
+            .collect();
+        if shapes.len() < 2 {
+            return None;
+        }
+        let all = Shape::new(ShapeId(u64::MAX), ShapeKind::Group { children: shapes.clone() });
+        let area = tracedraw_core::live_paint::region_at(&all, p)?;
+        let around = kurbo::Shape::bounding_box(&area).inflate(0.5, 0.5);
+        let members: Vec<ShapeId> = shapes
+            .iter()
+            .filter(|s| {
+                let b = kurbo::Shape::bounding_box(&s.page_path());
+                b.x0 <= around.x1 && b.x1 >= around.x0 && b.y0 <= around.y1 && b.y1 >= around.y0
+            })
+            .map(|s| s.id)
+            .collect();
+        if members.len() < 2 {
+            return None;
+        }
+        let mark = self.engine.begin_group();
+        self.select(members);
+        self.group_selection();
+        let group = match self.selection[..] {
+            [id] => self
+                .doc()
+                .find_shape(id)
+                .filter(|s| matches!(s.kind, ShapeKind::Group { .. }))
+                .cloned(),
+            _ => None,
+        };
+        if group.is_none() {
+            self.engine.end_group(mark, "Area Fill");
+        }
+        // The fill joins this step (`live_paint_at` ends the group).
+        group.map(|g| (g, mark))
     }
 
     /// The symmetry object an Area Fill click at `p` falls in, among the
@@ -772,6 +896,16 @@ impl App {
                         .into_iter()
                         .map(|(k, q)| ((id, k), q)),
                 );
+            }
+        }
+        // The chosen colour point's spread handle, on its ring (#3947).
+        if let Some((id, i)) = self.selected_color_point().filter(|_| !envelope_tool) {
+            if let Some((_, _, h)) = self
+                .doc()
+                .find_shape(id)
+                .and_then(|s| crate::color_points::spread_ring(s, i))
+            {
+                points.push(((id, crate::color_points::SPREAD_HANDLE_BASE + i), h));
             }
         }
         nearest(points)
@@ -922,6 +1056,28 @@ impl App {
         let Some(s) = self.doc().find_shape(id).cloned() else {
             return;
         };
+        // A colour point's spread handle: the spread follows the
+        // pointer's distance from the point, one undo step (#3947).
+        if let Some(i) = crate::color_points::spread_handle_of(index) {
+            if let Some((at, _, _)) = crate::color_points::spread_ring(&s, i) {
+                use tracedraw_core::geometry::Shape as _;
+                let b = s.page_path().bounding_box();
+                let unit = crate::color_points::spread_radius(b, 1.0).max(1e-9);
+                let spread = ((p + self.effect_node_grab) - at).hypot() / unit;
+                if let Some(cmd) = self.spread_color_point(id, i, spread) {
+                    if self.effect_node_stepped && self.engine.undo_label() == Some("Edit Effect")
+                    {
+                        let _ = self.engine.undo();
+                    }
+                    self.effect_node_stepped = true;
+                    if let Err(e) = self.engine.run_batch("Edit Effect", &[cmd]) {
+                        self.status = e.to_string();
+                    }
+                }
+            }
+            self.drag = Drag::Node { last: p };
+            return;
+        }
         let Some(at) = effect_point(&s, index) else {
             return;
         };
@@ -1056,9 +1212,10 @@ pub fn is_mesh_envelope_node(index: usize) -> bool {
 }
 
 /// Page-space positions of the editable nodes of a shape's perspective,
-/// mesh envelope and mesh fill, with a global index: perspective
-/// 100..104, mesh envelope 110 + k (its last one), mesh 200 + k (frame
-/// envelopes have their own editing, see `envelope_edit`).
+/// mesh envelope, blur pins and mesh fill, with a global index: perspective
+/// 100..104, mesh envelope 110 + k (its last one), blur pins
+/// [`BLUR_PIN_BASE`] + k, mesh 200 + k (frame envelopes have their own
+/// editing, see `envelope_edit`).
 pub fn effect_nodes(s: &Shape) -> Vec<(usize, Point)> {
     let mut out = Vec::new();
     for e in &s.effects {
@@ -1078,6 +1235,14 @@ pub fn effect_nodes(s: &Shape) -> Vec<(usize, Point)> {
             out.push((MESH_ENVELOPE_BASE + k, s.transform * *q));
         }
     }
+    // The pins of a variable Gaussian blur, BLUR_PIN_BASE + k.
+    for e in &s.effects {
+        if let Effect::GaussianBlur { pins, .. } = e {
+            for (k, pin) in pins.iter().take(BLUR_PIN_COUNT).enumerate() {
+                out.push((BLUR_PIN_BASE + k, s.transform * pin.at));
+            }
+        }
+    }
     if let Fill::Mesh(m) = &s.fill {
         for (k, n) in m.nodes.iter().enumerate() {
             out.push((200 + k, s.transform * n.pos));
@@ -1086,6 +1251,19 @@ pub fn effect_nodes(s: &Shape) -> Vec<(usize, Point)> {
     // A colour points gradient's points, numbered as mesh nodes are.
     out.extend(crate::color_points::point_nodes(s));
     out
+}
+
+/// The effect node number of a variable blur's first pin; its pins
+/// count on from it, up to [`BLUR_PIN_COUNT`] of them (past the mesh
+/// envelope's and the mesh nodes' numbers, below the mesh handles').
+pub const BLUR_PIN_BASE: usize = 900_000;
+pub const BLUR_PIN_COUNT: usize = tracedraw_core::live::MAX_BLUR_PINS;
+
+/// The blur pin an effect node number stands for.
+pub fn blur_pin_of(index: usize) -> Option<usize> {
+    index
+        .checked_sub(BLUR_PIN_BASE)
+        .filter(|k| *k < BLUR_PIN_COUNT)
 }
 
 /// The handles of mesh node `i` of `s` on the page, with their effect
@@ -1113,6 +1291,9 @@ pub fn mesh_handle_points(s: &Shape, i: usize) -> Vec<(usize, Point)> {
 /// Where effect node `index` of `s` is on the page: a perspective
 /// corner, a mesh node or a mesh node's handle.
 pub fn effect_point(s: &Shape, index: usize) -> Option<Point> {
+    if let Some(i) = crate::color_points::spread_handle_of(index) {
+        return crate::color_points::spread_ring(s, i).map(|(_, _, h)| h);
+    }
     if let Some((i, h)) = crate::mesh_tool::mesh_handle_of(index) {
         let Fill::Mesh(m) = &s.fill else {
             return None;
@@ -1145,10 +1326,22 @@ fn move_effect_node(effects: &mut [Effect], fill: &mut Fill, index: usize, d: Ve
         return;
     }
     for e in effects.iter_mut() {
-        if let Effect::Perspective { corners } = e {
-            if let Some(c) = index.checked_sub(100).and_then(|i| corners.get_mut(i)) {
-                *c += d;
+        match e {
+            Effect::Perspective { corners } => {
+                if let Some(c) = index
+                    .checked_sub(100)
+                    .filter(|i| *i < 4)
+                    .and_then(|i| corners.get_mut(i))
+                {
+                    *c += d;
+                }
             }
+            Effect::GaussianBlur { pins, .. } => {
+                if let Some(pin) = blur_pin_of(index).and_then(|k| pins.get_mut(k)) {
+                    pin.at += d;
+                }
+            }
+            _ => {}
         }
     }
     if let Fill::Mesh(m) = fill {
@@ -1216,6 +1409,61 @@ pub fn free_transform_step(
         }
     }
 }
+
+/// Area Fill's walls, bottom to top: each outline of `s` (under
+/// `parent`) and whether its fill hides what lies beneath it; with
+/// `edges`, each outline's band too, kept in `bands`.
+pub(crate) fn area_fill_collect(
+    s: &Shape,
+    parent: Affine,
+    edges: bool,
+    out: &mut Vec<(BezPath, bool)>,
+    bands: &mut Vec<BezPath>,
+) {
+    let t = parent * s.transform;
+    if !s.effects.is_empty() {
+        // What the object draws, in drawing order: the objects its
+        // effects add below it, its warped outline, those above.
+        let mut on_page = s.clone();
+        on_page.transform_by(parent);
+        let ev = tracedraw_core::live::evaluate(&on_page);
+        let see_through = s
+            .effects
+            .iter()
+            .any(|e| matches!(e, Effect::Transparency { .. } | Effect::Lens(_)));
+        for part in ev.below {
+            let covers = hides_below(&part);
+            out.push((part.page_path(), covers));
+        }
+        let covers = !see_through && hides_below(&ev.main);
+        out.push((ev.main.page_path(), covers));
+        for part in ev.above {
+            let covers = hides_below(&part);
+            out.push((part.page_path(), covers));
+        }
+        return;
+    }
+    match &s.kind {
+        ShapeKind::Group { children } => children
+            .iter()
+            .for_each(|c| area_fill_collect(c, t, edges, out, bands)),
+        _ => {
+            out.push((t * s.local_path(), hides_below(s)));
+            // The band the outline draws, as an opaque object: its
+            // edges are the walls and the middle line under it is
+            // cut away.
+            if edges && s.stroke.as_ref().is_some_and(|st| st.width > 0.0) {
+                let mut on_page = s.clone();
+                on_page.transform_by(parent);
+                if let Some(band) = crate::tools2::outline_object_path(&on_page) {
+                    bands.push(band.clone());
+                    out.push((band, true));
+                }
+            }
+        }
+    }
+}
+
 
 /// The object's fill hides what lies beneath it: an opaque fill at full
 /// opacity, with no transparency mask (Area Fill, #1281).

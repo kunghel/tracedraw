@@ -48,6 +48,8 @@ shadow of another object, use
 shadow a bitmap of its own, just behind the object. When the object also has a
 block shadow or an inner shadow, the command reads **Break Shadow Apart** and
 takes those off too: the block shadow as curves behind the object, the inner
-shadow as a bitmap in front of it. It is a bitmap of the
-shadow's one color, so a click on a palette color (or a right click) recolors
-it, keeping how soft it is.
+shadow as a bitmap in front of it. Select a detached shadow and drag with
+the [[tool.interactive_fill]] tool to give it a color gradient, or with the
+[[tool.transparency]] tool to fade it across the drag. A palette color
+(left or right click) gives a detached drop or inner shadow one color again.
+The shadow keeps its original soft edges.

@@ -88,3 +88,15 @@ barra un pulsante che avete tolto.
   partenza) o aprire il [[options.palette_context_menu]].
 
 Vedi [Tavolozze dei colori](../color/palettes.md).
+
+## Menu contestuali {#context-menus}
+
+In Personalizzazione, scegli [[options.context_menus]] per gestire separatamente le 32 posizioni dei menu contestuali. Seleziona una posizione con [[options.context_menu_scene]], poi usa [[options.context_menu_search]] per cercare un'operazione e deseleziona la casella per nasconderla in quella posizione. Le operazioni restano nell'elenco anche quando la selezione corrente non può usarle.
+
+Tutte le operazioni sono visibili per impostazione predefinita. Ogni posizione ha le proprie scelte: nascondere un'operazione degli oggetti nell'area di disegno non la nasconde nel pannello Oggetti. Gli elenchi dinamici, come i livelli di destinazione e le raccolte di caratteri, sono gestiti come una sola operazione, quindi cambiarne il nome non reimposta le scelte.
+
+[[options.context_menu_reset]] ripristina il menu selezionato e [[options.context_menu_reset_all]] ripristina tutti i menu. [[dialog.ok]] salva le scelte nelle impostazioni dell'applicazione; [[dialog.cancel]], Escape o il pulsante di chiusura ripristina le scelte presenti all'apertura delle Opzioni. I menu principali, le scorciatoie e la ricerca dei comandi continuano a offrire i comandi originali.
+
+Espandi un sottomenu per vedere le voci rientrate. Trascina la maniglia di una riga, oppure usa [[options.context_menu_move_up]] e [[options.context_menu_move_down]], per riordinare le voci dello stesso livello. Spostando un menu superiore si spostano anche tutte le sue voci; non è possibile trasferire una voce a un altro menu superiore. La ricerca mantiene visibili i menu che contengono i risultati. Il ripristino di un menu reimposta visibilità e ordine; annullando le Opzioni, entrambi tornano allo stato che avevano all’apertura della finestra.
+
+Il menu dei campioni della tavolozza del documento e la sua voce nel Gestore tavolozze hanno impostazioni separate. Le destinazioni dinamiche mantengono il proprio ordine; l’elenco degli stili del documento resta tra le azioni statiche di Stili oggetto. Le nuove operazioni aggiunte in una versione successiva restano visibili, dopo le voci salvate dello stesso livello.
